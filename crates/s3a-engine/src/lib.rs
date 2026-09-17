@@ -370,6 +370,60 @@ impl<'a> QuerySieve<'a> {
         Self { reader }
     }
 
+    /// Queries 3D GIS Survey point clouds / topographic meshes filtering by lat/long micro-degrees and elevation/depth mm.
+    pub fn query_gis_mesh_3d(
+        &self,
+        min_lat_deg: f64,
+        max_lat_deg: f64,
+        min_lon_deg: f64,
+        max_lon_deg: f64,
+        min_elev_m: f64,
+        max_elev_m: f64,
+    ) -> Vec<GISSurveyPointRecord> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        let min_lat = (min_lat_deg * 1_000_000.0) as f32;
+        let max_lat = (max_lat_deg * 1_000_000.0) as f32;
+        let min_lon = (min_lon_deg * 1_000_000.0) as f32;
+        let max_lon = (max_lon_deg * 1_000_000.0) as f32;
+
+        let query_min = [min_lat, min_lon, (min_elev_m * 1000.0) as f32];
+        let query_max = [max_lat, max_lon, (max_elev_m * 1000.0) as f32];
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::GIS_SURVEY_MESH {
+                continue;
+            }
+
+            // SIMD 3D Geographic Bounding Box Rejection across Simplex Hulls
+            if can_reject_tile_range(&header.hull, &query_min, &query_max) {
+                continue;
+            }
+
+            let records: &[GISSurveyPointRecord] = bytemuck::cast_slice(payload);
+            for rec in records {
+                let lat = rec.latitude_deg();
+                let lon = rec.longitude_deg();
+                let elev = rec.elevation_m();
+
+                if lat >= min_lat_deg && lat <= max_lat_deg
+                    && lon >= min_lon_deg && lon <= max_lon_deg
+                    && elev >= min_elev_m && elev <= max_elev_m
+                {
+                    results.push(*rec);
+                }
+            }
+        }
+
+        results
+    }
+
     /// Queries 3D spatial robotic trajectories filtering by 3D bounding box [min_xyz, max_xyz].
     pub fn query_robotics_trajectory_3d(
         &self,
@@ -724,6 +778,35 @@ impl Compactor {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_gis_mesh_3d_query() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+
+        let points = vec![
+            GISSurveyPointRecord::new(37.774929, -122.419416, 100.0, 0, 80, 1600000000), // Ground
+            GISSurveyPointRecord::new(37.775000, -122.420000, -50.0, 1, 90, 1600000000), // Subsurface Strata
+            GISSurveyPointRecord::new(38.000000, -123.000000, 200.0, 0, 50, 1600000000), // Out of area
+        ];
+
+        let mut hull = SimplexHull::empty();
+        hull.dim = 3;
+        hull.min_bounds[0] = 37774929.0;
+        hull.max_bounds[0] = 38000000.0;
+        hull.min_bounds[1] = -123000000.0;
+        hull.max_bounds[1] = -122419416.0;
+        hull.min_bounds[2] = -50000.0;
+        hull.max_bounds[2] = 200000.0;
+
+        writer.write_hyper_tile(TileType::GIS_SURVEY_MESH, &points, None, Some(hull)).unwrap();
+
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let sieve = QuerySieve::new(&reader);
+
+        let res = sieve.query_gis_mesh_3d(37.70, 37.80, -122.50, -122.40, -100.0, 150.0);
+        assert_eq!(res.len(), 2);
+    }
 
     #[test]
     fn test_robotics_stream_writer_and_3d_trajectory_query() {

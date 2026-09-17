@@ -13,7 +13,7 @@ pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
 /// S3A file header size (64 bytes).
 pub const FILE_HEADER_SIZE: usize = 64;
 
-/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics).
+/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics/GIS).
 pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
 
 /// Standard Hyper-Tile block header size (512 bytes).
@@ -83,7 +83,7 @@ impl fmt::Display for S3AError {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord)]
 pub struct S3ACoordinate {
-    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile / Robotics Ring, 1 = Hot L1 cache tile, 2 = Stratified)
+    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile / GIS Mesh Tile, 1 = Hot L1 cache tile, 2 = Stratified)
     pub _reserved: u16,
     pub tile_id: u32,      // Tile index within archive (0-based)
     pub record_offset: u32,// Record index within tile payload (0-based)
@@ -234,6 +234,7 @@ impl TileType {
     pub const HYBRID: u32 = 2;
     pub const WEARABLE_MICRO: u32 = 3;
     pub const ROBOTICS_KINEMATIC: u32 = 4;
+    pub const GIS_SURVEY_MESH: u32 = 5;
 }
 
 /// Hyper-Tile Header (512 bytes, 8-byte aligned).
@@ -339,8 +340,58 @@ impl TelemetryRecord {
     }
 }
 
+/// GIS SURVEYING & SUBSURFACE POINT CLOUD / MESH RECORD (32 bytes, 8-byte aligned).
+/// Direct mapping to 3D Topographic Earth Surveying, LiDAR point clouds, and Subsurface Geophysics.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct GISSurveyPointRecord {
+    pub latitude_microdeg: i32,  // Latitude in micro-degrees (e.g. 37.774929 -> 37774929)
+    pub longitude_microdeg: i32, // Longitude in micro-degrees
+    pub elevation_mm: i32,       // Elevation/Depth above/below sea level in millimeters
+    pub point_class: u16,        // Classification (0=Ground, 1=Subsurface Strata, 2=Vegetation, 3=Structure)
+    pub intensity: u16,          // LiDAR/Radar return intensity
+    pub color_rgb: u32,          // Packed 24-bit RGB point color
+    pub timestamp_sec: u32,      // Survey timestamp
+    pub _reserved: u32,
+    pub _padding: u32,
+}
+
+impl GISSurveyPointRecord {
+    pub fn new(
+        latitude_deg: f64,
+        longitude_deg: f64,
+        elevation_m: f64,
+        point_class: u16,
+        intensity: u16,
+        timestamp_sec: u32,
+    ) -> Self {
+        Self {
+            latitude_microdeg: (latitude_deg * 1_000_000.0) as i32,
+            longitude_microdeg: (longitude_deg * 1_000_000.0) as i32,
+            elevation_mm: (elevation_m * 1000.0) as i32,
+            point_class,
+            intensity,
+            color_rgb: 0x00FFFFFF,
+            timestamp_sec,
+            _reserved: 0,
+            _padding: 0,
+        }
+    }
+
+    pub fn latitude_deg(&self) -> f64 {
+        (self.latitude_microdeg as f64) / 1_000_000.0
+    }
+
+    pub fn longitude_deg(&self) -> f64 {
+        (self.longitude_microdeg as f64) / 1_000_000.0
+    }
+
+    pub fn elevation_m(&self) -> f64 {
+        (self.elevation_mm as f64) / 1000.0
+    }
+}
+
 /// ROBOTICS PLATFORM KINEMATIC & IMU STATE RECORD (72 bytes, 8-byte aligned).
-/// Designed for 1 kHz High-Frequency Actuator/Joint Telemetry, Autonomous Mobile Robots (AMR), Drones, and Humanoid Manipulators.
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct RoboticsKinematicRecord {
@@ -464,6 +515,16 @@ mod tests {
     use super::*;
     use core::mem::size_of;
     use std::format;
+
+    #[test]
+    fn test_gis_survey_point_record() {
+        assert_eq!(size_of::<GISSurveyPointRecord>(), 32);
+        let point = GISSurveyPointRecord::new(37.774929, -122.419416, 125.5, 0, 100, 1600000000);
+
+        assert!((point.latitude_deg() - 37.774929).abs() < 1e-5);
+        assert!((point.longitude_deg() - (-122.419416)).abs() < 1e-5);
+        assert!((point.elevation_m() - 125.5).abs() < 1e-3);
+    }
 
     #[test]
     fn test_robotics_kinematic_record_layout() {

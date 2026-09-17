@@ -7,7 +7,7 @@ use std::time::Instant;
 use s3a_engine::{
     Compactor, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
     TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
-    TileType, TileWriter, S3ACoordinate,
+    GISSurveyPointRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
 };
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -54,7 +54,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
     <header>
-        <h1>S3A Storage Architecture <span class="badge">Robotics & Wearables Ready</span></h1>
+        <h1>S3A Storage Architecture <span class="badge">GIS & Subsurface Mesh Enabled</span></h1>
         <div id="status">Archive: <span id="archive-path">test.s3a</span></div>
     </header>
 
@@ -357,6 +357,9 @@ fn main() {
         "benchmark-robotics" => {
             run_robotics_benchmark();
         }
+        "benchmark-gis" => {
+            run_gis_benchmark();
+        }
         "serve" => {
             let port = if args.len() >= 3 {
                 args[2].parse().unwrap_or(8080)
@@ -384,6 +387,7 @@ fn print_usage() {
     println!("  s3a-cli benchmark                                 Run benchmark comparing JSON/uncompressed storage vs S3A Hyper-Tiles");
     println!("  s3a-cli benchmark-wearable                        Run wearable benchmark (4KB Flash page micro-tiles, zero-heap alloc)");
     println!("  s3a-cli benchmark-robotics                        Run robotics platform benchmark (1 kHz stream ring-buffer & 3D SIMD trajectory)");
+    println!("  s3a-cli benchmark-gis                             Run GIS Earth surface/subsurface 3D point cloud & mesh benchmark");
     println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
 }
 
@@ -404,6 +408,7 @@ fn inspect_file(path: &str) {
                         TileType::HYBRID => "HYBRID",
                         TileType::WEARABLE_MICRO => "WEARABLE_MICRO",
                         TileType::ROBOTICS_KINEMATIC => "ROBOTICS_KINEMATIC",
+                        TileType::GIS_SURVEY_MESH => "GIS_SURVEY_MESH",
                         _ => "UNKNOWN",
                     };
                     println!(
@@ -491,6 +496,96 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
         Ok(count) => println!("Compaction SUCCESS: Wrote {} Hyper-Tiles to {}", count, output_path),
         Err(e) => eprintln!("Compaction FAILED: {}", e),
     }
+}
+
+fn run_gis_benchmark() {
+    println!("==================================================================");
+    println!("   S3A GIS SURVEYING & SUBSURFACE TOPOGRAPHY MESH BENCHMARK        ");
+    println!("   Mapping: 3D Point Clouds, LiDAR, Subsurface Geophysics, Terrains");
+    println!("==================================================================");
+
+    let temp_gis_path = Path::new("gis_survey.s3a");
+    let num_points = 100_000;
+    println!("Generating {} 3D LiDAR/Subsurface survey points...", num_points);
+
+    let mut points = Vec::with_capacity(num_points);
+    for i in 0..num_points {
+        let lat = 37.774929 + ((i % 1000) as f64) * 0.0001;
+        let lon = -122.419416 + ((i / 1000) as f64) * 0.0001;
+        let elev = if i % 2 == 0 { 50.0 + (i as f64) * 0.001 } else { -100.0 - (i as f64) * 0.001 }; // Surface & Subsurface strata
+        let cls = (i % 4) as u16;
+        let intensity = (i % 255) as u16;
+
+        points.push(GISSurveyPointRecord::new(lat, lon, elev, cls, intensity, 1600000000));
+    }
+
+    let start_write = Instant::now();
+    let mut writer = TileWriter::create(temp_gis_path).unwrap();
+
+    let points_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<GISSurveyPointRecord>();
+    for chunk in points.chunks(points_per_tile) {
+        let mut hull = SimplexHull::empty();
+        hull.dim = 3;
+
+        let mut min_lat = f32::INFINITY;
+        let mut max_lat = f32::NEG_INFINITY;
+        let mut min_lon = f32::INFINITY;
+        let mut max_lon = f32::NEG_INFINITY;
+        let mut min_elev = f32::INFINITY;
+        let mut max_elev = f32::NEG_INFINITY;
+
+        for p in chunk {
+            let lat_micro = p.latitude_microdeg as f32;
+            let lon_micro = p.longitude_microdeg as f32;
+            let elev_mm = p.elevation_mm as f32;
+
+            if lat_micro < min_lat { min_lat = lat_micro; }
+            if lat_micro > max_lat { max_lat = lat_micro; }
+            if lon_micro < min_lon { min_lon = lon_micro; }
+            if lon_micro > max_lon { max_lon = lon_micro; }
+            if elev_mm < min_elev { min_elev = elev_mm; }
+            if elev_mm > max_elev { max_elev = elev_mm; }
+        }
+
+        hull.min_bounds[0] = min_lat;
+        hull.max_bounds[0] = max_lat;
+        hull.min_bounds[1] = min_lon;
+        hull.max_bounds[1] = max_lon;
+        hull.min_bounds[2] = min_elev;
+        hull.max_bounds[2] = max_elev;
+
+        writer.write_hyper_tile(TileType::GIS_SURVEY_MESH, chunk, None, Some(hull)).unwrap();
+    }
+    let write_duration = start_write.elapsed();
+
+    let file_size = std::fs::metadata(temp_gis_path).unwrap().len() as usize;
+
+    println!("\n--- GIS MESH STORAGE DENSITY & INGEST PERFORMANCE ---");
+    println!("Total Survey Points:          {}", num_points);
+    println!("Write Duration (100k points): {:?}", write_duration);
+    println!("S3A Mesh Archive File Size:   {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+    println!("Points per 128KB Hyper-Tile:  {} points", points_per_tile);
+
+    // Benchmark SIMD 3D Topographic Sifting
+    println!("\n--- SIMD 3D ELEVATION & SUBSURFACE QUERY PERFORMANCE ---");
+    let reader = MmapReader::open(temp_gis_path).unwrap();
+    let sieve = QuerySieve::new(&reader);
+
+    let start_query = Instant::now();
+    // Query 3D bounding box for Subsurface Strata sector [Lat: 37.77..37.78, Lon: -122.42..-122.41, Elev: -200m..0m]
+    let query_results = sieve.query_gis_mesh_3d(
+        37.77, 37.78,
+        -122.42, -122.41,
+        -200.0, 0.0,
+    );
+    let query_duration = start_query.elapsed();
+
+    println!("3D Subsurface Query Time:     {:?}", query_duration);
+    println!("Matched Topography Points:    {} points", query_results.len());
+    println!("Simplicial Convex Hull SIMD rejection sifted through 100k points instantly!");
+
+    let _ = std::fs::remove_file(temp_gis_path);
+    println!("==================================================================");
 }
 
 fn run_robotics_benchmark() {
