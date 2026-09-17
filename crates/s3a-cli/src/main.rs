@@ -27,14 +27,14 @@ fn main() {
             verify_file(&args[2]);
         }
         "insert" => {
-            if args.len() < 6 {
+            if args.len() < 7 {
                 println!("Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
                 return;
             }
             insert_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
         }
         "get" => {
-            if args.len() < 5 {
+            if args.len() < 7 {
                 println!("Usage: s3a-cli get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
                 return;
             }
