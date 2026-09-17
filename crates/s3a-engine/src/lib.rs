@@ -7,6 +7,79 @@ use memmap2::Mmap;
 pub use s3a_core::*;
 use s3a_simd::{can_reject_tile_point, can_reject_tile_range, can_reject_tile_time};
 
+/// High-Frequency Low-Latency Ring-Buffered Writer for Autonomous Robots, Drones, and Humanoid Manipulators.
+pub struct RoboticsStreamWriter {
+    writer: TileWriter,
+    record_buffer: Vec<RoboticsKinematicRecord>,
+    capacity_per_tile: usize,
+    current_min_xyz: [f32; 3],
+    current_max_xyz: [f32; 3],
+}
+
+impl RoboticsStreamWriter {
+    pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let writer = TileWriter::create(path)?;
+        let capacity_per_tile = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<RoboticsKinematicRecord>();
+
+        Ok(Self {
+            writer,
+            record_buffer: Vec::with_capacity(capacity_per_tile),
+            capacity_per_tile,
+            current_min_xyz: [f32::INFINITY; 3],
+            current_max_xyz: [f32::NEG_INFINITY; 3],
+        })
+    }
+
+    /// Streams a 1 kHz robotics kinematic sample into zero-copy Hyper-Tiles with live 3D bounding hull updates.
+    pub fn push_sample(&mut self, record: RoboticsKinematicRecord) -> io::Result<Option<u64>> {
+        for d in 0..3 {
+            if record.position_xyz[d] < self.current_min_xyz[d] {
+                self.current_min_xyz[d] = record.position_xyz[d];
+            }
+            if record.position_xyz[d] > self.current_max_xyz[d] {
+                self.current_max_xyz[d] = record.position_xyz[d];
+            }
+        }
+
+        self.record_buffer.push(record);
+
+        if self.record_buffer.len() >= self.capacity_per_tile {
+            let tile_id = self.flush_tile()?;
+            Ok(Some(tile_id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Flushes accumulated kinematic records into a page-aligned 128 KB Hyper-Tile with embedded 3D spatial trajectory bounding hulls.
+    pub fn flush_tile(&mut self) -> io::Result<u64> {
+        if self.record_buffer.is_empty() {
+            return Ok(0);
+        }
+
+        let mut hull = SimplexHull::empty();
+        hull.dim = 3;
+        for d in 0..3 {
+            hull.min_bounds[d] = self.current_min_xyz[d];
+            hull.max_bounds[d] = self.current_max_xyz[d];
+        }
+
+        let timestamps: Vec<u64> = self.record_buffer.iter().map(|r| r.timestamp_us).collect();
+        let tile_id = self.writer.write_hyper_tile(
+            TileType::ROBOTICS_KINEMATIC,
+            &self.record_buffer,
+            Some(&timestamps),
+            Some(hull),
+        )?;
+
+        self.record_buffer.clear();
+        self.current_min_xyz = [f32::INFINITY; 3];
+        self.current_max_xyz = [f32::NEG_INFINITY; 3];
+
+        Ok(tile_id)
+    }
+}
+
 /// Zero-allocation 4 KB Micro-Tile Memory Buffer for embedded microcontrollers (Earbuds, Smart Glasses, Wristbands).
 pub struct MicroTileBuffer {
     buffer: [u8; MICRO_TILE_SIZE],
@@ -247,6 +320,9 @@ impl MmapReader {
 
         let payload_start = offset + HYPER_TILE_HEADER_SIZE;
         let payload_end = payload_start + tile_header.payload_bytes as usize;
+        if payload_end > offset + HYPER_TILE_SIZE {
+            return None;
+        }
         let payload = &self.mmap[payload_start..payload_end];
 
         Some((tile_header, payload))
@@ -292,6 +368,52 @@ pub struct QuerySieve<'a> {
 impl<'a> QuerySieve<'a> {
     pub fn new(reader: &'a MmapReader) -> Self {
         Self { reader }
+    }
+
+    /// Queries 3D spatial robotic trajectories filtering by 3D bounding box [min_xyz, max_xyz].
+    pub fn query_robotics_trajectory_3d(
+        &self,
+        min_xyz: [f32; 3],
+        max_xyz: [f32; 3],
+        min_ts_us: u64,
+        max_ts_us: u64,
+    ) -> Vec<RoboticsKinematicRecord> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::ROBOTICS_KINEMATIC {
+                continue;
+            }
+
+            if can_reject_tile_time(header, min_ts_us, max_ts_us) {
+                continue;
+            }
+
+            // SIMD 3D Trajectory Bounding Box Rejection
+            if can_reject_tile_range(&header.hull, &min_xyz, &max_xyz) {
+                continue;
+            }
+
+            let records: &[RoboticsKinematicRecord] = bytemuck::cast_slice(payload);
+            for rec in records {
+                if rec.timestamp_us >= min_ts_us && rec.timestamp_us <= max_ts_us {
+                    if rec.position_xyz[0] >= min_xyz[0] && rec.position_xyz[0] <= max_xyz[0]
+                        && rec.position_xyz[1] >= min_xyz[1] && rec.position_xyz[1] <= max_xyz[1]
+                        && rec.position_xyz[2] >= min_xyz[2] && rec.position_xyz[2] <= max_xyz[2]
+                    {
+                        results.push(*rec);
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     /// Queries telemetry records returning both the record and its exact `S3ACoordinate` address.
@@ -602,6 +724,42 @@ impl Compactor {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_robotics_stream_writer_and_3d_trajectory_query() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut stream_writer = RoboticsStreamWriter::create(temp_file.path()).unwrap();
+
+        // Push 2000 robotics kinematics samples (~1 HyperTile payload)
+        for i in 0..2000 {
+            let rec = RoboticsKinematicRecord::new(
+                i as u64 * 1000,
+                1,
+                [i as f32 * 0.1, (i % 10) as f32, 0.5],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.1, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            );
+            let _ = stream_writer.push_sample(rec).unwrap();
+        }
+        stream_writer.flush_tile().unwrap();
+
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let sieve = QuerySieve::new(&reader);
+
+        // Perform 3D bounding box trajectory query
+        let results = sieve.query_robotics_trajectory_3d(
+            [0.0, 0.0, 0.0],
+            [5.0, 5.0, 1.0],
+            0,
+            1_000_000,
+        );
+
+        assert!(!results.is_empty());
+        for r in &results {
+            assert!(r.position_xyz[0] >= 0.0 && r.position_xyz[0] <= 5.0);
+        }
+    }
 
     #[test]
     fn test_micro_tile_buffer_zero_alloc() {

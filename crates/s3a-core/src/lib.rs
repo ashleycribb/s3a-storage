@@ -13,7 +13,7 @@ pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
 /// S3A file header size (64 bytes).
 pub const FILE_HEADER_SIZE: usize = 64;
 
-/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers).
+/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics).
 pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
 
 /// Standard Hyper-Tile block header size (512 bytes).
@@ -83,7 +83,7 @@ impl fmt::Display for S3AError {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord)]
 pub struct S3ACoordinate {
-    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile, 1 = Hot L1 cache tile, 2 = Stratified)
+    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile / Robotics Ring, 1 = Hot L1 cache tile, 2 = Stratified)
     pub _reserved: u16,
     pub tile_id: u32,      // Tile index within archive (0-based)
     pub record_offset: u32,// Record index within tile payload (0-based)
@@ -233,6 +233,7 @@ impl TileType {
     pub const EMBEDDING: u32 = 1;
     pub const HYBRID: u32 = 2;
     pub const WEARABLE_MICRO: u32 = 3;
+    pub const ROBOTICS_KINEMATIC: u32 = 4;
 }
 
 /// Hyper-Tile Header (512 bytes, 8-byte aligned).
@@ -279,7 +280,7 @@ pub struct MicroTileHeader {
     pub tile_id: u32,
     pub tile_type: u16,
     pub record_count: u16,
-    pub min_timestamp: u32, // Delta-compressed 32-bit seconds timestamp
+    pub min_timestamp: u32,
     pub max_timestamp: u32,
     pub data_crc32: u32,
     pub header_crc32: u32,
@@ -335,6 +336,43 @@ impl TelemetryRecord {
 
     pub fn mark_tombstone(&mut self) {
         self.flags |= FLAG_TOMBSTONE;
+    }
+}
+
+/// ROBOTICS PLATFORM KINEMATIC & IMU STATE RECORD (72 bytes, 8-byte aligned).
+/// Designed for 1 kHz High-Frequency Actuator/Joint Telemetry, Autonomous Mobile Robots (AMR), Drones, and Humanoid Manipulators.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct RoboticsKinematicRecord {
+    pub timestamp_us: u64, // Microsecond-precision timestamp
+    pub robot_id: u32,      // Robot / Joint / Actuator ID
+    pub joint_mask: u32,    // Joint bitmask
+    pub position_xyz: [f32; 3], // 3D Position [X, Y, Z] in meters
+    pub orientation_quat: [f32; 4], // Quaternion [W, X, Y, Z]
+    pub linear_velocity: [f32; 3], // Linear Velocity [Vx, Vy, Vz]
+    pub angular_velocity: [f32; 3], // Angular Velocity [Wx, Wy, Wz]
+    pub _padding: u32,
+}
+
+impl RoboticsKinematicRecord {
+    pub fn new(
+        timestamp_us: u64,
+        robot_id: u32,
+        position_xyz: [f32; 3],
+        orientation_quat: [f32; 4],
+        linear_velocity: [f32; 3],
+        angular_velocity: [f32; 3],
+    ) -> Self {
+        Self {
+            timestamp_us,
+            robot_id,
+            joint_mask: 0xFFFF,
+            position_xyz,
+            orientation_quat,
+            linear_velocity,
+            angular_velocity,
+            _padding: 0,
+        }
     }
 }
 
@@ -426,6 +464,21 @@ mod tests {
     use super::*;
     use core::mem::size_of;
     use std::format;
+
+    #[test]
+    fn test_robotics_kinematic_record_layout() {
+        assert_eq!(size_of::<RoboticsKinematicRecord>(), 72);
+        let rec = RoboticsKinematicRecord::new(
+            1_000_000,
+            42,
+            [1.0, 2.0, 3.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+        );
+        assert_eq!(rec.timestamp_us, 1_000_000);
+        assert_eq!(rec.position_xyz, [1.0, 2.0, 3.0]);
+    }
 
     #[test]
     fn test_wearable_micro_tile_sizes() {
