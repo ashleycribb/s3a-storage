@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use s3a_engine::{
-    Compactor, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
+    Compactor, TileFusionEngine, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
     TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
     GISSurveyPointRecord, DACommitmentRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
 };
@@ -348,6 +348,13 @@ fn main() {
             }
             compact_files(&args[2], &args[3..]);
         }
+        "fuse" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli fuse <out_file> <in_file1> [in_file2...]");
+                return;
+            }
+            fuse_files(&args[2], &args[3..]);
+        }
         "benchmark" => {
             run_benchmark();
         }
@@ -387,6 +394,7 @@ fn print_usage() {
     println!("  s3a-cli get <file_path> <sensor> <metric> <min_ts> <max_ts> Get matching telemetry records with coordinates");
     println!("  s3a-cli delete <file_path> <sensor> <metric> <ts> Soft-delete matching record with tombstone");
     println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
+    println!("  s3a-cli fuse <out_file> <in_file1> [in_file2...]    Fuse multi-tile archives into a consolidated Hyper-Tile archive");
     println!("  s3a-cli benchmark                                 Run benchmark comparing JSON/uncompressed storage vs S3A Hyper-Tiles");
     println!("  s3a-cli benchmark-wearable                        Run wearable benchmark (4KB Flash page micro-tiles, zero-heap alloc)");
     println!("  s3a-cli benchmark-robotics                        Run robotics platform benchmark (1 kHz stream ring-buffer & 3D SIMD trajectory)");
@@ -500,6 +508,14 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
     match Compactor::compact(&refs, output_path) {
         Ok(count) => println!("Compaction SUCCESS: Wrote {} Hyper-Tiles to {}", count, output_path),
         Err(e) => eprintln!("Compaction FAILED: {}", e),
+    }
+}
+
+fn fuse_files(output_path: &str, input_paths: &[String]) {
+    let refs: Vec<&str> = input_paths.iter().map(|s| s.as_str()).collect();
+    match TileFusionEngine::fuse_telemetry_tiles(&refs, output_path) {
+        Ok(count) => println!("Multi-Tile Fusion SUCCESS: Consolidated into {} Hyper-Tile(s) in {}", count, output_path),
+        Err(e) => eprintln!("Multi-Tile Fusion FAILED: {}", e),
     }
 }
 

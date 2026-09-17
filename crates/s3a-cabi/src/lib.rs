@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
-use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, S3ACoordinate};
+use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TileFusionEngine, TelemetryRecord, S3ACoordinate};
 
 #[repr(C)]
 pub struct S3AHandle {
@@ -189,6 +189,40 @@ pub unsafe extern "C" fn s3a_compact(
     }
 }
 
+/// Fuses multiple telemetry Hyper-Tiles across distinct archives into a single consolidated Hyper-Tile archive.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_fuse_telemetry(
+    input_paths: *const *const c_char,
+    num_inputs: usize,
+    output_path: *const c_char,
+) -> c_int {
+    if input_paths.is_null() || output_path.is_null() || num_inputs == 0 {
+        return -1;
+    }
+
+    let out_str = match CStr::from_ptr(output_path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let mut in_strs = Vec::with_capacity(num_inputs);
+    for i in 0..num_inputs {
+        let p = *input_paths.add(i);
+        if p.is_null() {
+            return -1;
+        }
+        match CStr::from_ptr(p).to_str() {
+            Ok(s) => in_strs.push(s),
+            Err(_) => return -1,
+        }
+    }
+
+    match TileFusionEngine::fuse_telemetry_tiles(&in_strs, &out_str) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,19 +231,32 @@ mod tests {
     use s3a_engine::{TileType, TileWriter};
 
     #[test]
-    fn test_cabi_open_query_compact() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let path_str = temp_file.path().to_str().unwrap();
+    fn test_cabi_open_query_compact_and_fuse() {
+        let temp_file1 = NamedTempFile::new().unwrap();
+        let temp_file2 = NamedTempFile::new().unwrap();
+        let temp_out = NamedTempFile::new().unwrap();
 
-        let mut writer = TileWriter::create(temp_file.path()).unwrap();
-        let records = vec![TelemetryRecord::new(500, 1, 10, 99.9)];
-        writer
-            .write_hyper_tile(TileType::TELEMETRY, &records, Some(&[500]), None)
-            .unwrap();
+        let path_str1 = temp_file1.path().to_str().unwrap();
+        let path_str2 = temp_file2.path().to_str().unwrap();
+        let out_str = temp_out.path().to_str().unwrap();
 
-        let c_path = CString::new(path_str).unwrap();
+        let mut writer1 = TileWriter::create(temp_file1.path()).unwrap();
+        writer1.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(500, 1, 10, 99.9)], Some(&[500]), None).unwrap();
+
+        let mut writer2 = TileWriter::create(temp_file2.path()).unwrap();
+        writer2.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(600, 1, 10, 101.2)], Some(&[600]), None).unwrap();
+
+        let c_p1 = CString::new(path_str1).unwrap();
+        let c_p2 = CString::new(path_str2).unwrap();
+        let c_out = CString::new(out_str).unwrap();
+
+        let inputs = vec![c_p1.as_ptr(), c_p2.as_ptr()];
+
         unsafe {
-            let handle = s3a_open(c_path.as_ptr());
+            let res_fuse = s3a_fuse_telemetry(inputs.as_ptr(), 2, c_out.as_ptr());
+            assert_eq!(res_fuse, 0);
+
+            let handle = s3a_open(c_out.as_ptr());
             assert!(!handle.is_null());
 
             let count = s3a_tile_count(handle);
@@ -217,17 +264,9 @@ mod tests {
 
             let mut out_records = [TelemetryRecord::new(0, 0, 0, 0.0); 10];
             let mut out_len = 0;
-            let res = s3a_query_telemetry(
-                handle,
-                0,
-                1000,
-                out_records.as_mut_ptr(),
-                10,
-                &mut out_len,
-            );
+            let res = s3a_query_telemetry(handle, 0, 1000, out_records.as_mut_ptr(), 10, &mut out_len);
             assert_eq!(res, 0);
-            assert_eq!(out_len, 1);
-            assert_eq!(out_records[0].timestamp, 500);
+            assert_eq!(out_len, 2);
 
             s3a_close(handle);
         }

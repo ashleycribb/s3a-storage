@@ -360,6 +360,62 @@ impl MmapReader {
     }
 }
 
+/// MULTI-TILE HYPER-MESH FUSION ENGINE: Combines multiple distinct or sparse Hyper-Tiles into a single unified 128 KB Hyper-Tile.
+pub struct TileFusionEngine;
+
+impl TileFusionEngine {
+    /// Fuses multiple Telemetry Hyper-Tiles into a single consolidated 128 KB Hyper-Tile with recalculation of Simplex Bounding Hulls.
+    pub fn fuse_telemetry_tiles<P: AsRef<Path>>(
+        input_paths: &[P],
+        output_path: P,
+    ) -> io::Result<u32> {
+        let mut writer = TileWriter::create(output_path)?;
+        let mut fused_records: Vec<TelemetryRecord> = Vec::new();
+
+        for path in input_paths {
+            let reader = MmapReader::open(path)?;
+            for i in 0..reader.tile_count() as usize {
+                if let Some((header, payload)) = reader.get_tile(i) {
+                    if header.tile_type == TileType::TELEMETRY {
+                        let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
+                        fused_records.extend_from_slice(records);
+                    }
+                }
+            }
+        }
+
+        // Filter out tombstones and deduplicate versioned updates
+        fused_records.sort_by_key(|r| (r.sensor_id, r.metric_id, r.timestamp));
+        let mut deduped: Vec<TelemetryRecord> = Vec::new();
+        for rec in fused_records {
+            if rec.is_tombstone() {
+                deduped.retain(|r| !(r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp));
+            } else {
+                if let Some(pos) = deduped.iter().position(|r| r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp) {
+                    deduped[pos] = rec;
+                } else {
+                    deduped.push(rec);
+                }
+            }
+        }
+
+        deduped.sort_by_key(|r| r.timestamp);
+
+        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
+        for chunk in deduped.chunks(capacity) {
+            let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
+            writer.write_hyper_tile(
+                TileType::TELEMETRY,
+                chunk,
+                Some(&timestamps),
+                None,
+            )?;
+        }
+
+        Ok(writer.tile_count())
+    }
+}
+
 /// Query Sieve for high-performance single-cycle SIMD tile rejection and fast scanning.
 pub struct QuerySieve<'a> {
     reader: &'a MmapReader,
@@ -812,6 +868,29 @@ impl Compactor {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_tile_fusion_engine() {
+        let f1 = NamedTempFile::new().unwrap();
+        let f2 = NamedTempFile::new().unwrap();
+        let fused_file = NamedTempFile::new().unwrap();
+
+        let mut w1 = TileWriter::create(f1.path()).unwrap();
+        let recs1 = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
+        w1.write_hyper_tile(TileType::TELEMETRY, &recs1, Some(&[100]), None).unwrap();
+
+        let mut w2 = TileWriter::create(f2.path()).unwrap();
+        let recs2 = vec![TelemetryRecord::new(200, 1, 1, 20.0)];
+        w2.write_hyper_tile(TileType::TELEMETRY, &recs2, Some(&[200]), None).unwrap();
+
+        let count = TileFusionEngine::fuse_telemetry_tiles(&[f1.path(), f2.path()], fused_file.path()).unwrap();
+        assert_eq!(count, 1);
+
+        let reader = MmapReader::open(fused_file.path()).unwrap();
+        let sieve = QuerySieve::new(&reader);
+        let res = sieve.query_telemetry(0, 500, None, None);
+        assert_eq!(res.len(), 2);
+    }
 
     #[test]
     fn test_da_commitment_query() {
