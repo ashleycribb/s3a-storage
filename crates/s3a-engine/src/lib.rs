@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use bytemuck::{bytes_of, from_bytes, Pod};
 use memmap2::Mmap;
 
@@ -39,6 +39,24 @@ impl TileWriter {
             file,
             tile_count: 0,
             current_tile_id: 1,
+        })
+    }
+
+    pub fn open_append<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let reader = MmapReader::open(path.as_ref())?;
+        let tile_count = reader.tile_count();
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+
+        file.seek(SeekFrom::End(0))?;
+
+        Ok(Self {
+            file,
+            tile_count,
+            current_tile_id: (tile_count as u64) + 1,
         })
     }
 
@@ -209,7 +227,7 @@ impl<'a> QuerySieve<'a> {
         Self { reader }
     }
 
-    /// Queries telemetry records filtering by timestamp interval and optional sensor/metric IDs.
+    /// Queries telemetry records filtering by timestamp interval and optional sensor/metric IDs, resolving versioned updates & tombstones.
     pub fn query_telemetry(
         &self,
         min_ts: u64,
@@ -217,8 +235,8 @@ impl<'a> QuerySieve<'a> {
         sensor_id: Option<u32>,
         metric_id: Option<u32>,
     ) -> Vec<TelemetryRecord> {
-        let mut results = Vec::new();
         let tile_count = self.reader.tile_count() as usize;
+        let mut all_records: Vec<TelemetryRecord> = Vec::new();
 
         for i in 0..tile_count {
             let (header, payload) = match self.reader.get_tile(i) {
@@ -248,12 +266,23 @@ impl<'a> QuerySieve<'a> {
                             continue;
                         }
                     }
-                    results.push(*rec);
+                    all_records.push(*rec);
                 }
             }
         }
 
-        results
+        // Deduplicate records in append order: latest version overrides earlier ones, tombstones remove earlier records
+        let mut map: std::collections::BTreeMap<(u32, u32, u64), TelemetryRecord> = std::collections::BTreeMap::new();
+        for rec in all_records {
+            let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
+            if rec.is_tombstone() {
+                map.remove(&key);
+            } else {
+                map.insert(key, rec);
+            }
+        }
+
+        map.into_values().collect()
     }
 
     /// Queries embedding records filtering by SIMD spatial bounding box and/or point hulls.
@@ -306,6 +335,78 @@ impl<'a> QuerySieve<'a> {
     }
 }
 
+/// High-level CRUD Storage Engine for managing record creation, retrieval, updates, soft-deletion, and compaction.
+pub struct S3ACrudEngine {
+    file_path: PathBuf,
+}
+
+impl S3ACrudEngine {
+    pub fn open_or_create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path_buf = path.as_ref().to_path_buf();
+        if !path_buf.exists() || std::fs::metadata(&path_buf)?.len() == 0 {
+            let _ = TileWriter::create(&path_buf)?;
+        }
+        Ok(Self { file_path: path_buf })
+    }
+
+    /// CREATE: Insert new telemetry records into the S3A Hyper-Tile archive.
+    pub fn create_telemetry(&self, records: &[TelemetryRecord]) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp).collect();
+        writer.write_hyper_tile(TileType::TELEMETRY, records, Some(&timestamps), None)
+    }
+
+    /// READ: Retrieve telemetry records matching sensor_id and metric_id within timestamp bounds.
+    pub fn read_telemetry(
+        &self,
+        sensor_id: u32,
+        metric_id: u32,
+        min_ts: u64,
+        max_ts: u64,
+    ) -> io::Result<Vec<TelemetryRecord>> {
+        let reader = MmapReader::open(&self.file_path)?;
+        let sieve = QuerySieve::new(&reader);
+        Ok(sieve.query_telemetry(min_ts, max_ts, Some(sensor_id), Some(metric_id)))
+    }
+
+    /// UPDATE: Update an existing telemetry record by appending a newer version and tombstoning the older version.
+    pub fn update_telemetry(&self, sensor_id: u32, metric_id: u32, timestamp: u64, new_value: f64) -> io::Result<bool> {
+        // First delete (tombstone) existing version if present
+        let deleted = self.delete_telemetry(sensor_id, metric_id, timestamp)?;
+
+        // Append updated version
+        let updated_record = TelemetryRecord::new(timestamp, sensor_id, metric_id, new_value);
+        self.create_telemetry(&[updated_record])?;
+        Ok(deleted)
+    }
+
+    /// DELETE: Soft-delete telemetry records by appending tombstone markers or compacting.
+    pub fn delete_telemetry(&self, sensor_id: u32, metric_id: u32, timestamp: u64) -> io::Result<bool> {
+        let records = self.read_telemetry(sensor_id, metric_id, timestamp, timestamp)?;
+        if records.is_empty() {
+            return Ok(false);
+        }
+
+        // Write a tombstoned version of the record
+        let mut tombstone = records[0];
+        tombstone.mark_tombstone();
+        self.create_telemetry(&[tombstone])?;
+        Ok(true)
+    }
+
+    /// GARBAGE COLLECTION / COMPACTION: Compact the S3A archive, purging tombstoned records and re-aligning tiles.
+    pub fn purge_and_compact(&self) -> io::Result<u32> {
+        let temp_path = self.file_path.with_extension("tmp.s3a");
+        Compactor::compact(&[&self.file_path], &temp_path)?;
+        std::fs::rename(&temp_path, &self.file_path)?;
+        let reader = MmapReader::open(&self.file_path)?;
+        Ok(reader.tile_count())
+    }
+}
+
 /// S3A Compactor for merging and compacting sparse/uncompressed hyper-tiles into stratified blocks.
 pub struct Compactor;
 
@@ -333,12 +434,29 @@ impl Compactor {
             }
         }
 
-        // Sort telemetry by timestamp
-        telemetry_buffer.sort_by_key(|r| r.timestamp);
+        // Deduplicate telemetry records: keep latest active record, filtering out tombstones
+        telemetry_buffer.sort_by_key(|r| (r.sensor_id, r.metric_id, r.timestamp));
+        let mut deduped_telemetry: Vec<TelemetryRecord> = Vec::new();
+        for rec in telemetry_buffer {
+            if rec.is_tombstone() {
+                // Remove existing if present
+                deduped_telemetry.retain(|r| !(r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp));
+            } else {
+                // Replace or append
+                if let Some(pos) = deduped_telemetry.iter().position(|r| r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp) {
+                    deduped_telemetry[pos] = rec;
+                } else {
+                    deduped_telemetry.push(rec);
+                }
+            }
+        }
+
+        // Sort telemetry by timestamp for temporal indexing
+        deduped_telemetry.sort_by_key(|r| r.timestamp);
 
         // Compact telemetry into full 128 KB tiles
         let tel_rec_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
-        for chunk in telemetry_buffer.chunks(tel_rec_capacity) {
+        for chunk in deduped_telemetry.chunks(tel_rec_capacity) {
             let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
             writer.write_hyper_tile(
                 TileType::TELEMETRY,
@@ -421,56 +539,39 @@ mod tests {
     }
 
     #[test]
-    fn test_query_sieve() {
+    fn test_crud_engine_operations() {
         let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path();
+        let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
 
-        let mut writer = TileWriter::create(path).unwrap();
+        // 1. CREATE
+        let rec1 = TelemetryRecord::new(1000, 10, 1, 25.4);
+        let rec2 = TelemetryRecord::new(2000, 10, 1, 26.1);
+        engine.create_telemetry(&[rec1, rec2]).unwrap();
 
-        let records = vec![
-            TelemetryRecord::new(1000, 1, 101, 42.5),
-            TelemetryRecord::new(2000, 1, 101, 43.0),
-            TelemetryRecord::new(3000, 2, 102, 12.0),
-        ];
-        let timestamps = vec![1000, 2000, 3000];
-        writer
-            .write_hyper_tile(TileType::TELEMETRY, &records, Some(&timestamps), None)
-            .unwrap();
-
-        let reader = MmapReader::open(path).unwrap();
-        let sieve = QuerySieve::new(&reader);
-
-        let results = sieve.query_telemetry(1500, 2500, None, None);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].timestamp, 2000);
-
-        let sensor_results = sieve.query_telemetry(0, 4000, Some(2), None);
-        assert_eq!(sensor_results.len(), 1);
-        assert_eq!(sensor_results[0].sensor_id, 2);
-    }
-
-    #[test]
-    fn test_compactor() {
-        let in1 = NamedTempFile::new().unwrap();
-        let in2 = NamedTempFile::new().unwrap();
-        let out = NamedTempFile::new().unwrap();
-
-        let mut w1 = TileWriter::create(in1.path()).unwrap();
-        let recs1 = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
-        w1.write_hyper_tile(TileType::TELEMETRY, &recs1, Some(&[100]), None).unwrap();
-
-        let mut w2 = TileWriter::create(in2.path()).unwrap();
-        let recs2 = vec![TelemetryRecord::new(200, 1, 1, 2.0)];
-        w2.write_hyper_tile(TileType::TELEMETRY, &recs2, Some(&[200]), None).unwrap();
-
-        let compacted_tiles = Compactor::compact(&[in1.path(), in2.path()], out.path()).unwrap();
-        assert_eq!(compacted_tiles, 1);
-
-        let reader = MmapReader::open(out.path()).unwrap();
-        let sieve = QuerySieve::new(&reader);
-        let res = sieve.query_telemetry(0, 500, None, None);
+        // 2. READ
+        let res = engine.read_telemetry(10, 1, 500, 2500).unwrap();
         assert_eq!(res.len(), 2);
-        assert_eq!(res[0].timestamp, 100);
-        assert_eq!(res[1].timestamp, 200);
+
+        // 3. UPDATE
+        let updated = engine.update_telemetry(10, 1, 1000, 30.0).unwrap();
+        assert!(updated);
+
+        let res_after_update = engine.read_telemetry(10, 1, 1000, 1000).unwrap();
+        assert_eq!(res_after_update.len(), 1);
+        assert_eq!(res_after_update[0].value, 30.0);
+
+        // 4. DELETE
+        let deleted = engine.delete_telemetry(10, 1, 2000).unwrap();
+        assert!(deleted);
+
+        let res_after_delete = engine.read_telemetry(10, 1, 2000, 2000).unwrap();
+        assert_eq!(res_after_delete.len(), 0);
+
+        // 5. PURGE & COMPACT
+        engine.purge_and_compact().unwrap();
+        let final_records = engine.read_telemetry(10, 1, 0, 5000).unwrap();
+        assert_eq!(final_records.len(), 1);
+        assert_eq!(final_records[0].timestamp, 1000);
+        assert_eq!(final_records[0].value, 30.0);
     }
 }

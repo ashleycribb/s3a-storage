@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
-use s3a_engine::{Compactor, MmapReader, QuerySieve, TelemetryRecord};
+use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord};
 
 #[repr(C)]
 pub struct S3AHandle {
@@ -69,6 +69,59 @@ pub unsafe extern "C" fn s3a_query_telemetry(
 
     *out_len = results.len();
     0
+}
+
+/// Inserts telemetry records into an S3A archive (CREATE).
+#[no_mangle]
+pub unsafe extern "C" fn s3a_insert_telemetry(
+    path: *const c_char,
+    records: *const TelemetryRecord,
+    num_records: usize,
+) -> c_int {
+    if path.is_null() || records.is_null() || num_records == 0 {
+        return -1;
+    }
+
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let slice = std::slice::from_raw_parts(records, num_records);
+    match S3ACrudEngine::open_or_create(path_str) {
+        Ok(engine) => match engine.create_telemetry(slice) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
+}
+
+/// Soft-deletes a telemetry record by appending a tombstone marker (DELETE).
+#[no_mangle]
+pub unsafe extern "C" fn s3a_delete_telemetry(
+    path: *const c_char,
+    sensor_id: u32,
+    metric_id: u32,
+    timestamp: u64,
+) -> c_int {
+    if path.is_null() {
+        return -1;
+    }
+
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    match S3ACrudEngine::open_or_create(path_str) {
+        Ok(engine) => match engine.delete_telemetry(sensor_id, metric_id, timestamp) {
+            Ok(true) => 0,
+            Ok(false) => 1, // Record not found
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
 }
 
 /// Compacts multiple S3A input archives into a single optimized S3A output archive.
@@ -146,6 +199,23 @@ mod tests {
             assert_eq!(out_records[0].timestamp, 500);
 
             s3a_close(handle);
+        }
+    }
+
+    #[test]
+    fn test_cabi_crud_insert_delete() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path_str = temp_file.path().to_str().unwrap();
+        let c_path = CString::new(path_str).unwrap();
+
+        let rec = TelemetryRecord::new(1000, 5, 2, 88.5);
+
+        unsafe {
+            let res_insert = s3a_insert_telemetry(c_path.as_ptr(), &rec, 1);
+            assert_eq!(res_insert, 0);
+
+            let res_del = s3a_delete_telemetry(c_path.as_ptr(), 5, 2, 1000);
+            assert_eq!(res_del, 0);
         }
     }
 }

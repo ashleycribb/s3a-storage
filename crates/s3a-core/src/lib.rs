@@ -21,6 +21,10 @@ pub const HYPER_TILE_PAYLOAD_SIZE: usize = HYPER_TILE_SIZE - HYPER_TILE_HEADER_S
 /// Simplex hull dimension capacity for tile rejection indexing.
 pub const MAX_HULL_DIMENSIONS: usize = 16;
 
+/// Record flag bits for CRUD lifecycle management.
+pub const FLAG_ACTIVE: u64 = 0;
+pub const FLAG_TOMBSTONE: u64 = 1 << 0;
+
 /// Error types returned by S3A core functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3AError {
@@ -33,6 +37,7 @@ pub enum S3AError {
     InvalidFormat,
     CorruptedHeader,
     PayloadOverflow,
+    RecordNotFound,
 }
 
 impl fmt::Display for S3AError {
@@ -51,6 +56,7 @@ impl fmt::Display for S3AError {
             S3AError::InvalidFormat => write!(f, "Invalid S3A file format"),
             S3AError::CorruptedHeader => write!(f, "Corrupted block or file header"),
             S3AError::PayloadOverflow => write!(f, "Hyper-Tile payload capacity exceeded"),
+            S3AError::RecordNotFound => write!(f, "Requested record was not found"),
         }
     }
 }
@@ -190,8 +196,16 @@ impl TelemetryRecord {
             sensor_id,
             metric_id,
             value,
-            flags: 0,
+            flags: FLAG_ACTIVE,
         }
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        (self.flags & FLAG_TOMBSTONE) != 0
+    }
+
+    pub fn mark_tombstone(&mut self) {
+        self.flags |= FLAG_TOMBSTONE;
     }
 }
 

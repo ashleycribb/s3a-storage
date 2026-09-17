@@ -2,7 +2,7 @@ use std::env;
 use std::path::Path;
 use std::time::Instant;
 
-use s3a_engine::{Compactor, MmapReader, QuerySieve, TelemetryRecord, TileType, TileWriter};
+use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -26,6 +26,27 @@ fn main() {
             }
             verify_file(&args[2]);
         }
+        "insert" => {
+            if args.len() < 6 {
+                println!("Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
+                return;
+            }
+            insert_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
+        }
+        "get" => {
+            if args.len() < 5 {
+                println!("Usage: s3a-cli get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
+                return;
+            }
+            get_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
+        }
+        "delete" => {
+            if args.len() < 6 {
+                println!("Usage: s3a-cli delete <file_path> <sensor_id> <metric_id> <timestamp>");
+                return;
+            }
+            delete_telemetry(&args[2], &args[3], &args[4], &args[5]);
+        }
         "compact" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli compact <out_file> <in_file1> [in_file2...]");
@@ -47,6 +68,9 @@ fn print_usage() {
     println!("Usage:");
     println!("  s3a-cli inspect <file_path>                       Inspect Hyper-Tile metadata");
     println!("  s3a-cli verify <file_path>                        Verify file and tile checksums");
+    println!("  s3a-cli insert <file_path> <ts> <sensor> <metric> <val> Insert a new telemetry record");
+    println!("  s3a-cli get <file_path> <sensor> <metric> <min_ts> <max_ts> Get matching telemetry records");
+    println!("  s3a-cli delete <file_path> <sensor> <metric> <ts> Soft-delete matching record with tombstone");
     println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
     println!("  s3a-cli benchmark                                 Run benchmark comparing JSON/uncompressed storage vs S3A Hyper-Tiles");
 }
@@ -86,6 +110,46 @@ fn verify_file(path: &str) {
             Err(e) => eprintln!("Verification FAILED in {}: {}", path, e),
         },
         Err(e) => eprintln!("Error opening file: {}", e),
+    }
+}
+
+fn insert_telemetry(path: &str, ts_str: &str, sensor_str: &str, metric_str: &str, val_str: &str) {
+    let ts: u64 = ts_str.parse().expect("Invalid timestamp");
+    let sensor_id: u32 = sensor_str.parse().expect("Invalid sensor ID");
+    let metric_id: u32 = metric_str.parse().expect("Invalid metric ID");
+    let value: f64 = val_str.parse().expect("Invalid value");
+
+    let rec = TelemetryRecord::new(ts, sensor_id, metric_id, value);
+    let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
+    engine.create_telemetry(&[rec]).expect("Failed to insert record");
+    println!("Inserted record into {}: timestamp={}, sensor={}, metric={}, val={}", path, ts, sensor_id, metric_id, value);
+}
+
+fn get_telemetry(path: &str, sensor_str: &str, metric_str: &str, min_ts_str: &str, max_ts_str: &str) {
+    let sensor_id: u32 = sensor_str.parse().expect("Invalid sensor ID");
+    let metric_id: u32 = metric_str.parse().expect("Invalid metric ID");
+    let min_ts: u64 = min_ts_str.parse().expect("Invalid min timestamp");
+    let max_ts: u64 = max_ts_str.parse().expect("Invalid max timestamp");
+
+    let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
+    let results = engine.read_telemetry(sensor_id, metric_id, min_ts, max_ts).expect("Failed to query records");
+    println!("Found {} record(s) matching criteria:", results.len());
+    for r in results {
+        println!("  Record: timestamp={}, sensor={}, metric={}, value={}", r.timestamp, r.sensor_id, r.metric_id, r.value);
+    }
+}
+
+fn delete_telemetry(path: &str, sensor_str: &str, metric_str: &str, ts_str: &str) {
+    let sensor_id: u32 = sensor_str.parse().expect("Invalid sensor ID");
+    let metric_id: u32 = metric_str.parse().expect("Invalid metric ID");
+    let ts: u64 = ts_str.parse().expect("Invalid timestamp");
+
+    let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
+    let deleted = engine.delete_telemetry(sensor_id, metric_id, ts).expect("Failed to delete record");
+    if deleted {
+        println!("Soft-deleted record (tombstone appended) in {}", path);
+    } else {
+        println!("Record not found to delete in {}", path);
     }
 }
 
