@@ -7,6 +7,60 @@ use memmap2::Mmap;
 pub use s3a_core::*;
 use s3a_simd::{can_reject_tile_point, can_reject_tile_range, can_reject_tile_time};
 
+/// Zero-allocation 4 KB Micro-Tile Memory Buffer for embedded microcontrollers (Earbuds, Smart Glasses, Wristbands).
+pub struct MicroTileBuffer {
+    buffer: [u8; MICRO_TILE_SIZE],
+    written_bytes: usize,
+    record_count: u16,
+}
+
+impl MicroTileBuffer {
+    pub fn new(tile_id: u32) -> Self {
+        let mut buffer = [0u8; MICRO_TILE_SIZE];
+        let header = MicroTileHeader::new(tile_id, TileType::WEARABLE_MICRO as u16);
+        let header_bytes = bytes_of(&header);
+        buffer[..MICRO_TILE_HEADER_SIZE].copy_from_slice(header_bytes);
+
+        Self {
+            buffer,
+            written_bytes: MICRO_TILE_HEADER_SIZE,
+            record_count: 0,
+        }
+    }
+
+    /// Appends a record directly into the 4 KB page buffer without dynamic memory allocation (`alloc` free).
+    pub fn push_record<T: Pod>(&mut self, record: &T) -> Result<(), S3AError> {
+        let record_bytes = bytes_of(record);
+        if self.written_bytes + record_bytes.len() > MICRO_TILE_SIZE {
+            return Err(S3AError::PayloadOverflow);
+        }
+
+        self.buffer[self.written_bytes..self.written_bytes + record_bytes.len()].copy_from_slice(record_bytes);
+        self.written_bytes += record_bytes.len();
+        self.record_count += 1;
+        Ok(())
+    }
+
+    /// Finalizes header CRC32C and returns the complete 4,096-byte page ready for SPI NOR Flash programming.
+    pub fn finalize(&mut self) -> &[u8; MICRO_TILE_SIZE] {
+        let payload_bytes = (self.written_bytes - MICRO_TILE_HEADER_SIZE) as u16;
+        let data_bytes = &self.buffer[MICRO_TILE_HEADER_SIZE..self.written_bytes];
+        let data_crc32 = crc32c::crc32c(data_bytes);
+
+        let mut header: MicroTileHeader = *from_bytes(&self.buffer[..MICRO_TILE_HEADER_SIZE]);
+        header.record_count = self.record_count;
+        header.payload_bytes = payload_bytes;
+        header.data_crc32 = data_crc32;
+
+        let crc_offset = std::mem::offset_of!(MicroTileHeader, header_crc32);
+        let header_bytes = bytes_of(&header);
+        header.header_crc32 = crc32c::crc32c(&header_bytes[..crc_offset]);
+
+        self.buffer[..MICRO_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&header));
+        &self.buffer
+    }
+}
+
 /// Writer for generating page-aligned 128 KB S3A Hyper-Tile storage files.
 pub struct TileWriter {
     file: File,
@@ -548,6 +602,28 @@ impl Compactor {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_micro_tile_buffer_zero_alloc() {
+        let mut buf = MicroTileBuffer::new(1);
+        let rec1 = CompactWearableRecord::new(100, 1, 10, 72.5); // PPG Heart Rate
+        let rec2 = CompactWearableRecord::new(101, 1, 10, 73.0);
+
+        buf.push_record(&rec1).unwrap();
+        buf.push_record(&rec2).unwrap();
+
+        let page = buf.finalize();
+        assert_eq!(page.len(), MICRO_TILE_SIZE);
+
+        let header: &MicroTileHeader = from_bytes(&page[..MICRO_TILE_HEADER_SIZE]);
+        assert_eq!(header.tile_id, 1);
+        assert_eq!(header.record_count, 2);
+        assert_eq!(header.payload_bytes, 32);
+
+        let payload_records: &[CompactWearableRecord] = bytemuck::cast_slice(&page[MICRO_TILE_HEADER_SIZE..MICRO_TILE_HEADER_SIZE + 32]);
+        assert_eq!(payload_records[0], rec1);
+        assert_eq!(payload_records[1], rec2);
+    }
 
     #[test]
     fn test_tile_writer_and_mmap_reader_roundtrip() {

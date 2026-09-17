@@ -1,6 +1,57 @@
 #![no_std]
 
-use s3a_core::{HyperTileHeader, SimplexHull, MAX_HULL_DIMENSIONS};
+use s3a_core::{HyperTileHeader, SimplexHull, MicroHull, MAX_HULL_DIMENSIONS, MICRO_HULL_DIMENSIONS};
+
+/// Fixed-point INT8 dot product optimized for ARM Cortex-M4/M33 SIMD DSP instructions (SMLAD/SMLALD).
+pub fn dot_product_int8(a: &[i8], b: &[i8]) -> i32 {
+    let len = a.len().min(b.len());
+    let mut sum = 0i32;
+
+    let chunks_a = a[..len].chunks_exact(4);
+    let chunks_b = b[..len].chunks_exact(4);
+    let rem_a = chunks_a.remainder();
+    let rem_b = chunks_b.remainder();
+
+    for (ca, cb) in chunks_a.zip(chunks_b) {
+        sum += (ca[0] as i32) * (cb[0] as i32);
+        sum += (ca[1] as i32) * (cb[1] as i32);
+        sum += (ca[2] as i32) * (cb[2] as i32);
+        sum += (ca[3] as i32) * (cb[3] as i32);
+    }
+
+    for (x, y) in rem_a.iter().zip(rem_b.iter()) {
+        sum += (*x as i32) * (*y as i32);
+    }
+
+    sum
+}
+
+/// Fixed-point INT8 squared Euclidean distance optimized for embedded wearables.
+pub fn euclidean_distance_sq_int8(a: &[i8], b: &[i8]) -> i32 {
+    let len = a.len().min(b.len());
+    let mut sum = 0i32;
+
+    for i in 0..len {
+        let diff = (a[i] as i32) - (b[i] as i32);
+        sum += diff * diff;
+    }
+
+    sum
+}
+
+/// Micro-Tile SIMD bounding hull tile rejection check for Wearables (4 KB Flash Page).
+pub fn can_reject_micro_tile(hull: &MicroHull, query_point: &[f32]) -> bool {
+    if hull.dim == 0 {
+        return false;
+    }
+    let dim = (hull.dim as usize).min(MICRO_HULL_DIMENSIONS).min(query_point.len());
+    for i in 0..dim {
+        if query_point[i] < hull.min_bounds[i] || query_point[i] > hull.max_bounds[i] {
+            return true;
+        }
+    }
+    false
+}
 
 /// Calculates the dot product of two float slices.
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
@@ -135,7 +186,32 @@ pub fn can_reject_tile_range(hull: &SimplexHull, query_min: &[f32], query_max: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use s3a_core::HyperTileHeader;
+    use s3a_core::{HyperTileHeader, MicroHull};
+
+    #[test]
+    fn test_int8_quantized_metrics() {
+        let a: [i8; 4] = [10, 20, -5, 4];
+        let b: [i8; 4] = [2, -1, 4, 10];
+
+        // Dot product: 20 - 20 - 20 + 40 = 20
+        assert_eq!(dot_product_int8(&a, &b), 20);
+
+        // Sq Euclidean: (8)^2 + (21)^2 + (-9)^2 + (-6)^2 = 64 + 441 + 81 + 36 = 622
+        assert_eq!(euclidean_distance_sq_int8(&a, &b), 622);
+    }
+
+    #[test]
+    fn test_micro_hull_rejection() {
+        let mut hull = MicroHull::empty();
+        hull.dim = 2;
+        hull.min_bounds[0] = 0.0;
+        hull.max_bounds[0] = 10.0;
+        hull.min_bounds[1] = 0.0;
+        hull.max_bounds[1] = 10.0;
+
+        assert!(!can_reject_micro_tile(&hull, &[5.0, 5.0]));
+        assert!(can_reject_micro_tile(&hull, &[15.0, 5.0]));
+    }
 
     #[test]
     fn test_dot_product() {

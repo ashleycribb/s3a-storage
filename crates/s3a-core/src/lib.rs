@@ -13,17 +13,29 @@ pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
 /// S3A file header size (64 bytes).
 pub const FILE_HEADER_SIZE: usize = 64;
 
-/// Hyper-Tile block size (128 KB page-aligned block).
+/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers).
 pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
 
-/// Hyper-Tile block header size (512 bytes).
+/// Standard Hyper-Tile block header size (512 bytes).
 pub const HYPER_TILE_HEADER_SIZE: usize = 512;
 
-/// Hyper-Tile payload capacity in bytes (130,560 bytes).
+/// Standard Hyper-Tile payload capacity in bytes (130,560 bytes).
 pub const HYPER_TILE_PAYLOAD_SIZE: usize = HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE;
 
-/// Simplex hull dimension capacity for tile rejection indexing.
+/// WEARABLE MICRO-TILE PROFILE: 4 KB SPI NOR Flash Sector Aligned (Earbuds, Wristbands, Smart Glasses).
+pub const MICRO_TILE_SIZE: usize = 4 * 1024; // 4,096 bytes (matches typical SPI NOR flash sector erase size)
+
+/// Micro-Tile block header size (128 bytes).
+pub const MICRO_TILE_HEADER_SIZE: usize = 128;
+
+/// Micro-Tile payload capacity in bytes (3,968 bytes).
+pub const MICRO_TILE_PAYLOAD_SIZE: usize = MICRO_TILE_SIZE - MICRO_TILE_HEADER_SIZE;
+
+/// Simplex hull dimension capacity for standard tile rejection indexing.
 pub const MAX_HULL_DIMENSIONS: usize = 16;
+
+/// Compact micro-hull dimension capacity for wearable tile rejection indexing.
+pub const MICRO_HULL_DIMENSIONS: usize = 4;
 
 /// Record flag bits for CRUD lifecycle management.
 pub const FLAG_ACTIVE: u64 = 0;
@@ -71,7 +83,7 @@ impl fmt::Display for S3AError {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord)]
 pub struct S3ACoordinate {
-    pub level: u16,        // Stratum level (0 = Hot L1 cache tile, 1 = Stratified, 2 = Deep Archive)
+    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile, 1 = Hot L1 cache tile, 2 = Stratified)
     pub _reserved: u16,
     pub tile_id: u32,      // Tile index within archive (0-based)
     pub record_offset: u32,// Record index within tile payload (0-based)
@@ -100,7 +112,6 @@ impl FromStr for S3ACoordinate {
     type Err = S3AError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Expected format: L0:T1:R4
         let s = s.trim();
         let mut parts = s.split(':');
 
@@ -196,12 +207,32 @@ impl SimplexHull {
     }
 }
 
+/// Wearable Micro-Hull bounding manifold (36 bytes, 4-byte aligned).
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct MicroHull {
+    pub dim: u32,
+    pub min_bounds: [f32; MICRO_HULL_DIMENSIONS],
+    pub max_bounds: [f32; MICRO_HULL_DIMENSIONS],
+}
+
+impl MicroHull {
+    pub fn empty() -> Self {
+        Self {
+            dim: 0,
+            min_bounds: [f32::INFINITY; MICRO_HULL_DIMENSIONS],
+            max_bounds: [f32::NEG_INFINITY; MICRO_HULL_DIMENSIONS],
+        }
+    }
+}
+
 /// Tile Type enumeration values stored as u32 in header.
 pub struct TileType;
 impl TileType {
     pub const TELEMETRY: u32 = 0;
     pub const EMBEDDING: u32 = 1;
     pub const HYBRID: u32 = 2;
+    pub const WEARABLE_MICRO: u32 = 3;
 }
 
 /// Hyper-Tile Header (512 bytes, 8-byte aligned).
@@ -241,6 +272,41 @@ impl HyperTileHeader {
     }
 }
 
+/// Wearable Micro-Tile Header (128 bytes, 8-byte aligned) for 4 KB Flash Page Blocks.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct MicroTileHeader {
+    pub tile_id: u32,
+    pub tile_type: u16,
+    pub record_count: u16,
+    pub min_timestamp: u32, // Delta-compressed 32-bit seconds timestamp
+    pub max_timestamp: u32,
+    pub data_crc32: u32,
+    pub header_crc32: u32,
+    pub payload_bytes: u16,
+    pub _reserved1: u16,
+    pub hull: MicroHull,
+    pub _reserved2: [u32; 16],
+}
+
+impl MicroTileHeader {
+    pub fn new(tile_id: u32, tile_type: u16) -> Self {
+        Self {
+            tile_id,
+            tile_type,
+            record_count: 0,
+            min_timestamp: u32::MAX,
+            max_timestamp: 0,
+            data_crc32: 0,
+            header_crc32: 0,
+            payload_bytes: 0,
+            _reserved1: 0,
+            hull: MicroHull::empty(),
+            _reserved2: [0u32; 16],
+        }
+    }
+}
+
 /// Telemetry record layout (32 bytes).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
@@ -272,6 +338,74 @@ impl TelemetryRecord {
     }
 }
 
+/// Ultra-Compact Quantized Wearable Telemetry Record (16 bytes) for Heart Rate / IMU / PPG / Gyro in Earbuds & Smart Rings.
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct CompactWearableRecord {
+    pub timestamp_sec: u32, // Relative seconds timestamp (fits >130 years)
+    pub sensor_id: u8,      // Sensor ID (0=PPG HeartRate, 1=Accel, 2=Gyro, 3=Temp, 4=SpO2)
+    pub metric_id: u8,      // Metric ID
+    pub quantized_val: i16, // Q8.8 fixed-point quantized measurement (value * 256)
+    pub flags: u16,         // Compact status flags
+    pub _reserved: u16,
+    pub _padding: u32,
+}
+
+impl CompactWearableRecord {
+    pub fn new(timestamp_sec: u32, sensor_id: u8, metric_id: u8, value: f32) -> Self {
+        let quantized_val = (value * 256.0) as i16;
+        Self {
+            timestamp_sec,
+            sensor_id,
+            metric_id,
+            quantized_val,
+            flags: 0,
+            _reserved: 0,
+            _padding: 0,
+        }
+    }
+
+    pub fn float_value(&self) -> f32 {
+        (self.quantized_val as f32) / 256.0
+    }
+}
+
+/// Compact 32-Dimensional INT8 Quantized Embedding Record (48 bytes) for On-Device Speech/Gesture Keyword Spotting on Glasses/Earbuds.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct CompactEmbeddingRecord32 {
+    pub id: u32,
+    pub timestamp_sec: u32,
+    pub quantized_vector: [i8; 32], // INT8 quantized embedding features
+    pub scale: f32,                // Quantization scale factor
+    pub _reserved: u32,
+}
+
+impl CompactEmbeddingRecord32 {
+    pub fn new(id: u32, timestamp_sec: u32, float_vector: &[f32; 32]) -> Self {
+        let mut max_abs = 0.0f32;
+        for &v in float_vector.iter() {
+            let abs_v = if v < 0.0 { -v } else { v };
+            if abs_v > max_abs {
+                max_abs = abs_v;
+            }
+        }
+        let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
+        let mut quantized_vector = [0i8; 32];
+        for i in 0..32 {
+            quantized_vector[i] = (float_vector[i] / scale) as i8;
+        }
+
+        Self {
+            id,
+            timestamp_sec,
+            quantized_vector,
+            scale,
+            _reserved: 0,
+        }
+    }
+}
+
 /// Fixed-size 128-dimensional embedding record layout (528 bytes).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
@@ -292,6 +426,25 @@ mod tests {
     use super::*;
     use core::mem::size_of;
     use std::format;
+
+    #[test]
+    fn test_wearable_micro_tile_sizes() {
+        assert_eq!(MICRO_TILE_SIZE, 4096);
+        assert_eq!(size_of::<MicroTileHeader>(), MICRO_TILE_HEADER_SIZE);
+        assert_eq!(size_of::<CompactWearableRecord>(), 16);
+        assert_eq!(size_of::<CompactEmbeddingRecord32>(), 48);
+        assert_eq!(MICRO_TILE_PAYLOAD_SIZE, 3968);
+
+        // Capacity: 3,968 / 16 = 248 wearable records in a single 4 KB flash page!
+        assert_eq!(MICRO_TILE_PAYLOAD_SIZE / size_of::<CompactWearableRecord>(), 248);
+    }
+
+    #[test]
+    fn test_compact_wearable_record_quantization() {
+        let rec = CompactWearableRecord::new(100, 1, 10, 72.5);
+        assert_eq!(rec.sensor_id, 1);
+        assert!((rec.float_value() - 72.5).abs() < 0.01);
+    }
 
     #[test]
     fn test_coordinate_formatting_and_parsing() {
