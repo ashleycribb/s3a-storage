@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
-use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord};
+use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, S3ACoordinate};
 
 #[repr(C)]
 pub struct S3AHandle {
@@ -69,6 +69,37 @@ pub unsafe extern "C" fn s3a_query_telemetry(
 
     *out_len = results.len();
     0
+}
+
+/// Performs instantaneous O(1) zero-copy lookup by S3ACoordinate.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_lookup_coordinate(
+    path: *const c_char,
+    level: u16,
+    tile_id: u32,
+    record_offset: u32,
+    out_record: *mut TelemetryRecord,
+) -> c_int {
+    if path.is_null() || out_record.is_null() {
+        return -1;
+    }
+
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let coord = S3ACoordinate::new(level, tile_id, record_offset);
+    match S3ACrudEngine::open_or_create(path_str) {
+        Ok(engine) => match engine.read_by_coordinate::<TelemetryRecord>(&coord) {
+            Ok(rec) => {
+                *out_record = rec;
+                0
+            }
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
 }
 
 /// Inserts telemetry records into an S3A archive (CREATE).
@@ -203,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cabi_crud_insert_delete() {
+    fn test_cabi_crud_insert_delete_lookup() {
         let temp_file = NamedTempFile::new().unwrap();
         let path_str = temp_file.path().to_str().unwrap();
         let c_path = CString::new(path_str).unwrap();
@@ -213,6 +244,12 @@ mod tests {
         unsafe {
             let res_insert = s3a_insert_telemetry(c_path.as_ptr(), &rec, 1);
             assert_eq!(res_insert, 0);
+
+            let mut fetched_rec = TelemetryRecord::new(0, 0, 0, 0.0);
+            let res_lookup = s3a_lookup_coordinate(c_path.as_ptr(), 0, 0, 0, &mut fetched_rec);
+            assert_eq!(res_lookup, 0);
+            assert_eq!(fetched_rec.timestamp, 1000);
+            assert_eq!(fetched_rec.value, 88.5);
 
             let res_del = s3a_delete_telemetry(c_path.as_ptr(), 5, 2, 1000);
             assert_eq!(res_del, 0);

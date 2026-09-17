@@ -1,4 +1,0 @@
-   Compiling s3a-cli v0.1.0 (/app/crates/s3a-cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.49s
-     Running `target/debug/s3a-cli serve 8080`
-S3A Web Dashboard & Agent Function Calling Server listening on http://0.0.0.0:8080

@@ -1,6 +1,10 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use core::fmt;
+use core::str::FromStr;
 use bytemuck::{Pod, Zeroable};
 
 /// Magic bytes at the start of an S3A file (`S3A1`).
@@ -38,6 +42,7 @@ pub enum S3AError {
     CorruptedHeader,
     PayloadOverflow,
     RecordNotFound,
+    InvalidCoordinate,
 }
 
 impl fmt::Display for S3AError {
@@ -57,7 +62,65 @@ impl fmt::Display for S3AError {
             S3AError::CorruptedHeader => write!(f, "Corrupted block or file header"),
             S3AError::PayloadOverflow => write!(f, "Hyper-Tile payload capacity exceeded"),
             S3AError::RecordNotFound => write!(f, "Requested record was not found"),
+            S3AError::InvalidCoordinate => write!(f, "Invalid coordinate address format (expected L<level>:T<tile>:R<offset>)"),
         }
+    }
+}
+
+/// Precise S3A Hyper-Tile Coordinate Address (`L<level>:T<tile_id>:R<record_offset>`), analogous to Excel's `A1`/`B2` cell references.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord)]
+pub struct S3ACoordinate {
+    pub level: u16,        // Stratum level (0 = Hot L1 cache tile, 1 = Stratified, 2 = Deep Archive)
+    pub _reserved: u16,
+    pub tile_id: u32,      // Tile index within archive (0-based)
+    pub record_offset: u32,// Record index within tile payload (0-based)
+    pub _padding: u32,
+}
+
+impl S3ACoordinate {
+    pub fn new(level: u16, tile_id: u32, record_offset: u32) -> Self {
+        Self {
+            level,
+            _reserved: 0,
+            tile_id,
+            record_offset,
+            _padding: 0,
+        }
+    }
+}
+
+impl fmt::Display for S3ACoordinate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "L{}:T{}:R{}", self.level, self.tile_id, self.record_offset)
+    }
+}
+
+impl FromStr for S3ACoordinate {
+    type Err = S3AError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Expected format: L0:T1:R4
+        let s = s.trim();
+        let mut parts = s.split(':');
+
+        let p1 = parts.next().ok_or(S3AError::InvalidCoordinate)?;
+        let p2 = parts.next().ok_or(S3AError::InvalidCoordinate)?;
+        let p3 = parts.next().ok_or(S3AError::InvalidCoordinate)?;
+
+        if parts.next().is_some() {
+            return Err(S3AError::InvalidCoordinate);
+        }
+
+        if !p1.starts_with('L') || !p2.starts_with('T') || !p3.starts_with('R') {
+            return Err(S3AError::InvalidCoordinate);
+        }
+
+        let level: u16 = p1[1..].parse().map_err(|_| S3AError::InvalidCoordinate)?;
+        let tile_id: u32 = p2[1..].parse().map_err(|_| S3AError::InvalidCoordinate)?;
+        let record_offset: u32 = p3[1..].parse().map_err(|_| S3AError::InvalidCoordinate)?;
+
+        Ok(S3ACoordinate::new(level, tile_id, record_offset))
     }
 }
 
@@ -228,6 +291,20 @@ impl EmbeddingRecord128 {
 mod tests {
     use super::*;
     use core::mem::size_of;
+    use std::format;
+
+    #[test]
+    fn test_coordinate_formatting_and_parsing() {
+        let coord = S3ACoordinate::new(0, 5, 42);
+        let formatted = format!("{}", coord);
+        assert_eq!(formatted, "L0:T5:R42");
+
+        let parsed: S3ACoordinate = formatted.parse().unwrap();
+        assert_eq!(parsed, coord);
+        assert_eq!(parsed.level, 0);
+        assert_eq!(parsed.tile_id, 5);
+        assert_eq!(parsed.record_offset, 42);
+    }
 
     #[test]
     fn test_header_sizes_and_alignments() {
@@ -235,6 +312,7 @@ mod tests {
         assert_eq!(size_of::<HyperTileHeader>(), HYPER_TILE_HEADER_SIZE);
         assert_eq!(size_of::<TelemetryRecord>(), 32);
         assert_eq!(size_of::<EmbeddingRecord128>(), 528);
+        assert_eq!(size_of::<S3ACoordinate>(), 16);
     }
 
     #[test]

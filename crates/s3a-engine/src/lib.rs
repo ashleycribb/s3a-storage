@@ -198,6 +198,19 @@ impl MmapReader {
         Some((tile_header, payload))
     }
 
+    /// Instantaneous O(1) direct record lookup by S3ACoordinate address (Level, Tile ID, Record Offset)
+    pub fn read_record_by_coordinate<T: Pod>(&self, coord: &S3ACoordinate) -> Result<T, S3AError> {
+        let (header, payload) = self.get_tile(coord.tile_id as usize).ok_or(S3AError::OutOfBounds)?;
+        let records: &[T] = bytemuck::cast_slice(payload);
+
+        let offset = coord.record_offset as usize;
+        if offset >= records.len() || offset >= header.record_count as usize {
+            return Err(S3AError::OutOfBounds);
+        }
+
+        Ok(records[offset])
+    }
+
     pub fn verify_checksums(&self) -> Result<(), S3AError> {
         let count = self.tile_count() as usize;
         for i in 0..count {
@@ -227,16 +240,16 @@ impl<'a> QuerySieve<'a> {
         Self { reader }
     }
 
-    /// Queries telemetry records filtering by timestamp interval and optional sensor/metric IDs, resolving versioned updates & tombstones.
-    pub fn query_telemetry(
+    /// Queries telemetry records returning both the record and its exact `S3ACoordinate` address.
+    pub fn query_telemetry_with_coords(
         &self,
         min_ts: u64,
         max_ts: u64,
         sensor_id: Option<u32>,
         metric_id: Option<u32>,
-    ) -> Vec<TelemetryRecord> {
+    ) -> Vec<(TelemetryRecord, S3ACoordinate)> {
         let tile_count = self.reader.tile_count() as usize;
-        let mut all_records: Vec<TelemetryRecord> = Vec::new();
+        let mut all_records: Vec<(TelemetryRecord, S3ACoordinate)> = Vec::new();
 
         for i in 0..tile_count {
             let (header, payload) = match self.reader.get_tile(i) {
@@ -254,7 +267,7 @@ impl<'a> QuerySieve<'a> {
             }
 
             let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
-            for rec in records {
+            for (rec_idx, rec) in records.iter().enumerate() {
                 if rec.timestamp >= min_ts && rec.timestamp <= max_ts {
                     if let Some(s) = sensor_id {
                         if rec.sensor_id != s {
@@ -266,23 +279,38 @@ impl<'a> QuerySieve<'a> {
                             continue;
                         }
                     }
-                    all_records.push(*rec);
+                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                    all_records.push((*rec, coord));
                 }
             }
         }
 
         // Deduplicate records in append order: latest version overrides earlier ones, tombstones remove earlier records
-        let mut map: std::collections::BTreeMap<(u32, u32, u64), TelemetryRecord> = std::collections::BTreeMap::new();
-        for rec in all_records {
+        let mut map: std::collections::BTreeMap<(u32, u32, u64), (TelemetryRecord, S3ACoordinate)> = std::collections::BTreeMap::new();
+        for (rec, coord) in all_records {
             let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
             if rec.is_tombstone() {
                 map.remove(&key);
             } else {
-                map.insert(key, rec);
+                map.insert(key, (rec, coord));
             }
         }
 
         map.into_values().collect()
+    }
+
+    /// Queries telemetry records filtering by timestamp interval and optional sensor/metric IDs, resolving versioned updates & tombstones.
+    pub fn query_telemetry(
+        &self,
+        min_ts: u64,
+        max_ts: u64,
+        sensor_id: Option<u32>,
+        metric_id: Option<u32>,
+    ) -> Vec<TelemetryRecord> {
+        self.query_telemetry_with_coords(min_ts, max_ts, sensor_id, metric_id)
+            .into_iter()
+            .map(|(rec, _)| rec)
+            .collect()
     }
 
     /// Queries embedding records filtering by SIMD spatial bounding box and/or point hulls.
@@ -359,6 +387,19 @@ impl S3ACrudEngine {
         writer.write_hyper_tile(TileType::TELEMETRY, records, Some(&timestamps), None)
     }
 
+    /// READ: Retrieve telemetry records matching sensor_id and metric_id within timestamp bounds along with their S3ACoordinate addresses.
+    pub fn read_telemetry_with_coords(
+        &self,
+        sensor_id: u32,
+        metric_id: u32,
+        min_ts: u64,
+        max_ts: u64,
+    ) -> io::Result<Vec<(TelemetryRecord, S3ACoordinate)>> {
+        let reader = MmapReader::open(&self.file_path)?;
+        let sieve = QuerySieve::new(&reader);
+        Ok(sieve.query_telemetry_with_coords(min_ts, max_ts, Some(sensor_id), Some(metric_id)))
+    }
+
     /// READ: Retrieve telemetry records matching sensor_id and metric_id within timestamp bounds.
     pub fn read_telemetry(
         &self,
@@ -370,6 +411,12 @@ impl S3ACrudEngine {
         let reader = MmapReader::open(&self.file_path)?;
         let sieve = QuerySieve::new(&reader);
         Ok(sieve.query_telemetry(min_ts, max_ts, Some(sensor_id), Some(metric_id)))
+    }
+
+    /// DIRECT O(1) LOOKUP: Fetch record directly by S3ACoordinate address.
+    pub fn read_by_coordinate<T: Pod>(&self, coord: &S3ACoordinate) -> Result<T, S3AError> {
+        let reader = MmapReader::open(&self.file_path).map_err(|_| S3AError::CorruptedHeader)?;
+        reader.read_record_by_coordinate(coord)
     }
 
     /// UPDATE: Update an existing telemetry record by appending a newer version and tombstoning the older version.
@@ -539,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crud_engine_operations() {
+    fn test_crud_engine_operations_and_coordinate_lookup() {
         let temp_file = NamedTempFile::new().unwrap();
         let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
 
@@ -548,11 +595,19 @@ mod tests {
         let rec2 = TelemetryRecord::new(2000, 10, 1, 26.1);
         engine.create_telemetry(&[rec1, rec2]).unwrap();
 
-        // 2. READ
-        let res = engine.read_telemetry(10, 1, 500, 2500).unwrap();
+        // 2. READ WITH COORDINATE
+        let res = engine.read_telemetry_with_coords(10, 1, 500, 2500).unwrap();
         assert_eq!(res.len(), 2);
 
-        // 3. UPDATE
+        let (read_rec1, coord1) = res[0];
+        assert_eq!(read_rec1.timestamp, 1000);
+        assert_eq!(coord1, S3ACoordinate::new(0, 0, 0));
+
+        // 3. DIRECT O(1) COORDINATE LOOKUP
+        let direct_rec: TelemetryRecord = engine.read_by_coordinate(&coord1).unwrap();
+        assert_eq!(direct_rec, read_rec1);
+
+        // 4. UPDATE
         let updated = engine.update_telemetry(10, 1, 1000, 30.0).unwrap();
         assert!(updated);
 
@@ -560,14 +615,14 @@ mod tests {
         assert_eq!(res_after_update.len(), 1);
         assert_eq!(res_after_update[0].value, 30.0);
 
-        // 4. DELETE
+        // 5. DELETE
         let deleted = engine.delete_telemetry(10, 1, 2000).unwrap();
         assert!(deleted);
 
         let res_after_delete = engine.read_telemetry(10, 1, 2000, 2000).unwrap();
         assert_eq!(res_after_delete.len(), 0);
 
-        // 5. PURGE & COMPACT
+        // 6. PURGE & COMPACT
         engine.purge_and_compact().unwrap();
         let final_records = engine.read_telemetry(10, 1, 0, 5000).unwrap();
         assert_eq!(final_records.len(), 1);

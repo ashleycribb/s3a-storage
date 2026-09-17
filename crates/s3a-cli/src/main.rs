@@ -4,7 +4,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::time::Instant;
 
-use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter};
+use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter, S3ACoordinate};
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
@@ -23,6 +23,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             --danger: #f87171;
             --text: #f8fafc;
             --text-muted: #94a3b8;
+            --coord: #f59e0b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }
@@ -44,17 +45,31 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 600; }
         pre { background: #0f172a; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; color: #a5f3fc; border: 1px solid var(--border); max-height: 250px; }
         .agent-pill { background: #312e81; color: #c7d2fe; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; }
+        .coord-badge { background: #78350f; color: #fef3c7; font-weight: bold; font-family: monospace; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--coord); }
     </style>
 </head>
 <body>
     <header>
-        <h1>S3A Storage Architecture <span class="badge">Production Ready</span></h1>
+        <h1>S3A Storage Architecture <span class="badge">Coordinate System Integrated</span></h1>
         <div id="status">Archive: <span id="archive-path">test.s3a</span></div>
     </header>
 
     <div class="grid">
-        <!-- Left Column: Operations -->
+        <!-- Left Column: Operations & Direct Coordinate Lookup -->
         <div>
+            <!-- Direct Coordinate Lookup (Excel Cell style) -->
+            <div class="card">
+                <div class="card-header">
+                    <span>Direct $O(1)$ Coordinate Address Lookup</span>
+                    <span class="badge" style="background:#78350f; color:#fef3c7;">Excel A1 Analogue</span>
+                </div>
+                <div class="form-group">
+                    <label>S3A Coordinate Address (e.g. L0:T0:R0)</label>
+                    <input type="text" id="coord-address" value="L0:T0:R0" placeholder="L<level>:T<tile>:R<offset>">
+                </div>
+                <button onclick="lookupCoordinate()" style="background:#f59e0b; color:#0f172a;">Direct O(1) Fetch</button>
+            </div>
+
             <!-- Query Sieve -->
             <div class="card">
                 <div class="card-header">
@@ -121,6 +136,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <div class="form-group">
                     <label>Select Agent Tool Function</label>
                     <select id="agent-tool-select" onchange="updateAgentPayload()">
+                        <option value="s3a_lookup_coordinate">s3a_lookup_coordinate</option>
                         <option value="s3a_query_telemetry">s3a_query_telemetry</option>
                         <option value="s3a_insert_telemetry">s3a_insert_telemetry</option>
                         <option value="s3a_delete_telemetry">s3a_delete_telemetry</option>
@@ -129,7 +145,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 </div>
                 <div class="form-group">
                     <label>Tool Call Arguments (JSON)</label>
-                    <textarea id="agent-payload" rows="4">{"min_ts": 0, "max_ts": 100000}</textarea>
+                    <textarea id="agent-payload" rows="4">{"coordinate": "L0:T0:R0"}</textarea>
                 </div>
                 <button onclick="executeAgentTool()" style="background:#8b5cf6; color:#ffffff;">Execute Agent Function Call</button>
                 <div style="margin-top: 15px;">
@@ -143,6 +159,23 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <script>
         const ARCHIVE = "test.s3a";
 
+        async function lookupCoordinate() {
+            const coord = document.getElementById('coord-address').value;
+            const res = await fetch(`/api/lookup?file=${ARCHIVE}&coordinate=${coord}`);
+            const data = await res.json();
+
+            document.getElementById('results-title').innerText = `Direct O(1) Coordinate Lookup (${coord})`;
+            if (data.record) {
+                const r = data.record;
+                let html = '<table><thead><tr><th>Coordinate</th><th>Timestamp</th><th>Sensor ID</th><th>Metric ID</th><th>Value</th></tr></thead><tbody>';
+                html += `<tr><td><span class="coord-badge">${coord}</span></td><td>${r.timestamp}</td><td>${r.sensor_id}</td><td>${r.metric_id}</td><td>${r.value.toFixed(2)}</td></tr>`;
+                html += '</tbody></table>';
+                document.getElementById('results-container').innerHTML = html;
+            } else {
+                document.getElementById('results-container').innerHTML = `<p style="color: var(--danger); padding: 10px;">${data.error || 'Record not found'}</p>`;
+            }
+        }
+
         async function queryRecords() {
             const minTs = document.getElementById('q-min-ts').value;
             const maxTs = document.getElementById('q-max-ts').value;
@@ -152,9 +185,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             document.getElementById('results-title').innerText = `Query Results (${data.records ? data.records.length : 0} records found in ${data.duration_micros}µs)`;
 
             if (data.records && data.records.length > 0) {
-                let html = '<table><thead><tr><th>Timestamp</th><th>Sensor ID</th><th>Metric ID</th><th>Value</th><th>Flags</th></tr></thead><tbody>';
+                let html = '<table><thead><tr><th>S3A Coordinate</th><th>Timestamp</th><th>Sensor ID</th><th>Metric ID</th><th>Value</th></tr></thead><tbody>';
                 data.records.forEach(r => {
-                    html += `<tr><td>${r.timestamp}</td><td>${r.sensor_id}</td><td>${r.metric_id}</td><td>${r.value.toFixed(2)}</td><td>0x${r.flags.toString(16)}</td></tr>`;
+                    html += `<tr><td><span class="coord-badge">${r.coordinate}</span></td><td>${r.timestamp}</td><td>${r.sensor_id}</td><td>${r.metric_id}</td><td>${r.value.toFixed(2)}</td></tr>`;
                 });
                 html += '</tbody></table>';
                 document.getElementById('results-container').innerHTML = html;
@@ -221,7 +254,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
         function updateAgentPayload() {
             const tool = document.getElementById('agent-tool-select').value;
-            if (tool === 's3a_query_telemetry') {
+            if (tool === 's3a_lookup_coordinate') {
+                document.getElementById('agent-payload').value = '{"coordinate": "L0:T0:R0"}';
+            } else if (tool === 's3a_query_telemetry') {
                 document.getElementById('agent-payload').value = '{"min_ts": 0, "max_ts": 100000}';
             } else if (tool === 's3a_insert_telemetry') {
                 document.getElementById('agent-payload').value = '{"timestamp": 5000, "sensor_id": 1, "metric_id": 101, "value": 99.4}';
@@ -274,6 +309,13 @@ fn main() {
             }
             verify_file(&args[2]);
         }
+        "lookup" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli lookup <file_path> <coordinate> (e.g. L0:T0:R0)");
+                return;
+            }
+            lookup_coordinate(&args[2], &args[3]);
+        }
         "insert" => {
             if args.len() < 7 {
                 println!("Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
@@ -324,8 +366,9 @@ fn print_usage() {
     println!("Usage:");
     println!("  s3a-cli inspect <file_path>                       Inspect Hyper-Tile metadata");
     println!("  s3a-cli verify <file_path>                        Verify file and tile checksums");
+    println!("  s3a-cli lookup <file_path> <coordinate>           Direct O(1) lookup by coordinate address (e.g. L0:T0:R0)");
     println!("  s3a-cli insert <file_path> <ts> <sensor> <metric> <val> Insert a new telemetry record");
-    println!("  s3a-cli get <file_path> <sensor> <metric> <min_ts> <max_ts> Get matching telemetry records");
+    println!("  s3a-cli get <file_path> <sensor> <metric> <min_ts> <max_ts> Get matching telemetry records with coordinates");
     println!("  s3a-cli delete <file_path> <sensor> <metric> <ts> Soft-delete matching record with tombstone");
     println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
     println!("  s3a-cli benchmark                                 Run benchmark comparing JSON/uncompressed storage vs S3A Hyper-Tiles");
@@ -370,6 +413,24 @@ fn verify_file(path: &str) {
     }
 }
 
+fn lookup_coordinate(path: &str, coord_str: &str) {
+    let coord: S3ACoordinate = match coord_str.parse() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Invalid coordinate '{}': {}", coord_str, e);
+            return;
+        }
+    };
+
+    let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
+    match engine.read_by_coordinate::<TelemetryRecord>(&coord) {
+        Ok(r) => {
+            println!("Direct O(1) Fetch at {}: timestamp={}, sensor={}, metric={}, value={}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value);
+        }
+        Err(e) => eprintln!("Fetch failed at {}: {}", coord, e),
+    }
+}
+
 fn insert_telemetry(path: &str, ts_str: &str, sensor_str: &str, metric_str: &str, val_str: &str) {
     let ts: u64 = ts_str.parse().expect("Invalid timestamp");
     let sensor_id: u32 = sensor_str.parse().expect("Invalid sensor ID");
@@ -389,10 +450,10 @@ fn get_telemetry(path: &str, sensor_str: &str, metric_str: &str, min_ts_str: &st
     let max_ts: u64 = max_ts_str.parse().expect("Invalid max timestamp");
 
     let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
-    let results = engine.read_telemetry(sensor_id, metric_id, min_ts, max_ts).expect("Failed to query records");
+    let results = engine.read_telemetry_with_coords(sensor_id, metric_id, min_ts, max_ts).expect("Failed to query records");
     println!("Found {} record(s) matching criteria:", results.len());
-    for r in results {
-        println!("  Record: timestamp={}, sensor={}, metric={}, value={}", r.timestamp, r.sensor_id, r.metric_id, r.value);
+    for (r, coord) in results {
+        println!("  Record [{}]: timestamp={}, sensor={}, metric={}, value={}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value);
     }
 }
 
@@ -527,6 +588,36 @@ fn handle_connection(stream: &mut TcpStream) {
         return;
     }
 
+    if url.starts_with("/api/lookup") {
+        let file = extract_query_param(url, "file").unwrap_or_else(|| "test.s3a".to_string());
+        let coord_str = extract_query_param(url, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
+
+        let _ = S3ACrudEngine::open_or_create(&file);
+        let coord: Result<S3ACoordinate, _> = coord_str.parse();
+        if let Ok(c) = coord {
+            if let Ok(engine) = S3ACrudEngine::open_or_create(&file) {
+                match engine.read_by_coordinate::<TelemetryRecord>(&c) {
+                    Ok(r) => {
+                        let resp = format!(
+                            "{{\"coordinate\":\"{}\",\"record\":{{\"timestamp\":{},\"sensor_id\":{},\"metric_id\":{},\"value\":{}}}}}",
+                            c, r.timestamp, r.sensor_id, r.metric_id, r.value
+                        );
+                        send_response(stream, "200 OK", "application/json", resp.as_bytes());
+                    }
+                    Err(e) => {
+                        let resp = format!("{{\"error\":\"{}\"}}", e);
+                        send_response(stream, "404 Not Found", "application/json", resp.as_bytes());
+                    }
+                }
+            } else {
+                send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to open archive\"}");
+            }
+        } else {
+            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Invalid coordinate format\"}");
+        }
+        return;
+    }
+
     if url.starts_with("/api/inspect") {
         let file = extract_query_param(url, "file").unwrap_or_else(|| "test.s3a".to_string());
         let _ = S3ACrudEngine::open_or_create(&file);
@@ -557,13 +648,13 @@ fn handle_connection(stream: &mut TcpStream) {
         if let Ok(reader) = MmapReader::open(&file) {
             let sieve = QuerySieve::new(&reader);
             let start = Instant::now();
-            let records = sieve.query_telemetry(min_ts, max_ts, None, None);
+            let records = sieve.query_telemetry_with_coords(min_ts, max_ts, None, None);
             let duration = start.elapsed().as_micros();
 
-            let rec_json: Vec<String> = records.iter().map(|r| {
+            let rec_json: Vec<String> = records.iter().map(|(r, coord)| {
                 format!(
-                    "{{\"timestamp\":{},\"sensor_id\":{},\"metric_id\":{},\"value\":{},\"flags\":{}}}",
-                    r.timestamp, r.sensor_id, r.metric_id, r.value, r.flags
+                    "{{\"coordinate\":\"{}\",\"timestamp\":{},\"sensor_id\":{},\"metric_id\":{},\"value\":{},\"flags\":{}}}",
+                    coord, r.timestamp, r.sensor_id, r.metric_id, r.value, r.flags
                 )
             }).collect();
 
@@ -632,10 +723,20 @@ fn handle_connection(stream: &mut TcpStream) {
 
         let engine = S3ACrudEngine::open_or_create(&file).unwrap();
 
-        let response_json = if tool_name == "s3a_query_telemetry" {
+        let response_json = if tool_name == "s3a_lookup_coordinate" {
+            let coord_str = parse_json_str(&body, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
+            if let Ok(coord) = coord_str.parse::<S3ACoordinate>() {
+                match engine.read_by_coordinate::<TelemetryRecord>(&coord) {
+                    Ok(r) => format!("{{\"status\":\"success\",\"tool\":\"s3a_lookup_coordinate\",\"coordinate\":\"{}\",\"record\":{{\"timestamp\":{},\"sensor_id\":{},\"metric_id\":{},\"value\":{}}}}}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value),
+                    Err(e) => format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"{}\"}}", e),
+                }
+            } else {
+                format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"Invalid coordinate format\"}}")
+            }
+        } else if tool_name == "s3a_query_telemetry" {
             let min_ts = parse_json_u64(&body, "min_ts").unwrap_or(0);
             let max_ts = parse_json_u64(&body, "max_ts").unwrap_or(u64::MAX);
-            let records = engine.read_telemetry(1, 101, min_ts, max_ts).unwrap_or_default();
+            let records = engine.read_telemetry_with_coords(1, 101, min_ts, max_ts).unwrap_or_default();
             format!("{{\"status\":\"success\",\"tool\":\"s3a_query_telemetry\",\"matched_records\":{}}}", records.len())
         } else if tool_name == "s3a_insert_telemetry" {
             let ts = parse_json_u64(&body, "timestamp").unwrap_or(1000);
