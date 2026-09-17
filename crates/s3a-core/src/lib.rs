@@ -1,0 +1,250 @@
+#![no_std]
+
+use core::fmt;
+use bytemuck::{Pod, Zeroable};
+
+/// Magic bytes at the start of an S3A file (`S3A1`).
+pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
+
+/// S3A file header size (64 bytes).
+pub const FILE_HEADER_SIZE: usize = 64;
+
+/// Hyper-Tile block size (128 KB page-aligned block).
+pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
+
+/// Hyper-Tile block header size (512 bytes).
+pub const HYPER_TILE_HEADER_SIZE: usize = 512;
+
+/// Hyper-Tile payload capacity in bytes (130,560 bytes).
+pub const HYPER_TILE_PAYLOAD_SIZE: usize = HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE;
+
+/// Simplex hull dimension capacity for tile rejection indexing.
+pub const MAX_HULL_DIMENSIONS: usize = 16;
+
+/// Error types returned by S3A core functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S3AError {
+    InvalidMagic,
+    UnsupportedVersion(u16),
+    ChecksumMismatch { expected: u32, actual: u32 },
+    InvalidTileSize(usize),
+    BufferTooSmall { required: usize, provided: usize },
+    OutOfBounds,
+    InvalidFormat,
+    CorruptedHeader,
+    PayloadOverflow,
+}
+
+impl fmt::Display for S3AError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            S3AError::InvalidMagic => write!(f, "Invalid S3A file magic"),
+            S3AError::UnsupportedVersion(v) => write!(f, "Unsupported file version: {}", v),
+            S3AError::ChecksumMismatch { expected, actual } => {
+                write!(f, "Checksum mismatch: expected 0x{:08x}, got 0x{:08x}", expected, actual)
+            }
+            S3AError::InvalidTileSize(sz) => write!(f, "Invalid tile size: {}", sz),
+            S3AError::BufferTooSmall { required, provided } => {
+                write!(f, "Buffer too small: required {}, provided {}", required, provided)
+            }
+            S3AError::OutOfBounds => write!(f, "Index or offset out of bounds"),
+            S3AError::InvalidFormat => write!(f, "Invalid S3A file format"),
+            S3AError::CorruptedHeader => write!(f, "Corrupted block or file header"),
+            S3AError::PayloadOverflow => write!(f, "Hyper-Tile payload capacity exceeded"),
+        }
+    }
+}
+
+/// S3A File Header (64 bytes, 8-byte aligned, zero-padded).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct FileHeader {
+    pub magic: [u8; 4],
+    pub version: u16,
+    pub flags: u16,
+    pub tile_count: u32,
+    pub _reserved1: u32,
+    pub created_timestamp: u64,
+    pub _reserved2: [u64; 5],
+}
+
+impl FileHeader {
+    pub fn new(tile_count: u32, created_timestamp: u64) -> Self {
+        Self {
+            magic: S3A_MAGIC,
+            version: 1,
+            flags: 0,
+            tile_count,
+            _reserved1: 0,
+            created_timestamp,
+            _reserved2: [0u64; 5],
+        }
+    }
+
+    pub fn verify(&self) -> Result<(), S3AError> {
+        if self.magic != S3A_MAGIC {
+            return Err(S3AError::InvalidMagic);
+        }
+        if self.version != 1 {
+            return Err(S3AError::UnsupportedVersion(self.version));
+        }
+        Ok(())
+    }
+}
+
+/// Simplex convex hull bounding manifold embedded in Hyper-Tile header (212 bytes, 4-byte aligned).
+#[repr(C, align(4))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct SimplexHull {
+    pub dim: u32,
+    pub radius: f32,
+    pub min_bounds: [f32; MAX_HULL_DIMENSIONS],
+    pub max_bounds: [f32; MAX_HULL_DIMENSIONS],
+    pub centroid: [f32; MAX_HULL_DIMENSIONS],
+    pub _reserved: [u32; 3],
+}
+
+impl SimplexHull {
+    pub fn empty() -> Self {
+        Self {
+            dim: 0,
+            radius: 0.0,
+            min_bounds: [f32::INFINITY; MAX_HULL_DIMENSIONS],
+            max_bounds: [f32::NEG_INFINITY; MAX_HULL_DIMENSIONS],
+            centroid: [0.0; MAX_HULL_DIMENSIONS],
+            _reserved: [0u32; 3],
+        }
+    }
+
+    pub fn contains_point(&self, point: &[f32]) -> bool {
+        let d = (self.dim as usize).min(MAX_HULL_DIMENSIONS).min(point.len());
+        for i in 0..d {
+            if point[i] < self.min_bounds[i] || point[i] > self.max_bounds[i] {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Tile Type enumeration values stored as u32 in header.
+pub struct TileType;
+impl TileType {
+    pub const TELEMETRY: u32 = 0;
+    pub const EMBEDDING: u32 = 1;
+    pub const HYBRID: u32 = 2;
+}
+
+/// Hyper-Tile Header (512 bytes, 8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub struct HyperTileHeader {
+    pub tile_id: u64,
+    pub tile_type: u32,
+    pub record_count: u32,
+    pub min_timestamp: u64,
+    pub max_timestamp: u64,
+    pub data_crc32: u32,
+    pub header_crc32: u32,
+    pub payload_bytes: u32,
+    pub _reserved1: u32,
+    pub hull: SimplexHull,
+    pub _reserved2: [u32; 32],
+    pub _reserved3: [u32; 31],
+}
+
+impl HyperTileHeader {
+    pub fn new(tile_id: u64, tile_type: u32) -> Self {
+        Self {
+            tile_id,
+            tile_type,
+            record_count: 0,
+            min_timestamp: u64::MAX,
+            max_timestamp: 0,
+            data_crc32: 0,
+            header_crc32: 0,
+            payload_bytes: 0,
+            _reserved1: 0,
+            hull: SimplexHull::empty(),
+            _reserved2: [0u32; 32],
+            _reserved3: [0u32; 31],
+        }
+    }
+}
+
+/// Telemetry record layout (32 bytes).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct TelemetryRecord {
+    pub timestamp: u64,
+    pub sensor_id: u32,
+    pub metric_id: u32,
+    pub value: f64,
+    pub flags: u64,
+}
+
+impl TelemetryRecord {
+    pub fn new(timestamp: u64, sensor_id: u32, metric_id: u32, value: f64) -> Self {
+        Self {
+            timestamp,
+            sensor_id,
+            metric_id,
+            value,
+            flags: 0,
+        }
+    }
+}
+
+/// Fixed-size 128-dimensional embedding record layout (528 bytes).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct EmbeddingRecord128 {
+    pub id: u64,
+    pub timestamp: u64,
+    pub vector: [f32; 128],
+}
+
+impl EmbeddingRecord128 {
+    pub fn new(id: u64, timestamp: u64, vector: [f32; 128]) -> Self {
+        Self { id, timestamp, vector }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    #[test]
+    fn test_header_sizes_and_alignments() {
+        assert_eq!(size_of::<FileHeader>(), FILE_HEADER_SIZE);
+        assert_eq!(size_of::<HyperTileHeader>(), HYPER_TILE_HEADER_SIZE);
+        assert_eq!(size_of::<TelemetryRecord>(), 32);
+        assert_eq!(size_of::<EmbeddingRecord128>(), 528);
+    }
+
+    #[test]
+    fn test_file_header_verification() {
+        let header = FileHeader::new(10, 1000);
+        assert!(header.verify().is_ok());
+
+        let mut invalid_header = header;
+        invalid_header.magic = *b"BAD1";
+        assert_eq!(invalid_header.verify(), Err(S3AError::InvalidMagic));
+    }
+
+    #[test]
+    fn test_simplex_hull_bounds() {
+        let mut hull = SimplexHull::empty();
+        hull.dim = 3;
+        hull.min_bounds[0] = 0.0;
+        hull.max_bounds[0] = 10.0;
+        hull.min_bounds[1] = 0.0;
+        hull.max_bounds[1] = 10.0;
+        hull.min_bounds[2] = 0.0;
+        hull.max_bounds[2] = 10.0;
+
+        assert!(hull.contains_point(&[5.0, 5.0, 5.0]));
+        assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
+    }
+}

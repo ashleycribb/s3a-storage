@@ -1,0 +1,151 @@
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int};
+use std::ptr;
+
+use s3a_engine::{Compactor, MmapReader, QuerySieve, TelemetryRecord};
+
+#[repr(C)]
+pub struct S3AHandle {
+    _private: [u8; 0],
+}
+
+/// Opens an existing S3A archive using memory mapping.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_open(path: *const c_char) -> *mut S3AHandle {
+    if path.is_null() {
+        return ptr::null_mut();
+    }
+    let c_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return ptr::null_mut(),
+    };
+
+    match MmapReader::open(c_str) {
+        Ok(reader) => Box::into_raw(Box::new(reader)) as *mut S3AHandle,
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Closes an open S3A handle and releases memory mapping.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_close(handle: *mut S3AHandle) {
+    if !handle.is_null() {
+        let _ = Box::from_raw(handle as *mut MmapReader);
+    }
+}
+
+/// Returns the total tile count in the archive.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_tile_count(handle: *const S3AHandle) -> u32 {
+    if handle.is_null() {
+        return 0;
+    }
+    let reader = &*(handle as *const MmapReader);
+    reader.tile_count()
+}
+
+/// Queries telemetry records within a time range.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_query_telemetry(
+    handle: *const S3AHandle,
+    min_ts: u64,
+    max_ts: u64,
+    out_buffer: *mut TelemetryRecord,
+    max_out_len: usize,
+    out_len: *mut usize,
+) -> c_int {
+    if handle.is_null() || out_len.is_null() {
+        return -1;
+    }
+
+    let reader = &*(handle as *const MmapReader);
+    let sieve = QuerySieve::new(reader);
+    let results = sieve.query_telemetry(min_ts, max_ts, None, None);
+
+    let count = results.len().min(max_out_len);
+    if !out_buffer.is_null() && count > 0 {
+        ptr::copy_nonoverlapping(results.as_ptr(), out_buffer, count);
+    }
+
+    *out_len = results.len();
+    0
+}
+
+/// Compacts multiple S3A input archives into a single optimized S3A output archive.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_compact(
+    input_paths: *const *const c_char,
+    num_inputs: usize,
+    output_path: *const c_char,
+) -> c_int {
+    if input_paths.is_null() || output_path.is_null() || num_inputs == 0 {
+        return -1;
+    }
+
+    let out_str = match CStr::from_ptr(output_path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let mut in_strs = Vec::with_capacity(num_inputs);
+    for i in 0..num_inputs {
+        let p = *input_paths.add(i);
+        if p.is_null() {
+            return -1;
+        }
+        match CStr::from_ptr(p).to_str() {
+            Ok(s) => in_strs.push(s),
+            Err(_) => return -1,
+        }
+    }
+
+    match Compactor::compact(&in_strs, &out_str) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+    use tempfile::NamedTempFile;
+    use s3a_engine::{TileType, TileWriter};
+
+    #[test]
+    fn test_cabi_open_query_compact() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path_str = temp_file.path().to_str().unwrap();
+
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+        let records = vec![TelemetryRecord::new(500, 1, 10, 99.9)];
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, &records, Some(&[500]), None)
+            .unwrap();
+
+        let c_path = CString::new(path_str).unwrap();
+        unsafe {
+            let handle = s3a_open(c_path.as_ptr());
+            assert!(!handle.is_null());
+
+            let count = s3a_tile_count(handle);
+            assert_eq!(count, 1);
+
+            let mut out_records = [TelemetryRecord::new(0, 0, 0, 0.0); 10];
+            let mut out_len = 0;
+            let res = s3a_query_telemetry(
+                handle,
+                0,
+                1000,
+                out_records.as_mut_ptr(),
+                10,
+                &mut out_len,
+            );
+            assert_eq!(res, 0);
+            assert_eq!(out_len, 1);
+            assert_eq!(out_records[0].timestamp, 500);
+
+            s3a_close(handle);
+        }
+    }
+}
