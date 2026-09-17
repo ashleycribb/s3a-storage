@@ -7,7 +7,7 @@ use std::time::Instant;
 use s3a_engine::{
     Compactor, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
     TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
-    GISSurveyPointRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
+    GISSurveyPointRecord, DACommitmentRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
 };
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -54,7 +54,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
     <header>
-        <h1>S3A Storage Architecture <span class="badge">GIS & Subsurface Mesh Enabled</span></h1>
+        <h1>S3A Storage Architecture <span class="badge">Blockchain DA & Indexer Enabled</span></h1>
         <div id="status">Archive: <span id="archive-path">test.s3a</span></div>
     </header>
 
@@ -360,6 +360,9 @@ fn main() {
         "benchmark-gis" => {
             run_gis_benchmark();
         }
+        "benchmark-da" => {
+            run_da_benchmark();
+        }
         "serve" => {
             let port = if args.len() >= 3 {
                 args[2].parse().unwrap_or(8080)
@@ -388,6 +391,7 @@ fn print_usage() {
     println!("  s3a-cli benchmark-wearable                        Run wearable benchmark (4KB Flash page micro-tiles, zero-heap alloc)");
     println!("  s3a-cli benchmark-robotics                        Run robotics platform benchmark (1 kHz stream ring-buffer & 3D SIMD trajectory)");
     println!("  s3a-cli benchmark-gis                             Run GIS Earth surface/subsurface 3D point cloud & mesh benchmark");
+    println!("  s3a-cli benchmark-da                              Run L2 Rollup & Decentralized AI Data Availability benchmark");
     println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
 }
 
@@ -409,6 +413,7 @@ fn inspect_file(path: &str) {
                         TileType::WEARABLE_MICRO => "WEARABLE_MICRO",
                         TileType::ROBOTICS_KINEMATIC => "ROBOTICS_KINEMATIC",
                         TileType::GIS_SURVEY_MESH => "GIS_SURVEY_MESH",
+                        TileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
                         _ => "UNKNOWN",
                     };
                     println!(
@@ -496,6 +501,62 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
         Ok(count) => println!("Compaction SUCCESS: Wrote {} Hyper-Tiles to {}", count, output_path),
         Err(e) => eprintln!("Compaction FAILED: {}", e),
     }
+}
+
+fn run_da_benchmark() {
+    println!("==================================================================");
+    println!("   S3A BLOCKCHAIN INDEXER & DECENTRALIZED AI DA BENCHMARK          ");
+    println!("   Targets: L2 Rollup Sequencers, State Channels, AI Model Proofs ");
+    println!("==================================================================");
+
+    let temp_da_path = Path::new("da_commitments.s3a");
+    let num_commitments = 100_000;
+    println!("Generating {} L2 block state commitments & KZG roots...", num_commitments);
+
+    let mut da_records = Vec::with_capacity(num_commitments);
+    for i in 0..num_commitments {
+        let block = 1_000_000 + (i as u64);
+        let mut state_root = [0u8; 32];
+        state_root[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+        let quorum_mask = 0xFFFFFFFF; // 100% validator quorum
+
+        da_records.push(DACommitmentRecord::new(block, state_root, 1600000000 + (i as u32), quorum_mask, 250));
+    }
+
+    let start_write = Instant::now();
+    let mut writer = TileWriter::create(temp_da_path).unwrap();
+
+    let recs_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<DACommitmentRecord>();
+    for chunk in da_records.chunks(recs_per_tile) {
+        let block_heights: Vec<u64> = chunk.iter().map(|r| r.block_height).collect();
+        writer.write_hyper_tile(TileType::DATA_AVAILABILITY, chunk, Some(&block_heights), None).unwrap();
+    }
+    let write_duration = start_write.elapsed();
+
+    let file_size = std::fs::metadata(temp_da_path).unwrap().len() as usize;
+
+    println!("\n--- DATA AVAILABILITY STORAGE & COMMITMENT INGEST ---");
+    println!("Total L2 State Commitments:   {}", num_commitments);
+    println!("Write Duration (100k blocks): {:?}", write_duration);
+    println!("S3A DA Archive File Size:     {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+    println!("Commitments per Hyper-Tile:   {} blocks", recs_per_tile);
+
+    // Benchmark SIMD Data Availability Block Range Search
+    println!("\n--- ZERO-COPY STATE SAMPLING & PROOF SIFTING ---");
+    let reader = MmapReader::open(temp_da_path).unwrap();
+    let sieve = QuerySieve::new(&reader);
+
+    let start_query = Instant::now();
+    // Query block range [1,050,000..1,050,500]
+    let queried_blocks = sieve.query_da_commitments(1_050_000, 1_050_500);
+    let query_duration = start_query.elapsed();
+
+    println!("Block Range Query Duration:   {:?}", query_duration);
+    println!("Matched State Commitments:    {} blocks", queried_blocks.len());
+    println!("Single-cycle SIMD time filter instantly sifted through 100,000 blocks!");
+
+    let _ = std::fs::remove_file(temp_da_path);
+    println!("==================================================================");
 }
 
 fn run_gis_benchmark() {

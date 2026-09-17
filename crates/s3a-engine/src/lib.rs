@@ -370,6 +370,40 @@ impl<'a> QuerySieve<'a> {
         Self { reader }
     }
 
+    /// Queries L2 Rollup & Decentralized AI Data Availability commitments filtering by block height range.
+    pub fn query_da_commitments(
+        &self,
+        min_block: u64,
+        max_block: u64,
+    ) -> Vec<DACommitmentRecord> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::DATA_AVAILABILITY {
+                continue;
+            }
+
+            if can_reject_tile_time(header, min_block, max_block) {
+                continue;
+            }
+
+            let records: &[DACommitmentRecord] = bytemuck::cast_slice(payload);
+            for rec in records {
+                if rec.block_height >= min_block && rec.block_height <= max_block {
+                    results.push(*rec);
+                }
+            }
+        }
+
+        results
+    }
+
     /// Queries 3D GIS Survey point clouds / topographic meshes filtering by lat/long micro-degrees and elevation/depth mm.
     pub fn query_gis_mesh_3d(
         &self,
@@ -778,6 +812,28 @@ impl Compactor {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_da_commitment_query() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+
+        let commitments = vec![
+            DACommitmentRecord::new(100, [0x01; 32], 1600000000, 0xFF, 120),
+            DACommitmentRecord::new(200, [0x02; 32], 1600000010, 0xFF, 250),
+            DACommitmentRecord::new(500, [0x03; 32], 1600000020, 0xFF, 800),
+        ];
+
+        let timestamps = vec![100, 200, 500];
+        writer.write_hyper_tile(TileType::DATA_AVAILABILITY, &commitments, Some(&timestamps), None).unwrap();
+
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let sieve = QuerySieve::new(&reader);
+
+        let results = sieve.query_da_commitments(150, 300);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].block_height, 200);
+    }
 
     #[test]
     fn test_gis_mesh_3d_query() {

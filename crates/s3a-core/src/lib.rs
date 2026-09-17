@@ -13,7 +13,7 @@ pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
 /// S3A file header size (64 bytes).
 pub const FILE_HEADER_SIZE: usize = 64;
 
-/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics/GIS).
+/// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics/GIS/DA).
 pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
 
 /// Standard Hyper-Tile block header size (512 bytes).
@@ -235,6 +235,7 @@ impl TileType {
     pub const WEARABLE_MICRO: u32 = 3;
     pub const ROBOTICS_KINEMATIC: u32 = 4;
     pub const GIS_SURVEY_MESH: u32 = 5;
+    pub const DATA_AVAILABILITY: u32 = 6;
 }
 
 /// Hyper-Tile Header (512 bytes, 8-byte aligned).
@@ -340,12 +341,43 @@ impl TelemetryRecord {
     }
 }
 
+/// DECENTRALIZED DATA AVAILABILITY (DA) & BLOCKCHAIN INDEXER RECORD (64 bytes, 8-byte aligned).
+/// Designed for L2 Rollups, State Channels, and Decentralized AI Model Weight Commitment Verification.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
+pub struct DACommitmentRecord {
+    pub block_height: u64,          // Block height / L2 slot index
+    pub state_root_hash: [u8; 32],   // 256-bit State Root or Polynomial KZG commitment
+    pub timestamp_sec: u32,         // Block / Slot timestamp
+    pub quorum_bitmask: u32,        // Validator availability quorum signoff bitmask
+    pub transaction_count: u32,     // Number of bundled L2 / AI transactions
+    pub _reserved: [u32; 3],
+}
+
+impl DACommitmentRecord {
+    pub fn new(
+        block_height: u64,
+        state_root_hash: [u8; 32],
+        timestamp_sec: u32,
+        quorum_bitmask: u32,
+        transaction_count: u32,
+    ) -> Self {
+        Self {
+            block_height,
+            state_root_hash,
+            timestamp_sec,
+            quorum_bitmask,
+            transaction_count,
+            _reserved: [0u32; 3],
+        }
+    }
+}
+
 /// GIS SURVEYING & SUBSURFACE POINT CLOUD / MESH RECORD (32 bytes, 8-byte aligned).
-/// Direct mapping to 3D Topographic Earth Surveying, LiDAR point clouds, and Subsurface Geophysics.
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct GISSurveyPointRecord {
-    pub latitude_microdeg: i32,  // Latitude in micro-degrees (e.g. 37.774929 -> 37774929)
+    pub latitude_microdeg: i32,  // Latitude in micro-degrees
     pub longitude_microdeg: i32, // Longitude in micro-degrees
     pub elevation_mm: i32,       // Elevation/Depth above/below sea level in millimeters
     pub point_class: u16,        // Classification (0=Ground, 1=Subsurface Strata, 2=Vegetation, 3=Structure)
@@ -515,6 +547,14 @@ mod tests {
     use super::*;
     use core::mem::size_of;
     use std::format;
+
+    #[test]
+    fn test_da_commitment_record_layout() {
+        assert_eq!(size_of::<DACommitmentRecord>(), 64);
+        let rec = DACommitmentRecord::new(100_000, [0xAA; 32], 1600000000, 0xFF, 500);
+        assert_eq!(rec.block_height, 100_000);
+        assert_eq!(rec.transaction_count, 500);
+    }
 
     #[test]
     fn test_gis_survey_point_record() {
