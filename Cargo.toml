@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/s3a-core",
+    "crates/s3a-simd",
+    "crates/s3a-engine",
+    "crates/s3a-cabi",
+    "crates/s3a-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["S3A Architecture Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/your-org/s3a-storage"
+
+[workspace.dependencies]
+bytemuck = { version = "1.18", default-features = false, features = ["derive"] }
+memmap2 = "0.9"
+crc32c = "0.6"
+criterion = { version = "0.5", default-features = false }
