@@ -1,0 +1,11 @@
+[package]
+name = "s3a-simd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+bytemuck.workspace = true
