@@ -1080,6 +1080,47 @@ mod tests {
         assert_eq!(final_records.len(), 1);
         assert_eq!(final_records[0].timestamp, 1000);
         assert_eq!(final_records[0].value, 30.0);
+    }
+
+    #[test]
+    fn test_crud_engine_read_telemetry_empty_or_mismatched_range() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
+
+        // 1. Query empty engine before inserting any records
+        let empty_res = engine.read_telemetry(10, 1, 0, 10000).unwrap();
+        assert!(empty_res.is_empty(), "Expected empty result when querying empty archive");
+
+        // Insert some sample records for sensor_id = 10, metric_id = 1 with timestamps 1000..3000
+        let rec1 = TelemetryRecord::new(1000, 10, 1, 25.0);
+        let rec2 = TelemetryRecord::new(2000, 10, 1, 26.0);
+        let rec3 = TelemetryRecord::new(3000, 10, 1, 27.0);
+        engine.create_telemetry(&[rec1, rec2, rec3]).unwrap();
+
+        // 2. Query range entirely before existing timestamps
+        let before_res = engine.read_telemetry(10, 1, 0, 999).unwrap();
+        assert!(before_res.is_empty(), "Expected empty result for timestamp range before min_ts");
+
+        // 3. Query range entirely after existing timestamps
+        let after_res = engine.read_telemetry(10, 1, 3001, 5000).unwrap();
+        assert!(after_res.is_empty(), "Expected empty result for timestamp range after max_ts");
+
+        // 4. Query with inverted timestamp range (min_ts > max_ts)
+        let inverted_res = engine.read_telemetry(10, 1, 2500, 1500).unwrap();
+        assert!(inverted_res.is_empty(), "Expected empty result for inverted timestamp range");
+
+        // 5. Query with non-matching sensor_id
+        let wrong_sensor_res = engine.read_telemetry(99, 1, 500, 3500).unwrap();
+        assert!(wrong_sensor_res.is_empty(), "Expected empty result for mismatched sensor_id");
+
+        // 6. Query with non-matching metric_id
+        let wrong_metric_res = engine.read_telemetry(10, 99, 500, 3500).unwrap();
+        assert!(wrong_metric_res.is_empty(), "Expected empty result for mismatched metric_id");
+
+        // 7. Verify valid range query still works as expected
+        let valid_res = engine.read_telemetry(10, 1, 1500, 2500).unwrap();
+        assert_eq!(valid_res.len(), 1);
+        assert_eq!(valid_res[0].timestamp, 2000);
 #[cfg(test)]
 mod tests {
     #[test]
