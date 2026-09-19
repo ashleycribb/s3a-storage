@@ -262,5 +262,10 @@ mod tests {
 
         assert!(!can_reject_tile_range(&hull, &[2.0, 2.0], &[8.0, 8.0]));
         assert!(can_reject_tile_range(&hull, &[12.0, 12.0], &[20.0, 20.0]));
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }

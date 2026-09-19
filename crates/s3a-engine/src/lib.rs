@@ -1080,5 +1080,10 @@ mod tests {
         assert_eq!(final_records.len(), 1);
         assert_eq!(final_records[0].timestamp, 1000);
         assert_eq!(final_records[0].value, 30.0);
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }

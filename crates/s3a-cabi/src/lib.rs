@@ -293,5 +293,10 @@ mod tests {
             let res_del = s3a_delete_telemetry(c_path.as_ptr(), 5, 2, 1000);
             assert_eq!(res_del, 0);
         }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }
