@@ -12,3 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 s3a-core = { path = "../s3a-core" }
 s3a-engine = { path = "../s3a-engine" }
+
+[dev-dependencies]
+tempfile = "3"
