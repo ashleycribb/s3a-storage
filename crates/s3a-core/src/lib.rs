@@ -645,5 +645,9 @@ mod tests {
 
         assert!(hull.contains_point(&[5.0, 5.0, 5.0]));
         assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }

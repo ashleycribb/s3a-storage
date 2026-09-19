@@ -1121,5 +1121,10 @@ mod tests {
         let valid_res = engine.read_telemetry(10, 1, 1500, 2500).unwrap();
         assert_eq!(valid_res.len(), 1);
         assert_eq!(valid_res[0].timestamp, 2000);
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
     }
 }
