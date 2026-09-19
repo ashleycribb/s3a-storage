@@ -1083,6 +1083,94 @@ mod tests {
     }
 
     #[test]
+    fn test_tile_writer_open_append() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+
+        // 1. Create file and write tile 1
+        {
+            let mut writer = TileWriter::create(path).unwrap();
+            let records = vec![
+                TelemetryRecord::new(1000, 1, 101, 10.0),
+                TelemetryRecord::new(2000, 1, 101, 12.0),
+            ];
+            let tile_id = writer
+                .write_hyper_tile(TileType::TELEMETRY, &records, Some(&[1000, 2000]), None)
+                .unwrap();
+            assert_eq!(tile_id, 1);
+            assert_eq!(writer.tile_count(), 1);
+        }
+
+        // 2. Open append and write tile 2
+        {
+            let mut writer = TileWriter::open_append(path).unwrap();
+            assert_eq!(writer.tile_count(), 1);
+
+            let records = vec![
+                TelemetryRecord::new(3000, 1, 101, 14.0),
+                TelemetryRecord::new(4000, 1, 101, 16.0),
+            ];
+            let tile_id = writer
+                .write_hyper_tile(TileType::TELEMETRY, &records, Some(&[3000, 4000]), None)
+                .unwrap();
+            assert_eq!(tile_id, 2);
+            assert_eq!(writer.tile_count(), 2);
+        }
+
+        // 3. Open append again and write tile 3
+        {
+            let mut writer = TileWriter::open_append(path).unwrap();
+            assert_eq!(writer.tile_count(), 2);
+
+            let records = vec![
+                TelemetryRecord::new(5000, 1, 101, 18.0),
+            ];
+            let tile_id = writer
+                .write_hyper_tile(TileType::TELEMETRY, &records, Some(&[5000]), None)
+                .unwrap();
+            assert_eq!(tile_id, 3);
+            assert_eq!(writer.tile_count(), 3);
+        }
+
+        // 4. Verify all written tiles and records via MmapReader
+        let reader = MmapReader::open(path).unwrap();
+        assert_eq!(reader.tile_count(), 3);
+        assert!(reader.verify_checksums().is_ok());
+
+        // Check tile 0 (ID 1)
+        let (header1, payload1) = reader.get_tile(0).unwrap();
+        assert_eq!(header1.tile_id, 1);
+        assert_eq!(header1.record_count, 2);
+        let recs1: &[TelemetryRecord] = bytemuck::cast_slice(payload1);
+        assert_eq!(recs1[0].value, 10.0);
+        assert_eq!(recs1[1].value, 12.0);
+
+        // Check tile 1 (ID 2)
+        let (header2, payload2) = reader.get_tile(1).unwrap();
+        assert_eq!(header2.tile_id, 2);
+        assert_eq!(header2.record_count, 2);
+        let recs2: &[TelemetryRecord] = bytemuck::cast_slice(payload2);
+        assert_eq!(recs2[0].value, 14.0);
+        assert_eq!(recs2[1].value, 16.0);
+
+        // Check tile 2 (ID 3)
+        let (header3, payload3) = reader.get_tile(2).unwrap();
+        assert_eq!(header3.tile_id, 3);
+        assert_eq!(header3.record_count, 1);
+        let recs3: &[TelemetryRecord] = bytemuck::cast_slice(payload3);
+        assert_eq!(recs3[0].value, 18.0);
+    }
+
+    #[test]
+    fn test_tile_writer_open_append_errors() {
+        // Non-existent file should fail
+        let non_existent_path = PathBuf::from("non_existent_s3a_file_12345.s3a");
+        assert!(TileWriter::open_append(&non_existent_path).is_err());
+
+        // Corrupted / invalid header file should fail
+        let temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), b"invalid header data").unwrap();
+        assert!(TileWriter::open_append(temp_file.path()).is_err());
     fn test_crud_engine_read_telemetry_empty_or_mismatched_range() {
         let temp_file = NamedTempFile::new().unwrap();
         let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
