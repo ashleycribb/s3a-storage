@@ -1,0 +1,16 @@
+[package]
+name = "s3a-cabi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+
+

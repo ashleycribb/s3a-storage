@@ -1,0 +1,19 @@
+[package]
+name = "s3a-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-simd = { path = "../s3a-simd" }
+bytemuck = { workspace = true }
+memmap2 = { workspace = true }
+crc32c = { workspace = true }
+
+[dev-dependencies]
+memmap2.workspace = true
+crc32c.workspace = true
+
