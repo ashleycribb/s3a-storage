@@ -1129,4 +1129,6 @@ fn parse_json_f64(json: &str, key: &str) -> Option<f64> {
     } else {
         None
     }
+fn main() {
+    println!("S3A CLI");
 }
