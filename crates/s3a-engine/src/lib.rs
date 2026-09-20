@@ -18,6 +18,7 @@ pub mod compactor_daemon;
 pub mod net;
 pub mod erasure;
 pub mod tiering;
+pub mod lakehouse;
 
 pub use ql::{execute_query, S3AQLEngine, S3AStatement, QueryResult, Lexer, Parser, Token};
 pub use bvh::{HullBvh, BvhNode};
@@ -26,6 +27,12 @@ pub use compactor_daemon::{BackgroundCompactor, CompactorStats};
 pub use net::{S3AClient, S3AProtocolServer, send_frame, read_frame};
 pub use erasure::{ReedSolomonCodec, TileShard, TileShardHeader, ErasureError, save_shards_to_dir, load_shards_from_dir};
 pub use tiering::{TileStorageAdapter, LocalStorageAdapter, RustFsAdapter, RustFsConfig, TieringError, archive_cold_tiles, ArchivalReport};
+pub use lakehouse::{
+    SnowflakeBatchRequest, handle_snowflake_batch_request,
+    ArrowSchema, ArrowField, ArrowColumnVector, ArrowRecordBatchDescriptor,
+    project_telemetry_to_arrow, project_gis_to_arrow,
+    generate_iceberg_metadata, generate_delta_metadata,
+};
 
 
 /// High-Frequency Low-Latency Ring-Buffered Writer for Autonomous Robots, Drones, and Humanoid Manipulators.

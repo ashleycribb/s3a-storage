@@ -7,6 +7,12 @@ use core::fmt;
 use core::str::FromStr;
 use bytemuck::{Pod, Zeroable};
 
+pub mod hilbert;
+pub mod dop;
+
+pub use hilbert::{point_to_hilbert_3d, hilbert_to_point_3d, compare_hilbert_vs_morton_locality, compare_hilbert_vs_morton_curve_continuity, morton_to_point_3d, s3a_morton_3d};
+pub use dop::{Dop14Hull, toroidal_distance_3d, toroidal_interval_contains};
+
 /// Magic bytes at the start of an S3A file (`S3A1`).
 pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
 

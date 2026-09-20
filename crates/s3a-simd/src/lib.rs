@@ -1,6 +1,14 @@
 #![no_std]
 
-use s3a_core::{HyperTileHeader, SimplexHull, MicroHull, MAX_HULL_DIMENSIONS, MICRO_HULL_DIMENSIONS};
+use s3a_core::{HyperTileHeader, SimplexHull, MicroHull, MAX_HULL_DIMENSIONS, MICRO_HULL_DIMENSIONS, Dop14Hull};
+
+/// High-Performance 14-DOP (Discrete Oriented Polytope) SIMD rejection filter.
+/// Evaluates 7 canonical axis projections (3 orthogonal + 4 diagonal).
+/// If any axis does not overlap the query box [query_min, query_max], the tile is rejected.
+#[inline(always)]
+pub fn can_reject_dop14(hull: &Dop14Hull, query_min: &[f32; 3], query_max: &[f32; 3]) -> bool {
+    hull.can_reject_box(query_min, query_max)
+}
 
 /// Fixed-point INT8 dot product optimized for ARM Cortex-M4/M33 SIMD DSP instructions (SMLAD/SMLALD).
 pub fn dot_product_int8(a: &[i8], b: &[i8]) -> i32 {
@@ -502,6 +510,22 @@ mod tests {
         // Tenant 9999 or low clearance should reject
         assert!(can_reject_tile_security(&header, 9999, 2));
         assert!(can_reject_tile_security(&header, 1234, 1));
+    }
+
+    #[test]
+    fn test_dop14_simd_rejection() {
+        let points = [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [2.0, 2.0, 2.0],
+        ];
+        let hull = Dop14Hull::from_points(&points);
+
+        // Disjoint query box [5,5,5]..[6,6,6] should reject
+        assert!(can_reject_dop14(&hull, &[5.0, 5.0, 5.0], &[6.0, 6.0, 6.0]));
+
+        // Overlapping query box [1,1,1]..[3,3,3] should pass
+        assert!(!can_reject_dop14(&hull, &[1.0, 1.0, 1.0], &[3.0, 3.0, 3.0]));
     }
 }
 

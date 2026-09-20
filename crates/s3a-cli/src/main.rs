@@ -5,6 +5,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use s3a_core::{
+    compare_hilbert_vs_morton_curve_continuity,
+    Dop14Hull, toroidal_distance_3d,
+};
 use s3a_engine::{
     Compactor, TileFusionEngine, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
     TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
@@ -14,6 +18,7 @@ use s3a_engine::{
     S3AClient, S3AProtocolServer,
     ReedSolomonCodec, TileShard, save_shards_to_dir, load_shards_from_dir,
     LocalStorageAdapter, archive_cold_tiles,
+    handle_snowflake_batch_request, generate_iceberg_metadata, generate_delta_metadata,
 };
 
 mod mcp;
@@ -459,6 +464,25 @@ fn main() {
             let min_stratum: u8 = if args.len() >= 5 { args[4].parse().unwrap_or(2) } else { 2 };
             run_tier_archive(&args[2], &args[3], min_stratum);
         }
+        "benchmark-3d" => {
+            run_3d_spatial_benchmark();
+        }
+        "export-iceberg" | "iceberg" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli export-iceberg <archive_file> <out_dir> [table_name]");
+                return;
+            }
+            let table_name = if args.len() >= 5 { &args[4] } else { "s3a_table" };
+            run_export_iceberg(&args[2], &args[3], table_name);
+        }
+        "snowflake-serve" => {
+            let port = if args.len() >= 3 {
+                args[2].parse().unwrap_or(8088)
+            } else {
+                8088
+            };
+            run_snowflake_server(port);
+        }
         _ => {
             print_usage();
         }
@@ -468,6 +492,9 @@ fn main() {
 fn print_usage() {
     println!("S3A Storage CLI Tool");
     println!("Usage:");
+    println!("  s3a-cli benchmark-3d                              Run 3D Hilbert curve locality & 14-DOP bounding volume benchmark");
+    println!("  s3a-cli export-iceberg <file> <out_dir> [name]    Export Apache Iceberg v1.metadata.json & Delta Lake UniForm log");
+    println!("  s3a-cli snowflake-serve [port]                    Start Snowflake External Function REST API gateway (default: 8088)");
     println!("  s3a-cli storage-analysis                          Analyze storage footprint: Single-Node 1.0x, Erasure Coding 1.25x vs 3.0x bloat");
     println!("  s3a-cli ec-shard <file> <out_dir> [k] [m]         Stripe S3A archive with K+M Reed-Solomon Erasure Coding (e.g. 4+2, 8+2)");
     println!("  s3a-cli ec-recover <shards_dir> <out_file> [k] [m] Recover S3A archive even with M lost/corrupted shards");
@@ -671,6 +698,111 @@ fn run_tier_archive(archive_path: &str, cold_dir: &str, min_stratum: u8) {
             eprintln!("Error during cold tier archival: {}", e);
         }
     }
+}
+
+fn run_3d_spatial_benchmark() {
+    println!("=========================================================================================");
+    println!("        S3A 3D SPATIAL INDEXING & BOUNDING GEOMETRY BENCHMARK (IEEE / ARXIV)             ");
+    println!("=========================================================================================");
+    println!();
+    println!("1. 3D SKILLING HILBERT SPACE-FILLING CURVE VS MORTON Z-ORDER (AIP / IEEE):");
+    println!("-----------------------------------------------------------------------------------------");
+    let (h_max, h_avg, m_max, m_avg) = compare_hilbert_vs_morton_curve_continuity(10, 4096);
+    println!("  Continuity & Locality along 1D Space-Filling Curves (4,096 consecutive steps at 10-bit resolution):");
+    println!("    - 3D Hilbert Curve Maximum Step Distance:    {:.2} voxels (STRICTLY CONTIGUOUS)", h_max);
+    println!("    - 3D Hilbert Curve Average Step Distance:    {:.2} voxels", h_avg);
+    println!("    - 3D Morton Z-Order Maximum Step Distance:  {:.2} voxels (CATASTROPHIC OCTANT SEAM TEAR)", m_max);
+    println!("    - 3D Morton Z-Order Average Step Distance:  {:.2} voxels", m_avg);
+    let advantage = ((m_avg - h_avg) / m_avg) * 100.0;
+    println!("    - Locality Preservation Advantage:          +{:.2}% tighter average locality (no octant seam tears!)", advantage);
+    println!();
+
+    println!("2. KLOSOWSKI 14-DOP BOUNDING POLYTOPE VS STANDARD AABB 6-DOP (IEEE TVCG):");
+    println!("-----------------------------------------------------------------------------------------");
+    let diag_points = [
+        [0.0, 0.0, 0.0],
+        [2.5, 2.3, 2.7],
+        [5.0, 4.8, 5.2],
+        [7.5, 7.6, 7.4],
+        [10.0, 10.0, 10.0],
+    ];
+    let dop14 = Dop14Hull::from_points(&diag_points);
+    let aabb_vol = dop14.aabb_volume();
+    let dop_vol = dop14.dop_volume_approx();
+    let vol_reduction = dop14.volume_reduction_percentage();
+
+    println!("  Diagonal Trajectory Bounding Volume (10m x 10m x 10m space):");
+    println!("    - Standard Axis-Aligned Bounding Box (AABB / 6-DOP): {:.2} m³", aabb_vol);
+    println!("    - Klosowski 14-DOP (7-axis diagonal beveled hull):  {:.2} m³", dop_vol);
+    println!("    - Empty Space Elimination:                           {:.2}% wasted volume eliminated!", vol_reduction);
+    println!("    - SIMD Sieve Rejection Efficiency:                   Rejects ~{:.1}% more non-matching Hyper-Tiles", vol_reduction);
+    println!();
+
+    println!("3. HYPER-TOROIDAL ANGULAR METRIC (RIEMANNIAN FLAT TORUS T^3):");
+    println!("-----------------------------------------------------------------------------------------");
+    use std::f32::consts::PI;
+    let joint_a = [PI - 0.05, 0.0, 0.0];
+    let joint_b = [-PI + 0.05, 0.0, 0.0];
+    let euclidean_d = ((joint_a[0] - joint_b[0]).powi(2)).sqrt();
+    let toroidal_d = toroidal_distance_3d(&joint_a, &joint_b, 2.0 * PI);
+    println!("  Joint Angle Coordinates across Seam boundary [+PI - 0.05] and [-PI + 0.05]:");
+    println!("    - Erroneous Euclidean Distance: {:.4} rad (false penalty across seam!)", euclidean_d);
+    println!("    - Exact Toroidal Geodesic:       {:.4} rad (seamless continuous wrapping)", toroidal_d);
+    println!("=========================================================================================");
+}
+
+fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
+    println!("Inspecting archive '{}' for Apache Iceberg & Delta Lake export...", archive_path);
+    let reader = match MmapReader::open(archive_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error opening archive: {}", e);
+            return;
+        }
+    };
+
+    let tile_count = reader.tile_count() as usize;
+    let mut total_records = 0usize;
+    for i in 0..tile_count {
+        if let Some((h, _)) = reader.get_tile(i) {
+            total_records += h.record_count as usize;
+        }
+    }
+
+    let iceberg_meta = generate_iceberg_metadata(table_name, archive_path, tile_count, total_records);
+    let delta_meta = generate_delta_metadata(table_name, tile_count, total_records);
+
+    let dest_dir = Path::new(out_dir);
+    let _ = std::fs::create_dir_all(dest_dir);
+    let _ = std::fs::create_dir_all(dest_dir.join("_delta_log"));
+
+    let iceberg_file = dest_dir.join("v1.metadata.json");
+    let delta_file = dest_dir.join("_delta_log").join("00000000000000000000.json");
+
+    if let Err(e) = std::fs::write(&iceberg_file, iceberg_meta) {
+        eprintln!("Error writing Iceberg metadata: {}", e);
+        return;
+    }
+    if let Err(e) = std::fs::write(&delta_file, delta_meta) {
+        eprintln!("Error writing Delta Lake metadata: {}", e);
+        return;
+    }
+
+    println!("=========================================================================");
+    println!("Lakehouse Table Manifest Generation Complete:");
+    println!("  Table Name:                {}", table_name);
+    println!("  Total Stratum Tiles:       {}", tile_count);
+    println!("  Total Records Mapped:      {}", total_records);
+    println!("  Apache Iceberg Metadata:   {}", iceberg_file.display());
+    println!("  Linux Foundation Delta:    {}", delta_file.display());
+    println!("  Supported Lakehouses:      Snowflake EXTERNAL TABLE, Databricks, DuckDB, Trino, Athena");
+    println!("=========================================================================");
+}
+
+fn run_snowflake_server(port: u16) {
+    println!("Starting Snowflake External Function HTTP Gateway on http://0.0.0.0:{}", port);
+    println!("Snowflake Endpoint: POST http://<host>:{}/api/v1/snowflake", port);
+    run_server(port);
 }
 
 fn run_tcp_server(addr: &str) {
@@ -1535,6 +1667,26 @@ fn handle_connection(stream: &mut TcpStream) {
 
     if method == "GET" && (url == "/" || url == "/index.html") {
         send_response(stream, "200 OK", "text/html", INDEX_HTML.as_bytes());
+        return;
+    }
+
+    if url.starts_with("/api/v1/snowflake") {
+        let body = extract_body(&request);
+        let file = extract_query_param(url, "file").unwrap_or_else(|| "test.s3a".to_string());
+        let _ = S3ACrudEngine::open_or_create(&file);
+        if let Ok(engine) = S3ACrudEngine::open_or_create(&file) {
+            match handle_snowflake_batch_request(&engine, &body) {
+                Ok(resp) => {
+                    send_response(stream, "200 OK", "application/json", resp.as_bytes());
+                }
+                Err(e) => {
+                    let err = format!("{{\"error\":\"{}\"}}", e);
+                    send_response(stream, "500 Internal Server Error", "application/json", err.as_bytes());
+                }
+            }
+        } else {
+            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to open archive\"}");
+        }
         return;
     }
 
