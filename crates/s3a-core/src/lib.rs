@@ -1131,6 +1131,96 @@ impl ResearchGraphEdgeRecord {
     }
 }
 
+/// SCHOLAR RESEARCH SNAPSHOT (SRS) MANIFEST HEADER (512 bytes, exact sector-aligned, Pod/Zeroable).
+/// Encapsulates portable research object identity, Project UUID, Snapshot UUID, parent lineage,
+/// and hardware CRC32C checksums as defined in SECS-SRS-1.0.0.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct SrsManifestHeader {
+    pub magic: [u8; 8],                // b"S3ASTOR1" (offset 0..8)
+    pub schema_version: u32,           // SRS specification version (e.g. 1) (offset 8..12)
+    pub archive_flags: u32,            // Bitmask: IS_IMMUTABLE, IS_SNAPSHOT, etc. (offset 12..16)
+    pub project_uuid: [u64; 2],        // 128-bit persistent project identifier (offset 16..32)
+    pub snapshot_uuid: [u64; 2],       // 128-bit unique checkpoint identifier (offset 32..48)
+    pub parent_snapshot_uuid: [u64; 2],// 128-bit parent checkpoint (0 if initial root) (offset 48..64)
+    pub origin_session_uuid: [u64; 2], // 128-bit active session identifier (offset 64..80)
+    pub created_at_sec: u64,           // Unix epoch seconds (offset 80..88)
+    pub tile_count: u32,               // Number of Hyper-Tiles in container (offset 88..92)
+    pub crc32c_checksum: u32,          // Hardware CRC32C of entire payload (offset 92..96)
+    pub total_records: u64,            // Total record count across all tiles (offset 96..104)
+    pub _reserved1: [u64; 32],         // Zero-padded: 256 bytes (offset 104..360)
+    pub _reserved2: [u64; 19],         // Zero-padded: 152 bytes (offset 360..512)
+}
+
+impl SrsManifestHeader {
+    pub const MAGIC: [u8; 8] = *b"S3ASTOR1";
+    pub const FLAG_IMMUTABLE: u32 = 1 << 0;
+    pub const FLAG_SNAPSHOT: u32 = 1 << 1;
+    pub const FLAG_WASM_EXPORTED: u32 = 1 << 2;
+
+    pub fn new(
+        project_uuid: [u64; 2],
+        snapshot_uuid: [u64; 2],
+        parent_snapshot_uuid: [u64; 2],
+        origin_session_uuid: [u64; 2],
+        created_at_sec: u64,
+        tile_count: u32,
+        total_records: u64,
+    ) -> Self {
+        Self {
+            magic: Self::MAGIC,
+            schema_version: 1,
+            archive_flags: Self::FLAG_IMMUTABLE | Self::FLAG_SNAPSHOT,
+            project_uuid,
+            snapshot_uuid,
+            parent_snapshot_uuid,
+            origin_session_uuid,
+            created_at_sec,
+            tile_count,
+            crc32c_checksum: 0,
+            total_records,
+            _reserved1: [0u64; 32],
+            _reserved2: [0u64; 19],
+        }
+    }
+}
+
+/// SCHOLAR RESEARCH WORKSPACE RECORD (64 bytes, 8-byte aligned, Pod/Zeroable).
+/// Encapsulates research question hash, collection masks, and topic centroid.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
+pub struct SrsWorkspaceRecord {
+    pub project_uuid: [u64; 2],        // 128-bit project UUID (offset 0..16)
+    pub question_hash: u64,            // Hash of current research question (offset 16..24)
+    pub collection_mask: u64,          // Active collection bitmask (offset 24..32)
+    pub topic_centroid_xyz: [f32; 3],  // Topic cluster centroid coordinates (offset 32..44)
+    pub status: u32,                   // Workspace status (open, investigating, synthesized) (offset 44..48)
+    pub pinned_works_count: u32,       // Number of pinned works (offset 48..52)
+    pub claims_count: u32,             // Number of extracted claims (offset 52..56)
+    pub flags: u64,                    // Flags (offset 56..64)
+}
+
+impl SrsWorkspaceRecord {
+    pub fn new(
+        project_uuid: [u64; 2],
+        question_hash: u64,
+        collection_mask: u64,
+        topic_centroid_xyz: [f32; 3],
+        status: u32,
+    ) -> Self {
+        Self {
+            project_uuid,
+            question_hash,
+            collection_mask,
+            topic_centroid_xyz,
+            status,
+            pinned_works_count: 0,
+            claims_count: 0,
+            flags: FLAG_ACTIVE,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1260,6 +1350,51 @@ mod tests {
 
         assert!(hull.contains_point(&[5.0, 5.0, 5.0]));
         assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
+    }
+
+    #[test]
+    fn test_srs_manifest_header_layout() {
+        assert_eq!(size_of::<SrsManifestHeader>(), 512);
+        let project_uuid = [0x123456789abcdef0, 0x0fedcba987654321];
+        let snapshot_uuid = [0x1111222233334444, 0x5555666677778888];
+        let parent_uuid = [0, 0];
+        let session_uuid = [0xaaaabbbbccccdddd, 0xeeeeffff00001111];
+
+        let manifest = SrsManifestHeader::new(
+            project_uuid,
+            snapshot_uuid,
+            parent_uuid,
+            session_uuid,
+            1600000000,
+            5,
+            1250,
+        );
+
+        assert_eq!(manifest.magic, SrsManifestHeader::MAGIC);
+        assert_eq!(manifest.project_uuid, project_uuid);
+        assert_eq!(manifest.snapshot_uuid, snapshot_uuid);
+        assert_eq!(manifest.tile_count, 5);
+        assert_eq!(manifest.total_records, 1250);
+        assert_eq!(manifest.archive_flags & SrsManifestHeader::FLAG_SNAPSHOT, SrsManifestHeader::FLAG_SNAPSHOT);
+    }
+
+    #[test]
+    fn test_srs_workspace_record_layout() {
+        assert_eq!(size_of::<SrsWorkspaceRecord>(), 64);
+        let project_uuid = [0x123456789abcdef0, 0x0fedcba987654321];
+        let ws = SrsWorkspaceRecord::new(
+            project_uuid,
+            999888,
+            0b1011,
+            [0.25, 0.5, 0.75],
+            1,
+        );
+
+        assert_eq!(ws.project_uuid, project_uuid);
+        assert_eq!(ws.question_hash, 999888);
+        assert_eq!(ws.collection_mask, 0b1011);
+        assert_eq!(ws.topic_centroid_xyz, [0.25, 0.5, 0.75]);
+        assert_eq!(ws.status, 1);
     }
 }
 
