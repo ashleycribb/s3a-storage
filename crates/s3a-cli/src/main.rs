@@ -13,6 +13,7 @@ use s3a_engine::{
     Compactor, TileFusionEngine, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
     TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
     GISSurveyPointRecord, DACommitmentRecord, LearningActivityRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
+    HumanLrsRecord, AiTraceRecord, AcademicPaperRecord, ResearchGraphEdgeRecord,
     execute_query, QueryResult, HullBvh,
     L0RingBuffer, BackpressurePolicy, BackgroundCompactor,
     S3AClient, S3AProtocolServer,
@@ -483,6 +484,20 @@ fn main() {
             };
             run_snowflake_server(port);
         }
+        "trace-session" | "trace" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli trace-session <archive_file> <session_uuid>");
+                return;
+            }
+            run_trace_session(&args[2], &args[3]);
+        }
+        "import-academic-bundle" | "import-academic" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli import-academic-bundle <json_dir> <out_dir>");
+                return;
+            }
+            run_import_academic_bundle(&args[2], &args[3]);
+        }
         _ => {
             print_usage();
         }
@@ -492,7 +507,8 @@ fn main() {
 fn print_usage() {
     println!("S3A Storage CLI Tool");
     println!("Usage:");
-    println!("  s3a-cli benchmark-3d                              Run 3D Hilbert curve locality & 14-DOP bounding volume benchmark");
+    println!("  s3a-cli trace-session <file> <uuid>               Cross-trace Human SQL LRS & AI Agent Traceable Log by matching UUID
+  s3a-cli benchmark-3d                              Run 3D Hilbert curve locality & 14-DOP bounding volume benchmark");
     println!("  s3a-cli export-iceberg <file> <out_dir> [name]    Export Apache Iceberg v1.metadata.json & Delta Lake UniForm log");
     println!("  s3a-cli snowflake-serve [port]                    Start Snowflake External Function REST API gateway (default: 8088)");
     println!("  s3a-cli storage-analysis                          Analyze storage footprint: Single-Node 1.0x, Erasure Coding 1.25x vs 3.0x bloat");
@@ -915,6 +931,10 @@ fn inspect_file(path: &str) {
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
                         TileType::LEARNING_RECORD_STORE => "LEARNING_RECORD_STORE (xAPI / RL Trajectory)",
+                        TileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
+                        TileType::AI_TRACE_LOG => "AI_TRACE_LOG (Reasoning / Hallucination / Tool)",
+                        TileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Literature 3D Slices)",
+                        TileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
                         _ => "UNKNOWN",
                     };
                     let bloom_occupied = header.filter.bits.iter().map(|b| b.count_ones()).sum::<u32>();
@@ -1949,4 +1969,289 @@ fn parse_json_f64(json: &str, key: &str) -> Option<f64> {
         None
     }
 }
+
+fn run_trace_session(archive_file: &str, uuid_str: &str) {
+    let session_uuid = match parse_uuid_to_u64_pair(uuid_str) {
+        Some(u) => u,
+        None => {
+            println!("Error: Invalid 128-bit UUID format: '{}'", uuid_str);
+            return;
+        }
+    };
+
+    println!("=========================================================================");
+    println!("     S3A COGNITIVE PROVENANCE & DUAL-TRACE SESSION RESOLVER              ");
+    println!("=========================================================================");
+    println!("Target Archive: {}", archive_file);
+    println!("Session UUID:   {}", uuid_str);
+    println!("UUID Integers:  High=0x{:016X}, Low=0x{:016X}", session_uuid[0], session_uuid[1]);
+    println!("-------------------------------------------------------------------------");
+
+    let engine = match S3ACrudEngine::open_or_create(archive_file) {
+        Ok(e) => e,
+        Err(e) => {
+            println!("Failed to open archive: {}", e);
+            return;
+        }
+    };
+
+    let start = Instant::now();
+    let (humans, ais) = match engine.query_session_bundle(session_uuid) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("Query failed: {}", e);
+            return;
+        }
+    };
+    let elapsed = start.elapsed();
+
+    println!("Matched Human LRS Activity Records: {}", humans.len());
+    for (i, (h, coord)) in humans.iter().enumerate() {
+        println!("  [{}] Coord: {} | Actor: 0x{:X} | Verb: {} | Score: {:.2} | Linked AI Trace: {}",
+            i, coord, h.actor_hash, h.verb_id, h.decision_score, h.ai_trace_coord
+        );
+        // Test O(1) dereference to linked AI trace
+        if let Ok(ai_trace) = engine.trace_ai_from_human(coord) {
+            println!("      -> Dereferenced AI Event [O(1)]: Agent: 0x{:X}, Step: {}, Conf: {:.2}",
+                ai_trace.agent_id, ai_trace.step_type, ai_trace.confidence
+            );
+        }
+    }
+
+    println!();
+    println!("Matched AI Agent Traceable Log Metadata: {}", ais.len());
+    for (i, (a, coord)) in ais.iter().enumerate() {
+        println!("  [{}] Coord: {} | Agent: 0x{:X} | Step: {} | Conf: {:.2} | Linked Human Decision: {}",
+            i, coord, a.agent_id, a.step_type, a.confidence, a.human_coord
+        );
+        // Test O(1) dereference to linked human record
+        if let Ok(human_rec) = engine.trace_human_from_ai(coord) {
+            println!("      -> Dereferenced Human Review [O(1)]: Actor: 0x{:X}, Verb: {}, Score: {:.2}",
+                human_rec.actor_hash, human_rec.verb_id, human_rec.decision_score
+            );
+        }
+    }
+
+    println!("-------------------------------------------------------------------------");
+    println!("Query & Dereference Time: {:.3} ms (Zero SQL JOINs required!)", elapsed.as_secs_f64() * 1000.0);
+    println!("=========================================================================");
+}
+
+fn parse_uuid_to_u64_pair(s: &str) -> Option<[u64; 2]> {
+    let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if clean.len() != 32 {
+        return None;
+    }
+    let high = u64::from_str_radix(&clean[0..16], 16).ok()?;
+    let low = u64::from_str_radix(&clean[16..32], 16).ok()?;
+    Some([high, low])
+}
+
+fn run_import_academic_bundle(json_dir: &str, out_dir: &str) {
+    let out_path = Path::new(out_dir);
+    let _ = std::fs::create_dir_all(out_path);
+
+    println!("=========================================================================");
+    println!("     S3A ACADEMIC & COGNITIVE PROVENANCE INGESTION PIPELINE              ");
+    println!("=========================================================================");
+    println!("Source JSON Directory: {}", json_dir);
+    println!("Destination Directory: {}", out_dir);
+    println!("-------------------------------------------------------------------------");
+
+    use std::io::BufRead;
+
+    // 1. Ingest Human LRS Records
+    let human_file = Path::new(json_dir).join("human_lrs.jsonl");
+    let human_archive = out_path.join("openharness_human_lrs.s3a");
+    let mut human_count = 0usize;
+    if human_file.exists() {
+        if let Ok(file) = std::fs::File::open(&human_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            let engine = S3ACrudEngine::open_or_create(&human_archive).unwrap();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
+                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let actor = parse_json_u64(&line, "actor_hash").unwrap_or(0);
+                let verb = parse_json_u64(&line, "verb_id").unwrap_or(0) as u32;
+                let score = parse_json_f64(&line, "decision_score").unwrap_or(1.0) as f32;
+                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0) as u32;
+                let ai_t = parse_json_u64(&line, "ai_tile").unwrap_or(0) as u32;
+                let ai_r = parse_json_u64(&line, "ai_record").unwrap_or(0) as u32;
+                let ai_coord = S3ACoordinate::new(0, ai_t, ai_r);
+
+                batch.push(HumanLrsRecord::new([high, low], ts, actor, verb, score, ai_coord, obj));
+                human_count += 1;
+                if batch.len() >= 2040 {
+                    let _ = engine.create_human_lrs(&batch);
+                    batch.clear();
+                }
+            }
+            if !batch.is_empty() {
+                let _ = engine.create_human_lrs(&batch);
+            }
+        }
+        println!("  ✓ Ingested {} Human LRS Records -> {}", human_count, human_archive.display());
+    }
+
+    // 2. Ingest AI Trace Log Records
+    let ai_file = Path::new(json_dir).join("ai_traces.jsonl");
+    let ai_archive = out_path.join("openharness_ai_traces.s3a");
+    let mut ai_count = 0usize;
+    if ai_file.exists() {
+        if let Ok(file) = std::fs::File::open(&ai_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            let engine = S3ACrudEngine::open_or_create(&ai_archive).unwrap();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
+                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let agent = parse_json_u64(&line, "agent_id").unwrap_or(0);
+                let step = parse_json_u64(&line, "step_type").unwrap_or(0) as u32;
+                let conf = parse_json_f64(&line, "confidence").unwrap_or(1.0) as f32;
+                let h_t = parse_json_u64(&line, "human_tile").unwrap_or(0) as u32;
+                let h_r = parse_json_u64(&line, "human_record").unwrap_or(0) as u32;
+                let h_coord = S3ACoordinate::new(0, h_t, h_r);
+                let hilbert = parse_json_u64(&line, "hilbert_index").unwrap_or(0) as u32;
+
+                batch.push(AiTraceRecord::new([high, low], ts, agent, step, conf, h_coord, hilbert));
+                ai_count += 1;
+                if batch.len() >= 2040 {
+                    let _ = engine.create_ai_traces(&batch);
+                    batch.clear();
+                }
+            }
+            if !batch.is_empty() {
+                let _ = engine.create_ai_traces(&batch);
+            }
+        }
+        println!("  ✓ Ingested {} AI Agent Trace Records -> {}", ai_count, ai_archive.display());
+    }
+
+    // 3. Ingest Academic Research Papers
+    let papers_file = Path::new(json_dir).join("academic_papers.jsonl");
+    let papers_archive = out_path.join("openharness_papers.s3a");
+    let mut paper_count = 0usize;
+    if papers_file.exists() {
+        if let Ok(file) = std::fs::File::open(&papers_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            let engine = S3ACrudEngine::open_or_create(&papers_archive).unwrap();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let pid = parse_json_u64(&line, "paper_id").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let h_idx = parse_json_u64(&line, "hilbert_index").unwrap_or(0);
+                let tx = parse_json_f64(&line, "topic_x").unwrap_or(0.0) as f32;
+                let ty = parse_json_f64(&line, "topic_y").unwrap_or(0.0) as f32;
+                let tz = parse_json_f64(&line, "topic_z").unwrap_or(0.0) as f32;
+                let cit = parse_json_u64(&line, "citation_count").unwrap_or(0) as u32;
+                let year = parse_json_u64(&line, "year").unwrap_or(2026) as u16;
+                let venue = parse_json_u64(&line, "venue_id").unwrap_or(0) as u16;
+                let oa = parse_json_u64(&line, "open_access_flag").unwrap_or(0) as u16;
+                let warn = parse_json_u64(&line, "warning_count").unwrap_or(0) as u16;
+                let doi_pfx = parse_json_u64(&line, "doi_prefix_hash").unwrap_or(0);
+
+                batch.push(AcademicPaperRecord::new(pid, ts, h_idx, tx, ty, tz, cit, year, venue, oa, warn, doi_pfx));
+                paper_count += 1;
+                if batch.len() >= 2040 {
+                    let _ = engine.create_academic_papers(&batch);
+                    batch.clear();
+                }
+            }
+            if !batch.is_empty() {
+                let _ = engine.create_academic_papers(&batch);
+            }
+        }
+        println!("  ✓ Ingested {} Academic Research Papers -> {}", paper_count, papers_archive.display());
+    }
+
+    // 4. Ingest Research Graph Edges
+    let edges_file = Path::new(json_dir).join("graph_edges.jsonl");
+    let edges_archive = out_path.join("openharness_graph.s3a");
+    let mut edge_count = 0usize;
+    if edges_file.exists() {
+        if let Ok(file) = std::fs::File::open(&edges_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            let engine = S3ACrudEngine::open_or_create(&edges_archive).unwrap();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let sub = parse_json_u64(&line, "subject_hash").unwrap_or(0);
+                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let h_coord = parse_json_u64(&line, "hilbert_coord").unwrap_or(0);
+                let pred = parse_json_u64(&line, "predicate_id").unwrap_or(0) as u32;
+                let weight = parse_json_f64(&line, "weight").unwrap_or(1.0) as f32;
+
+                batch.push(ResearchGraphEdgeRecord::new(sub, obj, ts, h_coord, pred, weight));
+                edge_count += 1;
+                if batch.len() >= 2040 {
+                    let _ = engine.create_research_graph_edges(&batch);
+                    batch.clear();
+                }
+            }
+            if !batch.is_empty() {
+                let _ = engine.create_research_graph_edges(&batch);
+            }
+        }
+        println!("  ✓ Ingested {} Knowledge Graph Edges -> {}", edge_count, edges_archive.display());
+    }
+
+    // 5. Create Unified Archive with Both Human and AI Stratum
+    let unified_archive = out_path.join("openharness_unified.s3a");
+    if human_file.exists() && ai_file.exists() {
+        let engine = S3ACrudEngine::open_or_create(&unified_archive).unwrap();
+        if let Ok(file) = std::fs::File::open(&human_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
+                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let actor = parse_json_u64(&line, "actor_hash").unwrap_or(0);
+                let verb = parse_json_u64(&line, "verb_id").unwrap_or(0) as u32;
+                let score = parse_json_f64(&line, "decision_score").unwrap_or(1.0) as f32;
+                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0) as u32;
+                let ai_t = parse_json_u64(&line, "ai_tile").unwrap_or(1) as u32;
+                let ai_r = parse_json_u64(&line, "ai_record").unwrap_or(0) as u32;
+                let ai_coord = S3ACoordinate::new(0, ai_t, ai_r);
+                batch.push(HumanLrsRecord::new([high, low], ts, actor, verb, score, ai_coord, obj));
+            }
+            let _ = engine.create_human_lrs(&batch);
+        }
+        if let Ok(file) = std::fs::File::open(&ai_file) {
+            let reader = std::io::BufReader::new(file);
+            let mut batch = Vec::new();
+            for line in reader.lines().flatten() {
+                if line.trim().is_empty() { continue; }
+                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
+                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
+                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
+                let agent = parse_json_u64(&line, "agent_id").unwrap_or(0);
+                let step = parse_json_u64(&line, "step_type").unwrap_or(0) as u32;
+                let conf = parse_json_f64(&line, "confidence").unwrap_or(1.0) as f32;
+                let h_t = parse_json_u64(&line, "human_tile").unwrap_or(0) as u32;
+                let h_r = parse_json_u64(&line, "human_record").unwrap_or(0) as u32;
+                let h_coord = S3ACoordinate::new(0, h_t, h_r);
+                let hilbert = parse_json_u64(&line, "hilbert_index").unwrap_or(0) as u32;
+                batch.push(AiTraceRecord::new([high, low], ts, agent, step, conf, h_coord, hilbert));
+            }
+            let _ = engine.create_ai_traces(&batch);
+        }
+        println!("  ✓ Created Unified Dual-Trace Archive -> {}", unified_archive.display());
+    }
+
+    println!("-------------------------------------------------------------------------");
+    println!("Total Ingested: {} Human LRS, {} AI Traces, {} Papers, {} Graph Edges",
+        human_count, ai_count, paper_count, edge_count
+    );
+    println!("=========================================================================");
+}
+
 

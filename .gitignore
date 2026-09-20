@@ -3,4 +3,6 @@ Cargo.lock
 **/*.rs.bk
 *.swp
 *.s3a
+openharness_s3a_db/
+scratch/
 .DS_Store

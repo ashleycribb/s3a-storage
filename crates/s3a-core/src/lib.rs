@@ -97,7 +97,7 @@ impl fmt::Display for S3AError {
 
 /// Precise S3A Hyper-Tile Coordinate Address (`L<level>:T<tile_id>:R<record_offset>`), analogous to Excel's `A1`/`B2` cell references.
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct S3ACoordinate {
     pub level: u16,        // Stratum level (0 = Wearable Micro-Tile / GIS Mesh Tile, 1 = Hot L1 cache tile, 2 = Stratified)
     pub _reserved: u16,
@@ -297,6 +297,10 @@ impl TileType {
     pub const QUANTIZED_EMBEDDING_INT8: u32 = 7;
     pub const QUANTIZED_EMBEDDING_4BIT: u32 = 8;
     pub const LEARNING_RECORD_STORE: u32 = 9;
+    pub const HUMAN_LRS: u32 = 10;
+    pub const AI_TRACE_LOG: u32 = 11;
+    pub const ACADEMIC_PAPERS: u32 = 12;
+    pub const RESEARCH_GRAPH: u32 = 13;
 }
 
 /// Category 1: 960-bit SIMD Blocked-Bloom Filter Metadata (128 bytes, 8-byte aligned).
@@ -951,6 +955,182 @@ impl LearningActivityRecord {
     }
 }
 
+/// HUMAN ACTIVITY SQL LRS RECORD (64 bytes, 8-byte aligned).
+/// Captures human researcher reviews, approvals, rework decisions, and xAPI activity statements.
+/// Contains a shared 128-bit `session_uuid` and direct O(1) coordinate pointer to the corresponding AI trace.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
+pub struct HumanLrsRecord {
+    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
+    pub timestamp_sec: u64,            // Recorded timestamp (offset 16..24)
+    pub actor_hash: u64,               // Hash of researcher / human actor (offset 24..32)
+    pub verb_id: u32,                  // xAPI verb ID (e.g. accepted, reworked, decided) (offset 32..36)
+    pub decision_score: f32,           // Feedback / rework score (offset 36..40)
+    pub ai_trace_coord: S3ACoordinate, // Direct O(1) pointer to AI agent trace step (offset 40..56)
+    pub object_hash: u32,              // Hash of target artifact / paper / claim (offset 56..60)
+    pub flags: u32,                    // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 60..64)
+}
+
+impl HumanLrsRecord {
+    pub fn new(
+        session_uuid: [u64; 2],
+        timestamp_sec: u64,
+        actor_hash: u64,
+        verb_id: u32,
+        decision_score: f32,
+        ai_trace_coord: S3ACoordinate,
+        object_hash: u32,
+    ) -> Self {
+        Self {
+            session_uuid,
+            timestamp_sec,
+            actor_hash,
+            verb_id,
+            decision_score,
+            ai_trace_coord,
+            object_hash,
+            flags: FLAG_ACTIVE as u32,
+        }
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        (self.flags & (FLAG_TOMBSTONE as u32)) != 0
+    }
+}
+
+/// AI AGENT TRACEABLE LOG METADATA RECORD (64 bytes, 8-byte aligned).
+/// Captures agent reasoning steps, tool calls, hallucination events, and claim verifications.
+/// Matches the human SQL LRS via shared 128-bit `session_uuid` and direct O(1) coordinate pointer.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
+pub struct AiTraceRecord {
+    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
+    pub timestamp_sec: u64,            // Execution timestamp (offset 16..24)
+    pub agent_id: u64,                 // AI Agent hash (offset 24..32)
+    pub step_type: u32,                // Step category (reasoning, tool_call, claim, hallucination) (offset 32..36)
+    pub confidence: f32,               // Model confidence / reward score (offset 36..40)
+    pub human_coord: S3ACoordinate,    // Direct O(1) pointer to corresponding human decision (offset 40..56)
+    pub hilbert_index: u32,            // 3D spatial cluster coordinate (offset 56..60)
+    pub flags: u32,                    // Active, tombstone, warning flags (offset 60..64)
+}
+
+impl AiTraceRecord {
+    pub fn new(
+        session_uuid: [u64; 2],
+        timestamp_sec: u64,
+        agent_id: u64,
+        step_type: u32,
+        confidence: f32,
+        human_coord: S3ACoordinate,
+        hilbert_index: u32,
+    ) -> Self {
+        Self {
+            session_uuid,
+            timestamp_sec,
+            agent_id,
+            step_type,
+            confidence,
+            human_coord,
+            hilbert_index,
+            flags: FLAG_ACTIVE as u32,
+        }
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        (self.flags & (FLAG_TOMBSTONE as u32)) != 0
+    }
+}
+
+/// ACADEMIC PAPER & RESEARCH METADATA RECORD (64 bytes, 8-byte aligned).
+/// Captures literature metadata with 3D Skilling Hilbert curve spatial coordinates.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
+pub struct AcademicPaperRecord {
+    pub paper_id: u64,                 // 64-bit hash of DOI / URI (offset 0..8)
+    pub timestamp_sec: u64,            // Publication timestamp (offset 8..16)
+    pub hilbert_index: u64,            // 3D Skilling Hilbert curve index (offset 16..24)
+    pub topic_x: f32,                  // 3D coordinate X (topic/cluster) (offset 24..28)
+    pub topic_y: f32,                  // 3D coordinate Y (methodology/field) (offset 28..32)
+    pub topic_z: f32,                  // 3D coordinate Z (year/recency) (offset 32..36)
+    pub citation_count: u32,           // Citation count (offset 36..40)
+    pub year: u16,                     // Publication year (offset 40..42)
+    pub venue_id: u16,                 // Venue / service ID (offset 42..44)
+    pub open_access_flag: u16,         // 1 = OA PDF, 0 = Paywalled (offset 44..46)
+    pub warning_count: u16,            // Provenance warning count (offset 46..48)
+    pub doi_prefix_hash: u64,          // Hash of publisher DOI prefix (offset 48..56)
+    pub flags: u64,                    // Active, tombstone, reviewed (offset 56..64)
+}
+
+impl AcademicPaperRecord {
+    pub fn new(
+        paper_id: u64,
+        timestamp_sec: u64,
+        hilbert_index: u64,
+        topic_x: f32,
+        topic_y: f32,
+        topic_z: f32,
+        citation_count: u32,
+        year: u16,
+        venue_id: u16,
+        open_access_flag: u16,
+        warning_count: u16,
+        doi_prefix_hash: u64,
+    ) -> Self {
+        Self {
+            paper_id,
+            timestamp_sec,
+            hilbert_index,
+            topic_x,
+            topic_y,
+            topic_z,
+            citation_count,
+            year,
+            venue_id,
+            open_access_flag,
+            warning_count,
+            doi_prefix_hash,
+            flags: FLAG_ACTIVE,
+        }
+    }
+}
+
+/// RESEARCH KNOWLEDGE GRAPH EDGE RECORD (64 bytes, 8-byte aligned).
+/// Captures subject-predicate-object knowledge graph relations.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
+pub struct ResearchGraphEdgeRecord {
+    pub subject_hash: u64,             // Node A identifier hash (offset 0..8)
+    pub object_hash: u64,              // Node B identifier hash (offset 8..16)
+    pub timestamp_sec: u64,            // Extraction timestamp (offset 16..24)
+    pub hilbert_coord: u64,            // Spatial cluster coordinate (offset 24..32)
+    pub predicate_id: u32,             // Predicate type (contains, authored_by, cites) (offset 32..36)
+    pub weight: f32,                   // Edge weight / confidence (offset 36..40)
+    pub flags: u64,                    // Active, tombstone (offset 40..48)
+    pub _reserved: [u64; 2],           // Padding to 64 bytes (offset 48..64)
+}
+
+impl ResearchGraphEdgeRecord {
+    pub fn new(
+        subject_hash: u64,
+        object_hash: u64,
+        timestamp_sec: u64,
+        hilbert_coord: u64,
+        predicate_id: u32,
+        weight: f32,
+    ) -> Self {
+        Self {
+            subject_hash,
+            object_hash,
+            timestamp_sec,
+            hilbert_coord,
+            predicate_id,
+            weight,
+            flags: FLAG_ACTIVE,
+            _reserved: [0u64; 2],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,6 +1217,24 @@ mod tests {
         assert_eq!(size_of::<TileEncodingMetadata>(), 16);
         assert_eq!(size_of::<TileLearnedIndex>(), 8);
         assert_eq!(size_of::<LearningActivityRecord>(), 64);
+        assert_eq!(size_of::<HumanLrsRecord>(), 64);
+        assert_eq!(size_of::<AiTraceRecord>(), 64);
+        assert_eq!(size_of::<AcademicPaperRecord>(), 64);
+        assert_eq!(size_of::<ResearchGraphEdgeRecord>(), 64);
+    }
+
+    #[test]
+    fn test_cross_trace_human_and_ai_with_shared_uuid() {
+        let session_uuid = [0x1234_5678_9ABC_DEF0, 0x0FED_CBA9_8765_4321];
+        let ai_coord = S3ACoordinate::new(0, 1, 5);
+        let human_coord = S3ACoordinate::new(0, 2, 8);
+
+        let human = HumanLrsRecord::new(session_uuid, 1600000000, 42, 1, 1.0, ai_coord, 100);
+        let ai = AiTraceRecord::new(session_uuid, 1600000005, 99, 2, 0.95, human_coord, 500);
+
+        assert_eq!(human.session_uuid, ai.session_uuid);
+        assert_eq!(human.ai_trace_coord, ai_coord);
+        assert_eq!(ai.human_coord, human_coord);
     }
 
     #[test]

@@ -378,6 +378,36 @@ impl TileWriter {
                     header.lifecycle.tombstone_count += 1;
                 }
             }
+        } else if tile_type == TileType::HUMAN_LRS {
+            let h_recs: &[HumanLrsRecord] = bytemuck::cast_slice(records);
+            for r in h_recs {
+                bloom_filter_insert(&mut header.filter.bits, r.session_uuid[0] ^ r.session_uuid[1], header.filter.hash_seed);
+                bloom_filter_insert(&mut header.filter.bits, r.actor_hash, header.filter.hash_seed);
+                if r.is_tombstone() {
+                    header.lifecycle.tombstone_count += 1;
+                }
+            }
+        } else if tile_type == TileType::AI_TRACE_LOG {
+            let ai_recs: &[AiTraceRecord] = bytemuck::cast_slice(records);
+            for r in ai_recs {
+                bloom_filter_insert(&mut header.filter.bits, r.session_uuid[0] ^ r.session_uuid[1], header.filter.hash_seed);
+                bloom_filter_insert(&mut header.filter.bits, r.agent_id, header.filter.hash_seed);
+                if r.is_tombstone() {
+                    header.lifecycle.tombstone_count += 1;
+                }
+            }
+        } else if tile_type == TileType::ACADEMIC_PAPERS {
+            let p_recs: &[AcademicPaperRecord] = bytemuck::cast_slice(records);
+            for r in p_recs {
+                bloom_filter_insert(&mut header.filter.bits, r.paper_id, header.filter.hash_seed);
+                bloom_filter_insert(&mut header.filter.bits, r.doi_prefix_hash, header.filter.hash_seed);
+            }
+        } else if tile_type == TileType::RESEARCH_GRAPH {
+            let g_recs: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(records);
+            for r in g_recs {
+                bloom_filter_insert(&mut header.filter.bits, r.subject_hash, header.filter.hash_seed);
+                bloom_filter_insert(&mut header.filter.bits, r.object_hash, header.filter.hash_seed);
+            }
         }
 
         // Compute header CRC32C (excluding header_crc32 field itself)
@@ -1013,6 +1043,198 @@ impl<'a> QuerySieve<'a> {
 
         results
     }
+
+    /// Queries Human LRS activity records, filtering by 128-bit session UUID, actor hash, and time window.
+    pub fn query_human_lrs(
+        &self,
+        session_uuid: Option<[u64; 2]>,
+        actor_hash: Option<u64>,
+        min_ts: u64,
+        max_ts: u64,
+    ) -> Vec<(HumanLrsRecord, S3ACoordinate)> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::HUMAN_LRS {
+                continue;
+            }
+
+            if can_reject_tile_time(header, min_ts, max_ts) {
+                continue;
+            }
+
+            if let Some(session) = session_uuid {
+                if can_reject_tile_bloom(header, session[0] ^ session[1]) {
+                    continue;
+                }
+            }
+
+            let records: &[HumanLrsRecord] = bytemuck::cast_slice(payload);
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
+                    if let Some(s) = session_uuid {
+                        if rec.session_uuid != s {
+                            continue;
+                        }
+                    }
+                    if let Some(a) = actor_hash {
+                        if rec.actor_hash != a {
+                            continue;
+                        }
+                    }
+                    if !rec.is_tombstone() {
+                        let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                        results.push((*rec, coord));
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Queries AI Agent Traceable Log metadata, filtering by 128-bit session UUID, agent ID, and time window.
+    pub fn query_ai_traces(
+        &self,
+        session_uuid: Option<[u64; 2]>,
+        agent_id: Option<u64>,
+        min_ts: u64,
+        max_ts: u64,
+    ) -> Vec<(AiTraceRecord, S3ACoordinate)> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::AI_TRACE_LOG {
+                continue;
+            }
+
+            if can_reject_tile_time(header, min_ts, max_ts) {
+                continue;
+            }
+
+            if let Some(session) = session_uuid {
+                if can_reject_tile_bloom(header, session[0] ^ session[1]) {
+                    continue;
+                }
+            }
+
+            let records: &[AiTraceRecord] = bytemuck::cast_slice(payload);
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
+                    if let Some(s) = session_uuid {
+                        if rec.session_uuid != s {
+                            continue;
+                        }
+                    }
+                    if let Some(a) = agent_id {
+                        if rec.agent_id != a {
+                            continue;
+                        }
+                    }
+                    if !rec.is_tombstone() {
+                        let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                        results.push((*rec, coord));
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Queries Academic Paper records filtering by 3D continuous spatial bounding box (topic, methodology, recency).
+    pub fn query_academic_papers_3d(
+        &self,
+        min_topic: [f32; 3],
+        max_topic: [f32; 3],
+        min_year: u16,
+        max_year: u16,
+    ) -> Vec<(AcademicPaperRecord, S3ACoordinate)> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::ACADEMIC_PAPERS {
+                continue;
+            }
+
+            let records: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if rec.year >= min_year && rec.year <= max_year
+                    && rec.topic_x >= min_topic[0] && rec.topic_x <= max_topic[0]
+                    && rec.topic_y >= min_topic[1] && rec.topic_y <= max_topic[1]
+                    && rec.topic_z >= min_topic[2] && rec.topic_z <= max_topic[2]
+                {
+                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                    results.push((*rec, coord));
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Queries Research Knowledge Graph Edges by subject or predicate.
+    pub fn query_research_graph(
+        &self,
+        subject_hash: Option<u64>,
+        predicate_id: Option<u32>,
+    ) -> Vec<(ResearchGraphEdgeRecord, S3ACoordinate)> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::RESEARCH_GRAPH {
+                continue;
+            }
+
+            if let Some(sub) = subject_hash {
+                if can_reject_tile_bloom(header, sub) {
+                    continue;
+                }
+            }
+
+            let records: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(payload);
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if let Some(s) = subject_hash {
+                    if rec.subject_hash != s {
+                        continue;
+                    }
+                }
+                if let Some(p) = predicate_id {
+                    if rec.predicate_id != p {
+                        continue;
+                    }
+                }
+                let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                results.push((*rec, coord));
+            }
+        }
+
+        results
+    }
 }
 
 
@@ -1141,6 +1363,94 @@ impl S3ACrudEngine {
         std::fs::rename(&temp_path, &self.file_path)?;
         let reader = MmapReader::open(&self.file_path)?;
         Ok(reader.tile_count())
+    }
+
+    /// CREATE: Insert Human Activity SQL LRS records with Bloom filter on session UUID and actor.
+    pub fn create_human_lrs(&self, records: &[HumanLrsRecord]) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
+
+        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<HumanLrsRecord>();
+        if records.len() > capacity {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+        }
+
+        writer.write_hyper_tile(TileType::HUMAN_LRS, records, Some(&timestamps), None)
+    }
+
+    /// CREATE: Insert AI Agent Traceable Log metadata with Bloom filter on session UUID and agent ID.
+    pub fn create_ai_traces(&self, records: &[AiTraceRecord]) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
+
+        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AiTraceRecord>();
+        if records.len() > capacity {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+        }
+
+        writer.write_hyper_tile(TileType::AI_TRACE_LOG, records, Some(&timestamps), None)
+    }
+
+    /// CREATE: Insert Academic Paper literature records.
+    pub fn create_academic_papers(&self, records: &[AcademicPaperRecord]) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
+
+        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AcademicPaperRecord>();
+        if records.len() > capacity {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+        }
+
+        writer.write_hyper_tile(TileType::ACADEMIC_PAPERS, records, Some(&timestamps), None)
+    }
+
+    /// CREATE: Insert Knowledge Graph Edges.
+    pub fn create_research_graph_edges(&self, edges: &[ResearchGraphEdgeRecord]) -> io::Result<u64> {
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = edges.iter().map(|r| r.timestamp_sec).collect();
+
+        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ResearchGraphEdgeRecord>();
+        if edges.len() > capacity {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+        }
+
+        writer.write_hyper_tile(TileType::RESEARCH_GRAPH, edges, Some(&timestamps), None)
+    }
+
+    /// BIDIRECTIONAL CROSS-TRACE: Follow human decision to triggering AI agent event via direct O(1) S3ACoordinate pointer.
+    pub fn trace_ai_from_human(&self, human_coord: &S3ACoordinate) -> Result<AiTraceRecord, S3AError> {
+        let human: HumanLrsRecord = self.read_by_coordinate(human_coord)?;
+        self.read_by_coordinate(&human.ai_trace_coord)
+    }
+
+    /// BIDIRECTIONAL CROSS-TRACE: Follow AI agent event to human feedback/rework decision via direct O(1) S3ACoordinate pointer.
+    pub fn trace_human_from_ai(&self, ai_coord: &S3ACoordinate) -> Result<HumanLrsRecord, S3AError> {
+        let ai: AiTraceRecord = self.read_by_coordinate(ai_coord)?;
+        self.read_by_coordinate(&ai.human_coord)
+    }
+
+    /// SESSION CORRELATION: Retrieves all correlated Human LRS and AI Trace records sharing a matching 128-bit session_uuid.
+    pub fn query_session_bundle(
+        &self,
+        session_uuid: [u64; 2],
+    ) -> io::Result<(Vec<(HumanLrsRecord, S3ACoordinate)>, Vec<(AiTraceRecord, S3ACoordinate)>)> {
+        let reader = MmapReader::open(&self.file_path)?;
+        let sieve = QuerySieve::new(&reader);
+        let human_records = sieve.query_human_lrs(Some(session_uuid), None, 0, u64::MAX);
+        let ai_records = sieve.query_ai_traces(Some(session_uuid), None, 0, u64::MAX);
+        Ok((human_records, ai_records))
     }
 }
 
@@ -2125,6 +2435,58 @@ mod tests {
             }
             other => panic!("Expected LearningActivityList, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_dual_trace_human_and_ai_cross_reference() {
+        let temp_file = TestTempFile::new();
+        let path = temp_file.path();
+        let engine = S3ACrudEngine::open_or_create(path).unwrap();
+
+        let session_uuid = [0xAAAA_BBBB_CCCC_DDDD, 0x1111_2222_3333_4444];
+        let human_coord = S3ACoordinate::new(0, 0, 0);
+        let ai_coord = S3ACoordinate::new(0, 1, 0);
+
+        let human_rec = HumanLrsRecord::new(
+            session_uuid,
+            1600000000,
+            999, // researcher hash
+            1,   // 'accepted'
+            1.0,
+            ai_coord, // pointer to AI trace at tile 1, offset 0
+            42,
+        );
+
+        let ai_rec = AiTraceRecord::new(
+            session_uuid,
+            1600000001,
+            888, // agent id
+            2,   // reasoning step
+            0.98,
+            human_coord, // pointer to human feedback at tile 0, offset 0
+            1234,
+        );
+
+        engine.create_human_lrs(&[human_rec]).unwrap();
+        engine.create_ai_traces(&[ai_rec]).unwrap();
+
+        // 1. Test bidirectional O(1) dereferencing
+        let resolved_ai = engine.trace_ai_from_human(&human_coord).unwrap();
+        assert_eq!(resolved_ai.session_uuid, session_uuid);
+        assert_eq!(resolved_ai.agent_id, 888);
+        assert_eq!(resolved_ai.confidence, 0.98);
+
+        let resolved_human = engine.trace_human_from_ai(&ai_coord).unwrap();
+        assert_eq!(resolved_human.session_uuid, session_uuid);
+        assert_eq!(resolved_human.actor_hash, 999);
+        assert_eq!(resolved_human.decision_score, 1.0);
+
+        // 2. Test session correlation bundle query
+        let (humans, ais) = engine.query_session_bundle(session_uuid).unwrap();
+        assert_eq!(humans.len(), 1);
+        assert_eq!(ais.len(), 1);
+        assert_eq!(humans[0].0.actor_hash, 999);
+        assert_eq!(ais[0].0.agent_id, 888);
     }
 }
 
