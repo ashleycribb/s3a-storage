@@ -1737,7 +1737,10 @@ fn handle_connection(stream: &mut TcpStream) {
         
         // Parse incoming JSON from Scholar Explorer Web or Browser Extension
         let query = parse_json_str(&body, "query").unwrap_or_default();
-        let papers_raw = extract_json_array(&body, "papers").unwrap_or_default();
+        let mut papers_raw = extract_json_array(&body, "papers").unwrap_or_default();
+        if papers_raw.is_empty() && parse_json_str(&body, "title").is_some() {
+            papers_raw.push(body.clone());
+        }
 
         let engine = match S3ACrudEngine::open_or_create(&dest_db) {
             Ok(e) => e,
