@@ -16,12 +16,16 @@ pub mod bvh;
 pub mod ring_buffer;
 pub mod compactor_daemon;
 pub mod net;
+pub mod erasure;
+pub mod tiering;
 
 pub use ql::{execute_query, S3AQLEngine, S3AStatement, QueryResult, Lexer, Parser, Token};
 pub use bvh::{HullBvh, BvhNode};
 pub use ring_buffer::{L0RingBuffer, BackpressurePolicy, IngestError};
 pub use compactor_daemon::{BackgroundCompactor, CompactorStats};
 pub use net::{S3AClient, S3AProtocolServer, send_frame, read_frame};
+pub use erasure::{ReedSolomonCodec, TileShard, TileShardHeader, ErasureError, save_shards_to_dir, load_shards_from_dir};
+pub use tiering::{TileStorageAdapter, LocalStorageAdapter, RustFsAdapter, RustFsConfig, TieringError, archive_cold_tiles, ArchivalReport};
 
 
 /// High-Frequency Low-Latency Ring-Buffered Writer for Autonomous Robots, Drones, and Humanoid Manipulators.
@@ -2066,7 +2070,7 @@ mod tests {
         let temp_file = TestTempFile::new();
         let path = temp_file.path();
         let insert_ql = format!("INSERT TELEMETRY (1000, 1, 101, 99.9) INTO \"{}\";", path.display());
-        let res_str = client.query(&insert_ql).unwrap();
+        let _res_str = client.query(&insert_ql).unwrap();
         server.stop();
     }
 
