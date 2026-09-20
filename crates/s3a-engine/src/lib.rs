@@ -408,6 +408,12 @@ impl TileWriter {
                 bloom_filter_insert(&mut header.filter.bits, r.subject_hash, header.filter.hash_seed);
                 bloom_filter_insert(&mut header.filter.bits, r.object_hash, header.filter.hash_seed);
             }
+        } else if tile_type == TileType::SRS_WORKSPACE {
+            let ws_recs: &[SrsWorkspaceRecord] = bytemuck::cast_slice(records);
+            for r in ws_recs {
+                bloom_filter_insert(&mut header.filter.bits, r.project_uuid[0] ^ r.project_uuid[1], header.filter.hash_seed);
+                bloom_filter_insert(&mut header.filter.bits, r.question_hash, header.filter.hash_seed);
+            }
         }
 
         // Compute header CRC32C (excluding header_crc32 field itself)
@@ -1235,6 +1241,42 @@ impl<'a> QuerySieve<'a> {
 
         results
     }
+
+    /// Queries Scholar Research Workspace context metadata.
+    pub fn query_srs_workspace(&self, project_uuid: Option<[u64; 2]>) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)> {
+        let mut results = Vec::new();
+        let tile_count = self.reader.tile_count() as usize;
+
+        for i in 0..tile_count {
+            let (header, payload) = match self.reader.get_tile(i) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            if header.tile_type != TileType::SRS_WORKSPACE {
+                continue;
+            }
+
+            if let Some(proj) = project_uuid {
+                if can_reject_tile_bloom(header, proj[0] ^ proj[1]) {
+                    continue;
+                }
+            }
+
+            let records: &[SrsWorkspaceRecord] = bytemuck::cast_slice(payload);
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if let Some(p) = project_uuid {
+                    if rec.project_uuid != p {
+                        continue;
+                    }
+                }
+                let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                results.push((*rec, coord));
+            }
+        }
+
+        results
+    }
 }
 
 
@@ -1452,6 +1494,125 @@ impl S3ACrudEngine {
         let ai_records = sieve.query_ai_traces(Some(session_uuid), None, 0, u64::MAX);
         Ok((human_records, ai_records))
     }
+
+    /// CREATE: Insert Scholar Research Workspace context record.
+    pub fn create_srs_workspace(&self, record: &SrsWorkspaceRecord) -> io::Result<u64> {
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        writer.write_hyper_tile(TileType::SRS_WORKSPACE, std::slice::from_ref(record), None, None)
+    }
+
+    /// EXPORT SRS SNAPSHOT: Packs all active SEROM records into an immutable .snapshot.s3a container.
+    pub fn export_srs_snapshot<P: AsRef<Path>>(
+        &self,
+        dest_path: P,
+        manifest: &SrsManifestHeader,
+        workspace: Option<&SrsWorkspaceRecord>,
+        project_uuid: Option<[u64; 2]>,
+    ) -> io::Result<SrsSnapshotBundle> {
+        let reader = MmapReader::open(&self.file_path)?;
+        let sieve = QuerySieve::new(&reader);
+
+        let ws_records: Vec<SrsWorkspaceRecord> = if let Some(ws) = workspace {
+            vec![*ws]
+        } else {
+            sieve.query_srs_workspace(project_uuid).into_iter().map(|(r, _)| r).collect()
+        };
+
+        let papers: Vec<AcademicPaperRecord> = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+        let edges: Vec<ResearchGraphEdgeRecord> = sieve.query_research_graph(None, None)
+            .into_iter().map(|(r, _)| r).collect();
+        let human: Vec<HumanLrsRecord> = sieve.query_human_lrs(None, None, 0, u64::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+        let ai: Vec<AiTraceRecord> = sieve.query_ai_traces(None, None, 0, u64::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+
+        let mut writer = TileWriter::create(&dest_path)?;
+
+        if !ws_records.is_empty() {
+            writer.write_hyper_tile(TileType::SRS_WORKSPACE, &ws_records, None, None)?;
+        }
+        if !papers.is_empty() {
+            let timestamps: Vec<u64> = papers.iter().map(|p| p.timestamp_sec).collect();
+            writer.write_hyper_tile(TileType::ACADEMIC_PAPERS, &papers, Some(&timestamps), None)?;
+        }
+        if !edges.is_empty() {
+            let timestamps: Vec<u64> = edges.iter().map(|e| e.timestamp_sec).collect();
+            writer.write_hyper_tile(TileType::RESEARCH_GRAPH, &edges, Some(&timestamps), None)?;
+        }
+        if !human.is_empty() {
+            let timestamps: Vec<u64> = human.iter().map(|h| h.timestamp_sec).collect();
+            writer.write_hyper_tile(TileType::HUMAN_LRS, &human, Some(&timestamps), None)?;
+        }
+        if !ai.is_empty() {
+            let timestamps: Vec<u64> = ai.iter().map(|a| a.timestamp_sec).collect();
+            writer.write_hyper_tile(TileType::AI_TRACE_LOG, &ai, Some(&timestamps), None)?;
+        }
+
+        let total_records = (ws_records.len() + papers.len() + edges.len() + human.len() + ai.len()) as u64;
+        let mut final_manifest = *manifest;
+        final_manifest.total_records = total_records;
+        final_manifest.tile_count = writer.tile_count();
+
+        Ok(SrsSnapshotBundle {
+            manifest: final_manifest,
+            workspace: ws_records.into_iter().next(),
+            papers,
+            evidence_edges: edges,
+            human_decisions: human,
+            ai_traces: ai,
+        })
+    }
+
+    /// INTAKE SRS SNAPSHOT: Reads and validates a portable .snapshot.s3a container via zero-copy mmap.
+    pub fn intake_srs_snapshot<P: AsRef<Path>>(snapshot_path: P) -> io::Result<SrsSnapshotBundle> {
+        let reader = MmapReader::open(snapshot_path)?;
+        reader.verify_checksums().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Checksum failure: {}", e)))?;
+
+        let sieve = QuerySieve::new(&reader);
+        let ws = sieve.query_srs_workspace(None).into_iter().next().map(|(r, _)| r);
+        let papers: Vec<AcademicPaperRecord> = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+        let edges: Vec<ResearchGraphEdgeRecord> = sieve.query_research_graph(None, None)
+            .into_iter().map(|(r, _)| r).collect();
+        let human: Vec<HumanLrsRecord> = sieve.query_human_lrs(None, None, 0, u64::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+        let ai: Vec<AiTraceRecord> = sieve.query_ai_traces(None, None, 0, u64::MAX)
+            .into_iter().map(|(r, _)| r).collect();
+
+        let total_records = (papers.len() + edges.len() + human.len() + ai.len() + if ws.is_some() { 1 } else { 0 }) as u64;
+        let manifest = SrsManifestHeader::new(
+            ws.map(|w| w.project_uuid).unwrap_or([0, 0]),
+            [0, 1],
+            [0, 0],
+            [0, 0],
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+            reader.tile_count(),
+            total_records,
+        );
+
+        Ok(SrsSnapshotBundle {
+            manifest,
+            workspace: ws,
+            papers,
+            evidence_edges: edges,
+            human_decisions: human,
+            ai_traces: ai,
+        })
+    }
+}
+
+/// SCHOLAR RESEARCH SNAPSHOT (SRS) BUNDLE.
+/// Represents a fully reified, portable research project milestone containing
+/// manifest, workspace context, literature corpus, evidence relationships, and dual-actor provenance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SrsSnapshotBundle {
+    pub manifest: SrsManifestHeader,
+    pub workspace: Option<SrsWorkspaceRecord>,
+    pub papers: Vec<AcademicPaperRecord>,
+    pub evidence_edges: Vec<ResearchGraphEdgeRecord>,
+    pub human_decisions: Vec<HumanLrsRecord>,
+    pub ai_traces: Vec<AiTraceRecord>,
 }
 
 /// S3A Compactor for merging and compacting sparse/uncompressed hyper-tiles into stratified blocks.
@@ -2487,6 +2648,118 @@ mod tests {
         assert_eq!(ais.len(), 1);
         assert_eq!(humans[0].0.actor_hash, 999);
         assert_eq!(ais[0].0.agent_id, 888);
+    }
+
+    #[test]
+    fn test_srs_snapshot_export_and_intake_roundtrip() {
+        let live_db = TestTempFile::new();
+        let snapshot_file = TestTempFile::new();
+
+        let engine = S3ACrudEngine::open_or_create(live_db.path()).unwrap();
+
+        let project_uuid = [0x1122334455667788, 0x99AABBCCDDEEFF00];
+        let snapshot_uuid = [0x5555444433332222, 0x11110000FFFFEEEE];
+        let session_uuid = [0xCAFEBABE00001111, 0xDEADBEEF22223333];
+
+        // 1. Create Workspace
+        let ws = SrsWorkspaceRecord::new(
+            project_uuid,
+            123456,
+            0b11,
+            [0.1, 0.2, 0.3],
+            1,
+        );
+        engine.create_srs_workspace(&ws).unwrap();
+
+        // 2. Create Paper
+        let paper = AcademicPaperRecord::new(
+            1001,
+            1600000000,
+            5000,
+            0.1, 0.2, 0.3,
+            25,
+            2024,
+            1,
+            1,
+            0,
+            999,
+        );
+        engine.create_academic_papers(&[paper]).unwrap();
+
+        // 3. Create Edge
+        let edge = ResearchGraphEdgeRecord::new(
+            1001,
+            2002,
+            1600000001,
+            5001,
+            1, // SUPPORTS
+            0.95,
+        );
+        engine.create_research_graph_edges(&[edge]).unwrap();
+
+        // 4. Create Human Decision & AI Trace
+        let human = HumanLrsRecord::new(
+            session_uuid,
+            1600000002,
+            777,
+            1,
+            1.0,
+            S3ACoordinate::new(0, 4, 0),
+            1001 as u32,
+        );
+        let ai = AiTraceRecord::new(
+            session_uuid,
+            1600000003,
+            888,
+            2,
+            0.99,
+            S3ACoordinate::new(0, 3, 0),
+            5000,
+        );
+        engine.create_human_lrs(&[human]).unwrap();
+        engine.create_ai_traces(&[ai]).unwrap();
+
+        // 5. Export Snapshot
+        let manifest = SrsManifestHeader::new(
+            project_uuid,
+            snapshot_uuid,
+            [0, 0],
+            session_uuid,
+            1600000005,
+            5,
+            5,
+        );
+
+        let exported_bundle = engine.export_srs_snapshot(
+            snapshot_file.path(),
+            &manifest,
+            Some(&ws),
+            Some(project_uuid),
+        ).unwrap();
+
+        assert_eq!(exported_bundle.papers.len(), 1);
+        assert_eq!(exported_bundle.evidence_edges.len(), 1);
+        assert_eq!(exported_bundle.human_decisions.len(), 1);
+        assert_eq!(exported_bundle.ai_traces.len(), 1);
+        assert!(exported_bundle.workspace.is_some());
+
+        // 6. Zero-copy Intake Snapshot
+        let intaken_bundle = S3ACrudEngine::intake_srs_snapshot(snapshot_file.path()).unwrap();
+
+        assert_eq!(intaken_bundle.manifest.project_uuid, project_uuid);
+        assert_eq!(intaken_bundle.papers.len(), 1);
+        assert_eq!(intaken_bundle.papers[0].paper_id, 1001);
+        assert_eq!(intaken_bundle.evidence_edges.len(), 1);
+        assert_eq!(intaken_bundle.evidence_edges[0].predicate_id, 1);
+        assert_eq!(intaken_bundle.human_decisions.len(), 1);
+        assert_eq!(intaken_bundle.human_decisions[0].actor_hash, 777);
+        assert_eq!(intaken_bundle.ai_traces.len(), 1);
+        assert_eq!(intaken_bundle.ai_traces[0].confidence, 0.99);
+
+        // Verify Workspace matches
+        let intaken_ws = intaken_bundle.workspace.unwrap();
+        assert_eq!(intaken_ws.project_uuid, project_uuid);
+        assert_eq!(intaken_ws.question_hash, 123456);
     }
 }
 

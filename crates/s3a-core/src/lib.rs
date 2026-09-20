@@ -301,6 +301,8 @@ impl TileType {
     pub const AI_TRACE_LOG: u32 = 11;
     pub const ACADEMIC_PAPERS: u32 = 12;
     pub const RESEARCH_GRAPH: u32 = 13;
+    pub const SRS_WORKSPACE: u32 = 14;
+    pub const SRS_MANIFEST: u32 = 15;
 }
 
 /// Category 1: 960-bit SIMD Blocked-Bloom Filter Metadata (128 bytes, 8-byte aligned).
