@@ -1,0 +1,18 @@
+[package]
+name = "s3a-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "s3a-harness"
+path = "src/main.rs"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-simd = { path = "../s3a-simd" }
+memmap2 = { workspace = true }
+crc32c = { workspace = true }

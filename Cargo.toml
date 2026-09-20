@@ -6,6 +6,7 @@ members = [
     "crates/s3a-engine",
     "crates/s3a-cabi",
     "crates/s3a-cli",
+    "crates/s3a-harness",
 ]
 
 [workspace.package]

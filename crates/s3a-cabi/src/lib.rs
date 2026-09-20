@@ -2,6 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
+use s3a_core::SrsManifestHeader;
 use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TileFusionEngine, TelemetryRecord, S3ACoordinate};
 
 #[repr(C)]
@@ -223,6 +224,76 @@ pub unsafe extern "C" fn s3a_fuse_telemetry(
     }
 }
 
+/// Exports live S3A academic project database into a standalone, portable .snapshot.s3a container.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_export_srs(
+    live_path: *const c_char,
+    snapshot_path: *const c_char,
+    project_uuid_high: u64,
+    project_uuid_low: u64,
+    out_total_records: *mut u64,
+) -> c_int {
+    if live_path.is_null() || snapshot_path.is_null() {
+        return -1;
+    }
+
+    let live_str = match CStr::from_ptr(live_path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let snap_str = match CStr::from_ptr(snapshot_path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    let p_uuid = [project_uuid_high, project_uuid_low];
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let manifest = SrsManifestHeader::new(p_uuid, [0x1111, ts], [0, 0], [0, 0], ts, 0, 0);
+
+    match S3ACrudEngine::open_or_create(live_str) {
+        Ok(engine) => match engine.export_srs_snapshot(snap_str, &manifest, None, Some(p_uuid)) {
+            Ok(bundle) => {
+                if !out_total_records.is_null() {
+                    *out_total_records = bundle.manifest.total_records;
+                }
+                0
+            }
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
+}
+
+/// Ingests a portable .snapshot.s3a container via zero-copy mmap, verifying hardware CRC32C.
+#[no_mangle]
+pub unsafe extern "C" fn s3a_intake_srs(
+    snapshot_path: *const c_char,
+    out_papers_count: *mut usize,
+    out_edges_count: *mut usize,
+    out_human_count: *mut usize,
+    out_ai_count: *mut usize,
+) -> c_int {
+    if snapshot_path.is_null() {
+        return -1;
+    }
+
+    let snap_str = match CStr::from_ptr(snapshot_path).to_str() {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+
+    match S3ACrudEngine::intake_srs_snapshot(snap_str) {
+        Ok(bundle) => {
+            if !out_papers_count.is_null() { *out_papers_count = bundle.papers.len(); }
+            if !out_edges_count.is_null() { *out_edges_count = bundle.evidence_edges.len(); }
+            if !out_human_count.is_null() { *out_human_count = bundle.human_decisions.len(); }
+            if !out_ai_count.is_null() { *out_ai_count = bundle.ai_traces.len(); }
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +392,41 @@ mod tests {
 
             let res_del = s3a_delete_telemetry(c_path.as_ptr(), 5, 2, 1000);
             assert_eq!(res_del, 0);
+        }
+    }
+
+    #[test]
+    fn test_cabi_srs_snapshot_export_and_intake() {
+        use s3a_engine::AcademicPaperRecord;
+
+        let live_db = TestTempFile::new();
+        let snap_file = TestTempFile::new();
+
+        let live_path = CString::new(live_db.path().to_str().unwrap()).unwrap();
+        let snap_path = CString::new(snap_file.path().to_str().unwrap()).unwrap();
+
+        // Seed live DB with a paper
+        let engine = S3ACrudEngine::open_or_create(live_db.path()).unwrap();
+        let paper = AcademicPaperRecord::new(5555, 1600000000, 100, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 99);
+        engine.create_academic_papers(&[paper]).unwrap();
+
+        unsafe {
+            let mut total_records = 0u64;
+            let export_res = s3a_export_srs(live_path.as_ptr(), snap_path.as_ptr(), 0x1122, 0x3344, &mut total_records);
+            assert_eq!(export_res, 0);
+            assert_eq!(total_records, 1);
+
+            let mut papers = 0usize;
+            let mut edges = 0usize;
+            let mut human = 0usize;
+            let mut ai = 0usize;
+
+            let intake_res = s3a_intake_srs(snap_path.as_ptr(), &mut papers, &mut edges, &mut human, &mut ai);
+            assert_eq!(intake_res, 0);
+            assert_eq!(papers, 1);
+            assert_eq!(edges, 0);
+            assert_eq!(human, 0);
+            assert_eq!(ai, 0);
         }
     }
 }
