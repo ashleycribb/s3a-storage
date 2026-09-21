@@ -1764,6 +1764,55 @@ mod tests {
     }
 
     #[test]
+    fn test_tile_fusion_engine_deduplication_and_tombstones() {
+        let f1 = NamedTempFile::new().unwrap();
+        let f2 = NamedTempFile::new().unwrap();
+        let fused_file = NamedTempFile::new().unwrap();
+
+        // Tile 1: Initial telemetry records and a record to be tombstoned
+        let mut w1 = TileWriter::create(f1.path()).unwrap();
+        let recs1 = vec![
+            TelemetryRecord::new(100, 1, 1, 10.0), // Same key (100, 1, 1), initial value 10.0
+            TelemetryRecord::new(200, 1, 2, 50.0), // Will be tombstoned in Tile 2
+            TelemetryRecord::new(300, 2, 1, 99.0), // Unrelated record
+        ];
+        w1.write_hyper_tile(TileType::TELEMETRY, &recs1, Some(&[100, 200, 300]), None).unwrap();
+
+        // Tile 2: Updated version of (100, 1, 1) and tombstone for (200, 1, 2)
+        let mut w2 = TileWriter::create(f2.path()).unwrap();
+        let mut tombstone_rec = TelemetryRecord::new(200, 1, 2, 50.0);
+        tombstone_rec.mark_tombstone();
+
+        let recs2 = vec![
+            TelemetryRecord::new(100, 1, 1, 25.5), // Updated value 25.5 for key (100, 1, 1)
+            tombstone_rec,                           // Tombstone for key (200, 1, 2)
+        ];
+        w2.write_hyper_tile(TileType::TELEMETRY, &recs2, Some(&[100, 200]), None).unwrap();
+
+        let count = TileFusionEngine::fuse_telemetry_tiles(&[f1.path(), f2.path()], fused_file.path()).unwrap();
+        assert_eq!(count, 1);
+
+        let reader = MmapReader::open(fused_file.path()).unwrap();
+        let sieve = QuerySieve::new(&reader);
+        let res = sieve.query_telemetry(0, 500, None, None);
+
+        // Expect 2 records remaining:
+        // - (100, 1, 1) updated to value 25.5
+        // - (300, 2, 1) value 99.0
+        // Record (200, 1, 2) should be completely removed due to the tombstone
+        assert_eq!(res.len(), 2);
+
+        let r100 = res.iter().find(|r| r.timestamp == 100 && r.sensor_id == 1 && r.metric_id == 1).unwrap();
+        assert_eq!(r100.value, 25.5);
+
+        let r200 = res.iter().find(|r| r.timestamp == 200 && r.sensor_id == 1 && r.metric_id == 2);
+        assert!(r200.is_none());
+
+        let r300 = res.iter().find(|r| r.timestamp == 300 && r.sensor_id == 2 && r.metric_id == 1).unwrap();
+        assert_eq!(r300.value, 99.0);
+    }
+
+    #[test]
     fn test_da_commitment_query() {
         let temp_file = TestTempFile::new();
         let mut writer = TileWriter::create(temp_file.path()).unwrap();
