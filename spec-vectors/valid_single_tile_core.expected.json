@@ -1,0 +1,30 @@
+{
+  "case_name": "valid_single_tile_core",
+  "category": "valid",
+  "description": "Single 128KB Hyper-Tile containing 3 core Telemetry records",
+  "expected_outcome": "ok",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "0": 3
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "TelemetryRecord { timestamp: 1000, sensor_id: 101, metric_id: 1, value: 23.5 }"
+    },
+    {
+      "tile_type": 0,
+      "record_index": 2,
+      "summary": "TelemetryRecord { timestamp: 1020, sensor_id: 102, metric_id: 2, value: 88.2 }"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0
+}

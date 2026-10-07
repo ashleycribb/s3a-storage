@@ -8,13 +8,26 @@ use std::time::Instant;
 use s3a_core::{
     compare_hilbert_vs_morton_curve_continuity,
     Dop14Hull, toroidal_distance_3d,
-    SrsManifestHeader,
+    ADDON_EDU, ADDON_FINTECH, ADDON_ROBOTICS, ADDON_WEARABLE, ADDON_GIS, ADDON_DA, ADDON_ONTOLOGY, S3AAddon,
 };
+use s3a_pack_scholar::{
+    ScholarPack, ScholarTileType, ScholarCrudExt, ScholarQueryExt,
+    AcademicPaperRecord, AiTraceRecord, HumanLrsRecord,
+    CitationFingerprintRecord, ScholarNoteClaimRecord,
+    CONTENT_KIND_PDF, CLAIM_KIND_EMPIRICAL,
+    SrsManifestHeader, SCHOLAR_LAYOUT_VERSION_V1,
+    intake_srs_snapshot, intake_srs_snapshot_into_live,
+    ingest_scholar_intermediate_dir,
+    build_claim_proof, export_bibliography_with_proof,
+};
+use s3a_pack_wearable::{WearablePack, WearableTileType, CompactWearableRecord};
+use s3a_pack_robotics::{RoboticsPack, RoboticsTileType, RoboticsKinematicRecord, RoboticsStreamWriter, RoboticsQueryExt};
+use s3a_pack_gis::{GisPack, GisTileType, GISSurveyPointRecord, GisQueryExt};
+use s3a_pack_da::{DaPack, DaTileType, DACommitmentRecord, DaQueryExt};
+use s3a_pack_ontology::OntologyPack;
 use s3a_engine::{
     Compactor, TileFusionEngine, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
-    TelemetryRecord, CompactWearableRecord, RoboticsKinematicRecord, RoboticsStreamWriter,
-    GISSurveyPointRecord, DACommitmentRecord, LearningActivityRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
-    HumanLrsRecord, AiTraceRecord, AcademicPaperRecord, ResearchGraphEdgeRecord,
+    TelemetryRecord, LearningActivityRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
     execute_query, QueryResult, HullBvh,
     L0RingBuffer, BackpressurePolicy, BackgroundCompactor,
     S3AClient, S3AProtocolServer,
@@ -307,7 +320,22 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 </html>
 "#;
 
+fn register_all_types() {
+    let _ = s3a_core::registry::with_global_registry_mut(|reg| {
+        let _ = s3a_pack_wearable::register_pack_types(reg);
+        let _ = s3a_pack_robotics::register_pack_types(reg);
+        let _ = s3a_pack_gis::register_pack_types(reg);
+        let _ = s3a_pack_da::register_pack_types(reg);
+        let _ = s3a_pack_scholar::register_pack_types(reg);
+    });
+    s3a_pack_robotics::register_ql_handlers();
+    s3a_pack_gis::register_ql_handlers();
+    s3a_pack_da::register_ql_handlers();
+    s3a_pack_scholar::register_ql_handlers();
+}
+
 fn main() {
+    register_all_types();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         print_usage();
@@ -316,18 +344,109 @@ fn main() {
 
     match args[1].as_str() {
         "inspect" => {
-            if args.len() < 3 {
-                println!("Usage: s3a-cli inspect <file_path>");
+            let json_mode = args.iter().any(|a| a == "--json");
+            let file_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
+            match file_opt {
+                Some(f) => inspect_file(f, json_mode),
+                None => println!("Usage: s3a-cli inspect [--json] <file_path>"),
+            }
+        }
+        "seal" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli seal <in_file> <out_file>");
                 return;
             }
-            inspect_file(&args[2]);
+            seal_file(&args[2], &args[3]);
+        }
+        "anchor" => {
+            if args.len() < 3 {
+                println!("Usage: s3a-cli anchor <sealed_file> [--tsa <url>] [--calendars <c1,c2>]");
+                println!("       s3a-cli anchor upgrade <sealed_file> [--calendars <c1,c2>]");
+                return;
+            }
+            if args[2] == "upgrade" {
+                if args.len() < 4 {
+                    println!("Usage: s3a-cli anchor upgrade <sealed_file> [--calendars <c1,c2>]");
+                    return;
+                }
+                let file = &args[3];
+                let mut cal_opt = None;
+                for i in 4..args.len() {
+                    if args[i] == "--calendars" && i + 1 < args.len() {
+                        cal_opt = Some(args[i + 1].as_str());
+                    }
+                }
+                run_anchor_upgrade(file, cal_opt);
+            } else {
+                let file = &args[2];
+                let mut tsa_opt = None;
+                let mut cal_opt = None;
+                let mut mock_mode = false;
+                let mut i = 3;
+                while i < args.len() {
+                    if args[i] == "--tsa" && i + 1 < args.len() {
+                        tsa_opt = Some(args[i + 1].as_str());
+                        i += 2;
+                    } else if args[i] == "--calendars" && i + 1 < args.len() {
+                        cal_opt = Some(args[i + 1].as_str());
+                        i += 2;
+                    } else if args[i] == "--mock" {
+                        mock_mode = true;
+                        i += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+                run_anchor_file(file, tsa_opt, cal_opt, mock_mode);
+            }
         }
         "verify" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let anchor_mode = args.iter().any(|a| a == "--anchor");
+            let mut repair_out = None;
+            let mut trust_store = None;
+            let mut esplora_url = None;
+            let mut file_opt = None;
+            let mut skip_next = false;
+            for i in 2..args.len() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if args[i] == "--repair" && i + 1 < args.len() {
+                    repair_out = Some(args[i + 1].as_str());
+                    skip_next = true;
+                } else if (args[i] == "--trust-store" || args[i] == "--trust") && i + 1 < args.len() {
+                    trust_store = Some(args[i + 1].as_str());
+                    skip_next = true;
+                } else if args[i] == "--esplora" && i + 1 < args.len() {
+                    esplora_url = Some(args[i + 1].as_str());
+                    skip_next = true;
+                } else if !args[i].starts_with("--") {
+                    file_opt = Some(args[i].as_str());
+                }
+            }
+            match file_opt {
+                Some(f) => verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url),
+                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]"),
+            }
+        }
+        "status" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let file = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str()).unwrap_or("test.s3a");
+            run_status(file, json_mode);
+        }
+        "doctor" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let file = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str()).unwrap_or("test.s3a");
+            run_doctor(file, json_mode);
+        }
+        "recover" => {
             if args.len() < 3 {
-                println!("Usage: s3a-cli verify <file_path>");
+                println!("Usage: s3a-cli recover <file_path>");
                 return;
             }
-            verify_file(&args[2]);
+            run_recover(&args[2]);
         }
         "lookup" => {
             if args.len() < 4 {
@@ -399,11 +518,12 @@ fn main() {
             run_stream_ingest_benchmark(file, duration, rate);
         }
         "query" => {
-            if args.len() < 3 {
-                println!("Usage: s3a-cli query \"<S3A_QL_STATEMENT>\"");
-                return;
+            let json_mode = args.iter().any(|a| a == "--json");
+            let query_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
+            match query_opt {
+                Some(q) => execute_s3a_ql(q, json_mode),
+                None => println!("Usage: s3a-cli query [--json] \"<S3A_QL_STATEMENT>\""),
             }
-            execute_s3a_ql(&args[2]);
         }
         "serve" => {
             let port = if args.len() >= 3 {
@@ -436,6 +556,30 @@ fn main() {
         }
         "shell" | "sqlcmd" | "sql" => {
             run_interactive_shell();
+        }
+        "addon" | "addons" => {
+            if args.len() < 3 {
+                println!("Usage: s3a-cli addon <list|enable> <archive_file> [addon_name]");
+                return;
+            }
+            match args[2].as_str() {
+                "list" => {
+                    let file = if args.len() >= 4 { &args[3] } else { "test.s3a" };
+                    run_addon_list(file);
+                }
+                "enable" => {
+                    if args.len() < 5 {
+                        println!("Usage: s3a-cli addon enable <archive_file> <edu|fintech|robotics>");
+                        return;
+                    }
+                    let file = &args[3];
+                    let addon_name = &args[4];
+                    run_addon_enable(file, addon_name);
+                }
+                _ => {
+                    println!("Unknown addon action: {}. Available: list, enable", args[2]);
+                }
+            }
         }
         "ec-shard" => {
             if args.len() < 4 {
@@ -492,12 +636,228 @@ fn main() {
             }
             run_trace_session(&args[2], &args[3]);
         }
-        "import-academic-bundle" | "import-academic" => {
-            if args.len() < 4 {
-                println!("Usage: s3a-cli import-academic-bundle <json_dir> <out_dir>");
+        "snapshot" => {
+            if args.len() < 3 {
+                println!("Usage:");
+                println!("  s3a-cli snapshot export <live_db> <snapshot_file> [project_uuid]");
+                println!("  s3a-cli snapshot intake <snapshot_file> [--into <live_db>]");
+                println!("  s3a-cli snapshot inspect <snapshot_file>");
                 return;
             }
-            run_import_academic_bundle(&args[2], &args[3]);
+            match args[2].as_str() {
+                "export" => {
+                    if args.len() < 5 {
+                        println!("Usage: s3a-cli snapshot export <live_db> <snapshot_file> [project_uuid]");
+                        return;
+                    }
+                    let project_uuid = if args.len() >= 6 {
+                        parse_hex_uuid_128(&args[5])
+                    } else {
+                        None
+                    };
+                    run_snapshot_export(&args[3], &args[4], project_uuid);
+                }
+                "intake" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli snapshot intake <snapshot_file> [--into <live_db>]");
+                        return;
+                    }
+                    let into_live = if args.len() >= 6 && args[4] == "--into" {
+                        Some(args[5].as_str())
+                    } else {
+                        None
+                    };
+                    run_snapshot_intake(&args[3], into_live);
+                }
+                "inspect" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli snapshot inspect <snapshot_file>");
+                        return;
+                    }
+                    run_snapshot_inspect(&args[3]);
+                }
+                _ => {
+                    println!("Unknown snapshot action: {}", args[2]);
+                }
+            }
+        }
+        "scholar" => {
+            if args.len() < 3 {
+                println!("Usage:");
+                println!("  s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]");
+                println!("  s3a-cli scholar recheck <archive.s3a> [--online] [--endpoint <url>] [--out <output.s3a>]");
+                println!("  s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]");
+                println!("  s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]");
+                return;
+            }
+            match args[2].as_str() {
+                "ingest" => {
+                    if args.len() < 5 {
+                        println!("Usage: s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]");
+                        return;
+                    }
+                    let fresh = args.len() >= 6 && args[5] == "--fresh";
+                    run_scholar_ingest(&args[3], &args[4], fresh);
+                }
+                "recheck" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli scholar recheck <archive.s3a> [--online] [--endpoint <url>] [--out <output.s3a>]");
+                        return;
+                    }
+                    let archive_path = &args[3];
+                    let mut online = false;
+                    let mut endpoint = None;
+                    let mut out_path = None;
+                    let mut url_overrides = std::collections::HashMap::new();
+
+                    let mut i = 4;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--online" => {
+                                online = true;
+                                i += 1;
+                            }
+                            "--endpoint" => {
+                                if i + 1 < args.len() {
+                                    endpoint = Some(args[i + 1].clone());
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            "--url" => {
+                                if i + 1 < args.len() {
+                                    if let Some((pid_s, rest)) = args[i + 1].split_once('=') {
+                                        if let Ok(pid) = pid_s.parse::<u64>() {
+                                            let (doi, url) = rest.split_once(',').unwrap_or((rest, rest));
+                                            url_overrides.insert(pid, (doi.to_string(), url.to_string()));
+                                        }
+                                    }
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            "--out" => {
+                                if i + 1 < args.len() {
+                                    out_path = Some(args[i + 1].clone());
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            _ => { i += 1; }
+                        }
+                    }
+
+                    run_scholar_recheck(archive_path, online, endpoint, out_path, url_overrides);
+                }
+                "proof" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]");
+                        return;
+                    }
+                    let archive_path = &args[3];
+                    let mut claim_id = None;
+                    let mut json_ld = false;
+                    let mut out_path = None;
+
+                    let mut i = 4;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--claim" => {
+                                if i + 1 < args.len() {
+                                    claim_id = args[i + 1].parse::<u64>().ok();
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            "--json-ld" | "--json" => {
+                                json_ld = true;
+                                i += 1;
+                            }
+                            "--out" => {
+                                if i + 1 < args.len() {
+                                    out_path = Some(args[i + 1].clone());
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            _ => { i += 1; }
+                        }
+                    }
+
+                    let cid = match claim_id {
+                        Some(id) => id,
+                        None => {
+                            eprintln!("[ERROR] --claim <id> is required");
+                            std::process::exit(1);
+                        }
+                    };
+                    run_scholar_proof(archive_path, cid, json_ld, out_path.as_deref());
+                }
+                "export-bib" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]");
+                        return;
+                    }
+                    let archive_path = &args[3];
+                    let mut out_path = None;
+                    let mut format = "bibtex".to_string();
+
+                    let mut i = 4;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--out" => {
+                                if i + 1 < args.len() {
+                                    out_path = Some(args[i + 1].clone());
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            "--format" => {
+                                if i + 1 < args.len() {
+                                    format = args[i + 1].to_lowercase();
+                                    i += 2;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                            _ => { i += 1; }
+                        }
+                    }
+
+                    let out = match out_path {
+                        Some(o) => o,
+                        None => {
+                            eprintln!("[ERROR] --out <file> is required");
+                            std::process::exit(1);
+                        }
+                    };
+                    run_scholar_export_bib(archive_path, &out, &format);
+                }
+                "demo-seed" => {
+                    if args.len() < 4 {
+                        println!("Usage: s3a-cli scholar demo-seed <out.s3a>");
+                        return;
+                    }
+                    run_scholar_demo_seed(&args[3]);
+                }
+                _ => {
+                    println!("Unknown scholar action: {}", args[2]);
+                }
+            }
+        }
+        "import-academic-bundle" | "import-academic" => {
+            if args.len() < 4 {
+                println!("Usage: s3a-cli import-academic-bundle <json_dir> <out_archive> [--fresh]");
+                return;
+            }
+            let fresh = args.len() >= 5 && args[4] == "--fresh";
+            run_scholar_ingest(&args[2], &args[3], fresh);
         }
         "snapshot-export" => {
             if args.len() < 4 {
@@ -513,10 +873,15 @@ fn main() {
         }
         "snapshot-intake" => {
             if args.len() < 3 {
-                println!("Usage: s3a-cli snapshot-intake <snapshot_file>");
+                println!("Usage: s3a-cli snapshot-intake <snapshot_file> [--into <live_db>]");
                 return;
             }
-            run_snapshot_intake(&args[2]);
+            let into_live = if args.len() >= 5 && args[3] == "--into" {
+                Some(args[4].as_str())
+            } else {
+                None
+            };
+            run_snapshot_intake(&args[2], into_live);
         }
         "snapshot-inspect" => {
             if args.len() < 3 {
@@ -532,41 +897,138 @@ fn main() {
 }
 
 fn print_usage() {
-    println!("S3A Storage CLI Tool");
-    println!("Usage:");
-    println!("  s3a-cli snapshot-export <live_db> <out.s3a> [uuid] Export portable Scholar Research Snapshot container
-  s3a-cli snapshot-intake <snapshot.s3a>            Intake & validate portable SRS snapshot into memory in <1ms
-  s3a-cli snapshot-inspect <snapshot.s3a>           Inspect SRS manifest header, sector CRC32, and inventory
-  s3a-cli trace-session <file> <uuid>               Cross-trace Human SQL LRS & AI Agent Traceable Log by matching UUID
-  s3a-cli benchmark-3d                              Run 3D Hilbert curve locality & 14-DOP bounding volume benchmark");
-    println!("  s3a-cli export-iceberg <file> <out_dir> [name]    Export Apache Iceberg v1.metadata.json & Delta Lake UniForm log");
-    println!("  s3a-cli snowflake-serve [port]                    Start Snowflake External Function REST API gateway (default: 8088)");
-    println!("  s3a-cli storage-analysis                          Analyze storage footprint: Single-Node 1.0x, Erasure Coding 1.25x vs 3.0x bloat");
-    println!("  s3a-cli ec-shard <file> <out_dir> [k] [m]         Stripe S3A archive with K+M Reed-Solomon Erasure Coding (e.g. 4+2, 8+2)");
-    println!("  s3a-cli ec-recover <shards_dir> <out_file> [k] [m] Recover S3A archive even with M lost/corrupted shards");
-    println!("  s3a-cli tier-archive <file> <cold_dir> [stratum]  Offload frozen stratum Hyper-Tiles to S3/RustFS cold storage tier");
-    println!("  s3a-cli stream-ingest [file] [secs] [rate_hz]     Benchmark live L0 Ring Buffer concurrent ingestion & compaction");
-    println!("  s3a-cli query \"<S3A_QL_STATEMENT>\"                Execute native S3A-QL / STQL statement");
-    println!("  s3a-cli shell                                     Interactive SQL Server-style REPL shell");
+    println!("S3A Storage CLI Tool (v{})", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("STABLE CORE OPS & MAINTENANCE:");
+    println!("  s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata");
+    println!("  s3a-cli verify [--json] [--anchor] [--repair <out>] <archive> Verify sealed parity, self-addressing, or anchors");
+    println!("  s3a-cli seal <in_file> <out_file>                 Seal cold archive with Reed-Solomon K+M parity & directory");
+    println!("  s3a-cli anchor <sealed_file> [--tsa <url>]        Anchor archive fingerprint to OpenTimestamps / RFC 3161");
+    println!("  s3a-cli anchor upgrade <sealed_file>              Upgrade pending OpenTimestamps anchor to Bitcoin confirmed");
+    println!("  s3a-cli status [--json] <archive>                 Quick archive state, generation, slot, and addon mask");
+    println!("  s3a-cli doctor [--json] <archive>                 Deep integrity diagnosis (A/B slots, torn bytes, orphan temps)");
+    println!("  s3a-cli recover <archive>                         Crash recovery: truncate torn bytes, clean orphan temps, harden A/B slots");
+    println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
+    println!("  s3a-cli fuse <out_file> <in_file1> [in_file2...]  Fuse multi-tile archives into a consolidated Hyper-Tile archive");
+    println!("  s3a-cli addon list [archive]                      List active modular domain addons on an archive");
+    println!("  s3a-cli addon enable <archive> <addon_name>       Apply a modular addon (scholar, robotics, gis, da, wearable, ontology)");
+    println!("  s3a-cli query [--json] \"<S3A_QL_STATEMENT>\"       Execute versioned S3A-QL v1 statement");
+    println!("  s3a-cli snapshot export <live_db> <out> [uuid]    Export portable Scholar Research Snapshot container");
+    println!("  s3a-cli snapshot intake <snapshot> [--into <live>] Intake & validate portable SRS snapshot into live database");
+    println!("  s3a-cli snapshot inspect <snapshot>               Inspect SRS manifest header, sector CRC32, and inventory");
+    println!();
+    println!("DEVELOPER REPL, WIRE SERVER & PROTOCOLS:");
+    println!("  s3a-cli shell                                     Interactive SQL-style REPL shell");
+    println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
     println!("  s3a-cli serve-tcp [host:port]                     Start low-latency binary S3AP wire protocol server (default: 127.0.0.1:9333)");
     println!("  s3a-cli remote-query \"<STMT>\" [host:port]          Query remote S3A server via binary S3AP wire protocol");
-    println!("  s3a-cli mcp-server [archive_file]                 Run standard Model Context Protocol (MCP) server over stdin/stdout");
-    println!("  s3a-cli mcp-client [archive_file]                 Execute MCP JSON-RPC protocol validation tests");
-    println!("  s3a-cli inspect <file_path>                       Inspect Hyper-Tile metadata");
-    println!("  s3a-cli verify <file_path>                        Verify file and tile checksums");
-    println!("  s3a-cli lookup <file_path> <coordinate>           Direct O(1) lookup by coordinate address (e.g. L0:T0:R0)");
-    println!("  s3a-cli insert <file_path> <ts> <sensor> <metric> <val> Insert a new telemetry record");
-    println!("  s3a-cli get <file_path> <sensor> <metric> <min_ts> <max_ts> Get matching telemetry records with coordinates");
-    println!("  s3a-cli delete <file_path> <sensor> <metric> <ts> Soft-delete matching record with tombstone");
-    println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
-    println!("  s3a-cli fuse <out_file> <in_file1> [in_file2...]    Fuse multi-tile archives into a consolidated Hyper-Tile archive");
-    println!("  s3a-cli benchmark                                 Run benchmark comparing JSON/uncompressed storage vs S3A Hyper-Tiles");
-    println!("  s3a-cli benchmark-bvh                             Run Hierarchical Tree of Hulls (BVH) O(log N) pruning benchmark");
-    println!("  s3a-cli benchmark-wearable                        Run wearable benchmark (4KB Flash page micro-tiles, zero-heap alloc)");
-    println!("  s3a-cli benchmark-robotics                        Run robotics platform benchmark (1 kHz stream ring-buffer & 3D SIMD trajectory)");
-    println!("  s3a-cli benchmark-gis                             Run GIS Earth surface/subsurface 3D point cloud & mesh benchmark");
+    println!("  s3a-cli mcp-server [archive]                      Run standard Model Context Protocol (MCP) server over stdin/stdout");
+    println!("  s3a-cli mcp-client [archive]                      Execute MCP JSON-RPC protocol validation tests");
+    println!();
+    println!("DOMAIN PACK & LAKEHOUSE INTEGRATIONS:");
+    println!("  s3a-cli scholar ingest <json_dir> <out.s3a>       Ingest academic literature into Scholar Hyper-Tiles");
+    println!("  s3a-cli scholar recheck <file> [--online]         Recheck citation fingerprints against sources & Crossref");
+    println!("  s3a-cli scholar proof <file> --claim <id>         Print/export claim evidence chain (PROV-O JSON-LD)");
+    println!("  s3a-cli scholar export-bib <file> --out <path>    Export BibTeX/RIS bibliography with companion .proof.json");
+    println!("  s3a-cli export-iceberg <file> <out_dir> [name]    Export Apache Iceberg v1.metadata.json & Delta Lake UniForm log");
+    println!("  s3a-cli snowflake-serve [port]                    Start Snowflake External Function REST API gateway (default: 8088)");
+    println!("  s3a-cli tier-archive <file> <cold_dir> [stratum]  Offload frozen stratum Hyper-Tiles to S3/RustFS cold storage tier");
+    println!("  s3a-cli ec-shard <file> <out_dir> [k] [m]         Stripe S3A archive with K+M Reed-Solomon Erasure Coding (e.g. 8+2)");
+    println!("  s3a-cli ec-recover <shards_dir> <out_file> [k] [m] Recover S3A archive even with M lost/corrupted shards");
+    println!();
+    println!("BENCHMARKS & STRESS HARNESSES (EXPERIMENTAL):");
+    println!("  s3a-cli benchmark                                 Compare raw JSON/uncompressed storage vs S3A Hyper-Tiles");
+    println!("  s3a-cli benchmark-wearable                        Run wearable benchmark (4KB Flash page micro-tiles)");
+    println!("  s3a-cli benchmark-robotics                        Run robotics platform benchmark (1 kHz stream ring-buffer)");
+    println!("  s3a-cli benchmark-gis                             Run GIS Earth surface/subsurface 3D point cloud benchmark");
     println!("  s3a-cli benchmark-da                              Run L2 Rollup & Decentralized AI Data Availability benchmark");
-    println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
+    println!("  s3a-cli benchmark-bvh                             Run Hierarchical Tree of Hulls (BVH) O(log N) pruning benchmark");
+    println!("  s3a-cli benchmark-3d                              Run 3D Hilbert curve locality & 14-DOP bounding volume benchmark");
+    println!("  s3a-cli stream-ingest [file] [secs] [rate_hz]     Benchmark live L0 Ring Buffer concurrent ingestion & compaction");
+    println!("  s3a-cli storage-analysis                          Analyze storage footprint: Single-Node 1.0x, Erasure Coding vs 3.0x");
+}
+
+fn run_addon_list(archive_file: &str) {
+    println!("=========================================================================");
+    println!("                    S3A MODULAR ADDON INSPECTOR                          ");
+    println!("=========================================================================");
+    println!("Target Archive: {}", archive_file);
+
+    let engine = match S3ACrudEngine::open_or_create(archive_file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Failed to open archive: {}", e);
+            return;
+        }
+    };
+
+    let mask = engine.active_addons();
+    println!("Active Addons Bitmask: 0x{:08X}", mask);
+    println!("-------------------------------------------------------------------------");
+
+    let is_edu = engine.is_addon_active(ADDON_EDU);
+    let is_wearable = engine.is_addon_active(ADDON_WEARABLE);
+    let is_robotics = engine.is_addon_active(ADDON_ROBOTICS);
+    let is_gis = engine.is_addon_active(ADDON_GIS);
+    let is_da = engine.is_addon_active(ADDON_DA);
+    let is_ontology = engine.is_addon_active(ADDON_ONTOLOGY);
+    let is_fintech = engine.is_addon_active(ADDON_FINTECH);
+
+    let scholar_pack = ScholarPack;
+    let wearable_pack = WearablePack;
+    let robotics_pack = RoboticsPack;
+    let gis_pack = GisPack;
+    let da_pack = DaPack;
+    let ontology_pack = OntologyPack;
+
+    println!("Registered Domain Packs & Addons:");
+    println!("  [1] {} (v{}): {}", scholar_pack.name(), scholar_pack.version(), if is_edu { "ACTIVE (Tiles 10..=15)" } else { "INACTIVE" });
+    println!("  [2] {} (v{}): {}", wearable_pack.name(), wearable_pack.version(), if is_wearable { "ACTIVE (Tile 3)" } else { "INACTIVE" });
+    println!("  [3] {} (v{}): {}", robotics_pack.name(), robotics_pack.version(), if is_robotics { "ACTIVE (Tile 4)" } else { "INACTIVE" });
+    println!("  [4] {} (v{}): {}", gis_pack.name(), gis_pack.version(), if is_gis { "ACTIVE (Tile 5)" } else { "INACTIVE" });
+    println!("  [5] {} (v{}): {}", da_pack.name(), da_pack.version(), if is_da { "ACTIVE (Tile 6)" } else { "INACTIVE" });
+    println!("  [6] {} (v{}): {}", ontology_pack.name(), ontology_pack.version(), if is_ontology { "ACTIVE (Tiles 16..=17)" } else { "INACTIVE" });
+    println!("  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}", if is_fintech { "ACTIVE" } else { "INACTIVE" });
+
+    if mask == 0 {
+        println!();
+        println!("  => Pure General Database Archive: zero domain addons applied.");
+        println!("     All general-purpose vector, telemetry, and spatial operations are active.");
+    }
+    println!("=========================================================================");
+}
+
+fn run_addon_enable(archive_file: &str, addon_name: &str) {
+    let mask = match addon_name.to_lowercase().as_str() {
+        "edu" | "education" | "scholar" | "s3a-pack-scholar" => ADDON_EDU,
+        "wearable" | "wear" | "s3a-pack-wearable" => ADDON_WEARABLE,
+        "robotics" | "robot" | "s3a-pack-robotics" => ADDON_ROBOTICS,
+        "gis" | "geo" | "s3a-pack-gis" => ADDON_GIS,
+        "da" | "data-availability" | "s3a-pack-da" => ADDON_DA,
+        "ontology" | "ont" | "s3a-pack-ontology" => ADDON_ONTOLOGY,
+        "fintech" | "finance" => ADDON_FINTECH,
+        _ => {
+            eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, fintech", addon_name);
+            return;
+        }
+    };
+
+    let engine = match S3ACrudEngine::open_or_create(archive_file) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Failed to open archive: {}", e);
+            return;
+        }
+    };
+
+    match engine.enable_addon(mask) {
+        Ok(()) => {
+            println!("✓ Successfully enabled Addon '{}' (mask 0x{:04X}) on {}", addon_name, mask, archive_file);
+        }
+        Err(e) => {
+            eprintln!("Failed to enable addon: {}", e);
+        }
+    }
 }
 
 fn run_storage_analysis() {
@@ -921,7 +1383,7 @@ fn run_interactive_shell() {
         if trimmed.ends_with(';') || trimmed.ends_with("GO") || trimmed.ends_with("go") {
             let stmt = input_buffer.trim_end_matches(';').trim();
             if !stmt.is_empty() {
-                execute_s3a_ql(stmt);
+                execute_s3a_ql(stmt, false);
             }
             input_buffer.clear();
             print!("s3a> ");
@@ -934,11 +1396,35 @@ fn run_interactive_shell() {
 
 
 
-fn inspect_file(path: &str) {
+fn inspect_file(path: &str, json_mode: bool) {
     match MmapReader::open(path) {
         Ok(reader) => {
             let file_header = reader.file_header();
             let slot_name = if reader.active_slot() == 0 { "Slot A" } else { "Slot B" };
+
+            if json_mode {
+                let mut tiles_json = Vec::new();
+                for i in 0..reader.tile_count() as usize {
+                    if let Some((header, _)) = reader.get_tile(i) {
+                        tiles_json.push(format!(
+                            r#"{{"index":{},"tile_id":{},"tile_type":{},"layout_version":{},"record_count":{},"min_ts":{},"max_ts":{},"payload_bytes":{}}}"#,
+                            i, header.tile_id, header.tile_type, header.record_layout_version, header.record_count, header.min_timestamp, header.max_timestamp, header.payload_bytes
+                        ));
+                    }
+                }
+                println!(
+                    r#"{{"ok":true,"file":"{}","version":{},"generation":{},"active_slot":"{}","header_crc32":"0x{:08X}","tile_count":{},"tiles":[{}]}}"#,
+                    escape_cli_json(path),
+                    file_header.version,
+                    file_header.generation,
+                    if reader.active_slot() == 0 { "A" } else { "B" },
+                    file_header.header_crc32,
+                    file_header.tile_count,
+                    tiles_json.join(",")
+                );
+                return;
+            }
+
             println!("S3A Archive Inspection: {}", path);
             println!("  Version: {}", file_header.version);
             println!("  Generation: {}", file_header.generation);
@@ -954,24 +1440,34 @@ fn inspect_file(path: &str) {
                         TileType::TELEMETRY => "TELEMETRY",
                         TileType::EMBEDDING => "EMBEDDING",
                         TileType::HYBRID => "HYBRID",
-                        TileType::WEARABLE_MICRO => "WEARABLE_MICRO",
-                        TileType::ROBOTICS_KINEMATIC => "ROBOTICS_KINEMATIC",
-                        TileType::GIS_SURVEY_MESH => "GIS_SURVEY_MESH",
-                        TileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
+                        WearableTileType::WEARABLE_MICRO => "WEARABLE_MICRO",
+                        RoboticsTileType::ROBOTICS_KINEMATIC => "ROBOTICS_KINEMATIC",
+                        GisTileType::GIS_SURVEY_MESH => "GIS_SURVEY_MESH",
+                        DaTileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
                         TileType::LEARNING_RECORD_STORE => "LEARNING_RECORD_STORE (xAPI / RL Trajectory)",
-                        TileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
-                        TileType::AI_TRACE_LOG => "AI_TRACE_LOG (Reasoning / Hallucination / Tool)",
-                        TileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Literature 3D Slices)",
-                        TileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
+                        ScholarTileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
+                        ScholarTileType::AI_TRACE_LOG => "AI_TRACE_LOG (Reasoning / Hallucination / Tool)",
+                        ScholarTileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Literature 3D Slices)",
+                        ScholarTileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
+                        ScholarTileType::SRS_WORKSPACE => "SRS_WORKSPACE (Workspace Pod)",
+                        ScholarTileType::SRS_MANIFEST => "SRS_MANIFEST (Manifest Pod)",
                         _ => "UNKNOWN",
                     };
                     let bloom_occupied = header.filter.bits.iter().map(|b| b.count_ones()).sum::<u32>();
+                    let layout_str = if header.record_layout_version == 0 {
+                        "layout_v0 (legacy)".to_string()
+                    } else {
+                        format!("layout_v{}", header.record_layout_version)
+                    };
                     println!(
-                        "Tile #{}: ID={}, Type={}, Records={}, TimeRange=[{}, {}], Bytes={}",
-                        i, header.tile_id, tile_type_str, header.record_count, header.min_timestamp, header.max_timestamp, header.payload_bytes
+                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange=[{}, {}], Bytes={}",
+                        i, header.tile_id, tile_type_str, layout_str, header.record_count, header.min_timestamp, header.max_timestamp, header.payload_bytes
                     );
+                    if header.tile_type == 9 {
+                        println!("  ⚠️  WARNING: Tile type 9 is DEPRECATED/RESERVED_BOUNDARY. Greenfield LRS records should use Scholar Pack Tile 10.");
+                    }
                     println!(
                         "  ├─ Provenance Merkle Root: 0x{:02X}{:02X}{:02X}{:02X}...",
                         header.provenance.merkle_root[0], header.provenance.merkle_root[1],
@@ -992,7 +1488,13 @@ fn inspect_file(path: &str) {
                 }
             }
         }
-        Err(e) => eprintln!("Error opening file: {}", e),
+        Err(e) => {
+            if json_mode {
+                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            } else {
+                eprintln!("Error opening file: {}", e);
+            }
+        }
     }
 }
 
@@ -1041,11 +1543,12 @@ fn run_lrs_benchmark() {
 
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_lrs_path).unwrap();
+    writer.enable_addon(ADDON_EDU).unwrap();
     let recs_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<LearningActivityRecord>();
 
     for chunk in records.chunks(recs_per_tile) {
         let ts: Vec<u64> = chunk.iter().map(|r| r.timestamp_sec).collect();
-        writer.write_hyper_tile(TileType::LEARNING_RECORD_STORE, chunk, Some(&ts), None).unwrap();
+        writer.write_hyper_tile(ScholarTileType::HUMAN_LRS, chunk, Some(&ts), None).unwrap();
     }
     let write_duration = start_write.elapsed();
     let s3a_file_size = std::fs::metadata(temp_lrs_path).unwrap().len() as usize;
@@ -1077,13 +1580,548 @@ fn run_lrs_benchmark() {
     println!("==================================================================");
 }
 
-fn verify_file(path: &str) {
+fn escape_cli_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn seal_file(in_path: &str, out_path: &str) {
+    match s3a_engine::seal_archive(in_path, out_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M) {
+        Ok(_) => {
+            println!("Sealed S3A archive created successfully at '{}' (Reed-Solomon 16+2 parity)", out_path);
+        }
+        Err(e) => {
+            eprintln!("Error sealing archive: {}", e);
+        }
+    }
+}
+
+fn verify_file(
+    path: &str,
+    repair_out: Option<&str>,
+    json_mode: bool,
+    anchor_mode: bool,
+    trust_store: Option<&str>,
+    esplora_url: Option<&str>,
+) {
+    let p = Path::new(path);
+    if !p.exists() {
+        if json_mode {
+            println!(r#"{{"ok":false,"file":"{}","status":"error","error":"File not found"}}"#, escape_cli_json(path));
+        } else {
+            eprintln!("Error: file '{}' not found", path);
+        }
+        return;
+    }
+
+    let repair_path = repair_out.map(Path::new);
+    match s3a_engine::verify_sealed_archive(path, repair_path) {
+        Ok(report) => {
+            let status = if !report.repaired_tiles.is_empty() {
+                "repaired"
+            } else if report.is_sealed && report.rebuilt_directory {
+                "ok_with_warning"
+            } else {
+                "verified"
+            };
+
+            let computed_fp = s3a_engine::compute_sealed_fingerprint(
+                report.file_uuid,
+                report.tile_count,
+                &report.directory,
+            );
+            let computed_fp_hex = hex::encode(computed_fp);
+
+            if anchor_mode {
+                let trust_certs = trust_store.and_then(|tp| s3a_engine::load_pem_certificates(tp).ok());
+                let esplora_src = esplora_url.map(|u| s3a_engine::BlockHeaderSource::Esplora(u.to_string()));
+                let mut anchor_results = Vec::new();
+                for a in &report.anchors {
+                    let fp_match = a.fingerprint.to_lowercase() == computed_fp_hex.to_lowercase();
+                    let proof_valid = if a.method == "opentimestamps" {
+                        s3a_engine::verify_ots(a, &computed_fp, esplora_src.as_ref()).is_ok()
+                    } else if a.method == "rfc3161" {
+                        s3a_engine::verify_rfc3161(a, &computed_fp, trust_certs.as_deref()).unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    let is_match = fp_match && proof_valid;
+                    let display_status = if a.method == "rfc3161" {
+                        if is_match {
+                            "confirmed"
+                        } else if trust_certs.is_none() {
+                            "unverified"
+                        } else {
+                            "invalid"
+                        }
+                    } else {
+                        &a.status
+                    };
+                    anchor_results.push(serde_json::json!({
+                        "method": a.method,
+                        "fingerprint": a.fingerprint,
+                        "anchored_at": a.submitted_at,
+                        "status": display_status,
+                        "uri": a.uri,
+                        "match": if is_match { "yes" } else { "no" },
+                        "block_height": a.block_height,
+                        "block_hash": a.block_hash,
+                    }));
+                }
+
+                if json_mode {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "file": path,
+                            "is_sealed": report.is_sealed,
+                            "fingerprint": computed_fp_hex,
+                            "anchors": anchor_results,
+                        })
+                    );
+                } else {
+                    println!("Trust Anchor Verification for '{}':", path);
+                    println!("  Archive Fingerprint: {}", computed_fp_hex);
+                    println!("  Anchors Found:       {}", report.anchors.len());
+                    if report.anchors.is_empty() {
+                        println!("  Notice: No cryptographic trust anchors recorded in sealed footer.");
+                    } else {
+                        for (idx, res) in anchor_results.iter().enumerate() {
+                            println!("  - Anchor #{}:", idx + 1);
+                            println!("      Method:      {}", res["method"].as_str().unwrap_or(""));
+                            println!("      Anchored At: {} (epoch sec)", res["anchored_at"]);
+                            println!("      Status:      {}", res["status"].as_str().unwrap_or(""));
+                            if let Some(uri) = res["uri"].as_str() {
+                                println!("      URI:         {}", uri);
+                            }
+                            if let Some(height) = res["block_height"].as_u64() {
+                                println!("      Bitcoin Blk: {}", height);
+                            }
+                            println!("      Match:       {}", res["match"].as_str().unwrap_or("no"));
+                        }
+                    }
+                }
+                return;
+            }
+
+            if json_mode {
+                let warnings_json = serde_json::to_string(&report.warnings).unwrap_or("[]".into());
+                let repaired_json = serde_json::to_string(&report.repaired_tiles).unwrap_or("[]".into());
+                println!(
+                    r#"{{"ok":true,"file":"{}","status":"{}","is_sealed":{},"tile_count":{},"repaired_tiles":{},"warnings":{}}}"#,
+                    escape_cli_json(path),
+                    status,
+                    report.is_sealed,
+                    report.tile_count,
+                    repaired_json,
+                    warnings_json
+                );
+            } else {
+                if report.is_sealed {
+                    println!("Sealed verification SUCCESS: {} tiles verified in '{}'", report.tile_count, path);
+                } else {
+                    println!("Archive verification SUCCESS: {} tiles verified in '{}'", report.tile_count, path);
+                }
+                if !report.repaired_tiles.is_empty() {
+                    println!("Notice: Repaired {} damaged tiles in memory using Reed-Solomon parity: {:?}", report.repaired_tiles.len(), report.repaired_tiles);
+                    if let Some(out_p) = repair_out {
+                        println!("Repaired archive written to '{}'", out_p);
+                    }
+                }
+                for w in &report.warnings {
+                    println!("Warning: {}", w);
+                }
+            }
+        }
+        Err(e) => {
+            if json_mode {
+                println!(
+                    r#"{{"ok":false,"file":"{}","status":"failed","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
+            } else {
+                eprintln!("Verification FAILED in {}: {}", path, e);
+            }
+        }
+    }
+}
+
+fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, mock_mode: bool) {
+    let p = Path::new(path);
+    if !p.exists() {
+        eprintln!("Error: file '{}' not found", path);
+        return;
+    }
+
+    let fp = match s3a_engine::compute_sealed_file_fingerprint(p) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error computing archive fingerprint for '{}': {}", path, e);
+            return;
+        }
+    };
+    let fp_hex = hex::encode(fp);
+    println!("Sealed archive fingerprint: {}", fp_hex);
+
+    if let Some(tsa_url) = tsa_opt {
+        match s3a_engine::submit_rfc3161(fp, tsa_url) {
+            Ok(proof) => {
+                if let Err(e) = s3a_engine::attach_anchor_to_file(p, proof) {
+                    eprintln!("Failed to attach RFC 3161 anchor: {}", e);
+                } else {
+                    println!("Successfully anchored '{}' to TSA at '{}'", path, tsa_url);
+                }
+            }
+            Err(e) => {
+                eprintln!("RFC 3161 submission failed: {}", e);
+            }
+        }
+    } else {
+        let (_guards, calendars): (Vec<s3a_engine::anchor::mock_calendar::MockOtsCalendar>, Vec<String>) = if mock_mode {
+            let m1 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
+            let m2 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
+            let urls = vec![m1.url(), m2.url()];
+            println!("Started ephemeral local mock calendars: {}, {}", urls[0], urls[1]);
+            (vec![m1, m2], urls)
+        } else if let Some(c) = cal_opt {
+            let urls = c.split(',').map(|s| s.trim().to_string()).collect();
+            (Vec::new(), urls)
+        } else {
+            let urls = s3a_engine::DEFAULT_OTS_CALENDARS
+                .iter()
+                .map(|&s| s.to_string())
+                .collect();
+            (Vec::new(), urls)
+        };
+
+        match s3a_engine::submit_ots(fp, &calendars) {
+            Ok(proofs) => {
+                let mut attached_count = 0;
+                for proof in proofs {
+                    if let Err(e) = s3a_engine::attach_anchor_to_file(p, proof) {
+                        eprintln!("Failed to attach OpenTimestamps anchor: {}", e);
+                    } else {
+                        attached_count += 1;
+                    }
+                }
+                println!("Successfully anchored '{}' to {} OpenTimestamps calendar(s) (status: pending)", path, attached_count);
+            }
+            Err(e) => {
+                eprintln!("OpenTimestamps anchoring failed: {}", e);
+            }
+        }
+    }
+}
+
+fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
+    let p = Path::new(path);
+    if !p.exists() {
+        eprintln!("Error: file '{}' not found", path);
+        return;
+    }
+
+    let report = match s3a_engine::verify_sealed_archive(p, None) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error verifying sealed archive: {}", e);
+            return;
+        }
+    };
+
+    if report.anchors.is_empty() {
+        println!("No anchors found in '{}'", path);
+        return;
+    }
+
+    let mut upgraded_count = 0;
+    for mut anchor in report.anchors {
+        if anchor.status == "pending" && anchor.method == "opentimestamps" {
+            match s3a_engine::upgrade_ots(&mut anchor, cal_opt) {
+                Ok(true) => {
+                    if let Err(e) = s3a_engine::attach_anchor_to_file(p, anchor.clone()) {
+                        eprintln!("Failed to update anchor in file: {}", e);
+                    } else {
+                        println!(
+                            "Upgraded OTS anchor to confirmed at Bitcoin block {:?} ({:?})",
+                            anchor.block_height,
+                            anchor.block_hash
+                        );
+                        upgraded_count += 1;
+                    }
+                }
+                Ok(false) => {
+                    println!("Anchor still pending in calendar confirmation");
+                }
+                Err(e) => {
+                    eprintln!("Error upgrading anchor: {}", e);
+                }
+            }
+        }
+    }
+
+    if upgraded_count > 0 {
+        println!("Successfully upgraded {} anchor(s) in '{}'", upgraded_count, path);
+    }
+}
+
+fn run_status(path: &str, json_mode: bool) {
+    let p = Path::new(path);
+    if !p.exists() {
+        if json_mode {
+            println!(r#"{{"ok":false,"file":"{}","error":"File not found"}}"#, escape_cli_json(path));
+        } else {
+            eprintln!("Error: archive file '{}' does not exist", path);
+        }
+        return;
+    }
+
+    let file_len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            if json_mode {
+                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            } else {
+                eprintln!("Error reading metadata: {}", e);
+            }
+            return;
+        }
+    };
+
     match MmapReader::open(path) {
-        Ok(reader) => match reader.verify_checksums() {
-            Ok(_) => println!("Verification SUCCESS: All CRC32 checksums match in {}", path),
-            Err(e) => eprintln!("Verification FAILED in {}: {}", path, e),
-        },
-        Err(e) => eprintln!("Error opening file: {}", e),
+        Ok(reader) => {
+            let header = reader.file_header();
+            let slot_name = if reader.active_slot() == 0 { "A" } else { "B" };
+            let mask = header.addon_mask;
+            let mut addons = Vec::new();
+            if mask & ADDON_EDU != 0 { addons.push("scholar"); }
+            if mask & ADDON_WEARABLE != 0 { addons.push("wearable"); }
+            if mask & ADDON_ROBOTICS != 0 { addons.push("robotics"); }
+            if mask & ADDON_GIS != 0 { addons.push("gis"); }
+            if mask & ADDON_DA != 0 { addons.push("da"); }
+            if mask & ADDON_FINTECH != 0 { addons.push("fintech"); }
+
+            if json_mode {
+                let addons_json = addons.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(",");
+                println!(
+                    r#"{{"ok":true,"file":"{}","size_bytes":{},"version":{},"generation":{},"active_slot":"{}","header_crc32":"0x{:08X}","tile_count":{},"addon_mask":"0x{:04X}","active_addons":[{}]}}"#,
+                    escape_cli_json(path),
+                    file_len,
+                    header.version,
+                    header.generation,
+                    slot_name,
+                    header.header_crc32,
+                    header.tile_count,
+                    mask,
+                    addons_json
+                );
+            } else {
+                println!("=========================================================================");
+                println!("                     S3A ARCHIVE STATUS REPORT                           ");
+                println!("=========================================================================");
+                println!("Archive:                {}", path);
+                println!("File Size:              {} bytes ({:.2} KB)", file_len, file_len as f64 / 1024.0);
+                println!("Storage Version:        {}", header.version);
+                println!("Committed Generation:   {}", header.generation);
+                println!("Active Metadata Slot:   Slot {}", slot_name);
+                println!("Header CRC32:           0x{:08X}", header.header_crc32);
+                println!("Committed Tiles:        {}", header.tile_count);
+                println!("Capability Addon Mask:  0x{:04X} ({})", mask, if addons.is_empty() { "none (pure general db)".to_string() } else { addons.join(", ") });
+                println!("=========================================================================");
+            }
+        }
+        Err(e) => {
+            if json_mode {
+                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            } else {
+                eprintln!("Error inspecting status for '{}': {}", path, e);
+            }
+        }
+    }
+}
+
+fn run_doctor(path: &str, json_mode: bool) {
+    let p = Path::new(path);
+    if !p.exists() {
+        if json_mode {
+            println!(r#"{{"ok":false,"file":"{}","health":"MISSING","error":"File not found"}}"#, escape_cli_json(path));
+        } else {
+            eprintln!("Doctor Error: Archive file '{}' does not exist", path);
+        }
+        return;
+    }
+
+    let file_len = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            if json_mode {
+                println!(r#"{{"ok":false,"file":"{}","health":"ERROR","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            } else {
+                eprintln!("Doctor Error: {}", e);
+            }
+            return;
+        }
+    };
+
+    if file_len < s3a_core::FILE_HEADER_SIZE as u64 {
+        if json_mode {
+            println!(r#"{{"ok":false,"file":"{}","health":"CORRUPTED","error":"File smaller than S3A header ({} bytes)"}}"#, escape_cli_json(path), file_len);
+        } else {
+            eprintln!("Doctor: File too small ({} bytes < {} required header bytes)", file_len, s3a_core::FILE_HEADER_SIZE);
+        }
+        return;
+    }
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            if json_mode {
+                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            } else {
+                eprintln!("Doctor Error opening file: {}", e);
+            }
+            return;
+        }
+    };
+
+    let mut header_buf = [0u8; s3a_core::FILE_HEADER_SIZE];
+    if let Err(e) = file.read_exact(&mut header_buf) {
+        if json_mode {
+            println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+        } else {
+            eprintln!("Doctor Error reading header: {}", e);
+        }
+        return;
+    }
+
+    let slot_a: &s3a_core::FileHeader = bytemuck::from_bytes(&header_buf[s3a_core::FILE_HEADER_SLOT_A_OFFSET..s3a_core::FILE_HEADER_SLOT_A_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
+    let slot_b: &s3a_core::FileHeader = bytemuck::from_bytes(&header_buf[s3a_core::FILE_HEADER_SLOT_B_OFFSET..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
+
+    let slot_a_valid = s3a_engine::verify_header_slot(slot_a);
+    let slot_b_valid = s3a_engine::verify_header_slot(slot_b);
+
+    let resolution = s3a_engine::resolve_active_header(slot_a, slot_b);
+    let (active_header, active_slot_idx) = match resolution {
+        Ok((hdr, idx)) => (Some(hdr), Some(idx)),
+        Err(_) => (None, None),
+    };
+
+    let mut torn_bytes = 0u64;
+    let mut truncated_bytes = 0u64;
+    let mut orphan_temp_count = 0usize;
+
+    // Check orphan temp files
+    let parent_dir = p.parent().unwrap_or_else(|| Path::new("."));
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("archive");
+    let compact_prefix = format!("{}.compact.", stem);
+    let tmp_prefix = format!("{}.tmp.", stem);
+
+    if let Ok(entries) = std::fs::read_dir(parent_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(&compact_prefix) || name_str.starts_with(&tmp_prefix) {
+                orphan_temp_count += 1;
+            }
+        }
+    }
+
+    let mut tile_checksum_mismatches = 0usize;
+    let mut active_tile_count = 0u32;
+    let mut health = "HEALTHY";
+
+    if let Some(hdr) = active_header {
+        active_tile_count = hdr.tile_count;
+        let expected_size = s3a_core::FILE_HEADER_SIZE as u64 + active_tile_count as u64 * s3a_core::HYPER_TILE_SIZE as u64;
+        if file_len > expected_size {
+            torn_bytes = file_len - expected_size;
+            health = "DEGRADED";
+        } else if file_len < expected_size {
+            truncated_bytes = expected_size - file_len;
+            health = "CORRUPTED";
+        }
+
+        if !slot_a_valid || !slot_b_valid {
+            health = "DEGRADED";
+        }
+        if orphan_temp_count > 0 {
+            health = "DEGRADED";
+        }
+
+        // Validate individual tiles
+        if let Ok(reader) = MmapReader::open(path) {
+            for i in 0..active_tile_count as usize {
+                if let Some((tile_hdr, payload)) = reader.get_tile(i) {
+                    let computed_crc = crc32c::crc32c(payload);
+                    if computed_crc != tile_hdr.data_crc32 {
+                        tile_checksum_mismatches += 1;
+                        health = "CORRUPTED";
+                    }
+                }
+            }
+        }
+    } else {
+        health = "CORRUPTED";
+    }
+
+    if json_mode {
+        println!(
+            r#"{{"ok":true,"file":"{}","health":"{}","slot_a":{{"valid":{},"generation":{}}},"slot_b":{{"valid":{},"generation":{}}},"active_slot":"{}","tile_count":{},"torn_bytes":{},"truncated_bytes":{},"orphan_temps":{},"tile_crc_errors":{}}}"#,
+            escape_cli_json(path),
+            health,
+            slot_a_valid,
+            slot_a.generation,
+            slot_b_valid,
+            slot_b.generation,
+            active_slot_idx.map(|idx| if idx == 0 { "A" } else { "B" }).unwrap_or("NONE"),
+            active_tile_count,
+            torn_bytes,
+            truncated_bytes,
+            orphan_temp_count,
+            tile_checksum_mismatches
+        );
+    } else {
+        println!("=========================================================================");
+        println!("                     S3A ARCHIVE DOCTOR DIAGNOSTIC                       ");
+        println!("=========================================================================");
+        println!("Archive Target:         {}", path);
+        println!("Overall Health:         {}", match health {
+            "HEALTHY" => "✅ HEALTHY (All checks passed)",
+            "DEGRADED" => "⚠️  DEGRADED (Recoverable - run `s3a-cli recover <file>`)",
+            _ => "❌ CORRUPTED (Fatal integrity loss)",
+        });
+        println!("-------------------------------------------------------------------------");
+        println!("Slot A Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}", slot_a_valid, slot_a.generation, slot_a.header_crc32);
+        println!("Slot B Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}", slot_b_valid, slot_b.generation, slot_b.header_crc32);
+        println!("Active Committed Slot:  {}", active_slot_idx.map(|idx| if idx == 0 { "Slot A" } else { "Slot B" }).unwrap_or("NONE"));
+        println!("Committed Tile Count:   {}", active_tile_count);
+        println!("File Size on Disk:      {} bytes", file_len);
+        println!("Torn Uncommitted Bytes: {} bytes", torn_bytes);
+        println!("Truncated Tile Bytes:   {} bytes", truncated_bytes);
+        println!("Orphan Temp Compactions:{} file(s)", orphan_temp_count);
+        println!("Tile Checksum Mismatches: {}", tile_checksum_mismatches);
+        println!("=========================================================================");
+    }
+}
+
+fn run_recover(path: &str) {
+    println!("Initiating S3A Crash Recovery & Hardening on '{}'...", path);
+    match s3a_engine::recover_archive(path) {
+        Ok(header) => {
+            println!("✓ Recovery SUCCESS:");
+            println!("  Committed Generation: {}", header.generation);
+            println!("  Committed Tiles:      {}", header.tile_count);
+            println!("  Header CRC32:         0x{:08X}", header.header_crc32);
+            println!("  Addon Mask:           0x{:04X}", header.addon_mask);
+            println!("Archive is hardened, verified, and ready for queries.");
+        }
+        Err(e) => {
+            eprintln!("❌ Recovery FAILED on '{}': {}", path, e);
+        }
     }
 }
 
@@ -1183,11 +2221,12 @@ fn run_da_benchmark() {
 
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_da_path).unwrap();
+    writer.enable_addon(ADDON_DA).unwrap();
 
     let recs_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<DACommitmentRecord>();
     for chunk in da_records.chunks(recs_per_tile) {
         let block_heights: Vec<u64> = chunk.iter().map(|r| r.block_height).collect();
-        writer.write_hyper_tile(TileType::DATA_AVAILABILITY, chunk, Some(&block_heights), None).unwrap();
+        writer.write_hyper_tile(DaTileType::DATA_AVAILABILITY, chunk, Some(&block_heights), None).unwrap();
     }
     let write_duration = start_write.elapsed();
 
@@ -1240,6 +2279,7 @@ fn run_gis_benchmark() {
 
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_gis_path).unwrap();
+    writer.enable_addon(ADDON_GIS).unwrap();
 
     let points_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<GISSurveyPointRecord>();
     for chunk in points.chunks(points_per_tile) {
@@ -1273,7 +2313,7 @@ fn run_gis_benchmark() {
         hull.min_bounds[2] = min_elev;
         hull.max_bounds[2] = max_elev;
 
-        writer.write_hyper_tile(TileType::GIS_SURVEY_MESH, chunk, None, Some(hull)).unwrap();
+        writer.write_hyper_tile(GisTileType::GIS_SURVEY_MESH, chunk, None, Some(hull)).unwrap();
     }
     let write_duration = start_write.elapsed();
 
@@ -1491,71 +2531,118 @@ fn run_benchmark() {
     println!("\n==================================================================");
 }
 
-fn execute_s3a_ql(query: &str) {
+fn execute_s3a_ql(query: &str, json_mode: bool) {
     let start = Instant::now();
     match execute_query(query) {
         Ok(result) => {
             let elapsed = start.elapsed();
             match result {
                 QueryResult::Telemetry(rec) => {
-                    println!("--- S3A-QL FETCH RESULT (in {:?}) ---", elapsed);
-                    println!("Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
+                    if json_mode {
+                        println!(
+                            r#"{{"ok":true,"type":"fetch_telemetry","elapsed_us":{},"timestamp":{},"sensor_id":{},"metric_id":{},"value":{}}}"#,
+                            elapsed.as_micros(), rec.timestamp, rec.sensor_id, rec.metric_id, rec.value
+                        );
+                    } else {
+                        println!("--- S3A-QL FETCH RESULT (in {:?}) ---", elapsed);
+                        println!("Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
+                    }
                 }
                 QueryResult::TelemetryList(list) => {
-                    println!("--- S3A-QL SIFT RESULT ({} records in {:?}) ---", list.len(), elapsed);
-                    for (rec, coord) in list {
-                        println!("  {} -> Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", coord, rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
-                    }
-                }
-                QueryResult::KinematicList(list) => {
-                    println!("--- S3A-QL SIFT KINEMATICS ({} samples in {:?}) ---", list.len(), elapsed);
-                    for (rec, coord) in list {
-                        println!("  {} -> Time: {}us, Robot: {}, Pos: [{:.2}, {:.2}, {:.2}]", coord, rec.timestamp_us, rec.robot_id, rec.position_xyz[0], rec.position_xyz[1], rec.position_xyz[2]);
-                    }
-                }
-                QueryResult::GisList(list) => {
-                    println!("--- S3A-QL SIFT GIS_MESH ({} points in {:?}) ---", list.len(), elapsed);
-                    for (rec, coord) in list {
-                        println!("  {} -> Lat: {:.6}, Lon: {:.6}, Elev: {:.2}m", coord, rec.latitude_deg(), rec.longitude_deg(), rec.elevation_m());
+                    if json_mode {
+                        let records_json = list.iter().map(|(r, c)| {
+                            format!(r#"{{"coord":"{}","timestamp":{},"sensor_id":{},"metric_id":{},"value":{}}}"#, c, r.timestamp, r.sensor_id, r.metric_id, r.value)
+                        }).collect::<Vec<_>>().join(",");
+                        println!(r#"{{"ok":true,"type":"sift_telemetry","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                    } else {
+                        println!("--- S3A-QL SIFT RESULT ({} records in {:?}) ---", list.len(), elapsed);
+                        for (rec, coord) in list {
+                            println!("  {} -> Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", coord, rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
+                        }
                     }
                 }
                 QueryResult::EmbeddingList(list) => {
-                    println!("--- S3A-QL SIFT EMBEDDINGS ({} matches in {:?}) ---", list.len(), elapsed);
-                    for (rec, score, coord) in list {
-                        println!("  {} -> ID: {}, Timestamp: {}, Similarity Score: {:.4}", coord, rec.id, rec.timestamp, score);
-                    }
-                }
-                QueryResult::DaList(list) => {
-                    println!("--- S3A-QL SIFT DA_COMMITMENTS ({} blocks in {:?}) ---", list.len(), elapsed);
-                    for (rec, coord) in list {
-                        println!("  {} -> Block Height: {}, Txs: {}, Quorum: 0x{:08X}", coord, rec.block_height, rec.transaction_count, rec.quorum_bitmask);
+                    if json_mode {
+                        let records_json = list.iter().map(|(r, score, c)| {
+                            format!(r#"{{"coord":"{}","id":{},"timestamp":{},"score":{}}}"#, c, r.id, r.timestamp, score)
+                        }).collect::<Vec<_>>().join(",");
+                        println!(r#"{{"ok":true,"type":"sift_embeddings","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                    } else {
+                        println!("--- S3A-QL SIFT EMBEDDINGS ({} matches in {:?}) ---", list.len(), elapsed);
+                        for (rec, score, coord) in list {
+                            println!("  {} -> ID: {}, Timestamp: {}, Similarity Score: {:.4}", coord, rec.id, rec.timestamp, score);
+                        }
                     }
                 }
                 QueryResult::LearningActivityList(list) => {
-                    println!("--- S3A-QL SIFT LEARNING_ACTIVITIES ({} records in {:?}) ---", list.len(), elapsed);
-                    for (rec, coord) in list {
-                        println!("  {} -> Actor: {}, Verb: {}, Object: {}, Score: {:.2}, Latency: {}ms", coord, rec.actor_id, rec.verb_id, rec.object_id, rec.result_score, rec.duration_ms);
+                    if json_mode {
+                        let records_json = list.iter().map(|(r, c)| {
+                            format!(r#"{{"coord":"{}","actor_id":{},"verb_id":{},"object_id":{},"score":{},"duration_ms":{}}}"#, c, r.actor_id, r.verb_id, r.object_id, r.result_score, r.duration_ms)
+                        }).collect::<Vec<_>>().join(",");
+                        println!(r#"{{"ok":true,"type":"sift_learning_activities","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                    } else {
+                        println!("--- S3A-QL SIFT LEARNING_ACTIVITIES ({} records in {:?}) ---", list.len(), elapsed);
+                        for (rec, coord) in list {
+                            println!("  {} -> Actor: {}, Verb: {}, Object: {}, Score: {:.2}, Latency: {}ms", coord, rec.actor_id, rec.verb_id, rec.object_id, rec.result_score, rec.duration_ms);
+                        }
+                    }
+                }
+                QueryResult::PackData { domain, count, summary, json_payload } => {
+                    if json_mode {
+                        let payload_frag = match json_payload {
+                            Some(p) => format!(r#","payload":{}"#, p),
+                            None => String::new(),
+                        };
+                        println!(
+                            r#"{{"ok":true,"type":"pack_data","elapsed_us":{},"domain":"{}","count":{},"summary":"{}"{}}}"#,
+                            elapsed.as_micros(), domain.as_str(), count, escape_cli_json(&summary), payload_frag
+                        );
+                    } else {
+                        println!("--- S3A-QL SIFT PACK [{}] ({} records in {:?}) ---", domain.as_str(), count, elapsed);
+                        println!("{}", summary);
                     }
                 }
                 QueryResult::Inserted { coordinate } => {
-                    println!("--- S3A-QL INSERT SUCCESS (in {:?}) ---", elapsed);
-                    println!("Record stored at coordinate: {}", coordinate);
+                    if json_mode {
+                        println!(r#"{{"ok":true,"type":"insert","elapsed_us":{},"coordinate":"{}"}}"#, elapsed.as_micros(), coordinate);
+                    } else {
+                        println!("--- S3A-QL INSERT SUCCESS (in {:?}) ---", elapsed);
+                        println!("Record stored at coordinate: {}", coordinate);
+                    }
                 }
                 QueryResult::Deleted { success } => {
-                    println!("--- S3A-QL DELETE RESULT (in {:?}) ---", elapsed);
-                    println!("Deleted successfully: {}", success);
+                    if json_mode {
+                        println!(r#"{{"ok":true,"type":"delete","elapsed_us":{},"success":{}}}"#, elapsed.as_micros(), success);
+                    } else {
+                        println!("--- S3A-QL DELETE RESULT (in {:?}) ---", elapsed);
+                        println!("Deleted successfully: {}", success);
+                    }
                 }
                 QueryResult::Compacted { new_tile_count } => {
-                    println!("--- S3A-QL COMPACT COMPLETE (in {:?}) ---", elapsed);
-                    println!("Consolidated archive tile count: {}", new_tile_count);
+                    if json_mode {
+                        println!(r#"{{"ok":true,"type":"compact","elapsed_us":{},"new_tile_count":{}}}"#, elapsed.as_micros(), new_tile_count);
+                    } else {
+                        println!("--- S3A-QL COMPACT COMPLETE (in {:?}) ---", elapsed);
+                        println!("Consolidated archive tile count: {}", new_tile_count);
+                    }
                 }
                 QueryResult::Fused { new_tile_count } => {
-                    println!("--- S3A-QL FUSE COMPLETE (in {:?}) ---", elapsed);
-                    println!("Fused archive tile count: {}", new_tile_count);
+                    if json_mode {
+                        println!(r#"{{"ok":true,"type":"fuse","elapsed_us":{},"new_tile_count":{}}}"#, elapsed.as_micros(), new_tile_count);
+                    } else {
+                        println!("--- S3A-QL FUSE COMPLETE (in {:?}) ---", elapsed);
+                        println!("Fused archive tile count: {}", new_tile_count);
+                    }
                 }
             }
         }
-        Err(e) => eprintln!("S3A-QL Execution Error: {}", e),
+        Err(e) => {
+            if json_mode {
+                println!("{}", e.to_json());
+            } else {
+                eprintln!("S3A-QL Execution Error: {}", e);
+            }
+        }
     }
 }
 
@@ -1793,9 +2880,140 @@ fn handle_connection(stream: &mut TcpStream) {
         );
         let _ = engine.create_human_lrs(&[human_rec]);
 
+        // Auto-enable educational addon on destination database
+        let _ = engine.enable_addon(s3a_core::ADDON_EDU);
+
         let resp = format!(
             "{{\"status\":\"success\",\"message\":\"Direct web-to-local bridge intake completed in <1ms\",\"target_db\":\"{}\",\"ingested_papers\":{},\"query\":\"{}\"}}",
             dest_db, count, query
+        );
+        send_response(stream, "200 OK", "application/json", resp.as_bytes());
+        return;
+    }
+
+    if method == "GET" && (url == "/api/addons" || url.starts_with("/api/addons?")) {
+        let target_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let engine = match S3ACrudEngine::open_or_create(&target_db) {
+            Ok(e) => e,
+            Err(e) => {
+                let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
+                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                return;
+            }
+        };
+
+        let is_edu = engine.is_addon_active(s3a_core::ADDON_EDU);
+        let is_wearable = engine.is_addon_active(s3a_core::ADDON_WEARABLE);
+        let is_robotics = engine.is_addon_active(s3a_core::ADDON_ROBOTICS);
+        let is_gis = engine.is_addon_active(s3a_core::ADDON_GIS);
+        let is_da = engine.is_addon_active(s3a_core::ADDON_DA);
+        let is_fintech = engine.is_addon_active(s3a_core::ADDON_FINTECH);
+
+        let resp = format!(
+            "{{\"archive\":\"{}\",\"addon_mask\":{},\"addons\":[{{\"name\":\"s3a-pack-scholar\",\"title\":\"Scholar Explorer Educational & Cognitive Provenance\",\"active\":{},\"tiles\":[10,11,12,13,14,15]}},{{\"name\":\"s3a-pack-wearable\",\"title\":\"Wearable Micro-Telemetry & Biometrics\",\"active\":{},\"tiles\":[3]}},{{\"name\":\"s3a-pack-robotics\",\"title\":\"Robotics Kinematic Trajectories\",\"active\":{},\"tiles\":[4]}},{{\"name\":\"s3a-pack-gis\",\"title\":\"GIS Surveying & Subsurface Mesh\",\"active\":{},\"tiles\":[5]}},{{\"name\":\"s3a-pack-da\",\"title\":\"Data Availability Commitments\",\"active\":{},\"tiles\":[6]}},{{\"name\":\"s3a-addon-fintech\",\"title\":\"High-Frequency Financial Ticks\",\"active\":{}}}]}}",
+            target_db, engine.active_addons(), is_edu, is_wearable, is_robotics, is_gis, is_da, is_fintech
+        );
+        send_response(stream, "200 OK", "application/json", resp.as_bytes());
+        return;
+    }
+
+    if method == "POST" && (url == "/api/lrs/log" || url.starts_with("/api/lrs/log?")) {
+        let body = extract_body(&request);
+        let dest_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let engine = match S3ACrudEngine::open_or_create(&dest_db) {
+            Ok(e) => e,
+            Err(e) => {
+                let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
+                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                return;
+            }
+        };
+
+        // Enable educational addon
+        let _ = engine.enable_addon(s3a_core::ADDON_EDU);
+
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let event_type = parse_json_str(&body, "event_type").unwrap_or_else(|| "human".to_string());
+
+        if event_type == "human" || parse_json_str(&body, "verb").is_some() {
+            let verb = parse_json_str(&body, "verb").unwrap_or_else(|| "searched".to_string());
+            let query_text = parse_json_str(&body, "query").unwrap_or_default();
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in query_text.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+
+            let verb_id = match verb.as_str() {
+                "searched" => 1,
+                "inspected" => 2,
+                "filtered" => 3,
+                "starred" | "saved" => 4,
+                "tool_clicked" => 5,
+                "exported" => 6,
+                _ => 1,
+            };
+
+            let human_rec = HumanLrsRecord::new(
+                [0x1122334455667788, ts],
+                ts,
+                0x5343484F4C4152, // "SCHOLAR" actor hash
+                verb_id,
+                1.0,
+                S3ACoordinate::new(0, 0, 0),
+                (h & 0xFFFFFFFF) as u32,
+            );
+            let _ = engine.create_human_lrs(&[human_rec]);
+        } else if event_type == "ai_trace" || parse_json_str(&body, "prompt").is_some() {
+            let agent_name = parse_json_str(&body, "agent_id").unwrap_or_else(|| "scholar-advisor".to_string());
+            let mut agent_hash: u64 = 0xcbf29ce484222325;
+            for b in agent_name.as_bytes() { agent_hash ^= *b as u64; agent_hash = agent_hash.wrapping_mul(0x100000001b3); }
+
+            let step_type = parse_json_u64(&body, "step_type").unwrap_or(1) as u32;
+            let confidence = parse_json_f64(&body, "confidence").unwrap_or(0.95) as f32;
+
+            let ai_rec = AiTraceRecord::new(
+                [0x1122334455667788, ts],
+                ts,
+                agent_hash,
+                step_type,
+                confidence,
+                S3ACoordinate::new(0, 0, 0),
+                0,
+            );
+            let _ = engine.create_ai_traces(&[ai_rec]);
+        }
+
+        let resp = format!(
+            "{{\"status\":\"success\",\"addon\":\"s3a-pack-scholar\",\"target_db\":\"{}\",\"timestamp\":{}}}",
+            dest_db, ts
+        );
+        send_response(stream, "200 OK", "application/json", resp.as_bytes());
+        return;
+    }
+
+    if method == "GET" && (url == "/api/lrs/records" || url.starts_with("/api/lrs/records?")) {
+        let target_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let engine = match S3ACrudEngine::open_or_create(&target_db) {
+            Ok(e) => e,
+            Err(e) => {
+                let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
+                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                return;
+            }
+        };
+
+        let is_edu = engine.is_addon_active(s3a_core::ADDON_EDU);
+        let reader = MmapReader::open(&target_db).ok();
+        let (human_count, ai_count) = if let Some(ref r) = reader {
+            let sieve = QuerySieve::new(r);
+            let h = sieve.query_human_lrs(None, None, 0, u64::MAX);
+            let a = sieve.query_ai_traces(None, None, 0, u64::MAX);
+            (h.len(), a.len())
+        } else {
+            (0, 0)
+        };
+
+        let resp = format!(
+            "{{\"target_db\":\"{}\",\"addon_active\":{},\"human_records_count\":{},\"ai_traces_count\":{}}}",
+            target_db, is_edu, human_count, ai_count
         );
         send_response(stream, "200 OK", "application/json", resp.as_bytes());
         return;
@@ -2200,212 +3418,6 @@ fn parse_uuid_to_u64_pair(s: &str) -> Option<[u64; 2]> {
     Some([high, low])
 }
 
-fn run_import_academic_bundle(json_dir: &str, out_dir: &str) {
-    let out_path = Path::new(out_dir);
-    let _ = std::fs::create_dir_all(out_path);
-
-    println!("=========================================================================");
-    println!("     S3A ACADEMIC & COGNITIVE PROVENANCE INGESTION PIPELINE              ");
-    println!("=========================================================================");
-    println!("Source JSON Directory: {}", json_dir);
-    println!("Destination Directory: {}", out_dir);
-    println!("-------------------------------------------------------------------------");
-
-    use std::io::BufRead;
-
-    // 1. Ingest Human LRS Records
-    let human_file = Path::new(json_dir).join("human_lrs.jsonl");
-    let human_archive = out_path.join("openharness_human_lrs.s3a");
-    let mut human_count = 0usize;
-    if human_file.exists() {
-        if let Ok(file) = std::fs::File::open(&human_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            let engine = S3ACrudEngine::open_or_create(&human_archive).unwrap();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
-                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let actor = parse_json_u64(&line, "actor_hash").unwrap_or(0);
-                let verb = parse_json_u64(&line, "verb_id").unwrap_or(0) as u32;
-                let score = parse_json_f64(&line, "decision_score").unwrap_or(1.0) as f32;
-                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0) as u32;
-                let ai_t = parse_json_u64(&line, "ai_tile").unwrap_or(0) as u32;
-                let ai_r = parse_json_u64(&line, "ai_record").unwrap_or(0) as u32;
-                let ai_coord = S3ACoordinate::new(0, ai_t, ai_r);
-
-                batch.push(HumanLrsRecord::new([high, low], ts, actor, verb, score, ai_coord, obj));
-                human_count += 1;
-                if batch.len() >= 2040 {
-                    let _ = engine.create_human_lrs(&batch);
-                    batch.clear();
-                }
-            }
-            if !batch.is_empty() {
-                let _ = engine.create_human_lrs(&batch);
-            }
-        }
-        println!("  ✓ Ingested {} Human LRS Records -> {}", human_count, human_archive.display());
-    }
-
-    // 2. Ingest AI Trace Log Records
-    let ai_file = Path::new(json_dir).join("ai_traces.jsonl");
-    let ai_archive = out_path.join("openharness_ai_traces.s3a");
-    let mut ai_count = 0usize;
-    if ai_file.exists() {
-        if let Ok(file) = std::fs::File::open(&ai_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            let engine = S3ACrudEngine::open_or_create(&ai_archive).unwrap();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
-                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let agent = parse_json_u64(&line, "agent_id").unwrap_or(0);
-                let step = parse_json_u64(&line, "step_type").unwrap_or(0) as u32;
-                let conf = parse_json_f64(&line, "confidence").unwrap_or(1.0) as f32;
-                let h_t = parse_json_u64(&line, "human_tile").unwrap_or(0) as u32;
-                let h_r = parse_json_u64(&line, "human_record").unwrap_or(0) as u32;
-                let h_coord = S3ACoordinate::new(0, h_t, h_r);
-                let hilbert = parse_json_u64(&line, "hilbert_index").unwrap_or(0) as u32;
-
-                batch.push(AiTraceRecord::new([high, low], ts, agent, step, conf, h_coord, hilbert));
-                ai_count += 1;
-                if batch.len() >= 2040 {
-                    let _ = engine.create_ai_traces(&batch);
-                    batch.clear();
-                }
-            }
-            if !batch.is_empty() {
-                let _ = engine.create_ai_traces(&batch);
-            }
-        }
-        println!("  ✓ Ingested {} AI Agent Trace Records -> {}", ai_count, ai_archive.display());
-    }
-
-    // 3. Ingest Academic Research Papers
-    let papers_file = Path::new(json_dir).join("academic_papers.jsonl");
-    let papers_archive = out_path.join("openharness_papers.s3a");
-    let mut paper_count = 0usize;
-    if papers_file.exists() {
-        if let Ok(file) = std::fs::File::open(&papers_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            let engine = S3ACrudEngine::open_or_create(&papers_archive).unwrap();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let pid = parse_json_u64(&line, "paper_id").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let h_idx = parse_json_u64(&line, "hilbert_index").unwrap_or(0);
-                let tx = parse_json_f64(&line, "topic_x").unwrap_or(0.0) as f32;
-                let ty = parse_json_f64(&line, "topic_y").unwrap_or(0.0) as f32;
-                let tz = parse_json_f64(&line, "topic_z").unwrap_or(0.0) as f32;
-                let cit = parse_json_u64(&line, "citation_count").unwrap_or(0) as u32;
-                let year = parse_json_u64(&line, "year").unwrap_or(2026) as u16;
-                let venue = parse_json_u64(&line, "venue_id").unwrap_or(0) as u16;
-                let oa = parse_json_u64(&line, "open_access_flag").unwrap_or(0) as u16;
-                let warn = parse_json_u64(&line, "warning_count").unwrap_or(0) as u16;
-                let doi_pfx = parse_json_u64(&line, "doi_prefix_hash").unwrap_or(0);
-
-                batch.push(AcademicPaperRecord::new(pid, ts, h_idx, tx, ty, tz, cit, year, venue, oa, warn, doi_pfx));
-                paper_count += 1;
-                if batch.len() >= 2040 {
-                    let _ = engine.create_academic_papers(&batch);
-                    batch.clear();
-                }
-            }
-            if !batch.is_empty() {
-                let _ = engine.create_academic_papers(&batch);
-            }
-        }
-        println!("  ✓ Ingested {} Academic Research Papers -> {}", paper_count, papers_archive.display());
-    }
-
-    // 4. Ingest Research Graph Edges
-    let edges_file = Path::new(json_dir).join("graph_edges.jsonl");
-    let edges_archive = out_path.join("openharness_graph.s3a");
-    let mut edge_count = 0usize;
-    if edges_file.exists() {
-        if let Ok(file) = std::fs::File::open(&edges_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            let engine = S3ACrudEngine::open_or_create(&edges_archive).unwrap();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let sub = parse_json_u64(&line, "subject_hash").unwrap_or(0);
-                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let h_coord = parse_json_u64(&line, "hilbert_coord").unwrap_or(0);
-                let pred = parse_json_u64(&line, "predicate_id").unwrap_or(0) as u32;
-                let weight = parse_json_f64(&line, "weight").unwrap_or(1.0) as f32;
-
-                batch.push(ResearchGraphEdgeRecord::new(sub, obj, ts, h_coord, pred, weight));
-                edge_count += 1;
-                if batch.len() >= 2040 {
-                    let _ = engine.create_research_graph_edges(&batch);
-                    batch.clear();
-                }
-            }
-            if !batch.is_empty() {
-                let _ = engine.create_research_graph_edges(&batch);
-            }
-        }
-        println!("  ✓ Ingested {} Knowledge Graph Edges -> {}", edge_count, edges_archive.display());
-    }
-
-    // 5. Create Unified Archive with Both Human and AI Stratum
-    let unified_archive = out_path.join("openharness_unified.s3a");
-    if human_file.exists() && ai_file.exists() {
-        let engine = S3ACrudEngine::open_or_create(&unified_archive).unwrap();
-        if let Ok(file) = std::fs::File::open(&human_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
-                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let actor = parse_json_u64(&line, "actor_hash").unwrap_or(0);
-                let verb = parse_json_u64(&line, "verb_id").unwrap_or(0) as u32;
-                let score = parse_json_f64(&line, "decision_score").unwrap_or(1.0) as f32;
-                let obj = parse_json_u64(&line, "object_hash").unwrap_or(0) as u32;
-                let ai_t = parse_json_u64(&line, "ai_tile").unwrap_or(1) as u32;
-                let ai_r = parse_json_u64(&line, "ai_record").unwrap_or(0) as u32;
-                let ai_coord = S3ACoordinate::new(0, ai_t, ai_r);
-                batch.push(HumanLrsRecord::new([high, low], ts, actor, verb, score, ai_coord, obj));
-            }
-            let _ = engine.create_human_lrs(&batch);
-        }
-        if let Ok(file) = std::fs::File::open(&ai_file) {
-            let reader = std::io::BufReader::new(file);
-            let mut batch = Vec::new();
-            for line in reader.lines().flatten() {
-                if line.trim().is_empty() { continue; }
-                let high = parse_json_u64(&line, "session_high").unwrap_or(0);
-                let low = parse_json_u64(&line, "session_low").unwrap_or(0);
-                let ts = parse_json_u64(&line, "timestamp_sec").unwrap_or(0);
-                let agent = parse_json_u64(&line, "agent_id").unwrap_or(0);
-                let step = parse_json_u64(&line, "step_type").unwrap_or(0) as u32;
-                let conf = parse_json_f64(&line, "confidence").unwrap_or(1.0) as f32;
-                let h_t = parse_json_u64(&line, "human_tile").unwrap_or(0) as u32;
-                let h_r = parse_json_u64(&line, "human_record").unwrap_or(0) as u32;
-                let h_coord = S3ACoordinate::new(0, h_t, h_r);
-                let hilbert = parse_json_u64(&line, "hilbert_index").unwrap_or(0) as u32;
-                batch.push(AiTraceRecord::new([high, low], ts, agent, step, conf, h_coord, hilbert));
-            }
-            let _ = engine.create_ai_traces(&batch);
-        }
-        println!("  ✓ Created Unified Dual-Trace Archive -> {}", unified_archive.display());
-    }
-
-    println!("-------------------------------------------------------------------------");
-    println!("Total Ingested: {} Human LRS, {} AI Traces, {} Papers, {} Graph Edges",
-        human_count, ai_count, paper_count, edge_count
-    );
-    println!("=========================================================================");
-}
 
 fn parse_hex_uuid_128(s: &str) -> Option<[u64; 2]> {
     let clean = s.replace('-', "");
@@ -2473,14 +3485,226 @@ fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<
     }
 }
 
-fn run_snapshot_intake(snapshot_file: &str) {
+fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
+    println!("=========================================================================");
+    println!("       S3A SCHOLAR PACK INTERMEDIATE INGESTION (scholar_ingest_v1)       ");
+    println!("=========================================================================");
+    println!("Source Intermediate Directory: {}", intermediate_dir);
+    println!("Target S3A Archive:            {}", out_file);
+    println!("Idempotency (Fresh Archive):   {}", if fresh { "YES (--fresh)" } else { "NO (append)" });
+    println!("-------------------------------------------------------------------------");
+
+    let start = Instant::now();
+    match ingest_scholar_intermediate_dir(intermediate_dir, out_file, fresh) {
+        Ok(stats) => {
+            let duration = start.elapsed();
+            println!("Ingestion Successful in {:.2?}!", duration);
+            println!("  Workspace Context:  {} records", stats.workspace_count);
+            println!("  Academic Papers:    {} records (Tile 12)", stats.papers_count);
+            println!("  Knowledge Edges:    {} records (Tile 13)", stats.edges_count);
+            println!("  Human LRS Ledger:   {} records (Tile 10)", stats.human_count);
+            println!("  AI Trace Logs:      {} records (Tile 11)", stats.ai_count);
+            println!("  Total Tiles:        {}", stats.total_tiles);
+            println!("  Capability:         ADDON_EDU Enabled (0x0001)");
+            println!("=========================================================================");
+        }
+        Err(e) => {
+            eprintln!("Scholar Ingestion Failed: {}", e);
+        }
+    }
+}
+
+fn run_scholar_recheck(
+    archive_path: &str,
+    online: bool,
+    endpoint: Option<String>,
+    out_path: Option<String>,
+    url_overrides: std::collections::HashMap<u64, (String, String)>,
+) {
+    println!("════════════════════════════════════════════════════════════════════════════════");
+    println!("       S3A SCHOLAR PACK CITATION RECHECK (Verified Research Trust)              ");
+    println!("════════════════════════════════════════════════════════════════════════════════");
+    println!("Target Archive:     {}", archive_path);
+    println!("Verification Mode:  {}", if online { "ONLINE (re-fetch source & Crossref API)" } else { "OFFLINE (structural & cryptographic integrity)" });
+    if let Some(ref ep) = endpoint {
+        println!("Crossref Endpoint:  {}", ep);
+    }
+    if let Some(ref op) = out_path {
+        println!("Output Destination: {}", op);
+    }
+    println!("────────────────────────────────────────────────────────────────────────────────");
+
+    let opts = s3a_pack_scholar::RecheckOptions {
+        online,
+        crossref_endpoint: endpoint,
+        url_overrides,
+        out_path,
+    };
+
+    match s3a_pack_scholar::recheck_archive(archive_path, &opts) {
+        Ok(report) => {
+            println!("Found {} citation fingerprint(s) on Hyper-Tile 32.", report.items.len());
+            println!("--------------------------------------------------------------------------------");
+            println!("{:<14} {:<6} {:<18} {:<12} {:<18}", "Paper ID", "Kind", "Stored SHA-256", "Status", "Action Taken");
+            println!("--------------------------------------------------------------------------------");
+            for item in &report.items {
+                let sha_short = if item.stored_sha256.len() > 16 {
+                    format!("{}...", &item.stored_sha256[..16])
+                } else {
+                    item.stored_sha256.clone()
+                };
+                let action = if item.mark_written {
+                    "MARK_NEEDS_REVIEW"
+                } else {
+                    "-"
+                };
+                println!(
+                    "0x{:<12x} {:<6} {:<18} {:<12} {:<18}",
+                    item.paper_id,
+                    item.content_kind,
+                    sha_short,
+                    item.status.as_str(),
+                    action,
+                );
+            }
+            println!("--------------------------------------------------------------------------------");
+            println!(
+                "Summary: {} unchanged, {} changed, {} retracted, {} unreachable.",
+                report.unchanged_count, report.changed_count, report.retracted_count, report.unreachable_count
+            );
+            println!(
+                "Mutations: {} policy marks appended, {} xAPI statements recorded.",
+                report.marks_appended, report.statements_appended
+            );
+            println!("════════════════════════════════════════════════════════════════════════════════");
+        }
+        Err(e) => {
+            eprintln!("[ERROR] Scholar citation recheck failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_scholar_proof(archive_path: &str, claim_id: u64, json_ld: bool, out_path: Option<&str>) {
+    match build_claim_proof(archive_path, claim_id) {
+        Ok(proof) => {
+            if json_ld {
+                let json_ld_val = proof.to_json_ld();
+                let json_str = serde_json::to_string_pretty(&json_ld_val).unwrap_or_default();
+                if let Some(out) = out_path {
+                    if let Err(e) = std::fs::write(out, &json_str) {
+                        eprintln!("[ERROR] Failed to write JSON-LD to '{}': {}", out, e);
+                        std::process::exit(1);
+                    }
+                    println!("Claim proof exported as JSON-LD to '{}'", out);
+                } else {
+                    println!("{}", json_str);
+                }
+            } else {
+                proof.print_human_readable();
+                if let Some(out) = out_path {
+                    let json_val = serde_json::to_string_pretty(&proof).unwrap_or_default();
+                    if let Err(e) = std::fs::write(out, &json_val) {
+                        eprintln!("[ERROR] Failed to write proof to '{}': {}", out, e);
+                        std::process::exit(1);
+                    }
+                    println!("Claim proof written to '{}'", out);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[ERROR] Failed to build claim evidence proof: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_scholar_export_bib(archive_path: &str, out_path: &str, format: &str) {
+    match export_bibliography_with_proof(archive_path, out_path, format) {
+        Ok(()) => {
+            println!("Exported bibliography ({}) to '{}'", format, out_path);
+            let companion = format!("{}.proof.json", out_path);
+            println!("Exported cryptographic companion proof to '{}'", companion);
+        }
+        Err(e) => {
+            eprintln!("[ERROR] Failed to export bibliography with proof: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_scholar_demo_seed(out_path: &str) {
+    println!("Seeding demo Scholar snapshot at '{}'...", out_path);
+    let engine = S3ACrudEngine::open_or_create(out_path).expect("failed to create archive");
+    engine.enable_addon(ADDON_EDU).expect("failed to enable ADDON_EDU");
+
+    let paper = AcademicPaperRecord::new(
+        1001,
+        1600000000,
+        1,
+        0.1,
+        0.2,
+        0.3,
+        10,
+        2024,
+        1,
+        1,
+        0,
+        0,
+    );
+    engine.create_academic_papers(&[paper]).expect("papers");
+
+    let content_bytes = b"%PDF-1.4 Key empirical finding: neural topological memory achieves O(1) recall";
+    let fp = CitationFingerprintRecord::from_content(
+        1001,
+        "10.1000/1001",
+        content_bytes,
+        CONTENT_KIND_PDF,
+        "https://example.org/papers/topological_memory.pdf",
+        2,
+        1600000000,
+    );
+    engine.create_citation_fingerprints(&[fp]).expect("fingerprints");
+
+    let quote = "Key empirical finding: neural topological memory achieves O(1) recall";
+    let claim = ScholarNoteClaimRecord::new(
+        42,
+        1600000000,
+        [0, 0],
+        0xDEADBEEF,
+        0.99,
+        CLAIM_KIND_EMPIRICAL,
+        quote,
+    ).with_evidence(
+        1001,
+        4,
+        120,
+        quote.len() as u32,
+        quote,
+        0xDEADBEEF,
+        [0x1122334455667788, 0x99AABBCCDDEEFF00],
+    );
+    engine.create_note_claims(&[claim]).expect("claims");
+    println!("✓ Successfully seeded Scholar research snapshot with paper 1001, citation fingerprint, and claim 42.");
+}
+
+fn run_snapshot_intake(snapshot_file: &str, into_live_db: Option<&str>) {
     println!("=========================================================================");
     println!("         S3A SCHOLAR RESEARCH SNAPSHOT (SRS) ZERO-COPY INTAKE            ");
     println!("=========================================================================");
     println!("Snapshot File: {}", snapshot_file);
+    if let Some(target) = into_live_db {
+        println!("Target Live DB: {}", target);
+    }
 
     let start = Instant::now();
-    match S3ACrudEngine::intake_srs_snapshot(snapshot_file) {
+    let res = if let Some(target) = into_live_db {
+        intake_srs_snapshot_into_live(snapshot_file, target)
+    } else {
+        intake_srs_snapshot(snapshot_file)
+    };
+
+    match res {
         Ok(bundle) => {
             let intake_duration = start.elapsed();
             let size = std::fs::metadata(snapshot_file).map(|m| m.len()).unwrap_or(0);
@@ -2492,6 +3716,9 @@ fn run_snapshot_intake(snapshot_file: &str) {
             println!("  Sector Alignment: 512-byte physical disk boundary verified");
             println!("  Integrity:        100% Hardware CRC32C Verified");
             println!("  Container Size:   {} bytes ({:.2} KB)", size, size as f64 / 1024.0);
+            if let Some(target) = into_live_db {
+                println!("  Live DB Mounted:  {} (ADDON_EDU Capability Active)", target);
+            }
             println!("-------------------------------------------------------------------------");
             println!("Mounted In-Memory Records:");
             println!("  Workspace:        {}", if bundle.workspace.is_some() { "1 Record (Indexed)" } else { "0 Records" });
@@ -2532,10 +3759,57 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("  Magic:            {:?}", std::str::from_utf8(&hdr.magic).unwrap_or("????"));
     println!("  Format Version:   {}", hdr.version);
     println!("  Active Slot:      {}", reader.active_slot());
+    println!("  Addon Capability: 0x{:08X} (ADDON_EDU: {})", hdr.addon_mask, if (hdr.addon_mask & ADDON_EDU) != 0 { "ACTIVE" } else { "INACTIVE" });
     println!("  Tile Count:       {}", reader.tile_count());
     println!("-------------------------------------------------------------------------");
 
+    // Tile Histogram
+    let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    let tile_count = reader.tile_count() as usize;
+    for i in 0..tile_count {
+        if let Some((tile_hdr, _)) = reader.get_tile(i) {
+            *hist.entry(tile_hdr.tile_type).or_insert(0) += 1;
+        }
+    }
+
+    println!("Tile Histogram:");
+    for (t_type, count) in &hist {
+        let label = match *t_type {
+            ScholarTileType::HUMAN_LRS => "HUMAN_LRS (Tile 10)",
+            ScholarTileType::AI_TRACE_LOG => "AI_TRACE_LOG (Tile 11)",
+            ScholarTileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Tile 12)",
+            ScholarTileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Tile 13)",
+            ScholarTileType::SRS_WORKSPACE => "SRS_WORKSPACE (Tile 14)",
+            ScholarTileType::SRS_MANIFEST => "SRS_MANIFEST (Tile 15)",
+            TileType::TELEMETRY => "CORE_TELEMETRY (Tile 0)",
+            TileType::EMBEDDING => "CORE_EMBEDDING (Tile 1)",
+            TileType::HYBRID => "CORE_HYBRID (Tile 2)",
+            _ => "OTHER / UNKNOWN",
+        };
+        println!("  ├─ {:<28}: {} tile(s)", label, count);
+    }
+    println!("-------------------------------------------------------------------------");
+
     let sieve = QuerySieve::new(&reader);
+
+    // Authoritative Tile 15 Manifest
+    if let Some(manifest) = sieve.query_srs_manifest() {
+        println!("Authoritative SRS Manifest Header (Tile 15):");
+        println!("  Magic:                 {:?}", std::str::from_utf8(&manifest.magic).unwrap_or("????"));
+        println!("  Layout Version:        {} (V1: {})", manifest.schema_version, if manifest.schema_version == SCHOLAR_LAYOUT_VERSION_V1 { "CURRENT" } else { "UNSUPPORTED" });
+        println!("  CRC32C Checksum:       0x{:08X} (Status: {})", manifest.crc32c_checksum, if manifest.verify_checksum() { "PASS" } else { "MISMATCH" });
+        println!("  Project UUID:          {:016X}{:016X}", manifest.project_uuid[0], manifest.project_uuid[1]);
+        println!("  Snapshot UUID:         {:016X}{:016X}", manifest.snapshot_uuid[0], manifest.snapshot_uuid[1]);
+        println!("  Parent Snapshot UUID:  {:016X}{:016X}", manifest.parent_snapshot_uuid[0], manifest.parent_snapshot_uuid[1]);
+        println!("  Origin Session UUID:   {:016X}{:016X}", manifest.origin_session_uuid[0], manifest.origin_session_uuid[1]);
+        println!("  Created Timestamp:     {}", manifest.created_at_sec);
+        println!("  Manifest Tile Count:   {}", manifest.tile_count);
+        println!("  Manifest Total Records:{}", manifest.total_records);
+    } else {
+        println!("WARNING: Tile 15 (SRS_MANIFEST) not present (pre-v1 lab file or raw archive)");
+    }
+    println!("-------------------------------------------------------------------------");
+
     let ws = sieve.query_srs_workspace(None);
     let papers = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
     let edges = sieve.query_research_graph(None, None);

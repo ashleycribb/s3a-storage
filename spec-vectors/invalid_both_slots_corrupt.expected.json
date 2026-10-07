@@ -1,0 +1,11 @@
+{
+  "case_name": "invalid_both_slots_corrupt",
+  "category": "invalid",
+  "description": "Both header slots A and B corrupted with invalid CRC32C",
+  "expected_outcome": "error",
+  "error_class": "CorruptedHeader",
+  "expected_error_message": "Corrupted block or file header",
+  "file_size_bytes": 131584,
+  "visible_records": 0,
+  "hidden_records": 0
+}

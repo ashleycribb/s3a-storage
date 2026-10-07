@@ -1,0 +1,37 @@
+{
+  "case_name": "valid_snapshot_container",
+  "category": "valid",
+  "description": "Scholar Research Snapshot (.snapshot.s3a) container with Tile 15 SRS_MANIFEST and ADDON_EDU",
+  "expected_outcome": "ok",
+  "file_size_bytes": 393728,
+  "header": {
+    "active_slot": 0,
+    "generation": 5,
+    "tile_count": 3,
+    "addon_mask": 1
+  },
+  "records_per_tile_type": {
+    "12": 1,
+    "14": 1,
+    "15": 1
+  },
+  "sample_records": [
+    {
+      "tile_type": 14,
+      "record_index": 0,
+      "summary": "SrsWorkspaceRecord { question_hash: 12345, project_uuid: [0xAAAA1111, 0xBBBB2222] }"
+    },
+    {
+      "tile_type": 12,
+      "record_index": 0,
+      "summary": "AcademicPaperRecord { openalex_id: 1001, citation_count: 42, publication_year: 2024 }"
+    },
+    {
+      "tile_type": 15,
+      "record_index": 0,
+      "summary": "SrsManifestHeader { magic: b\"S3ASTOR1\", snapshot_uuid: [0x1234, 0x5678] }"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0
+}

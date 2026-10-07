@@ -1,0 +1,3 @@
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000020, "actor_hash": 9901, "verb_id": 1, "decision_score": 1.0, "object_hash": 10001, "ai_tile": 0, "ai_record": 0}
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000021, "actor_hash": 9901, "verb_id": 2, "decision_score": 0.9, "object_hash": 10002, "ai_tile": 0, "ai_record": 1}
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000022, "actor_hash": 9902, "verb_id": 3, "decision_score": 0.8, "object_hash": 10003, "ai_tile": 0, "ai_record": 2}

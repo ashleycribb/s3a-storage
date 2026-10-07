@@ -1,0 +1,3 @@
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000025, "agent_id": 8801, "step_type": 1, "confidence": 0.95, "human_tile": 0, "human_record": 0, "hilbert_index": 701}
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000026, "agent_id": 8802, "step_type": 2, "confidence": 0.88, "human_tile": 0, "human_record": 1, "hilbert_index": 702}
+{"session_high": 5550001, "session_low": 5550002, "timestamp_sec": 1710000027, "agent_id": 8803, "step_type": 1, "confidence": 0.92, "human_tile": 0, "human_record": 2, "hilbert_index": 703}

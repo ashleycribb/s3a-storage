@@ -1,0 +1,30 @@
+{
+  "case_name": "valid_after_compaction",
+  "category": "valid",
+  "description": "Archive post-compaction: tombstoned records purged, live records preserved",
+  "expected_outcome": "ok",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "0": 2
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "TelemetryRecord { timestamp: 3000, sensor_id: 1, metric_id: 1, value: 10.0 } (active)"
+    },
+    {
+      "tile_type": 0,
+      "record_index": 1,
+      "summary": "TelemetryRecord { timestamp: 3020, sensor_id: 2, metric_id: 1, value: 20.0 } (active)"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0
+}

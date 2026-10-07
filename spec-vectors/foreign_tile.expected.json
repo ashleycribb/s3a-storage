@@ -1,0 +1,11 @@
+{
+  "case_name": "foreign_tile",
+  "category": "invalid",
+  "description": "Tile header carrying foreign file_uuid; reader MUST reject with FileUuidMismatch error",
+  "expected_outcome": "error",
+  "error_class": "FileUuidMismatch",
+  "expected_error_message": "Tile file_uuid does not match file header file_uuid",
+  "file_size_bytes": 262656,
+  "visible_records": 0,
+  "hidden_records": 0
+}

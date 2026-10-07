@@ -1,0 +1,37 @@
+{
+  "case_name": "valid_multi_tile",
+  "category": "valid",
+  "description": "Multi-tile archive spanning Telemetry (0), Embedding (1), and Statement Index (22)",
+  "expected_outcome": "ok",
+  "file_size_bytes": 393728,
+  "header": {
+    "active_slot": 1,
+    "generation": 4,
+    "tile_count": 3,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "0": 2,
+    "1": 2,
+    "22": 2
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "TelemetryRecord { timestamp: 2000, sensor_id: 10, metric_id: 1, value: 100.0 }"
+    },
+    {
+      "tile_type": 1,
+      "record_index": 0,
+      "summary": "EmbeddingRecord128 { id: 1, timestamp: 2000, vector[0]: 1.0 }"
+    },
+    {
+      "tile_type": 22,
+      "record_index": 0,
+      "summary": "StatementIndexRecord { statement_id: [1, 100], actor_hash: 0xAA }"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0
+}

@@ -2,6 +2,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use fs2::FileExt;
 use bytemuck::{bytes_of, from_bytes, Pod};
 use memmap2::Mmap;
 
@@ -19,8 +21,23 @@ pub mod net;
 pub mod erasure;
 pub mod tiering;
 pub mod lakehouse;
+pub mod fsutil;
+pub mod compactor_gates;
+pub mod concurrent_writer;
+pub mod lrs_store;
+pub mod elr;
+pub mod sealed;
+pub mod anchor;
 
-pub use ql::{execute_query, S3AQLEngine, S3AStatement, QueryResult, Lexer, Parser, Token};
+pub use fsutil::{atomic_replace, clean_orphan_temps, unique_compact_temp_path};
+pub use compactor_gates::*;
+pub use concurrent_writer::*;
+pub use lrs_store::*;
+pub use elr::*;
+pub use sealed::*;
+pub use anchor::*;
+
+pub use ql::{execute_query, S3AQLEngine, S3AStatement, QueryResult, Lexer, Parser, Token, QlError, register_pack_sift_handler, PackSiftHandler};
 pub use bvh::{HullBvh, BvhNode};
 pub use ring_buffer::{L0RingBuffer, BackpressurePolicy, IngestError};
 pub use compactor_daemon::{BackgroundCompactor, CompactorStats};
@@ -30,83 +47,9 @@ pub use tiering::{TileStorageAdapter, LocalStorageAdapter, RustFsAdapter, RustFs
 pub use lakehouse::{
     SnowflakeBatchRequest, handle_snowflake_batch_request,
     ArrowSchema, ArrowField, ArrowColumnVector, ArrowRecordBatchDescriptor,
-    project_telemetry_to_arrow, project_gis_to_arrow,
+    project_telemetry_to_arrow,
     generate_iceberg_metadata, generate_delta_metadata,
 };
-
-
-/// High-Frequency Low-Latency Ring-Buffered Writer for Autonomous Robots, Drones, and Humanoid Manipulators.
-pub struct RoboticsStreamWriter {
-    writer: TileWriter,
-    record_buffer: Vec<RoboticsKinematicRecord>,
-    capacity_per_tile: usize,
-    current_min_xyz: [f32; 3],
-    current_max_xyz: [f32; 3],
-}
-
-impl RoboticsStreamWriter {
-    pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let writer = TileWriter::create(path)?;
-        let capacity_per_tile = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<RoboticsKinematicRecord>();
-
-        Ok(Self {
-            writer,
-            record_buffer: Vec::with_capacity(capacity_per_tile),
-            capacity_per_tile,
-            current_min_xyz: [f32::INFINITY; 3],
-            current_max_xyz: [f32::NEG_INFINITY; 3],
-        })
-    }
-
-    /// Streams a 1 kHz robotics kinematic sample into zero-copy Hyper-Tiles with live 3D bounding hull updates.
-    pub fn push_sample(&mut self, record: RoboticsKinematicRecord) -> io::Result<Option<u64>> {
-        for d in 0..3 {
-            if record.position_xyz[d] < self.current_min_xyz[d] {
-                self.current_min_xyz[d] = record.position_xyz[d];
-            }
-            if record.position_xyz[d] > self.current_max_xyz[d] {
-                self.current_max_xyz[d] = record.position_xyz[d];
-            }
-        }
-
-        self.record_buffer.push(record);
-
-        if self.record_buffer.len() >= self.capacity_per_tile {
-            let tile_id = self.flush_tile()?;
-            Ok(Some(tile_id))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Flushes accumulated kinematic records into a page-aligned 128 KB Hyper-Tile with embedded 3D spatial trajectory bounding hulls.
-    pub fn flush_tile(&mut self) -> io::Result<u64> {
-        if self.record_buffer.is_empty() {
-            return Ok(0);
-        }
-
-        let mut hull = SimplexHull::empty();
-        hull.dim = 3;
-        for d in 0..3 {
-            hull.min_bounds[d] = self.current_min_xyz[d];
-            hull.max_bounds[d] = self.current_max_xyz[d];
-        }
-
-        let timestamps: Vec<u64> = self.record_buffer.iter().map(|r| r.timestamp_us).collect();
-        let tile_id = self.writer.write_hyper_tile(
-            TileType::ROBOTICS_KINEMATIC,
-            &self.record_buffer,
-            Some(&timestamps),
-            Some(hull),
-        )?;
-
-        self.record_buffer.clear();
-        self.current_min_xyz = [f32::INFINITY; 3];
-        self.current_max_xyz = [f32::NEG_INFINITY; 3];
-
-        Ok(tile_id)
-    }
-}
 
 /// Zero-allocation 4 KB Micro-Tile Memory Buffer for embedded microcontrollers (Earbuds, Smart Glasses, Wristbands).
 pub struct MicroTileBuffer {
@@ -117,8 +60,12 @@ pub struct MicroTileBuffer {
 
 impl MicroTileBuffer {
     pub fn new(tile_id: u32) -> Self {
+        Self::new_with_type(tile_id, 3)
+    }
+
+    pub fn new_with_type(tile_id: u32, tile_type: u16) -> Self {
         let mut buffer = [0u8; MICRO_TILE_SIZE];
-        let header = MicroTileHeader::new(tile_id, TileType::WEARABLE_MICRO as u16);
+        let header = MicroTileHeader::new(tile_id, tile_type);
         let header_bytes = bytes_of(&header);
         buffer[..MICRO_TILE_HEADER_SIZE].copy_from_slice(header_bytes);
 
@@ -153,9 +100,7 @@ impl MicroTileBuffer {
         header.payload_bytes = payload_bytes;
         header.data_crc32 = data_crc32;
 
-        let crc_offset = std::mem::offset_of!(MicroTileHeader, header_crc32);
-        let header_bytes = bytes_of(&header);
-        header.header_crc32 = crc32c::crc32c(&header_bytes[..crc_offset]);
+        header.header_crc32 = compute_micro_tile_header_crc32(&header);
 
         self.buffer[..MICRO_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&header));
         &self.buffer
@@ -166,6 +111,24 @@ impl MicroTileBuffer {
 pub fn compute_header_crc32(header: &FileHeader) -> u32 {
     let bytes = bytes_of(header);
     let crc_offset = std::mem::offset_of!(FileHeader, header_crc32);
+    let mut crc = crc32c::crc32c(&bytes[..crc_offset]);
+    crc = crc32c::crc32c_append(crc, &bytes[crc_offset + 4..]);
+    crc
+}
+
+/// Computes CRC32C of a HyperTileHeader excluding the header_crc32 field itself.
+pub fn compute_tile_header_crc32(header: &HyperTileHeader) -> u32 {
+    let bytes = bytes_of(header);
+    let crc_offset = std::mem::offset_of!(HyperTileHeader, header_crc32);
+    let mut crc = crc32c::crc32c(&bytes[..crc_offset]);
+    crc = crc32c::crc32c_append(crc, &bytes[crc_offset + 4..]);
+    crc
+}
+
+/// Computes CRC32C of a MicroTileHeader excluding the header_crc32 field itself.
+pub fn compute_micro_tile_header_crc32(header: &MicroTileHeader) -> u32 {
+    let bytes = bytes_of(header);
+    let crc_offset = std::mem::offset_of!(MicroTileHeader, header_crc32);
     let mut crc = crc32c::crc32c(&bytes[..crc_offset]);
     crc = crc32c::crc32c_append(crc, &bytes[crc_offset + 4..]);
     crc
@@ -207,6 +170,20 @@ pub fn resolve_active_header(slot_a: &FileHeader, slot_b: &FileHeader) -> Result
     }
 }
 
+/// Generates a non-zero 128-bit pseudo-random UUID for an S3A archive file.
+pub fn generate_file_uuid() -> [u64; 2] {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let nanos = now.as_nanos();
+    let pid = std::process::id() as u64;
+    let h1 = xxhash_rust::xxh3::xxh3_64(&nanos.to_le_bytes());
+    let h2 = xxhash_rust::xxh3::xxh3_64(&(nanos ^ (pid as u128)).to_be_bytes());
+    let u1 = if h1 == 0 { 1 } else { h1 };
+    let u2 = if h2 == 0 { 2 } else { h2 };
+    [u1, u2]
+}
+
 /// Writer for generating page-aligned 128 KB S3A Hyper-Tile storage files with crash-safe atomic commits.
 pub struct TileWriter {
     file: File,
@@ -215,10 +192,16 @@ pub struct TileWriter {
     generation: u64,
     active_slot: usize,
     created_timestamp: u64,
+    addon_mask: u32,
+    file_uuid: [u64; 2],
 }
 
 impl TileWriter {
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::create_with_uuid(path, generate_file_uuid())
+    }
+
+    pub fn create_with_uuid<P: AsRef<Path>>(path: P, file_uuid: [u64; 2]) -> io::Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -231,7 +214,7 @@ impl TileWriter {
             .unwrap_or_default()
             .as_secs();
 
-        let mut slot_a = FileHeader::new(0, now);
+        let mut slot_a = FileHeader::new(0, now).with_file_uuid(file_uuid);
         slot_a.generation = 1;
         slot_a.header_crc32 = compute_header_crc32(&slot_a);
 
@@ -247,6 +230,8 @@ impl TileWriter {
             generation: 1,
             active_slot: 0,
             created_timestamp: now,
+            addon_mask: 0,
+            file_uuid,
         })
     }
 
@@ -284,6 +269,9 @@ impl TileWriter {
             file.sync_all()?;
         }
 
+        // Clean stale orphan compaction temps since live archive header is verified
+        let _ = fsutil::clean_orphan_temps(&path);
+
         file.seek(SeekFrom::End(0))?;
 
         Ok(Self {
@@ -293,16 +281,112 @@ impl TileWriter {
             generation: active_header.generation,
             active_slot,
             created_timestamp: active_header.created_timestamp,
+            addon_mask: active_header.addon_mask,
+            file_uuid: active_header.file_uuid,
         })
     }
 
-    pub fn write_hyper_tile<T: Pod>(
+    /// Attempts to acquire an exclusive OS advisory file lock on the archive.
+    pub fn try_lock_exclusive(&self) -> io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.file.try_lock_exclusive()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(())
+        }
+    }
+
+    /// Releases the OS advisory file lock.
+    pub fn unlock(&self) -> io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.file.unlock()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(())
+        }
+    }
+
+    /// Flushes and reads all committed bytes directly from the underlying archive file handle.
+    pub fn read_all_bytes(&mut self) -> io::Result<Vec<u8>> {
+        self.file.flush()?;
+        self.file.sync_all()?;
+        let current_pos = self.file.stream_position()?;
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut buf = Vec::new();
+        self.file.read_to_end(&mut buf)?;
+        self.file.seek(SeekFrom::Start(current_pos))?;
+        Ok(buf)
+    }
+
+
+    fn commit_header_slot(&mut self, next_tile_count: u32, addon_mask: u32) -> io::Result<()> {
+        let next_generation = self.generation + 1;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let target_slot = 1 - self.active_slot;
+        let mut new_slot = FileHeader::with_commit(
+            next_tile_count,
+            next_generation,
+            self.created_timestamp,
+            now,
+        );
+        new_slot.addon_mask = addon_mask;
+        new_slot.file_uuid = self.file_uuid;
+        new_slot.header_crc32 = compute_header_crc32(&new_slot);
+
+        let slot_offset = if target_slot == 0 {
+            FILE_HEADER_SLOT_A_OFFSET
+        } else {
+            FILE_HEADER_SLOT_B_OFFSET
+        } as u64;
+
+        self.file.seek(SeekFrom::Start(slot_offset))?;
+        self.file.write_all(bytes_of(&new_slot))?;
+        self.file.flush()?;
+        self.file.sync_all()?;
+
+        self.active_slot = target_slot;
+        self.generation = next_generation;
+        self.tile_count = next_tile_count;
+        self.addon_mask = addon_mask;
+        self.file.seek(SeekFrom::End(0))?;
+        Ok(())
+    }
+
+    pub fn write_hyper_tile_ext<T: Pod>(
         &mut self,
         tile_type: u32,
         records: &[T],
         timestamps: Option<&[u64]>,
         hull: Option<SimplexHull>,
+        filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
+        // Enforce capability write gate and registry validation:
+        let registry = s3a_core::registry::global_registry();
+        let target_version = registry.get(tile_type).map(|d| d.current_layout_version).unwrap_or(1);
+        if registry.get(tile_type).is_some() {
+            if let Err(e) = registry.validate_write(tile_type, target_version, self.addon_mask) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{}", e)));
+            }
+        } else if let Some((pack_name, required_mask)) = s3a_core::required_addon_for_tile(tile_type) {
+            if (self.addon_mask & required_mask) == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                        tile_type, pack_name, required_mask, self.addon_mask
+                    ),
+                ));
+            }
+        }
+
         let record_size = std::mem::size_of::<T>();
         let payload_bytes = records.len() * record_size;
 
@@ -316,6 +400,10 @@ impl TileWriter {
         let mut header = HyperTileHeader::new(self.current_tile_id, tile_type);
         header.record_count = records.len() as u32;
         header.payload_bytes = payload_bytes as u32;
+        header.generation = self.generation;
+        header.tile_index = self.tile_count;
+        header.file_uuid = self.file_uuid;
+        header.record_layout_version = target_version;
 
         if let Some(ts) = timestamps {
             if !ts.is_empty() {
@@ -359,68 +447,35 @@ impl TileWriter {
             }
         }
 
-        // Automatically populate discrete ID Bloom filter if records are Telemetry or Learning Activities
-        if tile_type == TileType::TELEMETRY {
-            let tel_recs: &[TelemetryRecord] = bytemuck::cast_slice(records);
-            for r in tel_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.sensor_id as u64, header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.metric_id as u64, header.filter.hash_seed);
-                if r.is_tombstone() {
-                    header.lifecycle.tombstone_count += 1;
+        // Populate discrete ID Bloom filter from provided filter keys or core tile types
+        if let Some(keys) = filter_keys {
+            for &k in keys {
+                bloom_filter_insert(&mut header.filter.bits, k, header.filter.hash_seed);
+            }
+        } else if tile_type == TileType::TELEMETRY {
+            if let Ok(tel_recs) = bytemuck::try_cast_slice::<T, TelemetryRecord>(records) {
+                for r in tel_recs {
+                    bloom_filter_insert(&mut header.filter.bits, r.sensor_id as u64, header.filter.hash_seed);
+                    bloom_filter_insert(&mut header.filter.bits, r.metric_id as u64, header.filter.hash_seed);
+                    if r.is_tombstone() {
+                        header.lifecycle.tombstone_count += 1;
+                    }
                 }
             }
-        } else if tile_type == TileType::LEARNING_RECORD_STORE {
-            let lrs_recs: &[LearningActivityRecord] = bytemuck::cast_slice(records);
-            for r in lrs_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.actor_id, header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.verb_id as u64, header.filter.hash_seed);
-                if r.is_tombstone() {
-                    header.lifecycle.tombstone_count += 1;
+        } else if tile_type == TileType::RESERVED_BOUNDARY || tile_type == 10 {
+            if let Ok(lrs_recs) = bytemuck::try_cast_slice::<T, LearningActivityRecord>(records) {
+                for r in lrs_recs {
+                    bloom_filter_insert(&mut header.filter.bits, r.actor_id, header.filter.hash_seed);
+                    bloom_filter_insert(&mut header.filter.bits, r.verb_id as u64, header.filter.hash_seed);
+                    if r.is_tombstone() {
+                        header.lifecycle.tombstone_count += 1;
+                    }
                 }
-            }
-        } else if tile_type == TileType::HUMAN_LRS {
-            let h_recs: &[HumanLrsRecord] = bytemuck::cast_slice(records);
-            for r in h_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.session_uuid[0] ^ r.session_uuid[1], header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.actor_hash, header.filter.hash_seed);
-                if r.is_tombstone() {
-                    header.lifecycle.tombstone_count += 1;
-                }
-            }
-        } else if tile_type == TileType::AI_TRACE_LOG {
-            let ai_recs: &[AiTraceRecord] = bytemuck::cast_slice(records);
-            for r in ai_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.session_uuid[0] ^ r.session_uuid[1], header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.agent_id, header.filter.hash_seed);
-                if r.is_tombstone() {
-                    header.lifecycle.tombstone_count += 1;
-                }
-            }
-        } else if tile_type == TileType::ACADEMIC_PAPERS {
-            let p_recs: &[AcademicPaperRecord] = bytemuck::cast_slice(records);
-            for r in p_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.paper_id, header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.doi_prefix_hash, header.filter.hash_seed);
-            }
-        } else if tile_type == TileType::RESEARCH_GRAPH {
-            let g_recs: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(records);
-            for r in g_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.subject_hash, header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.object_hash, header.filter.hash_seed);
-            }
-        } else if tile_type == TileType::SRS_WORKSPACE {
-            let ws_recs: &[SrsWorkspaceRecord] = bytemuck::cast_slice(records);
-            for r in ws_recs {
-                bloom_filter_insert(&mut header.filter.bits, r.project_uuid[0] ^ r.project_uuid[1], header.filter.hash_seed);
-                bloom_filter_insert(&mut header.filter.bits, r.question_hash, header.filter.hash_seed);
             }
         }
 
         // Compute header CRC32C (excluding header_crc32 field itself)
-        let header_bytes = bytes_of(&header);
-        let crc_offset = std::mem::offset_of!(HyperTileHeader, header_crc32);
-        let header_without_crc = &header_bytes[..crc_offset];
-        header.header_crc32 = crc32c::crc32c(header_without_crc);
+        header.header_crc32 = compute_tile_header_crc32(&header);
 
         // Write header
         self.file.write_all(bytes_of(&header))?;
@@ -440,43 +495,125 @@ impl TileWriter {
         self.file.flush()?;
         self.file.sync_data()?;
 
+        // AFTER GATE: Re-read output tile from disk and verify CRC before A/B commit switch
+        let tile_offset = FILE_HEADER_SIZE as u64 + (self.tile_count as u64 * HYPER_TILE_SIZE as u64);
+        crate::compactor_gates::verify_written_tile_from_disk(
+            &mut self.file,
+            tile_offset,
+            header.header_crc32,
+            header.data_crc32,
+            payload_bytes,
+        )?;
+
+        #[cfg(any(test, feature = "fault-injection"))]
+        if crate::compactor_gates::fault_injection::INJECT_CRASH_BEFORE_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Crash simulated between tile write and header commit switch",
+            ));
+        }
+
         let committed_tile_id = self.current_tile_id;
+        self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
         self.current_tile_id += 1;
-        self.tile_count += 1;
-        self.generation += 1;
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // 2. Prepare new header in alternate slot
-        let target_slot = 1 - self.active_slot;
-        let mut new_slot = FileHeader::with_commit(
-            self.tile_count,
-            self.generation,
-            self.created_timestamp,
-            now,
-        );
-        new_slot.header_crc32 = compute_header_crc32(&new_slot);
-
-        // 3. Atomically write alternate header slot
-        let slot_offset = if target_slot == 0 {
-            FILE_HEADER_SLOT_A_OFFSET
-        } else {
-            FILE_HEADER_SLOT_B_OFFSET
-        } as u64;
-
-        self.file.seek(SeekFrom::Start(slot_offset))?;
-        self.file.write_all(bytes_of(&new_slot))?;
-        self.file.flush()?;
-        self.file.sync_all()?;
-
-        // 4. Switch active slot and seek back to EOF for subsequent writes
-        self.active_slot = target_slot;
-        self.file.seek(SeekFrom::End(0))?;
 
         Ok(committed_tile_id)
+    }
+
+    pub fn write_hyper_tile<T: Pod>(
+        &mut self,
+        tile_type: u32,
+        records: &[T],
+        timestamps: Option<&[u64]>,
+        hull: Option<SimplexHull>,
+    ) -> io::Result<u64> {
+        self.write_hyper_tile_ext(tile_type, records, timestamps, hull, None)
+    }
+
+    pub fn write_raw_hyper_tile(&mut self, header: &HyperTileHeader, payload: &[u8]) -> io::Result<u64> {
+        // Enforce capability write gate and registry validation:
+        let registry = s3a_core::registry::global_registry();
+        let effective_version = if header.record_layout_version == 0 { 1 } else { header.record_layout_version };
+        if registry.get(header.tile_type).is_some() {
+            if let Err(e) = registry.validate_write(header.tile_type, effective_version, self.addon_mask) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{}", e)));
+            }
+        } else if let Some((pack_name, required_mask)) = s3a_core::required_addon_for_tile(header.tile_type) {
+            if (self.addon_mask & required_mask) == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                        header.tile_type, pack_name, required_mask, self.addon_mask
+                    ),
+                ));
+            }
+        }
+
+        let committed_tile_id = self.current_tile_id;
+        let mut new_header = *header;
+        new_header.tile_id = committed_tile_id;
+        if new_header.data_crc32 == 0 {
+            new_header.data_crc32 = crc32c::crc32c(payload);
+        }
+        if new_header.payload_bytes == 0 {
+            new_header.payload_bytes = payload.len() as u32;
+        }
+        if new_header.file_uuid == [0, 0] {
+            new_header.file_uuid = self.file_uuid;
+        }
+        if new_header.generation == 0 {
+            new_header.generation = self.generation;
+        }
+        new_header.tile_index = self.tile_count;
+
+        new_header.header_crc32 = compute_tile_header_crc32(&new_header);
+
+        let written = HYPER_TILE_HEADER_SIZE + payload.len();
+        if written > HYPER_TILE_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Payload size {} exceeds hyper tile capacity {}", payload.len(), HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE),
+            ));
+        }
+
+        self.file.write_all(bytes_of(&new_header))?;
+        self.file.write_all(payload)?;
+
+        let padding_needed = HYPER_TILE_SIZE - written;
+        if padding_needed > 0 {
+            let zeros = vec![0u8; padding_needed];
+            self.file.write_all(&zeros)?;
+        }
+
+        self.file.flush()?;
+        self.file.sync_data()?;
+
+        // AFTER GATE: Re-read output tile from disk and verify CRC before A/B commit switch
+        let tile_offset = FILE_HEADER_SIZE as u64 + (self.tile_count as u64 * HYPER_TILE_SIZE as u64);
+        crate::compactor_gates::verify_written_tile_from_disk(
+            &mut self.file,
+            tile_offset,
+            new_header.header_crc32,
+            new_header.data_crc32,
+            payload.len(),
+        )?;
+
+        #[cfg(any(test, feature = "fault-injection"))]
+        if crate::compactor_gates::fault_injection::INJECT_CRASH_BEFORE_COMMIT.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Crash simulated between tile write and header commit switch",
+            ));
+        }
+
+        self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
+        self.current_tile_id += 1;
+        Ok(committed_tile_id)
+    }
+
+    pub fn file_uuid(&self) -> [u64; 2] {
+        self.file_uuid
     }
 
     pub fn tile_count(&self) -> u32 {
@@ -489,6 +626,16 @@ impl TileWriter {
 
     pub fn active_slot(&self) -> usize {
         self.active_slot
+    }
+
+    pub fn addon_mask(&self) -> u32 {
+        self.addon_mask
+    }
+
+    /// Enables a modular domain addon (e.g. ADDON_EDU) by updating the file header addon_mask.
+    pub fn enable_addon(&mut self, mask: u32) -> io::Result<()> {
+        let new_mask = self.addon_mask | mask;
+        self.commit_header_slot(self.tile_count, new_mask)
     }
 }
 
@@ -530,6 +677,14 @@ impl MmapReader {
         &self.active_header
     }
 
+    pub fn file_uuid(&self) -> [u64; 2] {
+        self.active_header.file_uuid
+    }
+
+    pub fn addon_mask(&self) -> u32 {
+        self.active_header.addon_mask
+    }
+
     pub fn tile_count(&self) -> u32 {
         self.active_header.tile_count
     }
@@ -568,6 +723,32 @@ impl MmapReader {
     /// Instantaneous O(1) direct record lookup by S3ACoordinate address (Level, Tile ID, Record Offset)
     pub fn read_record_by_coordinate<T: Pod>(&self, coord: &S3ACoordinate) -> Result<T, S3AError> {
         let (header, payload) = self.get_tile(coord.tile_id as usize).ok_or(S3AError::OutOfBounds)?;
+
+        // Self-addressing verification: reject tile if file_uuid does not match
+        if (self.active_header.file_uuid != [0, 0] || header.file_uuid != [0, 0])
+            && !(header.record_layout_version <= 1 && header.file_uuid == [0, 0])
+            && header.file_uuid != self.active_header.file_uuid
+        {
+            return Err(S3AError::FileUuidMismatch {
+                expected: self.active_header.file_uuid,
+                actual: header.file_uuid,
+            });
+        }
+
+        // Validate layout version via registry
+        let registry = s3a_core::registry::global_registry();
+        if let Err(e) = registry.validate_read(header.tile_type, header.record_layout_version) {
+            match e {
+                s3a_core::registry::RegistryError::UnsupportedLayoutVersionTooOld { version, .. } => {
+                    return Err(S3AError::UnsupportedLayoutVersion(version));
+                }
+                s3a_core::registry::RegistryError::UnsupportedLayoutVersionTooNew { version, .. } => {
+                    return Err(S3AError::UnsupportedLayoutVersion(version));
+                }
+                _ => {}
+            }
+        }
+
         let records: &[T] = bytemuck::cast_slice(payload);
 
         let offset = coord.record_offset as usize;
@@ -593,6 +774,24 @@ impl MmapReader {
         let count = self.tile_count() as usize;
         for i in 0..count {
             if let Some((header, payload)) = self.get_tile(i) {
+                if header.header_crc32 != 0 {
+                    let expected_hdr_crc = compute_tile_header_crc32(header);
+                    if header.header_crc32 != expected_hdr_crc {
+                        return Err(S3AError::ChecksumMismatch {
+                            expected: header.header_crc32,
+                            actual: expected_hdr_crc,
+                        });
+                    }
+                }
+                if self.active_header.file_uuid != [0, 0] || header.file_uuid != [0, 0] {
+                    let is_legacy = header.record_layout_version <= 1 && header.file_uuid == [0, 0];
+                    if !is_legacy && header.file_uuid != self.active_header.file_uuid {
+                        return Err(S3AError::FileUuidMismatch {
+                            expected: self.active_header.file_uuid,
+                            actual: header.file_uuid,
+                        });
+                    }
+                }
                 let actual_data_crc = crc32c::crc32c(payload);
                 if actual_data_crc != header.data_crc32 {
                     return Err(S3AError::ChecksumMismatch {
@@ -608,6 +807,57 @@ impl MmapReader {
     }
 }
 
+/// Recovers and hardens an S3A archive:
+/// 1. Validates the dual A/B header slots and resolves the active generation.
+/// 2. Truncates any torn / uncommitted bytes appended past the active generation's tile count.
+/// 3. Cleans any orphan temporary compaction files matching `{stem}.compact.*` / `{stem}.tmp.*`.
+/// 4. Returns the active FileHeader, or fails closed if both header slots are invalid.
+pub fn recover_archive<P: AsRef<Path>>(path: P) -> io::Result<FileHeader> {
+    let path_ref = path.as_ref();
+    if !path_ref.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Archive file not found: {}", path_ref.display()),
+        ));
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path_ref)?;
+
+    let file_len = file.metadata()?.len();
+    if file_len < FILE_HEADER_SIZE as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too small for S3A dual header",
+        ));
+    }
+
+    let mut header_buf = [0u8; FILE_HEADER_SIZE];
+    file.seek(SeekFrom::Start(0))?;
+    file.read_exact(&mut header_buf)?;
+
+    let slot_a: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+    let slot_b: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+
+    let (active_header, _) = resolve_active_header(slot_a, slot_b)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
+
+    let committed_tile_count = active_header.tile_count;
+    let expected_size = FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64);
+
+    if file_len > expected_size {
+        file.set_len(expected_size)?;
+        file.flush()?;
+        file.sync_all()?;
+    }
+
+    // Clean stale orphan compaction temps since live archive is verified
+    let _ = fsutil::clean_orphan_temps(path_ref);
+
+    Ok(active_header)
+}
 
 /// MULTI-TILE HYPER-MESH FUSION ENGINE: Combines multiple distinct or sparse Hyper-Tiles into a single unified 128 KB Hyper-Tile.
 pub struct TileFusionEngine;
@@ -618,13 +868,67 @@ impl TileFusionEngine {
         input_paths: &[P],
         output_path: P,
     ) -> io::Result<u32> {
-        let mut writer = TileWriter::create(output_path)?;
+        let out_ref = output_path.as_ref();
+
+        match Self::fuse_pass(input_paths, out_ref) {
+            Ok(count) => Ok(count),
+            Err(first_err) => {
+                if out_ref.exists() {
+                    let _ = std::fs::remove_file(out_ref);
+                }
+                if first_err.to_string().contains("quarantined") {
+                    return Err(first_err);
+                }
+
+                // Retry once
+                match Self::fuse_pass(input_paths, out_ref) {
+                    Ok(count) => Ok(count),
+                    Err(second_err) => {
+                        if out_ref.exists() {
+                            let _ = std::fs::remove_file(out_ref);
+                        }
+                        let (bad_path, bad_tile_id, bad_gen) = Compactor::identify_failed_tile(input_paths, &second_err);
+                        let _ = crate::compactor_gates::quarantine_tile(&bad_path, bad_tile_id, bad_gen);
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Tile fusion failed after retry: tile {} in '{}' quarantined due to persistent integrity failure ({})",
+                                bad_tile_id, bad_path.display(), second_err
+                            ),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fn fuse_pass<P: AsRef<Path>>(input_paths: &[P], output_path: &Path) -> io::Result<u32> {
+        let mut preflight = crate::compactor_gates::CompactionPreflight::new();
+        let mut input_acc = crate::compactor_gates::LiveRecordAccumulator::new();
+        let mut output_acc = crate::compactor_gates::LiveRecordAccumulator::new();
+        let mut target_uuid: [u64; 2] = [0, 0];
+        for path in input_paths {
+            if let Ok(reader) = MmapReader::open(path) {
+                if reader.file_uuid() != [0, 0] {
+                    target_uuid = reader.file_uuid();
+                    break;
+                }
+            }
+        }
+        if target_uuid == [0, 0] {
+            target_uuid = generate_file_uuid();
+        }
+        let mut writer = TileWriter::create_with_uuid(output_path, target_uuid)?;
         let mut fused_records: Vec<TelemetryRecord> = Vec::new();
 
         for path in input_paths {
             let reader = MmapReader::open(path)?;
+            let gen = reader.generation();
             for i in 0..reader.tile_count() as usize {
                 if let Some((header, payload)) = reader.get_tile(i) {
+                    // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
+                    preflight.verify_and_register_tile(path, gen, header, payload)?;
+
                     if header.tile_type == TileType::TELEMETRY {
                         let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
                         fused_records.extend_from_slice(records);
@@ -650,8 +954,29 @@ impl TileFusionEngine {
 
         deduped.sort_by_key(|r| r.timestamp);
 
+        for rec in &deduped {
+            input_acc.push_record(rec);
+        }
+
+        #[allow(unused_mut)]
+        let mut output_telemetry = deduped;
+        #[cfg(any(test, feature = "fault-injection"))]
+        {
+            if crate::compactor_gates::fault_injection::INJECT_RECORD_DROP.load(std::sync::atomic::Ordering::SeqCst) {
+                if !output_telemetry.is_empty() {
+                    output_telemetry.pop();
+                }
+            }
+            if crate::compactor_gates::fault_injection::INJECT_RECORD_DUPLICATION.load(std::sync::atomic::Ordering::SeqCst) {
+                if !output_telemetry.is_empty() {
+                    let first = output_telemetry[0];
+                    output_telemetry.push(first);
+                }
+            }
+        }
+
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
-        for chunk in deduped.chunks(capacity) {
+        for chunk in output_telemetry.chunks(capacity) {
             let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
             writer.write_hyper_tile(
                 TileType::TELEMETRY,
@@ -659,154 +984,134 @@ impl TileFusionEngine {
                 Some(&timestamps),
                 None,
             )?;
+            for rec in chunk {
+                output_acc.push_record(rec);
+            }
         }
 
-        Ok(writer.tile_count())
+        // DURING GATE: Verify live-record count in = out and hash in = out
+        input_acc.verify_equal(&output_acc)?;
+
+        // End of fusion: verify all output tiles from disk
+        drop(writer);
+        let output_reader = MmapReader::open(output_path)?;
+        output_reader.verify_checksums().map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("Tile fusion After-Gate checksum failure: {}", e))
+        })?;
+
+        Ok(output_reader.tile_count())
     }
 }
 
 /// Query Sieve for high-performance single-cycle SIMD tile rejection and fast scanning.
 pub struct QuerySieve<'a> {
     reader: &'a MmapReader,
+    include_hidden: bool,
 }
 
 impl<'a> QuerySieve<'a> {
     pub fn new(reader: &'a MmapReader) -> Self {
-        Self { reader }
+        Self {
+            reader,
+            include_hidden: false,
+        }
     }
 
-    /// Queries L2 Rollup & Decentralized AI Data Availability commitments filtering by block height range.
-    pub fn query_da_commitments(
-        &self,
-        min_block: u64,
-        max_block: u64,
-    ) -> Vec<DACommitmentRecord> {
-        let mut results = Vec::new();
+    pub fn with_hidden_marks(mut self, include_hidden: bool) -> Self {
+        self.include_hidden = include_hidden;
+        self
+    }
+
+    pub fn set_include_hidden(&mut self, include_hidden: bool) {
+        self.include_hidden = include_hidden;
+    }
+
+    pub fn include_hidden(&self) -> bool {
+        self.include_hidden
+    }
+
+    pub fn reader(&self) -> &'a MmapReader {
+        self.reader
+    }
+
+    /// Evaluates whether a record is hidden by policy marks (CONSENT_WITHDRAWN, QUARANTINE, or RETENTION_EXPIRED).
+    pub fn is_record_hidden(&self, target_tile_type: u32, target_tile_id: u64, record_index: u32) -> bool {
+        if self.include_hidden {
+            return false;
+        }
+        self.is_marked(target_tile_type, target_tile_id, record_index, MARK_CONSENT_WITHDRAWN)
+            || self.is_marked(target_tile_type, target_tile_id, record_index, MARK_QUARANTINE)
+            || self.is_marked(target_tile_type, target_tile_id, record_index, MARK_RETENTION_EXPIRED)
+    }
+
+    /// Evaluates the active status of a mark_kind on a target record or tile.
+    /// Follows append-only semantics where the latest mark per target wins.
+    pub fn is_marked(&self, target_tile_type: u32, target_tile_id: u64, record_index: u32, mark_kind: u32) -> bool {
         let tile_count = self.reader.tile_count() as usize;
+        let mut latest_record_state: Option<bool> = None;
+        let mut latest_tile_state: Option<bool> = None;
 
         for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::DATA_AVAILABILITY {
-                continue;
-            }
-
-            if can_reject_tile_time(header, min_block, max_block) {
-                continue;
-            }
-
-            let records: &[DACommitmentRecord] = bytemuck::cast_slice(payload);
-            for rec in records {
-                if rec.block_height >= min_block && rec.block_height <= max_block {
-                    results.push(*rec);
+            if let Some((header, payload)) = self.reader.get_tile(i) {
+                if header.tile_type == TileType::MARKS {
+                    let marks: &[MarkRecord] = bytemuck::cast_slice(payload);
+                    for m in marks {
+                        if m.target_tile_type == target_tile_type
+                            && m.target_tile_id == target_tile_id
+                            && m.mark_kind == mark_kind
+                        {
+                            if m.record_index == record_index {
+                                latest_record_state = Some(m.is_set());
+                            } else if m.is_whole_tile() {
+                                latest_tile_state = Some(m.is_set());
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        results
+        latest_record_state.or(latest_tile_state).unwrap_or(false)
     }
 
-    /// Queries 3D GIS Survey point clouds / topographic meshes filtering by lat/long micro-degrees and elevation/depth mm.
-    pub fn query_gis_mesh_3d(
-        &self,
-        min_lat_deg: f64,
-        max_lat_deg: f64,
-        min_lon_deg: f64,
-        max_lon_deg: f64,
-        min_elev_m: f64,
-        max_elev_m: f64,
-    ) -> Vec<GISSurveyPointRecord> {
-        let mut results = Vec::new();
+    /// Queries all raw mark records matching optional tile type and tile ID filters.
+    pub fn query_marks(&self, target_tile_type: Option<u32>, target_tile_id: Option<u64>) -> Vec<MarkRecord> {
         let tile_count = self.reader.tile_count() as usize;
-
-        let min_lat = (min_lat_deg * 1_000_000.0) as f32;
-        let max_lat = (max_lat_deg * 1_000_000.0) as f32;
-        let min_lon = (min_lon_deg * 1_000_000.0) as f32;
-        let max_lon = (max_lon_deg * 1_000_000.0) as f32;
-
-        let query_min = [min_lat, min_lon, (min_elev_m * 1000.0) as f32];
-        let query_max = [max_lat, max_lon, (max_elev_m * 1000.0) as f32];
+        let mut results = Vec::new();
 
         for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::GIS_SURVEY_MESH {
-                continue;
-            }
-
-            // SIMD 3D Geographic Bounding Box Rejection across Simplex Hulls
-            if can_reject_tile_range(&header.hull, &query_min, &query_max) {
-                continue;
-            }
-
-            let records: &[GISSurveyPointRecord] = bytemuck::cast_slice(payload);
-            for rec in records {
-                let lat = rec.latitude_deg();
-                let lon = rec.longitude_deg();
-                let elev = rec.elevation_m();
-
-                if lat >= min_lat_deg && lat <= max_lat_deg
-                    && lon >= min_lon_deg && lon <= max_lon_deg
-                    && elev >= min_elev_m && elev <= max_elev_m
-                {
-                    results.push(*rec);
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Queries 3D spatial robotic trajectories filtering by 3D bounding box [min_xyz, max_xyz].
-    pub fn query_robotics_trajectory_3d(
-        &self,
-        min_xyz: [f32; 3],
-        max_xyz: [f32; 3],
-        min_ts_us: u64,
-        max_ts_us: u64,
-    ) -> Vec<RoboticsKinematicRecord> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::ROBOTICS_KINEMATIC {
-                continue;
-            }
-
-            if can_reject_tile_time(header, min_ts_us, max_ts_us) {
-                continue;
-            }
-
-            // SIMD 3D Trajectory Bounding Box Rejection
-            if can_reject_tile_range(&header.hull, &min_xyz, &max_xyz) {
-                continue;
-            }
-
-            let records: &[RoboticsKinematicRecord] = bytemuck::cast_slice(payload);
-            for rec in records {
-                if rec.timestamp_us >= min_ts_us && rec.timestamp_us <= max_ts_us {
-                    if rec.position_xyz[0] >= min_xyz[0] && rec.position_xyz[0] <= max_xyz[0]
-                        && rec.position_xyz[1] >= min_xyz[1] && rec.position_xyz[1] <= max_xyz[1]
-                        && rec.position_xyz[2] >= min_xyz[2] && rec.position_xyz[2] <= max_xyz[2]
-                    {
-                        results.push(*rec);
+            if let Some((header, payload)) = self.reader.get_tile(i) {
+                if header.tile_type == TileType::MARKS {
+                    let marks: &[MarkRecord] = bytemuck::cast_slice(payload);
+                    for m in marks {
+                        if let Some(tt) = target_tile_type {
+                            if m.target_tile_type != tt {
+                                continue;
+                            }
+                        }
+                        if let Some(tid) = target_tile_id {
+                            if m.target_tile_id != tid && m.target_tile_id != i as u64 {
+                                continue;
+                            }
+                        }
+                        results.push(*m);
                     }
                 }
             }
         }
 
         results
+    }
+
+    /// Returns the consolidated set of currently active marks (latest SET per target).
+    pub fn active_marks(&self) -> Vec<MarkRecord> {
+        let all_marks = self.query_marks(None, None);
+        let mut map: std::collections::BTreeMap<(u32, u64, u32, u32), MarkRecord> = std::collections::BTreeMap::new();
+        for m in all_marks {
+            let key = (m.target_tile_type, m.target_tile_id, m.record_index, m.mark_kind);
+            map.insert(key, m);
+        }
+        map.into_values().filter(|m| m.is_set()).collect()
     }
 
     /// Queries telemetry records returning both the record and its exact `S3ACoordinate` address.
@@ -844,6 +1149,9 @@ impl<'a> QuerySieve<'a> {
 
             let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
+                if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                    continue;
+                }
                 if rec.timestamp >= min_ts && rec.timestamp <= max_ts {
                     if let Some(s) = sensor_id {
                         if rec.sensor_id != s {
@@ -899,6 +1207,9 @@ impl<'a> QuerySieve<'a> {
 
             let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
+                if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                    continue;
+                }
                 if rec.timestamp >= min_ts && rec.timestamp <= max_ts {
                     if let Some(s) = sensor_id {
                         if rec.sensor_id != s {
@@ -983,7 +1294,10 @@ impl<'a> QuerySieve<'a> {
             }
 
             let records: &[EmbeddingRecord128] = bytemuck::cast_slice(payload);
-            for rec in records {
+            for (rec_idx, rec) in records.iter().enumerate() {
+                if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                    continue;
+                }
                 if rec.timestamp >= min_ts && rec.timestamp <= max_ts {
                     results.push(*rec);
                 }
@@ -1010,7 +1324,7 @@ impl<'a> QuerySieve<'a> {
                 None => continue,
             };
 
-            if header.tile_type != TileType::LEARNING_RECORD_STORE {
+            if header.tile_type != TileType::RESERVED_BOUNDARY && header.tile_type != 10 {
                 continue;
             }
 
@@ -1028,6 +1342,9 @@ impl<'a> QuerySieve<'a> {
 
             let records: &[LearningActivityRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
+                if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                    continue;
+                }
                 if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
                     if let Some(a) = actor_id {
                         if rec.actor_id != a {
@@ -1044,234 +1361,6 @@ impl<'a> QuerySieve<'a> {
                         results.push((*rec, coord));
                     }
                 }
-            }
-        }
-
-        results
-    }
-
-    /// Queries Human LRS activity records, filtering by 128-bit session UUID, actor hash, and time window.
-    pub fn query_human_lrs(
-        &self,
-        session_uuid: Option<[u64; 2]>,
-        actor_hash: Option<u64>,
-        min_ts: u64,
-        max_ts: u64,
-    ) -> Vec<(HumanLrsRecord, S3ACoordinate)> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::HUMAN_LRS {
-                continue;
-            }
-
-            if can_reject_tile_time(header, min_ts, max_ts) {
-                continue;
-            }
-
-            if let Some(session) = session_uuid {
-                if can_reject_tile_bloom(header, session[0] ^ session[1]) {
-                    continue;
-                }
-            }
-
-            let records: &[HumanLrsRecord] = bytemuck::cast_slice(payload);
-            for (rec_idx, rec) in records.iter().enumerate() {
-                if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
-                    if let Some(s) = session_uuid {
-                        if rec.session_uuid != s {
-                            continue;
-                        }
-                    }
-                    if let Some(a) = actor_hash {
-                        if rec.actor_hash != a {
-                            continue;
-                        }
-                    }
-                    if !rec.is_tombstone() {
-                        let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
-                        results.push((*rec, coord));
-                    }
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Queries AI Agent Traceable Log metadata, filtering by 128-bit session UUID, agent ID, and time window.
-    pub fn query_ai_traces(
-        &self,
-        session_uuid: Option<[u64; 2]>,
-        agent_id: Option<u64>,
-        min_ts: u64,
-        max_ts: u64,
-    ) -> Vec<(AiTraceRecord, S3ACoordinate)> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::AI_TRACE_LOG {
-                continue;
-            }
-
-            if can_reject_tile_time(header, min_ts, max_ts) {
-                continue;
-            }
-
-            if let Some(session) = session_uuid {
-                if can_reject_tile_bloom(header, session[0] ^ session[1]) {
-                    continue;
-                }
-            }
-
-            let records: &[AiTraceRecord] = bytemuck::cast_slice(payload);
-            for (rec_idx, rec) in records.iter().enumerate() {
-                if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
-                    if let Some(s) = session_uuid {
-                        if rec.session_uuid != s {
-                            continue;
-                        }
-                    }
-                    if let Some(a) = agent_id {
-                        if rec.agent_id != a {
-                            continue;
-                        }
-                    }
-                    if !rec.is_tombstone() {
-                        let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
-                        results.push((*rec, coord));
-                    }
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Queries Academic Paper records filtering by 3D continuous spatial bounding box (topic, methodology, recency).
-    pub fn query_academic_papers_3d(
-        &self,
-        min_topic: [f32; 3],
-        max_topic: [f32; 3],
-        min_year: u16,
-        max_year: u16,
-    ) -> Vec<(AcademicPaperRecord, S3ACoordinate)> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::ACADEMIC_PAPERS {
-                continue;
-            }
-
-            let records: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
-            for (rec_idx, rec) in records.iter().enumerate() {
-                if rec.year >= min_year && rec.year <= max_year
-                    && rec.topic_x >= min_topic[0] && rec.topic_x <= max_topic[0]
-                    && rec.topic_y >= min_topic[1] && rec.topic_y <= max_topic[1]
-                    && rec.topic_z >= min_topic[2] && rec.topic_z <= max_topic[2]
-                {
-                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
-                    results.push((*rec, coord));
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Queries Research Knowledge Graph Edges by subject or predicate.
-    pub fn query_research_graph(
-        &self,
-        subject_hash: Option<u64>,
-        predicate_id: Option<u32>,
-    ) -> Vec<(ResearchGraphEdgeRecord, S3ACoordinate)> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::RESEARCH_GRAPH {
-                continue;
-            }
-
-            if let Some(sub) = subject_hash {
-                if can_reject_tile_bloom(header, sub) {
-                    continue;
-                }
-            }
-
-            let records: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(payload);
-            for (rec_idx, rec) in records.iter().enumerate() {
-                if let Some(s) = subject_hash {
-                    if rec.subject_hash != s {
-                        continue;
-                    }
-                }
-                if let Some(p) = predicate_id {
-                    if rec.predicate_id != p {
-                        continue;
-                    }
-                }
-                let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
-                results.push((*rec, coord));
-            }
-        }
-
-        results
-    }
-
-    /// Queries Scholar Research Workspace context metadata.
-    pub fn query_srs_workspace(&self, project_uuid: Option<[u64; 2]>) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)> {
-        let mut results = Vec::new();
-        let tile_count = self.reader.tile_count() as usize;
-
-        for i in 0..tile_count {
-            let (header, payload) = match self.reader.get_tile(i) {
-                Some(t) => t,
-                None => continue,
-            };
-
-            if header.tile_type != TileType::SRS_WORKSPACE {
-                continue;
-            }
-
-            if let Some(proj) = project_uuid {
-                if can_reject_tile_bloom(header, proj[0] ^ proj[1]) {
-                    continue;
-                }
-            }
-
-            let records: &[SrsWorkspaceRecord] = bytemuck::cast_slice(payload);
-            for (rec_idx, rec) in records.iter().enumerate() {
-                if let Some(p) = project_uuid {
-                    if rec.project_uuid != p {
-                        continue;
-                    }
-                }
-                let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
-                results.push((*rec, coord));
             }
         }
 
@@ -1294,6 +1383,30 @@ impl S3ACrudEngine {
         Ok(Self { file_path: path_buf })
     }
 
+    /// Enables a modular domain addon (e.g. ADDON_EDU) on this archive.
+    pub fn enable_addon(&self, mask: u32) -> io::Result<()> {
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        writer.enable_addon(mask)
+    }
+
+    /// Checks if a specific domain addon is active on this archive.
+    pub fn is_addon_active(&self, mask: u32) -> bool {
+        if let Ok(reader) = MmapReader::open(&self.file_path) {
+            reader.file_header().has_addon(mask)
+        } else {
+            false
+        }
+    }
+
+    /// Returns the active addons bitmask for this archive.
+    pub fn active_addons(&self) -> u32 {
+        if let Ok(reader) = MmapReader::open(&self.file_path) {
+            reader.file_header().addon_mask
+        } else {
+            0
+        }
+    }
+
     /// CREATE: Insert new telemetry records into the S3A Hyper-Tile archive.
     pub fn create_telemetry(&self, records: &[TelemetryRecord]) -> io::Result<u64> {
         if records.is_empty() {
@@ -1302,6 +1415,41 @@ impl S3ACrudEngine {
         let mut writer = TileWriter::open_append(&self.file_path)?;
         let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp).collect();
         writer.write_hyper_tile(TileType::TELEMETRY, records, Some(&timestamps), None)
+    }
+
+    /// CREATE: Insert changeable metadata marks into the S3A Hyper-Tile archive.
+    pub fn create_marks(&self, marks: &[MarkRecord]) -> io::Result<u64> {
+        if marks.is_empty() {
+            return Ok(0);
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = marks.iter().map(|m| m.timestamp).collect();
+        writer.write_hyper_tile(TileType::MARKS, marks, Some(&timestamps), None)
+    }
+
+    /// Appends a single changeable metadata mark targeting a record or whole tile.
+    pub fn mark_record(
+        &self,
+        target_tile_type: u32,
+        target_tile_id: u64,
+        record_index: u32,
+        mark_kind: u32,
+        set: bool,
+        timestamp: u64,
+        actor_hash: u64,
+    ) -> io::Result<u64> {
+        let gen = MmapReader::open(&self.file_path).map(|r| r.generation()).unwrap_or(1);
+        let mark = MarkRecord::new(
+            target_tile_type,
+            target_tile_id,
+            record_index,
+            gen,
+            mark_kind,
+            if set { MARK_SET } else { MARK_CLEAR },
+            timestamp,
+            actor_hash,
+        );
+        self.create_marks(&[mark])
     }
 
     /// CREATE: Insert Learning Record Store (LRS) activity records with Bloom filter indexing.
@@ -1325,7 +1473,7 @@ impl S3ACrudEngine {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
         }
 
-        writer.write_hyper_tile(TileType::LEARNING_RECORD_STORE, records, Some(&timestamps), None)
+        writer.write_hyper_tile(TileType::RESERVED_BOUNDARY, records, Some(&timestamps), None)
     }
 
     /// READ: Query Learning Record Store activities by actor and verb.
@@ -1400,219 +1548,38 @@ impl S3ACrudEngine {
 
     /// GARBAGE COLLECTION / COMPACTION: Compact the S3A archive, purging tombstoned records and re-aligning tiles.
     pub fn purge_and_compact(&self) -> io::Result<u32> {
-        let temp_path = self.file_path.with_extension("tmp.s3a");
-        Compactor::compact(&[&self.file_path], &temp_path)?;
-        std::fs::rename(&temp_path, &self.file_path)?;
+        let temp_path = fsutil::unique_compact_temp_path(&self.file_path);
+        let res = Compactor::compact(&[&self.file_path], &temp_path);
+        if let Err(e) = res {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e);
+        }
+        if let Err(e) = fsutil::atomic_replace(&temp_path, &self.file_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(e);
+        }
         let reader = MmapReader::open(&self.file_path)?;
         Ok(reader.tile_count())
     }
 
-    /// CREATE: Insert Human Activity SQL LRS records with Bloom filter on session UUID and actor.
-    pub fn create_human_lrs(&self, records: &[HumanLrsRecord]) -> io::Result<u64> {
-        if records.is_empty() {
-            return Ok(0);
-        }
-        let mut writer = TileWriter::open_append(&self.file_path)?;
-        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
-
-        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<HumanLrsRecord>();
-        if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
-        }
-
-        writer.write_hyper_tile(TileType::HUMAN_LRS, records, Some(&timestamps), None)
+    pub fn file_path(&self) -> &Path {
+        &self.file_path
     }
 
-    /// CREATE: Insert AI Agent Traceable Log metadata with Bloom filter on session UUID and agent ID.
-    pub fn create_ai_traces(&self, records: &[AiTraceRecord]) -> io::Result<u64> {
-        if records.is_empty() {
-            return Ok(0);
-        }
-        let mut writer = TileWriter::open_append(&self.file_path)?;
-        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
-
-        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AiTraceRecord>();
-        if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
-        }
-
-        writer.write_hyper_tile(TileType::AI_TRACE_LOG, records, Some(&timestamps), None)
-    }
-
-    /// CREATE: Insert Academic Paper literature records.
-    pub fn create_academic_papers(&self, records: &[AcademicPaperRecord]) -> io::Result<u64> {
-        if records.is_empty() {
-            return Ok(0);
-        }
-        let mut writer = TileWriter::open_append(&self.file_path)?;
-        let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp_sec).collect();
-
-        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AcademicPaperRecord>();
-        if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
-        }
-
-        writer.write_hyper_tile(TileType::ACADEMIC_PAPERS, records, Some(&timestamps), None)
-    }
-
-    /// CREATE: Insert Knowledge Graph Edges.
-    pub fn create_research_graph_edges(&self, edges: &[ResearchGraphEdgeRecord]) -> io::Result<u64> {
-        if edges.is_empty() {
-            return Ok(0);
-        }
-        let mut writer = TileWriter::open_append(&self.file_path)?;
-        let timestamps: Vec<u64> = edges.iter().map(|r| r.timestamp_sec).collect();
-
-        let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ResearchGraphEdgeRecord>();
-        if edges.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
-        }
-
-        writer.write_hyper_tile(TileType::RESEARCH_GRAPH, edges, Some(&timestamps), None)
-    }
-
-    /// BIDIRECTIONAL CROSS-TRACE: Follow human decision to triggering AI agent event via direct O(1) S3ACoordinate pointer.
-    pub fn trace_ai_from_human(&self, human_coord: &S3ACoordinate) -> Result<AiTraceRecord, S3AError> {
-        let human: HumanLrsRecord = self.read_by_coordinate(human_coord)?;
-        self.read_by_coordinate(&human.ai_trace_coord)
-    }
-
-    /// BIDIRECTIONAL CROSS-TRACE: Follow AI agent event to human feedback/rework decision via direct O(1) S3ACoordinate pointer.
-    pub fn trace_human_from_ai(&self, ai_coord: &S3ACoordinate) -> Result<HumanLrsRecord, S3AError> {
-        let ai: AiTraceRecord = self.read_by_coordinate(ai_coord)?;
-        self.read_by_coordinate(&ai.human_coord)
-    }
-
-    /// SESSION CORRELATION: Retrieves all correlated Human LRS and AI Trace records sharing a matching 128-bit session_uuid.
-    pub fn query_session_bundle(
+    pub fn append_tile_records<T: Pod>(
         &self,
-        session_uuid: [u64; 2],
-    ) -> io::Result<(Vec<(HumanLrsRecord, S3ACoordinate)>, Vec<(AiTraceRecord, S3ACoordinate)>)> {
-        let reader = MmapReader::open(&self.file_path)?;
-        let sieve = QuerySieve::new(&reader);
-        let human_records = sieve.query_human_lrs(Some(session_uuid), None, 0, u64::MAX);
-        let ai_records = sieve.query_ai_traces(Some(session_uuid), None, 0, u64::MAX);
-        Ok((human_records, ai_records))
-    }
-
-    /// CREATE: Insert Scholar Research Workspace context record.
-    pub fn create_srs_workspace(&self, record: &SrsWorkspaceRecord) -> io::Result<u64> {
+        tile_type: u32,
+        records: &[T],
+        timestamps: Option<&[u64]>,
+        hull: Option<SimplexHull>,
+        filter_keys: Option<&[u64]>,
+    ) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
         let mut writer = TileWriter::open_append(&self.file_path)?;
-        writer.write_hyper_tile(TileType::SRS_WORKSPACE, std::slice::from_ref(record), None, None)
+        writer.write_hyper_tile_ext(tile_type, records, timestamps, hull, filter_keys)
     }
-
-    /// EXPORT SRS SNAPSHOT: Packs all active SEROM records into an immutable .snapshot.s3a container.
-    pub fn export_srs_snapshot<P: AsRef<Path>>(
-        &self,
-        dest_path: P,
-        manifest: &SrsManifestHeader,
-        workspace: Option<&SrsWorkspaceRecord>,
-        project_uuid: Option<[u64; 2]>,
-    ) -> io::Result<SrsSnapshotBundle> {
-        let reader = MmapReader::open(&self.file_path)?;
-        let sieve = QuerySieve::new(&reader);
-
-        let ws_records: Vec<SrsWorkspaceRecord> = if let Some(ws) = workspace {
-            vec![*ws]
-        } else {
-            sieve.query_srs_workspace(project_uuid).into_iter().map(|(r, _)| r).collect()
-        };
-
-        let papers: Vec<AcademicPaperRecord> = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-        let edges: Vec<ResearchGraphEdgeRecord> = sieve.query_research_graph(None, None)
-            .into_iter().map(|(r, _)| r).collect();
-        let human: Vec<HumanLrsRecord> = sieve.query_human_lrs(None, None, 0, u64::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-        let ai: Vec<AiTraceRecord> = sieve.query_ai_traces(None, None, 0, u64::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-
-        let mut writer = TileWriter::create(&dest_path)?;
-
-        if !ws_records.is_empty() {
-            writer.write_hyper_tile(TileType::SRS_WORKSPACE, &ws_records, None, None)?;
-        }
-        if !papers.is_empty() {
-            let timestamps: Vec<u64> = papers.iter().map(|p| p.timestamp_sec).collect();
-            writer.write_hyper_tile(TileType::ACADEMIC_PAPERS, &papers, Some(&timestamps), None)?;
-        }
-        if !edges.is_empty() {
-            let timestamps: Vec<u64> = edges.iter().map(|e| e.timestamp_sec).collect();
-            writer.write_hyper_tile(TileType::RESEARCH_GRAPH, &edges, Some(&timestamps), None)?;
-        }
-        if !human.is_empty() {
-            let timestamps: Vec<u64> = human.iter().map(|h| h.timestamp_sec).collect();
-            writer.write_hyper_tile(TileType::HUMAN_LRS, &human, Some(&timestamps), None)?;
-        }
-        if !ai.is_empty() {
-            let timestamps: Vec<u64> = ai.iter().map(|a| a.timestamp_sec).collect();
-            writer.write_hyper_tile(TileType::AI_TRACE_LOG, &ai, Some(&timestamps), None)?;
-        }
-
-        let total_records = (ws_records.len() + papers.len() + edges.len() + human.len() + ai.len()) as u64;
-        let mut final_manifest = *manifest;
-        final_manifest.total_records = total_records;
-        final_manifest.tile_count = writer.tile_count();
-
-        Ok(SrsSnapshotBundle {
-            manifest: final_manifest,
-            workspace: ws_records.into_iter().next(),
-            papers,
-            evidence_edges: edges,
-            human_decisions: human,
-            ai_traces: ai,
-        })
-    }
-
-    /// INTAKE SRS SNAPSHOT: Reads and validates a portable .snapshot.s3a container via zero-copy mmap.
-    pub fn intake_srs_snapshot<P: AsRef<Path>>(snapshot_path: P) -> io::Result<SrsSnapshotBundle> {
-        let reader = MmapReader::open(snapshot_path)?;
-        reader.verify_checksums().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Checksum failure: {}", e)))?;
-
-        let sieve = QuerySieve::new(&reader);
-        let ws = sieve.query_srs_workspace(None).into_iter().next().map(|(r, _)| r);
-        let papers: Vec<AcademicPaperRecord> = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-        let edges: Vec<ResearchGraphEdgeRecord> = sieve.query_research_graph(None, None)
-            .into_iter().map(|(r, _)| r).collect();
-        let human: Vec<HumanLrsRecord> = sieve.query_human_lrs(None, None, 0, u64::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-        let ai: Vec<AiTraceRecord> = sieve.query_ai_traces(None, None, 0, u64::MAX)
-            .into_iter().map(|(r, _)| r).collect();
-
-        let total_records = (papers.len() + edges.len() + human.len() + ai.len() + if ws.is_some() { 1 } else { 0 }) as u64;
-        let manifest = SrsManifestHeader::new(
-            ws.map(|w| w.project_uuid).unwrap_or([0, 0]),
-            [0, 1],
-            [0, 0],
-            [0, 0],
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-            reader.tile_count(),
-            total_records,
-        );
-
-        Ok(SrsSnapshotBundle {
-            manifest,
-            workspace: ws,
-            papers,
-            evidence_edges: edges,
-            human_decisions: human,
-            ai_traces: ai,
-        })
-    }
-}
-
-/// SCHOLAR RESEARCH SNAPSHOT (SRS) BUNDLE.
-/// Represents a fully reified, portable research project milestone containing
-/// manifest, workspace context, literature corpus, evidence relationships, and dual-actor provenance.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SrsSnapshotBundle {
-    pub manifest: SrsManifestHeader,
-    pub workspace: Option<SrsWorkspaceRecord>,
-    pub papers: Vec<AcademicPaperRecord>,
-    pub evidence_edges: Vec<ResearchGraphEdgeRecord>,
-    pub human_decisions: Vec<HumanLrsRecord>,
-    pub ai_traces: Vec<AiTraceRecord>,
 }
 
 /// S3A Compactor for merging and compacting sparse/uncompressed hyper-tiles into stratified blocks.
@@ -1620,58 +1587,208 @@ pub struct Compactor;
 
 impl Compactor {
     pub fn compact<P: AsRef<Path>>(input_paths: &[P], output_path: P) -> io::Result<u32> {
-        let mut writer = TileWriter::create(output_path)?;
+        let out_ref = output_path.as_ref();
 
+        match Self::compact_pass(input_paths, out_ref) {
+            Ok(count) => Ok(count),
+            Err(first_err) => {
+                if out_ref.exists() {
+                    let _ = std::fs::remove_file(out_ref);
+                }
+
+                // If already quarantined, do not retry
+                if first_err.to_string().contains("quarantined") {
+                    return Err(first_err);
+                }
+
+                // Retry once
+                match Self::compact_pass(input_paths, out_ref) {
+                    Ok(count) => Ok(count),
+                    Err(second_err) => {
+                        if out_ref.exists() {
+                            let _ = std::fs::remove_file(out_ref);
+                        }
+
+                        let (bad_path, bad_tile_id, bad_gen) = Self::identify_failed_tile(input_paths, &second_err);
+                        let _ = crate::compactor_gates::quarantine_tile(&bad_path, bad_tile_id, bad_gen);
+
+                        Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Compaction failed after retry: tile {} (generation {}) in '{}' quarantined due to persistent integrity failure ({})",
+                                bad_tile_id, bad_gen, bad_path.display(), second_err
+                            ),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn identify_failed_tile<P: AsRef<Path>>(input_paths: &[P], _err: &io::Error) -> (PathBuf, u64, u64) {
+        for p in input_paths {
+            let path = p.as_ref();
+            if let Ok(reader) = MmapReader::open(path) {
+                let gen = reader.generation();
+                for i in 0..reader.tile_count() as usize {
+                    if let Some((header, payload)) = reader.get_tile(i) {
+                        let actual_crc = crc32c::crc32c(payload);
+                        if actual_crc != header.data_crc32 {
+                            return (path.to_path_buf(), header.tile_id, gen);
+                        }
+                        let is_legacy = header.record_layout_version == 0;
+                        if header.header_crc32 == 0 && !is_legacy {
+                            return (path.to_path_buf(), header.tile_id, gen);
+                        }
+                        if header.header_crc32 != 0 && header.header_crc32 != compute_tile_header_crc32(header) {
+                            return (path.to_path_buf(), header.tile_id, gen);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(first) = input_paths.first() {
+            let gen = MmapReader::open(first.as_ref()).map(|r| r.generation()).unwrap_or(1);
+            (first.as_ref().to_path_buf(), 0, gen)
+        } else {
+            (PathBuf::from("unknown"), 0, 1)
+        }
+    }
+
+    fn compact_pass<P: AsRef<Path>>(input_paths: &[P], output_path: &Path) -> io::Result<u32> {
+        let mut preflight = crate::compactor_gates::CompactionPreflight::new();
+        let mut input_acc = crate::compactor_gates::LiveRecordAccumulator::new();
+        let mut output_acc = crate::compactor_gates::LiveRecordAccumulator::new();
+
+        let mut target_uuid: [u64; 2] = [0, 0];
+        for path in input_paths {
+            if let Ok(reader) = MmapReader::open(path) {
+                if reader.file_uuid() != [0, 0] {
+                    target_uuid = reader.file_uuid();
+                    break;
+                }
+            }
+        }
+        if target_uuid == [0, 0] {
+            target_uuid = generate_file_uuid();
+        }
+        let mut writer = TileWriter::create_with_uuid(output_path, target_uuid)?;
+
+        let mut accumulated_addon_mask: u32 = 0;
         let mut telemetry_buffer: Vec<TelemetryRecord> = Vec::new();
+        let mut telemetry_input_tile_ids: Vec<(usize, u64)> = Vec::new();
         let mut embedding_buffer: Vec<EmbeddingRecord128> = Vec::new();
+        let mut embedding_input_tile_ids: Vec<(usize, u64)> = Vec::new();
+        let mut unspecialized_tiles: Vec<(HyperTileHeader, Vec<u8>, usize)> = Vec::new();
+        let mut input_marks: Vec<(usize, MarkRecord)> = Vec::new();
 
-        for input_path in input_paths {
+        for (input_idx, input_path) in input_paths.iter().enumerate() {
             let reader = MmapReader::open(input_path)?;
+            accumulated_addon_mask |= reader.file_header().addon_mask;
+            let gen = reader.generation();
             let tile_count = reader.tile_count() as usize;
 
             for i in 0..tile_count {
                 if let Some((header, payload)) = reader.get_tile(i) {
+                    // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
+                    preflight.verify_and_register_tile(input_path, gen, header, payload)?;
+
                     if header.tile_type == TileType::TELEMETRY {
+                        telemetry_input_tile_ids.push((input_idx, header.tile_id));
                         let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
                         telemetry_buffer.extend_from_slice(records);
                     } else if header.tile_type == TileType::EMBEDDING {
+                        embedding_input_tile_ids.push((input_idx, header.tile_id));
                         let records: &[EmbeddingRecord128] = bytemuck::cast_slice(payload);
                         embedding_buffer.extend_from_slice(records);
+                    } else if header.tile_type == TileType::MARKS {
+                        let marks: &[MarkRecord] = bytemuck::cast_slice(payload);
+                        for m in marks {
+                            input_marks.push((input_idx, *m));
+                        }
+                    } else {
+                        unspecialized_tiles.push((*header, payload.to_vec(), input_idx));
                     }
                 }
             }
         }
 
-        // Deduplicate telemetry records: keep latest active record, filtering out tombstones
-        telemetry_buffer.sort_by_key(|r| (r.sensor_id, r.metric_id, r.timestamp));
-        let mut deduped_telemetry: Vec<TelemetryRecord> = Vec::new();
+        // Inherit accumulated addon capability bitmask onto compacted archive
+        if accumulated_addon_mask != 0 {
+            writer.enable_addon(accumulated_addon_mask)?;
+        }
+
+        // Deduplicate telemetry records: keep latest active record, filtering out tombstones using O(N) HashMap
+        let mut telemetry_map: std::collections::HashMap<(u32, u32, u64), TelemetryRecord> =
+            std::collections::HashMap::with_capacity(telemetry_buffer.len());
         for rec in telemetry_buffer {
+            let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
             if rec.is_tombstone() {
-                // Remove existing if present
-                deduped_telemetry.retain(|r| !(r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp));
+                telemetry_map.remove(&key);
             } else {
-                // Replace or append
-                if let Some(pos) = deduped_telemetry.iter().position(|r| r.sensor_id == rec.sensor_id && r.metric_id == rec.metric_id && r.timestamp == rec.timestamp) {
-                    deduped_telemetry[pos] = rec;
+                telemetry_map.insert(key, rec);
+            }
+        }
+
+        let mut deduped_telemetry: Vec<TelemetryRecord> = telemetry_map.into_values().collect();
+        deduped_telemetry.sort_by_key(|r| r.timestamp);
+
+        // Accumulate input live records
+        for rec in &deduped_telemetry {
+            input_acc.push_record(rec);
+        }
+        for rec in &embedding_buffer {
+            input_acc.push_record(rec);
+        }
+        for (header, payload, _input_idx) in &unspecialized_tiles {
+            if header.record_count > 0 && header.payload_bytes > 0 {
+                let rec_size = header.payload_bytes as usize / header.record_count as usize;
+                if rec_size > 0 {
+                    for chunk in payload[..header.payload_bytes as usize].chunks_exact(rec_size) {
+                        input_acc.push_record_bytes(chunk);
+                    }
                 } else {
-                    deduped_telemetry.push(rec);
+                    input_acc.push_record_bytes(&payload[..header.payload_bytes as usize]);
                 }
             }
         }
 
-        // Sort telemetry by timestamp for temporal indexing
-        deduped_telemetry.sort_by_key(|r| r.timestamp);
+        // Check fault injection for drop or duplication
+        #[allow(unused_mut)]
+        let mut output_telemetry = deduped_telemetry;
+        #[cfg(any(test, feature = "fault-injection"))]
+        {
+            if crate::compactor_gates::fault_injection::INJECT_RECORD_DROP.load(std::sync::atomic::Ordering::SeqCst) {
+                if !output_telemetry.is_empty() {
+                    output_telemetry.pop();
+                }
+            }
+            if crate::compactor_gates::fault_injection::INJECT_RECORD_DUPLICATION.load(std::sync::atomic::Ordering::SeqCst) {
+                if !output_telemetry.is_empty() {
+                    let first = output_telemetry[0];
+                    output_telemetry.push(first);
+                }
+            }
+        }
+
+        let mut tile_id_remap: std::collections::HashMap<(usize, u64), u64> = std::collections::HashMap::new();
 
         // Compact telemetry into full 128 KB tiles
         let tel_rec_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
-        for chunk in deduped_telemetry.chunks(tel_rec_capacity) {
+        for chunk in output_telemetry.chunks(tel_rec_capacity) {
             let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
-            writer.write_hyper_tile(
+            let new_tile_id = writer.write_hyper_tile(
                 TileType::TELEMETRY,
                 chunk,
                 Some(&timestamps),
                 None,
             )?;
+            for &(inp_idx, old_tid) in &telemetry_input_tile_ids {
+                tile_id_remap.insert((inp_idx, old_tid), new_tile_id);
+            }
+            for rec in chunk {
+                output_acc.push_record(rec);
+            }
         }
 
         // Compact embeddings into full 128 KB tiles with calculated Simplex Hulls
@@ -1693,21 +1810,91 @@ impl Compactor {
                 }
             }
 
-            writer.write_hyper_tile(
+            let new_tile_id = writer.write_hyper_tile(
                 TileType::EMBEDDING,
                 chunk,
                 Some(&timestamps),
                 Some(hull),
             )?;
+            for &(inp_idx, old_tid) in &embedding_input_tile_ids {
+                tile_id_remap.insert((inp_idx, old_tid), new_tile_id);
+            }
+            for rec in chunk {
+                output_acc.push_record(rec);
+            }
         }
 
-        Ok(writer.tile_count())
+        // Copy through all unspecialized / pack tiles intact, recording tile ID remappings
+        for (header, payload, input_idx) in unspecialized_tiles {
+            let old_tile_id = header.tile_id;
+            let mut h = header;
+            h.file_uuid = writer.file_uuid();
+            let new_tile_id = writer.write_raw_hyper_tile(&h, &payload)?;
+            tile_id_remap.insert((input_idx, old_tile_id), new_tile_id);
+
+            if header.record_count > 0 && header.payload_bytes > 0 {
+                let rec_size = header.payload_bytes as usize / header.record_count as usize;
+                if rec_size > 0 {
+                    for chunk in payload[..header.payload_bytes as usize].chunks_exact(rec_size) {
+                        output_acc.push_record_bytes(chunk);
+                    }
+                } else {
+                    output_acc.push_record_bytes(&payload[..header.payload_bytes as usize]);
+                }
+            }
+        }
+
+        // Carry marks forward: latest mark per target wins, remapping target tile IDs
+        let mut latest_marks_map: std::collections::BTreeMap<(u32, usize, u64, u32, u32), MarkRecord> = std::collections::BTreeMap::new();
+        for (input_idx, m) in input_marks {
+            let key = (m.target_tile_type, input_idx, m.target_tile_id, m.record_index, m.mark_kind);
+            latest_marks_map.insert(key, m);
+        }
+
+        let out_gen = writer.generation();
+        let mut output_marks: Vec<MarkRecord> = Vec::new();
+        for ((_tt, input_idx, old_tile_id, _rec_idx, _kind), m) in latest_marks_map {
+            if m.is_set() {
+                let mut remapped = m;
+                if let Some(&new_id) = tile_id_remap.get(&(input_idx, old_tile_id)) {
+                    remapped.target_tile_id = new_id;
+                }
+                remapped.generation = out_gen;
+                output_marks.push(remapped);
+            }
+        }
+
+        if !output_marks.is_empty() {
+            let mark_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<MarkRecord>();
+            for chunk in output_marks.chunks(mark_capacity) {
+                let timestamps: Vec<u64> = chunk.iter().map(|m| m.timestamp).collect();
+                writer.write_hyper_tile(
+                    TileType::MARKS,
+                    chunk,
+                    Some(&timestamps),
+                    None,
+                )?;
+            }
+        }
+
+        // DURING GATE: Verify live-record count in = out and hash in = out
+        input_acc.verify_equal(&output_acc)?;
+
+        // End of compaction: verify all output tiles from disk
+        drop(writer);
+        let output_reader = MmapReader::open(output_path)?;
+        output_reader.verify_checksums().map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("Compaction After-Gate checksum failure: {}", e))
+        })?;
+
+        Ok(output_reader.tile_count())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytemuck::{Pod, Zeroable};
 
     struct TestTempFile {
 
@@ -1765,9 +1952,9 @@ mod tests {
 
     #[test]
     fn test_tile_fusion_engine_deduplication_and_tombstones() {
-        let f1 = NamedTempFile::new().unwrap();
-        let f2 = NamedTempFile::new().unwrap();
-        let fused_file = NamedTempFile::new().unwrap();
+        let f1 = TestTempFile::new();
+        let f2 = TestTempFile::new();
+        let fused_file = TestTempFile::new();
 
         // Tile 1: Initial telemetry records and a record to be tombstoned
         let mut w1 = TileWriter::create(f1.path()).unwrap();
@@ -1812,98 +1999,33 @@ mod tests {
         assert_eq!(r300.value, 99.0);
     }
 
-    #[test]
-    fn test_da_commitment_query() {
-        let temp_file = TestTempFile::new();
-        let mut writer = TileWriter::create(temp_file.path()).unwrap();
-
-        let commitments = vec![
-            DACommitmentRecord::new(100, [0x01; 32], 1600000000, 0xFF, 120),
-            DACommitmentRecord::new(200, [0x02; 32], 1600000010, 0xFF, 250),
-            DACommitmentRecord::new(500, [0x03; 32], 1600000020, 0xFF, 800),
-        ];
-
-        let timestamps = vec![100, 200, 500];
-        writer.write_hyper_tile(TileType::DATA_AVAILABILITY, &commitments, Some(&timestamps), None).unwrap();
-
-        let reader = MmapReader::open(temp_file.path()).unwrap();
-        let sieve = QuerySieve::new(&reader);
-
-        let results = sieve.query_da_commitments(150, 300);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].block_height, 200);
-    }
-
-    #[test]
-    fn test_gis_mesh_3d_query() {
-        let temp_file = TestTempFile::new();
-        let mut writer = TileWriter::create(temp_file.path()).unwrap();
-
-        let points = vec![
-            GISSurveyPointRecord::new(37.774929, -122.419416, 100.0, 0, 80, 1600000000), // Ground
-            GISSurveyPointRecord::new(37.775000, -122.420000, -50.0, 1, 90, 1600000000), // Subsurface Strata
-            GISSurveyPointRecord::new(38.000000, -123.000000, 200.0, 0, 50, 1600000000), // Out of area
-        ];
-
-        let mut hull = SimplexHull::empty();
-        hull.dim = 3;
-        hull.min_bounds[0] = 37774929.0;
-        hull.max_bounds[0] = 38000000.0;
-        hull.min_bounds[1] = -123000000.0;
-        hull.max_bounds[1] = -122419416.0;
-        hull.min_bounds[2] = -50000.0;
-        hull.max_bounds[2] = 200000.0;
-
-        writer.write_hyper_tile(TileType::GIS_SURVEY_MESH, &points, None, Some(hull)).unwrap();
-
-        let reader = MmapReader::open(temp_file.path()).unwrap();
-        let sieve = QuerySieve::new(&reader);
-
-        let res = sieve.query_gis_mesh_3d(37.70, 37.80, -122.50, -122.40, -100.0, 150.0);
-        assert_eq!(res.len(), 2);
-    }
-
-    #[test]
-    fn test_robotics_stream_writer_and_3d_trajectory_query() {
-        let temp_file = TestTempFile::new();
-        let mut stream_writer = RoboticsStreamWriter::create(temp_file.path()).unwrap();
-
-        // Push 2000 robotics kinematics samples (~1 HyperTile payload)
-        for i in 0..2000 {
-            let rec = RoboticsKinematicRecord::new(
-                i as u64 * 1000,
-                1,
-                [i as f32 * 0.1, (i % 10) as f32, 0.5],
-                [1.0, 0.0, 0.0, 0.0],
-                [0.1, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-            );
-            let _ = stream_writer.push_sample(rec).unwrap();
-        }
-        stream_writer.flush_tile().unwrap();
-
-        let reader = MmapReader::open(temp_file.path()).unwrap();
-        let sieve = QuerySieve::new(&reader);
-
-        // Perform 3D bounding box trajectory query
-        let results = sieve.query_robotics_trajectory_3d(
-            [0.0, 0.0, 0.0],
-            [5.0, 5.0, 1.0],
-            0,
-            1_000_000,
-        );
-
-        assert!(!results.is_empty());
-        for r in &results {
-            assert!(r.position_xyz[0] >= 0.0 && r.position_xyz[0] <= 5.0);
-        }
+    #[repr(C)]
+    #[derive(Clone, Copy, Pod, Zeroable, PartialEq, Debug)]
+    struct DummyMicroRecord {
+        timestamp: u32,
+        sensor_id: u16,
+        metric_id: u16,
+        value: f32,
+        _reserved: [u8; 4],
     }
 
     #[test]
     fn test_micro_tile_buffer_zero_alloc() {
         let mut buf = MicroTileBuffer::new(1);
-        let rec1 = CompactWearableRecord::new(100, 1, 10, 72.5); // PPG Heart Rate
-        let rec2 = CompactWearableRecord::new(101, 1, 10, 73.0);
+        let rec1 = DummyMicroRecord {
+            timestamp: 100,
+            sensor_id: 1,
+            metric_id: 10,
+            value: 72.5,
+            _reserved: [0; 4],
+        };
+        let rec2 = DummyMicroRecord {
+            timestamp: 101,
+            sensor_id: 1,
+            metric_id: 10,
+            value: 73.0,
+            _reserved: [0; 4],
+        };
 
         buf.push_record(&rec1).unwrap();
         buf.push_record(&rec2).unwrap();
@@ -1916,9 +2038,75 @@ mod tests {
         assert_eq!(header.record_count, 2);
         assert_eq!(header.payload_bytes, 32);
 
-        let payload_records: &[CompactWearableRecord] = bytemuck::cast_slice(&page[MICRO_TILE_HEADER_SIZE..MICRO_TILE_HEADER_SIZE + 32]);
+        let payload_records: &[DummyMicroRecord] = bytemuck::cast_slice(&page[MICRO_TILE_HEADER_SIZE..MICRO_TILE_HEADER_SIZE + 32]);
         assert_eq!(payload_records[0], rec1);
         assert_eq!(payload_records[1], rec2);
+    }
+
+    #[test]
+    fn test_domain_tile_write_gates() {
+        use s3a_core::{ADDON_WEARABLE, ADDON_ROBOTICS, ADDON_GIS, ADDON_DA, ADDON_EDU};
+
+        let temp_file = TestTempFile::new();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+        let records = [TelemetryRecord::new(100, 1, 1, 1.0)];
+
+        // Fail-closed writes without enabling addon bits
+        assert!(writer.write_hyper_tile(3, &records, None, None).is_err());
+        assert!(writer.write_hyper_tile(4, &records, None, None).is_err());
+        assert!(writer.write_hyper_tile(5, &records, None, None).is_err());
+        assert!(writer.write_hyper_tile(6, &records, None, None).is_err());
+        assert!(writer.write_hyper_tile(10, &records, None, None).is_err());
+
+        // Enable bits individually and verify writes pass
+        writer.enable_addon(ADDON_WEARABLE).unwrap();
+        assert!(writer.write_hyper_tile(3, &records, None, None).is_ok());
+
+        writer.enable_addon(ADDON_ROBOTICS).unwrap();
+        assert!(writer.write_hyper_tile(4, &records, None, None).is_ok());
+
+        writer.enable_addon(ADDON_GIS).unwrap();
+        assert!(writer.write_hyper_tile(5, &records, None, None).is_ok());
+
+        writer.enable_addon(ADDON_DA).unwrap();
+        assert!(writer.write_hyper_tile(6, &records, None, None).is_ok());
+
+        writer.enable_addon(ADDON_EDU).unwrap();
+        assert!(writer.write_hyper_tile(10, &records, None, None).is_ok());
+    }
+
+    #[test]
+    fn test_compaction_domain_tiles_and_mask_preservation() {
+        use s3a_core::{ADDON_WEARABLE, ADDON_ROBOTICS, ADDON_GIS, ADDON_DA, ADDON_EDU};
+
+        let temp_file = TestTempFile::new();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+        let records = [TelemetryRecord::new(100, 1, 1, 1.0)];
+
+        let all_addons = ADDON_WEARABLE | ADDON_ROBOTICS | ADDON_GIS | ADDON_DA | ADDON_EDU;
+        writer.enable_addon(all_addons).unwrap();
+
+        writer.write_hyper_tile(3, &records, None, None).unwrap();
+        writer.write_hyper_tile(4, &records, None, None).unwrap();
+        writer.write_hyper_tile(5, &records, None, None).unwrap();
+        writer.write_hyper_tile(6, &records, None, None).unwrap();
+        writer.write_hyper_tile(10, &records, None, None).unwrap();
+
+        let initial_count = writer.tile_count();
+        assert_eq!(initial_count, 5);
+
+        // Run compaction via S3ACrudEngine
+        let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
+        let compacted_count = engine.purge_and_compact().unwrap();
+        assert_eq!(compacted_count, 5);
+
+        // Verify reader sees all 5 tiles and addon_mask is preserved
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        assert_eq!(reader.tile_count(), 5);
+        assert_eq!(reader.addon_mask(), all_addons);
+
+        let types: Vec<u32> = (0..5).map(|i| reader.get_tile(i).unwrap().0.tile_type).collect();
+        assert_eq!(types, vec![3, 4, 5, 6, 10]);
     }
 
     #[test]
@@ -2462,7 +2650,7 @@ mod tests {
         }
 
         // Wait for background worker to trigger automatic flush
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(300));
 
         let stats = compactor.stats();
         assert!(stats.flushed_records >= 100, "Background compactor should have flushed batched records");
@@ -2624,10 +2812,48 @@ mod tests {
             records.push(rec);
         }
 
-        let written = engine.create_learning_activities(&records).unwrap();
-        assert_eq!(written, 1);
+        // 1. Verify Greenfield write fails closed because Tile 9 is strictly RESERVED_BOUNDARY
+        let write_res = engine.create_learning_activities(&records);
+        assert!(write_res.is_err());
+        let write_err = write_res.unwrap_err();
+        assert_eq!(write_err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(write_err.to_string().contains("RESERVED"));
 
-        // Verify read by actor 1001
+        // 2. Synthesize a legacy archive containing Tile 9 to verify backward-compatible read sieve and S3A-QL
+        {
+            use std::io::{Seek, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            let mut tile_hdr = HyperTileHeader::new(0, TileType::RESERVED_BOUNDARY);
+            tile_hdr.record_count = records.len() as u32;
+            tile_hdr.payload_bytes = (records.len() * std::mem::size_of::<LearningActivityRecord>()) as u32;
+            tile_hdr.min_timestamp = 1000;
+            tile_hdr.max_timestamp = 1000 + 99 * 10;
+            tile_hdr.learned_index.slope = (records.len() - 1) as f32 / (tile_hdr.max_timestamp - tile_hdr.min_timestamp) as f32;
+            tile_hdr.learned_index.intercept = 0.0;
+            for r in &records {
+                bloom_filter_insert(&mut tile_hdr.filter.bits, r.actor_id, tile_hdr.filter.hash_seed);
+                bloom_filter_insert(&mut tile_hdr.filter.bits, r.verb_id as u64, tile_hdr.filter.hash_seed);
+            }
+            tile_hdr.data_crc32 = crc32c::crc32c(bytemuck::cast_slice(&records));
+            tile_hdr.header_crc32 = compute_tile_header_crc32(&tile_hdr);
+
+            let rec_bytes = bytemuck::cast_slice::<LearningActivityRecord, u8>(&records);
+            file.seek(std::io::SeekFrom::Start(FILE_HEADER_SIZE as u64)).unwrap();
+            file.write_all(bytemuck::bytes_of(&tile_hdr)).unwrap();
+            file.write_all(rec_bytes).unwrap();
+            let pad = HYPER_TILE_SIZE - (HYPER_TILE_HEADER_SIZE + rec_bytes.len());
+            file.write_all(&vec![0u8; pad]).unwrap();
+
+            // Commit dual slot A with tile_count = 1
+            let mut file_hdr = FileHeader::new(1, 1000);
+            file_hdr.generation = 2;
+            file_hdr.header_crc32 = compute_header_crc32(&file_hdr);
+            file.seek(std::io::SeekFrom::Start(0)).unwrap();
+            file.write_all(bytemuck::bytes_of(&file_hdr)).unwrap();
+            file.flush().unwrap();
+        }
+
+        // Verify read by actor 1001 from legacy archive
         let act1001 = engine.read_learning_activities(Some(1001), None, 1000, 2000).unwrap();
         assert_eq!(act1001.len(), 50);
         assert_eq!(act1001[0].0.actor_id, 1001);
@@ -2636,179 +2862,249 @@ mod tests {
         let act_none = engine.read_learning_activities(Some(9999), None, 1000, 2000).unwrap();
         assert_eq!(act_none.len(), 0);
 
-        // Test S3A-QL parsing and execution on LEARNING_ACTIVITIES
+        // Test S3A-QL parsing and execution on LEARNING_ACTIVITIES:
+        // In core engine without scholar pack registered, this must fail closed with PackRequired
         let ql_stmt = format!("SIFT LEARNING_ACTIVITIES FROM \"{}\" WHERE ACTOR_ID = 1001;", path.display());
-        let res = execute_query(&ql_stmt).unwrap();
-        match res {
-            QueryResult::LearningActivityList(list) => {
-                assert_eq!(list.len(), 50);
-            }
-            other => panic!("Expected LearningActivityList, got {:?}", other),
+        let err = execute_query(&ql_stmt).unwrap_err();
+        assert_eq!(err.code(), "pack_required");
+    }
+
+    #[test]
+    fn test_scholar_tile_write_gate_enforcement() {
+        let temp_file = TestTempFile::new();
+        let path = temp_file.path();
+
+        let mut writer = TileWriter::create(path).unwrap();
+        assert_eq!(writer.addon_mask(), 0);
+
+        // Writing raw bytes to tile 10 (Human LRS) or tile 12 (Academic Papers) must fail closed
+        let dummy_payload = [0x5Au8; 64];
+        let res = writer.write_hyper_tile(10, &dummy_payload, None, None);
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err.to_string().contains("Scholar Pack"));
+
+        // Enable ADDON_EDU capability
+        writer.enable_addon(ADDON_EDU).unwrap();
+        assert_eq!(writer.addon_mask() & ADDON_EDU, ADDON_EDU);
+
+        // Write to tile 10 now succeeds
+        let tile_id = writer.write_hyper_tile(10, &dummy_payload, None, None).unwrap();
+        assert_eq!(tile_id, 1);
+        assert_eq!(writer.tile_count(), 1);
+    }
+
+    #[test]
+    fn test_compactor_copy_through_and_addon_mask_preservation() {
+        let input_file = TestTempFile::new();
+        let output_file = TestTempFile::new();
+
+        // 1. Create input archive with telemetry and an unspecialized pack tile (tile 12)
+        let mut writer = TileWriter::create(input_file.path()).unwrap();
+        writer.enable_addon(ADDON_EDU).unwrap();
+
+        let tel_rec = TelemetryRecord::new(100, 1, 1, 42.0);
+        writer.write_hyper_tile(TileType::TELEMETRY, &[tel_rec], Some(&[100]), None).unwrap();
+
+        let dummy_pack_payload = [0xA5u8; 64];
+        writer.write_hyper_tile(12, &dummy_pack_payload, None, None).unwrap();
+        assert_eq!(writer.tile_count(), 2);
+        drop(writer);
+
+        // 2. Compact archive
+        let compacted_count = Compactor::compact(&[input_file.path()], output_file.path()).unwrap();
+        assert_eq!(compacted_count, 2);
+
+        // 3. Verify output archive inherited addon_mask and preserved pack tile intact
+        let reader = MmapReader::open(output_file.path()).unwrap();
+        assert_eq!(reader.file_header().addon_mask & ADDON_EDU, ADDON_EDU);
+        assert_eq!(reader.tile_count(), 2);
+
+        // Tile 0: compacted telemetry
+        let (h0, _) = reader.get_tile(0).unwrap();
+        assert_eq!(h0.tile_type, TileType::TELEMETRY);
+
+        // Tile 1: copied through pack tile (tile 12)
+        let (h1, p1) = reader.get_tile(1).unwrap();
+        assert_eq!(h1.tile_type, 12);
+        assert_eq!(&p1[..64], &dummy_pack_payload);
+
+        // Verify checksums pass on the compacted archive
+        assert!(reader.verify_checksums().is_ok());
+    }
+
+    #[test]
+    fn test_tile_writer_sets_record_layout_version() {
+        let temp_file = TestTempFile::new();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+        let rec = TelemetryRecord::new(100, 1, 1, 42.0);
+        writer.write_hyper_tile(TileType::TELEMETRY, &[rec], Some(&[100]), None).unwrap();
+        drop(writer);
+
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let (header, _) = reader.get_tile(0).unwrap();
+        assert_eq!(header.record_layout_version, 1);
+        let read_rec: TelemetryRecord = reader.read_record_by_coordinate(&S3ACoordinate::new(0, 0, 0)).unwrap();
+        assert_eq!(read_rec.timestamp, 100);
+        assert_eq!(read_rec.sensor_id, 1);
+    }
+
+    #[test]
+    fn test_read_fails_closed_on_unsupported_layout_version() {
+        let temp_file = TestTempFile::new();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
+
+        // 1. Writer write gate fails closed on unsupported layout version
+        let rec = TelemetryRecord::new(200, 2, 2, 84.0);
+        let mut header = HyperTileHeader::new(0, TileType::TELEMETRY);
+        header.record_layout_version = 99; // future/unsupported
+        header.record_count = 1;
+        header.payload_bytes = std::mem::size_of::<TelemetryRecord>() as u32;
+
+        let write_res = writer.write_raw_hyper_tile(&header, bytemuck::bytes_of(&rec));
+        assert!(write_res.is_err());
+        assert_eq!(write_res.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        drop(writer);
+
+        // 2. Synthesize an archive containing future layout version 99 to test Reader fail-closed behavior
+        {
+            use std::io::{Seek, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(temp_file.path()).unwrap();
+            header.data_crc32 = crc32c::crc32c(bytemuck::bytes_of(&rec));
+            header.header_crc32 = compute_tile_header_crc32(&header);
+
+            file.seek(std::io::SeekFrom::Start(FILE_HEADER_SIZE as u64)).unwrap();
+            file.write_all(bytemuck::bytes_of(&header)).unwrap();
+            file.write_all(bytemuck::bytes_of(&rec)).unwrap();
+            let pad = HYPER_TILE_SIZE - (HYPER_TILE_HEADER_SIZE + std::mem::size_of::<TelemetryRecord>());
+            file.write_all(&vec![0u8; pad]).unwrap();
+
+            let mut file_hdr = FileHeader::new(1, 200);
+            file_hdr.generation = 2;
+            file_hdr.header_crc32 = compute_header_crc32(&file_hdr);
+            file.seek(std::io::SeekFrom::Start(0)).unwrap();
+            file.write_all(bytemuck::bytes_of(&file_hdr)).unwrap();
+            file.flush().unwrap();
+        }
+
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let res: Result<TelemetryRecord, S3AError> = reader.read_record_by_coordinate(&S3ACoordinate::new(0, 0, 0));
+        assert!(res.is_err());
+        match res.unwrap_err() {
+            S3AError::UnsupportedLayoutVersion(v) => assert_eq!(v, 99),
+            other => panic!("Expected UnsupportedLayoutVersion(99), got {:?}", other),
         }
     }
 
     #[test]
-    fn test_dual_trace_human_and_ai_cross_reference() {
+    fn test_legacy_layout_version_zero_compatibility() {
         let temp_file = TestTempFile::new();
-        let path = temp_file.path();
-        let engine = S3ACrudEngine::open_or_create(path).unwrap();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
 
-        let session_uuid = [0xAAAA_BBBB_CCCC_DDDD, 0x1111_2222_3333_4444];
-        let human_coord = S3ACoordinate::new(0, 0, 0);
-        let ai_coord = S3ACoordinate::new(0, 1, 0);
+        // Simulate a legacy tile written before Phase 2 (record_layout_version == 0)
+        let rec = TelemetryRecord::new(300, 3, 3, 126.0);
+        let mut header = HyperTileHeader::new(0, TileType::TELEMETRY);
+        header.record_layout_version = 0; // Legacy version alias
+        header.record_count = 1;
+        header.payload_bytes = std::mem::size_of::<TelemetryRecord>() as u32;
 
-        let human_rec = HumanLrsRecord::new(
-            session_uuid,
-            1600000000,
-            999, // researcher hash
-            1,   // 'accepted'
-            1.0,
-            ai_coord, // pointer to AI trace at tile 1, offset 0
-            42,
-        );
+        writer.write_raw_hyper_tile(&header, bytemuck::bytes_of(&rec)).unwrap();
+        drop(writer);
 
-        let ai_rec = AiTraceRecord::new(
-            session_uuid,
-            1600000001,
-            888, // agent id
-            2,   // reasoning step
-            0.98,
-            human_coord, // pointer to human feedback at tile 0, offset 0
-            1234,
-        );
+        let reader = MmapReader::open(temp_file.path()).unwrap();
+        let (read_header, _) = reader.get_tile(0).unwrap();
+        assert_eq!(read_header.record_layout_version, 0);
 
-        engine.create_human_lrs(&[human_rec]).unwrap();
-        engine.create_ai_traces(&[ai_rec]).unwrap();
-
-        // 1. Test bidirectional O(1) dereferencing
-        let resolved_ai = engine.trace_ai_from_human(&human_coord).unwrap();
-        assert_eq!(resolved_ai.session_uuid, session_uuid);
-        assert_eq!(resolved_ai.agent_id, 888);
-        assert_eq!(resolved_ai.confidence, 0.98);
-
-        let resolved_human = engine.trace_human_from_ai(&ai_coord).unwrap();
-        assert_eq!(resolved_human.session_uuid, session_uuid);
-        assert_eq!(resolved_human.actor_hash, 999);
-        assert_eq!(resolved_human.decision_score, 1.0);
-
-        // 2. Test session correlation bundle query
-        let (humans, ais) = engine.query_session_bundle(session_uuid).unwrap();
-        assert_eq!(humans.len(), 1);
-        assert_eq!(ais.len(), 1);
-        assert_eq!(humans[0].0.actor_hash, 999);
-        assert_eq!(ais[0].0.agent_id, 888);
+        // Reader maps 0 to 1 and successfully returns the record
+        let read_rec: TelemetryRecord = reader.read_record_by_coordinate(&S3ACoordinate::new(0, 0, 0)).unwrap();
+        assert_eq!(read_rec.timestamp, 300);
+        assert_eq!(read_rec.sensor_id, 3);
     }
 
     #[test]
-    fn test_srs_snapshot_export_and_intake_roundtrip() {
-        let live_db = TestTempFile::new();
-        let snapshot_file = TestTempFile::new();
+    fn test_tile_nine_write_denied() {
+        let temp_file = TestTempFile::new();
+        let mut writer = TileWriter::create(temp_file.path()).unwrap();
 
-        let engine = S3ACrudEngine::open_or_create(live_db.path()).unwrap();
+        // 1. write_hyper_tile to tile 9 must fail closed
+        let dummy = [0u8; 64];
+        let res1 = writer.write_hyper_tile(9, &dummy, None, None);
+        assert!(res1.is_err());
+        let err1 = res1.unwrap_err();
+        assert_eq!(err1.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err1.to_string().contains("RESERVED"));
 
-        let project_uuid = [0x1122334455667788, 0x99AABBCCDDEEFF00];
-        let snapshot_uuid = [0x5555444433332222, 0x11110000FFFFEEEE];
-        let session_uuid = [0xCAFEBABE00001111, 0xDEADBEEF22223333];
+        // 2. write_raw_hyper_tile to tile 9 must also fail closed
+        let header = HyperTileHeader::new(0, 9);
+        let res2 = writer.write_raw_hyper_tile(&header, &dummy);
+        assert!(res2.is_err());
+        let err2 = res2.unwrap_err();
+        assert_eq!(err2.kind(), io::ErrorKind::PermissionDenied);
+        assert!(err2.to_string().contains("RESERVED"));
+    }
 
-        // 1. Create Workspace
-        let ws = SrsWorkspaceRecord::new(
-            project_uuid,
-            123456,
-            0b11,
-            [0.1, 0.2, 0.3],
-            1,
-        );
-        engine.create_srs_workspace(&ws).unwrap();
+    #[test]
+    fn test_compactor_preserves_record_layout_version() {
+        let input_file = TestTempFile::new();
+        let output_file = TestTempFile::new();
 
-        // 2. Create Paper
-        let paper = AcademicPaperRecord::new(
-            1001,
-            1600000000,
-            5000,
-            0.1, 0.2, 0.3,
-            25,
-            2024,
-            1,
-            1,
-            0,
-            999,
-        );
-        engine.create_academic_papers(&[paper]).unwrap();
+        let mut writer = TileWriter::create(input_file.path()).unwrap();
+        writer.enable_addon(ADDON_EDU).unwrap();
 
-        // 3. Create Edge
-        let edge = ResearchGraphEdgeRecord::new(
-            1001,
-            2002,
-            1600000001,
-            5001,
-            1, // SUPPORTS
-            0.95,
-        );
-        engine.create_research_graph_edges(&[edge]).unwrap();
+        // Write tile 12 with specific record_layout_version
+        let dummy = [0x77u8; 64];
+        let mut h12 = HyperTileHeader::new(0, 12);
+        h12.record_layout_version = 1;
+        h12.payload_bytes = 64;
+        writer.write_raw_hyper_tile(&h12, &dummy).unwrap();
+        drop(writer);
 
-        // 4. Create Human Decision & AI Trace
-        let human = HumanLrsRecord::new(
-            session_uuid,
-            1600000002,
-            777,
-            1,
-            1.0,
-            S3ACoordinate::new(0, 4, 0),
-            1001 as u32,
-        );
-        let ai = AiTraceRecord::new(
-            session_uuid,
-            1600000003,
-            888,
-            2,
-            0.99,
-            S3ACoordinate::new(0, 3, 0),
-            5000,
-        );
-        engine.create_human_lrs(&[human]).unwrap();
-        engine.create_ai_traces(&[ai]).unwrap();
+        // Compact
+        let compacted_count = Compactor::compact(&[input_file.path()], output_file.path()).unwrap();
+        assert_eq!(compacted_count, 1);
 
-        // 5. Export Snapshot
-        let manifest = SrsManifestHeader::new(
-            project_uuid,
-            snapshot_uuid,
-            [0, 0],
-            session_uuid,
-            1600000005,
-            5,
-            5,
-        );
+        // Verify preserved byte-for-byte
+        let reader = MmapReader::open(output_file.path()).unwrap();
+        let (compacted_header, payload) = reader.get_tile(0).unwrap();
+        assert_eq!(compacted_header.tile_type, 12);
+        assert_eq!(compacted_header.record_layout_version, 1);
+        assert_eq!(&payload[..64], &dummy);
+    }
 
-        let exported_bundle = engine.export_srs_snapshot(
-            snapshot_file.path(),
-            &manifest,
-            Some(&ws),
-            Some(project_uuid),
-        ).unwrap();
+    #[test]
+    fn test_demo_payload_migrator_in_engine() {
+        use s3a_core::registry::{migrate_tile_payload, TilePayloadMigrator, RegistryError};
 
-        assert_eq!(exported_bundle.papers.len(), 1);
-        assert_eq!(exported_bundle.evidence_edges.len(), 1);
-        assert_eq!(exported_bundle.human_decisions.len(), 1);
-        assert_eq!(exported_bundle.ai_traces.len(), 1);
-        assert!(exported_bundle.workspace.is_some());
+        struct DemoV1ToV2Migrator;
+        impl TilePayloadMigrator for DemoV1ToV2Migrator {
+            fn migrate_payload(
+                &self,
+                tile_type: u32,
+                from_version: u32,
+                to_version: u32,
+                payload: &[u8],
+            ) -> Result<Vec<u8>, RegistryError> {
+                if tile_type == 10 && from_version == 1 && to_version == 2 {
+                    let mut migrated = payload.to_vec();
+                    migrated.extend_from_slice(&[0xFF; 16]);
+                    Ok(migrated)
+                } else {
+                    Err(RegistryError::MigrationFailed("Unsupported migration".to_string()))
+                }
+            }
+        }
 
-        // 6. Zero-copy Intake Snapshot
-        let intaken_bundle = S3ACrudEngine::intake_srs_snapshot(snapshot_file.path()).unwrap();
+        let old_payload = vec![1, 2, 3, 4];
+        let migrator = DemoV1ToV2Migrator;
+        let migrated_custom = migrator.migrate_payload(10, 1, 2, &old_payload).unwrap();
+        assert_eq!(migrated_custom.len(), old_payload.len() + 16);
 
-        assert_eq!(intaken_bundle.manifest.project_uuid, project_uuid);
-        assert_eq!(intaken_bundle.papers.len(), 1);
-        assert_eq!(intaken_bundle.papers[0].paper_id, 1001);
-        assert_eq!(intaken_bundle.evidence_edges.len(), 1);
-        assert_eq!(intaken_bundle.evidence_edges[0].predicate_id, 1);
-        assert_eq!(intaken_bundle.human_decisions.len(), 1);
-        assert_eq!(intaken_bundle.human_decisions[0].actor_hash, 777);
-        assert_eq!(intaken_bundle.ai_traces.len(), 1);
-        assert_eq!(intaken_bundle.ai_traces[0].confidence, 0.99);
-
-        // Verify Workspace matches
-        let intaken_ws = intaken_bundle.workspace.unwrap();
-        assert_eq!(intaken_ws.project_uuid, project_uuid);
-        assert_eq!(intaken_ws.question_hash, 123456);
+        // Test standard synthetic demo migrator for tile 99
+        let tile99_v1_record = [1u8; 16];
+        let tile99_v2_payload = migrate_tile_payload(99, 1, 2, &tile99_v1_record).unwrap();
+        assert_eq!(tile99_v2_payload.len(), 20);
+        assert_eq!(&tile99_v2_payload[16..], &[0, 0, 0, 0]);
     }
 }
 

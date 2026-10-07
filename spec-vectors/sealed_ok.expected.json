@@ -1,0 +1,29 @@
+{
+  "case_name": "sealed_ok",
+  "category": "valid",
+  "description": "Sealed S3A archive with directory, K=16/M=2 Reed-Solomon parity, and valid 64-byte end cap",
+  "expected_outcome": "ok",
+  "file_size_bytes": 524944,
+  "header": {
+    "active_slot": 0,
+    "generation": 3,
+    "tile_count": 2,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "telemetry": 10
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "Telemetry device 100"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": true,
+  "rebuilt_directory": false,
+  "out_of_order_detected": false,
+  "repaired_tiles_count": 0
+}

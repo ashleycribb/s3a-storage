@@ -3,18 +3,27 @@
 //! zero-overhead Rust engine operating over S3A Hyper-Tiles and SRS Snapshots.
 
 pub mod agent;
-pub mod srs;
 pub mod mcp;
+pub mod sandbox;
+pub mod srs;
+pub mod store;
 
-pub use agent::{ResearchLoopEngine, ResearchAction, EpistemicConfidenceTier};
-pub use srs::SrsContainerManager;
+pub use agent::{
+    EpistemicConfidenceTier, GateRejectionLog, GateStatus, HallucinationRisk, HumanGateRequest,
+    ResearchAction, ResearchLoopEngine, TaGuidance, TA_VERB_APPROVED_DRAFT, TA_VERB_ESCALATED,
+    TA_VERB_PROVIDED_ANALOGY, TA_VERB_REDIRECTED,
+};
 pub use mcp::S3AMcpDispatcher;
+pub use sandbox::{Sandbox, SandboxError};
+pub use srs::SrsContainerManager;
+pub use store::{LocalStore, LrsStore, Store, StoreError};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use s3a_core::ADDON_EDU;
     use s3a_engine::S3ACrudEngine;
-    use s3a_core::SrsWorkspaceRecord;
+    use s3a_pack_scholar::SrsWorkspaceRecord;
 
     struct TempArchive {
         path: std::path::PathBuf,
@@ -25,9 +34,17 @@ mod tests {
             use std::sync::atomic::{AtomicU64, Ordering};
             static COUNTER: AtomicU64 = AtomicU64::new(0);
             let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
             let mut path = std::env::temp_dir();
-            path.push(format!("s3a_harness_test_{}_{}_{}.s3a", std::process::id(), ts, id));
+            path.push(format!(
+                "s3a_harness_test_{}_{}_{}.s3a",
+                std::process::id(),
+                ts,
+                id
+            ));
             Self { path }
         }
     }
@@ -42,23 +59,30 @@ mod tests {
     fn test_harness_autonomous_research_loop_and_gates() {
         let live_db = TempArchive::new();
         let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
+        engine.enable_addon(ADDON_EDU).unwrap();
 
         let session_uuid = [0x11223344, 0x55667788];
         let loop_engine = ResearchLoopEngine::new(session_uuid, 42);
 
         // 1. Ingest paper
-        let paper_coord = loop_engine.register_paper(&engine, 0x99998888, [0.2, 0.4, 0.6], 100, 2025, 1, true).unwrap();
+        let paper_coord = loop_engine
+            .register_paper(&engine, 0x99998888, [0.2, 0.4, 0.6], 100, 2025, 1, true)
+            .unwrap();
         assert_eq!(paper_coord.level, 0);
 
         // 2. High confidence AI step (no gate)
         assert!(!loop_engine.requires_human_gate(0.85, false));
-        let ai_coord = loop_engine.record_ai_step(&engine, 1, 0.85, s3a_core::S3ACoordinate::new(0, 0, 0), 555).unwrap();
+        let ai_coord = loop_engine
+            .record_ai_step(&engine, 1, 0.85, s3a_core::S3ACoordinate::new(0, 0, 0), 555)
+            .unwrap();
 
         // 3. Low confidence AI step (triggers gate)
         assert!(loop_engine.requires_human_gate(0.45, false));
 
         // 4. Human oversight decision
-        let human_coord = loop_engine.record_human_decision(&engine, 0x05E8_0001, 1, 1.0, ai_coord, 0x99998888 as u32).unwrap();
+        let human_coord = loop_engine
+            .record_human_decision(&engine, 0x05E8_0001, 1, 1.0, ai_coord, 0x99998888_u32)
+            .unwrap();
         assert_eq!(human_coord.level, 0);
 
         // 5. Epistemic tier mapping
@@ -91,15 +115,26 @@ mod tests {
         let snap_file = TempArchive::new();
 
         let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
+        engine.enable_addon(ADDON_EDU).unwrap();
         let loop_engine = ResearchLoopEngine::new([1, 2], 100);
-        let _ = loop_engine.register_paper(&engine, 0x12345, [0.1, 0.2, 0.3], 50, 2024, 1, true).unwrap();
+        let _ = loop_engine
+            .register_paper(&engine, 0x12345, [0.1, 0.2, 0.3], 50, 2024, 1, true)
+            .unwrap();
 
         let p_uuid = [0xCAFE, 0xBABE];
         let s_uuid = [0xDEAD, 0xBEEF];
         let ws = SrsWorkspaceRecord::new(p_uuid, 888, 1, [0.1, 0.2, 0.3], 1);
 
         // Package SRS snapshot
-        let packaged = SrsContainerManager::package_project(&live_db.path, &snap_file.path, p_uuid, s_uuid, [0, 0], Some(&ws)).unwrap();
+        let packaged = SrsContainerManager::package_project(
+            &live_db.path,
+            &snap_file.path,
+            p_uuid,
+            s_uuid,
+            [0, 0],
+            Some(&ws),
+        )
+        .unwrap();
         assert_eq!(packaged.papers.len(), 1);
         assert!(packaged.workspace.is_some());
 
@@ -108,5 +143,188 @@ mod tests {
         assert_eq!(mounted.manifest.project_uuid, p_uuid);
         assert_eq!(mounted.papers.len(), 1);
         assert_eq!(mounted.papers[0].paper_id, 0x12345);
+    }
+
+    #[test]
+    fn test_teacher_assistant_supervisory_gate() {
+        let live_db = TempArchive::new();
+        let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
+        engine.enable_addon(ADDON_EDU).unwrap();
+        engine.enable_addon(s3a_core::ADDON_ONTOLOGY).unwrap();
+
+        let session_uuid = [0xAAAA_BBBB, 0xCCCC_DDDD];
+        let loop_engine = ResearchLoopEngine::new(session_uuid, 77);
+
+        // 1. Preflight check: low confidence triggers HallucinationRisk::LowConfidence
+        let res_low = loop_engine.preflight_check(0.55, &[], true);
+        assert!(matches!(
+            res_low,
+            Err(HallucinationRisk::LowConfidence { .. })
+        ));
+
+        // 2. Preflight check: unvetted analogy triggers HallucinationRisk::UnverifiedAnalogy
+        let res_analogy = loop_engine.preflight_check(0.85, &[], false);
+        assert!(matches!(
+            res_analogy,
+            Err(HallucinationRisk::UnverifiedAnalogy { .. })
+        ));
+
+        // 3. Preflight check: unbound entity triggers HallucinationRisk::UnboundEntity
+        let res_entity = loop_engine.preflight_check(0.95, &[0xDEAD_CAFE], true);
+        assert!(matches!(
+            res_entity,
+            Err(HallucinationRisk::UnboundEntity {
+                entity_hash: 0xDEAD_CAFE
+            })
+        ));
+
+        // 4. Preflight check passes on grounded, high-confidence draft
+        assert!(loop_engine.preflight_check(0.92, &[], true).is_ok());
+
+        // 5. Agent halts on unvetted analogy and "Raises Hand to TA"
+        let risk = res_analogy.unwrap_err();
+        let candidate_draft = "Air molecules freeze into a slush inside the tire.";
+        let ta_guidance = loop_engine.raise_hand_to_ta(
+            risk,
+            "Why does tire pressure drop in cold weather?",
+            candidate_draft,
+            Some(TaGuidance::ProvideAlternativeAnalogy {
+                approved_analogy:
+                    "Think of air molecules like bouncing tennis balls losing kinetic energy."
+                        .into(),
+                pedagogical_edge: s3a_pack_ontology::PREDICATE_HAS_APPROVED_ANALOGY,
+            }),
+        );
+
+        // 6. TA intervenes with approved analogy
+        assert!(matches!(
+            ta_guidance,
+            TaGuidance::ProvideAlternativeAnalogy { .. }
+        ));
+
+        // 7. Atomic dual-actor log: record AI trace (halted) and link to TA decision
+        let ai_coord = loop_engine
+            .record_ai_step(
+                &engine,
+                2, // ReasoningStep / AnalogyAttempt
+                0.60,
+                s3a_core::S3ACoordinate::new(0, 0, 0),
+                123,
+            )
+            .unwrap();
+
+        let ta_id = 0x05E8_7777; // TA user ID
+        let ta_coord = loop_engine
+            .record_ta_decision(
+                &engine,
+                ta_id,
+                TA_VERB_PROVIDED_ANALOGY,
+                1.0, // Approved
+                ai_coord,
+                0x104, // Concept: IdealGasLaw
+            )
+            .unwrap();
+
+        assert_eq!(ta_coord.level, 0);
+    }
+
+    #[test]
+    fn test_agent_allowlist_and_preflight_supervisory_halt() {
+        use s3a_pack_scholar::{
+            seed_default_agents, AgentDenied, ScholarCrudExt, TOOL_CREDENTIAL_EXPORT,
+            TOOL_OPENALEX_QUERY, TOOL_PUBLISH,
+        };
+
+        let live_db = TempArchive::new();
+        let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
+        engine.enable_addon(ADDON_EDU).unwrap();
+
+        let session_uuid = [0x5555_6666_7777_8888, 0x1111_2222_3333_4444];
+        let default_agents = seed_default_agents();
+        let claim_checker = &default_agents[2]; // claim-checker
+        let loop_engine = ResearchLoopEngine::new(session_uuid, claim_checker.agent_id);
+
+        // 1. Agent allowlist enforcement: claim-checker cannot publish
+        let allow_err = loop_engine.assert_agent_allows(claim_checker, None, Some(TOOL_PUBLISH));
+        assert!(
+            matches!(allow_err, Err(AgentDenied::ToolExplicitlyDenied { tool_bit }) if tool_bit == TOOL_PUBLISH)
+        );
+
+        let cred_err =
+            loop_engine.assert_agent_allows(claim_checker, None, Some(TOOL_CREDENTIAL_EXPORT));
+        assert!(
+            matches!(cred_err, Err(AgentDenied::ToolExplicitlyDenied { tool_bit }) if tool_bit == TOOL_CREDENTIAL_EXPORT)
+        );
+
+        let unalloc_err =
+            loop_engine.assert_agent_allows(claim_checker, None, Some(TOOL_OPENALEX_QUERY));
+        assert!(
+            matches!(unalloc_err, Err(AgentDenied::ToolNotAllowlisted { tool_bit }) if tool_bit == TOOL_OPENALEX_QUERY)
+        );
+
+        // Human gate requirement: claim-checker without clearance returns Err(AgentDenied::RequiresHumanGate)
+        let gate_err =
+            loop_engine.assert_agent_allows_gated(claim_checker, Some(1 << 5), None, false);
+        assert!(matches!(gate_err, Err(AgentDenied::RequiresHumanGate)));
+
+        let gate_ok =
+            loop_engine.assert_agent_allows_gated(claim_checker, Some(1 << 5), None, true);
+        assert!(gate_ok.is_ok());
+
+        // 2. Preflight check fails on unvetted speculation (< 0.70 confidence)
+        let preflight_res = loop_engine.preflight_check(0.40, &[], false);
+        assert!(preflight_res.is_err());
+        let risk = preflight_res.unwrap_err();
+
+        // 3. Emission halted! Agent raises hand to TA
+        let ta_guidance = loop_engine.raise_hand_to_ta(
+            risk,
+            "What causes gravitational time dilation?",
+            "Time runs slower because gravity condenses clock gears.",
+            Some(TaGuidance::RedirectToExcerpt {
+                target_coord: s3a_core::S3ACoordinate::new(0, 12, 4),
+            }),
+        );
+        assert!(matches!(ta_guidance, TaGuidance::RedirectToExcerpt { .. }));
+
+        // 4. Log AI trace and TA decision with shared session_uuid
+        let ai_coord = loop_engine
+            .record_ai_step(
+                &engine,
+                0x0006, // VERB_ID_FLAGGED_HALLUCINATION
+                0.40,
+                s3a_core::S3ACoordinate::new(0, 0, 0),
+                789,
+            )
+            .unwrap();
+
+        let _ta_coord = loop_engine
+            .record_ta_decision(
+                &engine,
+                0x05E8_9999, // TA actor id
+                TA_VERB_REDIRECTED,
+                1.0,
+                ai_coord,
+                1204, // object id
+            )
+            .unwrap();
+
+        // 5. Query session bundle: dual-actor join HumanLrsRecord.session_uuid == AiTraceRecord.session_uuid
+        let (humans, ais) = engine.query_session_bundle(session_uuid).unwrap();
+        assert_eq!(humans.len(), 1);
+        assert_eq!(ais.len(), 1);
+
+        let (human_rec, h_coord) = &humans[0];
+        let (ai_rec, a_coord) = &ais[0];
+
+        assert_eq!(human_rec.session_uuid, session_uuid);
+        assert_eq!(ai_rec.session_uuid, session_uuid);
+        assert_eq!(human_rec.session_uuid, ai_rec.session_uuid);
+        assert_eq!(human_rec.verb_id, TA_VERB_REDIRECTED);
+        assert_eq!(human_rec.ai_trace_coord, ai_coord);
+        assert_eq!(h_coord.level, 0);
+        assert_eq!(a_coord.level, 0);
+        assert_eq!(h_coord.record_offset, 0);
+        assert_eq!(a_coord.record_offset, 0);
     }
 }

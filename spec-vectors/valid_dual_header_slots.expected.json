@@ -1,0 +1,25 @@
+{
+  "case_name": "valid_dual_header_slots",
+  "category": "valid",
+  "description": "Both Slot A and Slot B valid with different generations; reader must pick Slot B (generation 2)",
+  "expected_outcome": "ok",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "0": 1
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "TelemetryRecord { timestamp: 4000, sensor_id: 1, value: 55.0 }"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0
+}

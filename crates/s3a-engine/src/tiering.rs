@@ -20,7 +20,9 @@ use s3a_core::{HyperTileHeader, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, FILE_HE
 pub fn compute_tile_header_crc32(header: &HyperTileHeader) -> u32 {
     let header_bytes = bytes_of(header);
     let crc_offset = std::mem::offset_of!(HyperTileHeader, header_crc32);
-    crc32c::crc32c(&header_bytes[..crc_offset])
+    let mut crc = crc32c::crc32c(&header_bytes[..crc_offset]);
+    crc = crc32c::crc32c_append(crc, &header_bytes[crc_offset + 4..]);
+    crc
 }
 
 /// Error types for Cold Tiering operations.

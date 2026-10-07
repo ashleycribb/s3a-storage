@@ -6,3 +6,4 @@ Cargo.lock
 openharness_s3a_db/
 scratch/
 .DS_Store
+tests/adl-conformance/

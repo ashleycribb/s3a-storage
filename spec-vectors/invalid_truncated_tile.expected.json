@@ -1,0 +1,17 @@
+{
+  "case_name": "invalid_truncated_tile",
+  "category": "invalid",
+  "description": "Archive header commits 1 Hyper-Tile (131,584 bytes expected) but file truncated to 60,000 bytes",
+  "expected_outcome": "error",
+  "error_class": "TruncatedTile",
+  "expected_error_message": "Index or offset out of bounds",
+  "file_size_bytes": 60000,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

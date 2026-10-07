@@ -12,8 +12,35 @@ s3a-simd = { path = "../s3a-simd" }
 bytemuck = { workspace = true }
 memmap2 = { workspace = true }
 crc32c = { workspace = true }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+hex = { workspace = true }
+humantime = { workspace = true }
+opentimestamps = "0.2.0"
+x509-tsp = "0.1.0"
+der = { version = "0.7", features = ["std", "oid", "alloc"] }
+cms = "0.2"
+cmpv2 = "0.2"
+spki = "0.7"
+x509-cert = { version = "0.2", features = ["pem", "std"] }
+rsa = { version = "0.9", features = ["sha2"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
+signature = "2.2"
+getrandom = "0.2"
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = "0.4"
+ureq = { workspace = true }
+
+[features]
+default = []
+fault-injection = []
 
 [dev-dependencies]
 memmap2.workspace = true
 crc32c.workspace = true
+s3a-engine = { path = ".", features = ["fault-injection"] }
+rand = "0.8"
 

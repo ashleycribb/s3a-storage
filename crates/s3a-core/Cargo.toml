@@ -8,3 +8,8 @@ repository.workspace = true
 
 [dependencies]
 bytemuck.workspace = true
+
+[features]
+default = ["std"]
+std = []
+

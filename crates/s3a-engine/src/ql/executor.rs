@@ -1,31 +1,50 @@
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, RwLock};
+
 use crate::ql::ast::*;
+use crate::ql::error::QlError;
 use crate::{
-    MmapReader, QuerySieve, S3ACrudEngine, TileFusionEngine,
-    TelemetryRecord, RoboticsKinematicRecord, GISSurveyPointRecord, EmbeddingRecord128, DACommitmentRecord,
-    LearningActivityRecord, S3ACoordinate, TileType,
+    EmbeddingRecord128, LearningActivityRecord, MmapReader,
+    QuerySieve, S3ACoordinate, S3ACrudEngine, TelemetryRecord, TileFusionEngine, TileType,
 };
 use s3a_simd::{cosine_similarity, dot_product};
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryResult {
     Telemetry(TelemetryRecord),
     TelemetryList(Vec<(TelemetryRecord, S3ACoordinate)>),
-    KinematicList(Vec<(RoboticsKinematicRecord, S3ACoordinate)>),
-    GisList(Vec<(GISSurveyPointRecord, S3ACoordinate)>),
     EmbeddingList(Vec<(EmbeddingRecord128, f32, S3ACoordinate)>),
-    DaList(Vec<(DACommitmentRecord, S3ACoordinate)>),
     LearningActivityList(Vec<(LearningActivityRecord, S3ACoordinate)>),
+    PackData {
+        domain: SiftDomain,
+        count: usize,
+        summary: String,
+        json_payload: Option<String>,
+    },
     Inserted { coordinate: S3ACoordinate },
     Deleted { success: bool },
     Compacted { new_tile_count: u32 },
     Fused { new_tile_count: u32 },
 }
 
+pub type PackSiftHandler = Arc<dyn Fn(&SiftStatement) -> Result<QueryResult, QlError> + Send + Sync>;
+
+static PACK_HANDLERS: OnceLock<RwLock<HashMap<SiftDomain, PackSiftHandler>>> = OnceLock::new();
+
+fn get_pack_handlers() -> &'static RwLock<HashMap<SiftDomain, PackSiftHandler>> {
+    PACK_HANDLERS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Registers a domain pack's SIFT query handler.
+pub fn register_pack_sift_handler(domain: SiftDomain, handler: PackSiftHandler) {
+    let mut map = get_pack_handlers().write().unwrap();
+    map.insert(domain, handler);
+}
+
 pub struct S3AQLEngine;
 
 impl S3AQLEngine {
-    pub fn execute(stmt: &S3AStatement) -> Result<QueryResult, String> {
+    pub fn execute(stmt: &S3AStatement) -> Result<QueryResult, QlError> {
         match stmt {
             S3AStatement::Fetch(fetch) => Self::execute_fetch(fetch),
             S3AStatement::Sift(sift) => Self::execute_sift(sift),
@@ -36,24 +55,89 @@ impl S3AQLEngine {
         }
     }
 
-    fn execute_fetch(fetch: &FetchStatement) -> Result<QueryResult, String> {
-        let reader = MmapReader::open(&fetch.from_path)
-            .map_err(|e| format!("Failed to open archive '{}': {}", fetch.from_path, e))?;
+    fn execute_fetch(fetch: &FetchStatement) -> Result<QueryResult, QlError> {
+        let reader = MmapReader::open(&fetch.from_path).map_err(QlError::Io)?;
 
-        let record: TelemetryRecord = reader.read_record_by_coordinate(&fetch.coordinate)
-            .map_err(|e| format!("Failed to read record at coordinate {}: {}", fetch.coordinate, e))?;
+        let record: TelemetryRecord = reader
+            .read_record_by_coordinate(&fetch.coordinate)
+            .map_err(|_| QlError::NotFound {
+                coordinate: fetch.coordinate.to_string(),
+            })?;
 
         Ok(QueryResult::Telemetry(record))
     }
 
-    fn execute_sift(sift: &SiftStatement) -> Result<QueryResult, String> {
-        let reader = MmapReader::open(&sift.from_path)
-            .map_err(|e| format!("Failed to open archive '{}': {}", sift.from_path, e))?;
-
-        let sieve = QuerySieve::new(&reader);
-
+    fn execute_sift(sift: &SiftStatement) -> Result<QueryResult, QlError> {
+        // First, check if this is a registered pack domain or an unhandled pack domain
         match sift.domain {
+            SiftDomain::Kinematics => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&SiftDomain::Kinematics) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-robotics",
+                    feature: "kinematics",
+                });
+            }
+            SiftDomain::GisMesh => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&SiftDomain::GisMesh) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-gis",
+                    feature: "gis_mesh",
+                });
+            }
+            SiftDomain::DaCommitments => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&SiftDomain::DaCommitments) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-da",
+                    feature: "da_commitments",
+                });
+            }
+            SiftDomain::HumanLrs | SiftDomain::LearningActivities => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&sift.domain) {
+                    return handler(sift);
+                }
+                // Also check fallback between HumanLrs and LearningActivities
+                if let Some(handler) = map.get(&SiftDomain::HumanLrs) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-scholar",
+                    feature: "human_lrs",
+                });
+            }
+            SiftDomain::AiTraces => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&SiftDomain::AiTraces) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-scholar",
+                    feature: "ai_traces",
+                });
+            }
+            SiftDomain::AcademicPapers => {
+                let map = get_pack_handlers().read().unwrap();
+                if let Some(handler) = map.get(&SiftDomain::AcademicPapers) {
+                    return handler(sift);
+                }
+                return Err(QlError::PackRequired {
+                    pack: "s3a-pack-scholar",
+                    feature: "academic_papers",
+                });
+            }
             SiftDomain::Telemetry => {
+                let reader = MmapReader::open(&sift.from_path).map_err(QlError::Io)?;
+                let sieve = QuerySieve::new(&reader);
+
                 let mut min_ts = 0u64;
                 let mut max_ts = u64::MAX;
                 let mut sensor_id = None;
@@ -61,9 +145,16 @@ impl S3AQLEngine {
 
                 for cond in &sift.conditions {
                     match cond {
-                        Condition::TimeBetween(min, max) => { min_ts = *min; max_ts = *max; }
-                        Condition::SensorId(sid) => { sensor_id = Some(*sid); }
-                        Condition::MetricId(mid) => { metric_id = Some(*mid); }
+                        Condition::TimeBetween(min, max) => {
+                            min_ts = *min;
+                            max_ts = *max;
+                        }
+                        Condition::SensorId(sid) => {
+                            sensor_id = Some(*sid);
+                        }
+                        Condition::MetricId(mid) => {
+                            metric_id = Some(*mid);
+                        }
                         _ => {}
                     }
                 }
@@ -75,92 +166,8 @@ impl S3AQLEngine {
                 };
                 Ok(QueryResult::TelemetryList(limited))
             }
-            SiftDomain::Kinematics => {
-                let mut min_t = 0u64;
-                let mut max_t = u64::MAX;
-                let mut min_xyz = [f32::NEG_INFINITY; 3];
-                let mut max_xyz = [f32::INFINITY; 3];
-
-                for cond in &sift.conditions {
-                    match cond {
-                        Condition::TimeBetween(min, max) => { min_t = *min; max_t = *max; }
-                        Condition::SpatialBoxSimplex { min, max } => { min_xyz = *min; max_xyz = *max; }
-                        _ => {}
-                    }
-                }
-
-                let mut results = Vec::new();
-                for i in 0..reader.tile_count() as usize {
-                    if let Some((header, payload)) = reader.get_tile(i) {
-                        if header.tile_type == TileType::ROBOTICS_KINEMATIC {
-                            let recs: &[RoboticsKinematicRecord] = bytemuck::cast_slice(payload);
-                            for (offset, rec) in recs.iter().enumerate() {
-                                if rec.timestamp_us >= min_t && rec.timestamp_us <= max_t {
-                                    let mut inside = true;
-                                    for d in 0..3 {
-                                        if rec.position_xyz[d] < min_xyz[d] || rec.position_xyz[d] > max_xyz[d] {
-                                            inside = false;
-                                            break;
-                                        }
-                                    }
-                                    if inside {
-                                        results.push((*rec, S3ACoordinate::new(0, i as u32, offset as u32)));
-                                        if let Some(lim) = sift.limit {
-                                            if results.len() >= lim {
-                                                return Ok(QueryResult::KinematicList(results));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(QueryResult::KinematicList(results))
-            }
-            SiftDomain::GisMesh => {
-                let mut min_lat = -90.0f64;
-                let mut max_lat = 90.0f64;
-                let mut min_lon = -180.0f64;
-                let mut max_lon = 180.0f64;
-                let mut min_elev = -100_000.0f64;
-                let mut max_elev = 100_000.0f64;
-
-                for cond in &sift.conditions {
-                    match cond {
-                        Condition::GisLatitudeBetween(min, max) => { min_lat = *min; max_lat = *max; }
-                        Condition::GisLongitudeBetween(min, max) => { min_lon = *min; max_lon = *max; }
-                        Condition::GisElevationBetween(min, max) => { min_elev = *min; max_elev = *max; }
-                        _ => {}
-                    }
-                }
-
-                let mut results = Vec::new();
-                for i in 0..reader.tile_count() as usize {
-                    if let Some((header, payload)) = reader.get_tile(i) {
-                        if header.tile_type == TileType::GIS_SURVEY_MESH {
-                            let recs: &[GISSurveyPointRecord] = bytemuck::cast_slice(payload);
-                            for (offset, rec) in recs.iter().enumerate() {
-                                let lat = rec.latitude_deg();
-                                let lon = rec.longitude_deg();
-                                let elev = rec.elevation_m();
-                                if lat >= min_lat && lat <= max_lat &&
-                                   lon >= min_lon && lon <= max_lon &&
-                                   elev >= min_elev && elev <= max_elev {
-                                    results.push((*rec, S3ACoordinate::new(0, i as u32, offset as u32)));
-                                    if let Some(lim) = sift.limit {
-                                        if results.len() >= lim {
-                                            return Ok(QueryResult::GisList(results));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(QueryResult::GisList(results))
-            }
             SiftDomain::Embeddings => {
+                let reader = MmapReader::open(&sift.from_path).map_err(QlError::Io)?;
                 let mut target_vec = None;
                 let mut metric = SimilarityMetric::Cosine;
                 let mut threshold = 0.0f32;
@@ -170,14 +177,35 @@ impl S3AQLEngine {
 
                 for cond in &sift.conditions {
                     match cond {
-                        Condition::TimeBetween(min, max) => { min_t = *min; max_t = *max; }
-                        Condition::Similarity { vector, metric: m, threshold: t } => {
+                        Condition::TimeBetween(min, max) => {
+                            min_t = *min;
+                            max_t = *max;
+                        }
+                        Condition::Similarity {
+                            vector,
+                            metric: m,
+                            threshold: t,
+                        } => {
                             target_vec = Some(vector);
                             metric = *m;
                             threshold = *t;
                         }
-                        Condition::AlgebraicCompose { vector, vector_weight, spatial_target, spatial_weight, halflife_secs, time_weight } => {
-                            compose_opt = Some((vector, *vector_weight, *spatial_target, *spatial_weight, *halflife_secs, *time_weight));
+                        Condition::AlgebraicCompose {
+                            vector,
+                            vector_weight,
+                            spatial_target,
+                            spatial_weight,
+                            halflife_secs,
+                            time_weight,
+                        } => {
+                            compose_opt = Some((
+                                vector,
+                                *vector_weight,
+                                *spatial_target,
+                                *spatial_weight,
+                                *halflife_secs,
+                                *time_weight,
+                            ));
                         }
                         _ => {}
                     }
@@ -209,8 +237,13 @@ impl S3AQLEngine {
                                             1.0
                                         };
 
-                                        let composite_score = v_weight * sim + sp_weight * sp_score + t_weight * time_score;
-                                        results.push((*rec, composite_score, S3ACoordinate::new(0, i as u32, offset as u32)));
+                                        let composite_score =
+                                            v_weight * sim + sp_weight * sp_score + t_weight * time_score;
+                                        results.push((
+                                            *rec,
+                                            composite_score,
+                                            S3ACoordinate::new(0, i as u32, offset as u32),
+                                        ));
                                     }
                                 }
                             }
@@ -232,7 +265,11 @@ impl S3AQLEngine {
                                             SimilarityMetric::DotProduct => dot_product(&rec.vector, target),
                                         };
                                         if sim >= threshold {
-                                            results.push((*rec, sim, S3ACoordinate::new(0, i as u32, offset as u32)));
+                                            results.push((
+                                                *rec,
+                                                sim,
+                                                S3ACoordinate::new(0, i as u32, offset as u32),
+                                            ));
                                             if let Some(lim) = sift.limit {
                                                 if results.len() >= lim {
                                                     return Ok(QueryResult::EmbeddingList(results));
@@ -247,102 +284,55 @@ impl S3AQLEngine {
                 }
                 Ok(QueryResult::EmbeddingList(results))
             }
-            SiftDomain::DaCommitments => {
-                let mut min_height = 0u64;
-                let mut max_height = u64::MAX;
-
-                for cond in &sift.conditions {
-                    if let Condition::BlockHeightBetween(min, max) = cond {
-                        min_height = *min;
-                        max_height = *max;
-                    }
-                }
-
-                let mut results = Vec::new();
-                for i in 0..reader.tile_count() as usize {
-                    if let Some((header, payload)) = reader.get_tile(i) {
-                        if header.tile_type == TileType::DATA_AVAILABILITY {
-                            let recs: &[DACommitmentRecord] = bytemuck::cast_slice(payload);
-                            for (offset, rec) in recs.iter().enumerate() {
-                                if rec.block_height >= min_height && rec.block_height <= max_height {
-                                    results.push((*rec, S3ACoordinate::new(0, i as u32, offset as u32)));
-                                    if let Some(lim) = sift.limit {
-                                        if results.len() >= lim {
-                                            return Ok(QueryResult::DaList(results));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(QueryResult::DaList(results))
-            }
-            SiftDomain::LearningActivities => {
-                let mut min_ts = 0u64;
-                let mut max_ts = u64::MAX;
-                let mut actor_id = None;
-                let mut verb_id = None;
-
-                for cond in &sift.conditions {
-                    match cond {
-                        Condition::TimeBetween(min, max) => {
-                            min_ts = *min;
-                            max_ts = *max;
-                        }
-                        Condition::ActorId(a) => actor_id = Some(*a),
-                        Condition::VerbId(v) => verb_id = Some(*v),
-                        _ => {}
-                    }
-                }
-
-                let sieve = QuerySieve::new(&reader);
-                let mut results = sieve.query_learning_activities(min_ts, max_ts, actor_id, verb_id);
-                if let Some(lim) = sift.limit {
-                    results.truncate(lim);
-                }
-                Ok(QueryResult::LearningActivityList(results))
-            }
         }
     }
 
-    fn execute_insert(insert: &InsertStatement) -> Result<QueryResult, String> {
-        let engine = S3ACrudEngine::open_or_create(&insert.into_path)
-            .map_err(|e| format!("Failed to open engine at '{}': {}", insert.into_path, e))?;
+    fn execute_insert(insert: &InsertStatement) -> Result<QueryResult, QlError> {
+        let engine = S3ACrudEngine::open_or_create(&insert.into_path).map_err(QlError::Io)?;
 
-        let rec = TelemetryRecord::new(insert.timestamp, insert.sensor_id, insert.metric_id, insert.value);
-        let tile_id = engine.create_telemetry(&[rec])
-            .map_err(|e| format!("Failed to insert telemetry record: {}", e))?;
+        let rec = TelemetryRecord::new(
+            insert.timestamp,
+            insert.sensor_id,
+            insert.metric_id,
+            insert.value,
+        );
+        let tile_id = engine
+            .create_telemetry(&[rec])
+            .map_err(|e| QlError::Internal(e.to_string()))?;
 
         let coordinate = S3ACoordinate::new(0, (tile_id.saturating_sub(1)) as u32, 0);
         Ok(QueryResult::Inserted { coordinate })
     }
 
-    fn execute_delete(del: &DeleteStatement) -> Result<QueryResult, String> {
-        let engine = S3ACrudEngine::open_or_create(&del.from_path)
-            .map_err(|e| format!("Failed to open engine at '{}': {}", del.from_path, e))?;
+    fn execute_delete(del: &DeleteStatement) -> Result<QueryResult, QlError> {
+        let engine = S3ACrudEngine::open_or_create(&del.from_path).map_err(QlError::Io)?;
 
-        let success = engine.delete_telemetry(del.sensor_id, del.metric_id, del.timestamp)
-            .map_err(|e| format!("Failed to delete telemetry record: {}", e))?;
+        let success = engine
+            .delete_telemetry(del.sensor_id, del.metric_id, del.timestamp)
+            .map_err(|e| QlError::Internal(e.to_string()))?;
 
         Ok(QueryResult::Deleted { success })
     }
 
-    fn execute_compact(comp: &CompactStatement) -> Result<QueryResult, String> {
-        let engine = S3ACrudEngine::open_or_create(&comp.archive_path)
-            .map_err(|e| format!("Failed to open engine at '{}': {}", comp.archive_path, e))?;
+    fn execute_compact(comp: &CompactStatement) -> Result<QueryResult, QlError> {
+        let engine = S3ACrudEngine::open_or_create(&comp.archive_path).map_err(QlError::Io)?;
 
-        let new_tile_count = engine.purge_and_compact()
-            .map_err(|e| format!("Failed to compact archive '{}': {}", comp.archive_path, e))?;
+        let new_tile_count = engine
+            .purge_and_compact()
+            .map_err(|e| QlError::Internal(e.to_string()))?;
 
         Ok(QueryResult::Compacted { new_tile_count })
     }
 
-    fn execute_fuse(fuse: &FuseStatement) -> Result<QueryResult, String> {
-        let count = TileFusionEngine::fuse_telemetry_tiles(&fuse.input_paths, fuse.output_path.clone())
-            .map_err(|e| format!("Failed to fuse tiles into '{}': {}", fuse.output_path, e))?;
+    fn execute_fuse(fuse: &FuseStatement) -> Result<QueryResult, QlError> {
+        let count = TileFusionEngine::fuse_telemetry_tiles(
+            &fuse.input_paths,
+            fuse.output_path.clone(),
+        )
+        .map_err(|e| QlError::Internal(e.to_string()))?;
 
-        Ok(QueryResult::Fused { new_tile_count: count })
-
+        Ok(QueryResult::Fused {
+            new_tile_count: count,
+        })
     }
 }

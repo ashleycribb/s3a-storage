@@ -6,7 +6,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::ring_buffer::L0RingBuffer;
-use crate::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter, HYPER_TILE_PAYLOAD_SIZE};
+use crate::{
+    fsutil, Compactor, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType,
+    TileWriter, HYPER_TILE_PAYLOAD_SIZE,
+};
 
 /// Runtime operational statistics for the Background Compactor Daemon.
 #[derive(Debug, Clone, Default)]
@@ -107,12 +110,20 @@ impl BackgroundCompactor {
                     // Periodic stratified compaction / tombstone purging
                     if let Some(compact_interval) = auto_compact_interval {
                         if last_compaction.elapsed() >= compact_interval {
-                            let temp_path = archive_path.with_extension("compact.tmp.s3a");
-                            if Compactor::compact(&[&archive_path], &temp_path).is_ok() {
-                                let _ = std::fs::rename(&temp_path, &archive_path);
-                                let mut s = stats.lock().unwrap();
-                                s.compaction_runs += 1;
-                                s.last_compaction_time = Some(Instant::now());
+                            let temp_path = fsutil::unique_compact_temp_path(&archive_path);
+                            match Compactor::compact(&[&archive_path], &temp_path) {
+                                Ok(_) => {
+                                    if fsutil::atomic_replace(&temp_path, &archive_path).is_ok() {
+                                        let mut s = stats.lock().unwrap();
+                                        s.compaction_runs += 1;
+                                        s.last_compaction_time = Some(Instant::now());
+                                    } else {
+                                        let _ = std::fs::remove_file(&temp_path);
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ = std::fs::remove_file(&temp_path);
+                                }
                             }
                             last_compaction = Instant::now();
                         }

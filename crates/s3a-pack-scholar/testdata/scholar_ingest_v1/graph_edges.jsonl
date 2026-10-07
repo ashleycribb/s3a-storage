@@ -1,0 +1,3 @@
+{"subject_hash": 10001, "object_hash": 10002, "timestamp_sec": 1710000010, "hilbert_coord": 501, "predicate_id": 3, "weight": 0.95}
+{"subject_hash": 10002, "object_hash": 10003, "timestamp_sec": 1710000011, "hilbert_coord": 502, "predicate_id": 1, "weight": 1.0}
+{"subject_hash": 10003, "object_hash": 10001, "timestamp_sec": 1710000012, "hilbert_coord": 503, "predicate_id": 2, "weight": 0.85}

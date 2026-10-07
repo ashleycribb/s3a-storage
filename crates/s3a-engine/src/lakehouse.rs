@@ -7,8 +7,7 @@
 //! 4. Linux Foundation Delta Lake UniForm Transaction Log Generator (Databricks / Microsoft Fabric)
 
 use s3a_core::{
-    TelemetryRecord, GISSurveyPointRecord, RoboticsKinematicRecord,
-    S3ACoordinate, S3AError,
+    TelemetryRecord, S3ACoordinate, S3AError,
 };
 use crate::S3ACrudEngine;
 
@@ -165,89 +164,7 @@ pub fn project_telemetry_to_arrow(records: &[TelemetryRecord]) -> ArrowRecordBat
     }
 }
 
-/// Projects a slice of S3A GISSurveyPointRecords into an Apache Arrow Columnar RecordBatch.
-pub fn project_gis_to_arrow(records: &[GISSurveyPointRecord]) -> ArrowRecordBatchDescriptor {
-    let schema = ArrowSchema {
-        fields: vec![
-            ArrowField { name: "latitude_microdeg", data_type: "Int32", nullable: false },
-            ArrowField { name: "longitude_microdeg", data_type: "Int32", nullable: false },
-            ArrowField { name: "elevation_mm", data_type: "Int32", nullable: false },
-            ArrowField { name: "point_class", data_type: "UInt32", nullable: false },
-            ArrowField { name: "intensity", data_type: "UInt32", nullable: false },
-        ],
-    };
 
-    let n = records.len();
-    let mut col_lat = Vec::with_capacity(n);
-    let mut col_lon = Vec::with_capacity(n);
-    let mut col_elev = Vec::with_capacity(n);
-    let mut col_class = Vec::with_capacity(n);
-    let mut col_intensity = Vec::with_capacity(n);
-
-    for r in records {
-        col_lat.push(r.latitude_microdeg);
-        col_lon.push(r.longitude_microdeg);
-        col_elev.push(r.elevation_mm);
-        col_class.push(r.point_class as u32);
-        col_intensity.push(r.intensity as u32);
-    }
-
-    ArrowRecordBatchDescriptor {
-        schema,
-        num_rows: n,
-        columns: vec![
-            ArrowColumnVector::Int32(col_lat),
-            ArrowColumnVector::Int32(col_lon),
-            ArrowColumnVector::Int32(col_elev),
-            ArrowColumnVector::UInt32(col_class),
-            ArrowColumnVector::UInt32(col_intensity),
-        ],
-    }
-}
-
-/// Projects a slice of S3A RoboticsKinematicRecords into an Apache Arrow Columnar RecordBatch.
-pub fn project_robotics_to_arrow(records: &[RoboticsKinematicRecord]) -> ArrowRecordBatchDescriptor {
-    let schema = ArrowSchema {
-        fields: vec![
-            ArrowField { name: "timestamp_us", data_type: "UInt64", nullable: false },
-            ArrowField { name: "robot_id", data_type: "UInt32", nullable: false },
-            ArrowField { name: "joint_mask", data_type: "UInt32", nullable: false },
-            ArrowField { name: "position_xyz", data_type: "FixedSizeBinary[12]", nullable: false },
-            ArrowField { name: "orientation_quat", data_type: "FixedSizeBinary[16]", nullable: false },
-        ],
-    };
-
-    let n = records.len();
-    let mut col_ts = Vec::with_capacity(n);
-    let mut col_robot = Vec::with_capacity(n);
-    let mut col_joint = Vec::with_capacity(n);
-    let mut col_pos = Vec::with_capacity(n * 12);
-    let mut col_quat = Vec::with_capacity(n * 16);
-
-    for r in records {
-        col_ts.push(r.timestamp_us);
-        col_robot.push(r.robot_id);
-        col_joint.push(r.joint_mask);
-        for i in 0..3 {
-            col_pos.extend_from_slice(&r.position_xyz[i].to_le_bytes());
-        }
-        for i in 0..4 {
-            col_quat.extend_from_slice(&r.orientation_quat[i].to_le_bytes());
-        }
-    }
-
-    ArrowRecordBatchDescriptor {
-        schema,
-        num_rows: n,
-        columns: vec![
-            ArrowColumnVector::UInt64(col_ts),
-            ArrowColumnVector::UInt32(col_robot),
-            ArrowColumnVector::UInt32(col_joint),
-            ArrowColumnVector::FixedSizeBinary { data: col_pos, byte_width: 12 },
-            ArrowColumnVector::FixedSizeBinary { data: col_quat, byte_width: 16 },
-        ],
-    }
-}
 
 /// Generates Apache Iceberg `v1.metadata.json` for Snowflake External Tables and AWS Athena.
 pub fn generate_iceberg_metadata(
@@ -345,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_arrow_telemetry_and_robotics_projection() {
+    fn test_arrow_telemetry_projection() {
         let records = [
             TelemetryRecord::new(1000, 1, 101, 42.5),
             TelemetryRecord::new(2000, 2, 102, 99.1),
@@ -361,22 +278,6 @@ mod tests {
             ArrowColumnVector::UInt64(vec) => assert_eq!(vec, &[1000, 2000]),
             _ => panic!("Expected UInt64 column"),
         }
-
-        let rob_records = [
-            RoboticsKinematicRecord {
-                timestamp_us: 50000,
-                robot_id: 1,
-                joint_mask: 7,
-                position_xyz: [1.0, 2.0, 3.0],
-                orientation_quat: [1.0, 0.0, 0.0, 0.0],
-                linear_velocity: [0.1, 0.2, 0.3],
-                angular_velocity: [0.0, 0.0, 0.0],
-                _padding: 0,
-            }
-        ];
-        let rob_batch = project_robotics_to_arrow(&rob_records);
-        assert_eq!(rob_batch.num_rows, 1);
-        assert_eq!(rob_batch.schema.fields.len(), 5);
     }
 
     #[test]

@@ -1,0 +1,25 @@
+[package]
+name = "s3a-wasm-snapshot"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Additive In-Memory WebAssembly Snapshot Engine for Scholar Explorer Web Application & AI Agents"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-simd = { path = "../s3a-simd" }
+s3a-pack-scholar = { path = "../s3a-pack-scholar" }
+s3a-pack-ontology = { path = "../s3a-pack-ontology" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+crc32c = { workspace = true }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[features]
+default = []

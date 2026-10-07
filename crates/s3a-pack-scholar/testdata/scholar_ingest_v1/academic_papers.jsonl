@@ -1,0 +1,3 @@
+{"paper_id": 10001, "timestamp_sec": 1710000001, "hilbert_index": 101, "topic_x": 10.0, "topic_y": 20.0, "topic_z": 2024.0, "citation_count": 25, "year": 2024, "venue_id": 1, "open_access_flag": 1, "warning_count": 0, "doi_prefix_hash": 9001}
+{"paper_id": 10002, "timestamp_sec": 1710000002, "hilbert_index": 102, "topic_x": 15.0, "topic_y": 25.0, "topic_z": 2023.0, "citation_count": 8, "year": 2023, "venue_id": 2, "open_access_flag": 0, "warning_count": 1, "doi_prefix_hash": 9002}
+{"paper_id": 10003, "timestamp_sec": 1710000003, "hilbert_index": 103, "topic_x": 30.0, "topic_y": 40.0, "topic_z": 2022.0, "citation_count": 112, "year": 2022, "venue_id": 1, "open_access_flag": 1, "warning_count": 0, "doi_prefix_hash": 9003}

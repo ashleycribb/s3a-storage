@@ -194,7 +194,7 @@ impl TileShard {
 pub struct ReedSolomonCodec {
     pub k: usize,
     pub m: usize,
-    matrix: Vec<Vec<u8>>, // (K + M) x K systematic generator matrix
+    pub matrix: Vec<Vec<u8>>, // (K + M) x K systematic generator matrix
 }
 
 impl ReedSolomonCodec {
@@ -401,7 +401,7 @@ impl ReedSolomonCodec {
 }
 
 /// Inverts a K x K matrix in GF(2^8) using Gaussian Elimination with partial pivoting.
-fn invert_matrix(matrix: &[Vec<u8>], k: usize) -> Result<Vec<Vec<u8>>, ErasureError> {
+pub fn invert_matrix(matrix: &[Vec<u8>], k: usize) -> Result<Vec<Vec<u8>>, ErasureError> {
     // Augmented matrix [A | I_K] of size K x 2K
     let mut aug = vec![vec![0u8; 2 * k]; k];
     for r in 0..k {

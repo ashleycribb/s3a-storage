@@ -1,0 +1,26 @@
+{
+  "case_name": "legacy_unaddressed_tiles",
+  "category": "valid",
+  "description": "Legacy pre-v1.1 unaddressed tile (record_layout_version=1, file_uuid=[0,0]); reader accepts via legacy path",
+  "expected_outcome": "ok",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "telemetry": 5
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "Telemetry device 100"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": false
+}

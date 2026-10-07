@@ -254,7 +254,8 @@ fn handle_client(stream: &mut TcpStream, ring_buffer: Option<Arc<L0RingBuffer<Te
                         send_frame(stream, MSG_QUERY_RESPONSE, request_id, resp.as_bytes())?;
                     }
                     Err(e) => {
-                        send_frame(stream, MSG_ERROR, request_id, e.as_bytes())?;
+                        let err_str = e.to_string();
+                        send_frame(stream, MSG_ERROR, request_id, err_str.as_bytes())?;
                     }
                 }
             }

@@ -1,0 +1,16 @@
+{
+  "case_name": "invalid_torn_write_fallback",
+  "category": "invalid",
+  "description": "Newest header slot (Slot B, gen 2) torn with invalid CRC; reader must fall back to Slot A (gen 1)",
+  "expected_outcome": "fallback_recovered",
+  "error_class": "TornWriteFallback",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 0,
+    "generation": 1,
+    "tile_count": 0,
+    "addon_mask": 0
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

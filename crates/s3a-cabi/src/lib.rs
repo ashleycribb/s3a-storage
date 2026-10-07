@@ -2,7 +2,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
-use s3a_core::SrsManifestHeader;
+use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, SrsManifestHeader};
 use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TileFusionEngine, TelemetryRecord, S3ACoordinate};
 
 #[repr(C)]
@@ -282,7 +282,7 @@ pub unsafe extern "C" fn s3a_intake_srs(
         Err(_) => return -1,
     };
 
-    match S3ACrudEngine::intake_srs_snapshot(snap_str) {
+    match intake_srs_snapshot(snap_str) {
         Ok(bundle) => {
             if !out_papers_count.is_null() { *out_papers_count = bundle.papers.len(); }
             if !out_edges_count.is_null() { *out_edges_count = bundle.evidence_edges.len(); }
@@ -397,7 +397,8 @@ mod tests {
 
     #[test]
     fn test_cabi_srs_snapshot_export_and_intake() {
-        use s3a_engine::AcademicPaperRecord;
+        use s3a_pack_scholar::{AcademicPaperRecord, ScholarCrudExt};
+        use s3a_core::ADDON_EDU;
 
         let live_db = TestTempFile::new();
         let snap_file = TestTempFile::new();
@@ -407,6 +408,7 @@ mod tests {
 
         // Seed live DB with a paper
         let engine = S3ACrudEngine::open_or_create(live_db.path()).unwrap();
+        engine.enable_addon(ADDON_EDU).unwrap();
         let paper = AcademicPaperRecord::new(5555, 1600000000, 100, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 99);
         engine.create_academic_papers(&[paper]).unwrap();
 

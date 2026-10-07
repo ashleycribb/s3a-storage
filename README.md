@@ -168,6 +168,17 @@ cargo run -p s3a-cli -- benchmark-bvh
 
 ---
 
+## Documentation & Specifications
+
+- **[S3A-QL v1 Language Specification & Query Contract](docs/s3a-ql-v1.md)**: Frozen grammar, statements (`FETCH`, `SIFT`, `INSERT`, `DELETE`, `COMPACT`, `FUSE`), pack domain handoff, and machine-readable error models.
+- **[Production Operations Manual & DBA Runbook](docs/ops.md)**: Administrator operations (`inspect`, `verify`, `status`, `doctor`, `recover`, `compact`, `fuse`, `addon`, `snapshot`), machine-readable `--json` output, and recovery runbooks.
+- **[S3A Pack Contract](docs/pack-contract.md)**: Modular domain pack architecture, wire tile ID allocation, and capability mask (`addon_mask`) fail-closed write gates.
+- **[Durability & Crash Recovery Contract](docs/durability.md)**: Dual-slot A/B commit mechanics, append write barriers, and crash-safe compaction replacement.
+- **[Schema Evolution Contract](docs/schema-evolution.md)**: Hyper-tile record layout versioning (`record_layout_version`), global registry, and additive evolution rules.
+- **[Scholar Ingestion & Snapshot Specification](docs/scholar-ingest.md)**: Ingestion of external literature corpora into Scholar Hyper-Tiles and portable SRS snapshot containers.
+
+---
+
 ## License
 
 Dual-licensed under either:
@@ -175,3 +186,4 @@ Dual-licensed under either:
 - MIT License ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+

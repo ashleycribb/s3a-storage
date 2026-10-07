@@ -1,0 +1,20 @@
+[package]
+name = "s3a-pack-scholar"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Scholar Explorer Domain Pack for S3A Database (Tiles 10-15: Literature, Cognitive Provenance, SRS/LRS)"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-simd = { path = "../s3a-simd" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+crc32c = { workspace = true }
+memmap2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ureq = { workspace = true }

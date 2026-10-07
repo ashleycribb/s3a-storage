@@ -1,0 +1,18 @@
+{
+  "case_name": "valid_unknown_tile_type",
+  "category": "valid",
+  "description": "Archive with unknown tile type 9999; readers must skip during domain queries and verify CRC cleanly",
+  "expected_outcome": "ok",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "9999": 1
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

@@ -1,0 +1,17 @@
+{
+  "case_name": "invalid_unsupported_layout_version",
+  "category": "invalid",
+  "description": "HyperTileHeader record_layout_version set to 99; reading records must fail with UnsupportedLayoutVersion",
+  "expected_outcome": "error",
+  "error_class": "UnsupportedLayoutVersion",
+  "expected_error_message": "Unsupported record layout version: 99",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

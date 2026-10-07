@@ -1,0 +1,15 @@
+[package]
+name = "s3a-pack-ontology"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3A Domain Pack for Web Ontologies (OWL), Axiom Grounding, and xAPI Profile Verification (Tiles 16..=17)"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+
+[dev-dependencies]

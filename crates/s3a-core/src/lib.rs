@@ -1,4 +1,10 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std as alloc;
 
 #[cfg(test)]
 extern crate std;
@@ -9,9 +15,19 @@ use bytemuck::{Pod, Zeroable};
 
 pub mod hilbert;
 pub mod dop;
+pub mod registry;
+pub mod lrs;
 
 pub use hilbert::{point_to_hilbert_3d, hilbert_to_point_3d, compare_hilbert_vs_morton_locality, compare_hilbert_vs_morton_curve_continuity, morton_to_point_3d, s3a_morton_3d};
 pub use dop::{Dop14Hull, toroidal_distance_3d, toroidal_interval_contains};
+pub use registry::{
+    TileTypeFlags, TileTypeDescriptor, TileLifecycle, RegistryError, TileTypeRegistry,
+    register_core_types, register_standard_pack_types,
+    TilePayloadMigrator, migrate_tile_payload,
+};
+pub use lrs::*;
+#[cfg(feature = "std")]
+pub use registry::{global_registry, with_global_registry_mut};
 
 /// Magic bytes at the start of an S3A file (`S3A1`).
 pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
@@ -71,6 +87,12 @@ pub enum S3AError {
     PayloadOverflow,
     RecordNotFound,
     InvalidCoordinate,
+    UnsupportedLayoutVersion(u32),
+    FileUuidMismatch { expected: [u64; 2], actual: [u64; 2] },
+    SealedFooterCorrupt,
+    SealedEndCapCorrupt,
+    SealedTruncated,
+    UnrepairableCorruption { group_idx: usize, corrupted_count: usize, max_repairable: usize },
 }
 
 impl fmt::Display for S3AError {
@@ -78,6 +100,7 @@ impl fmt::Display for S3AError {
         match self {
             S3AError::InvalidMagic => write!(f, "Invalid S3A file magic"),
             S3AError::UnsupportedVersion(v) => write!(f, "Unsupported file version: {}", v),
+            S3AError::UnsupportedLayoutVersion(v) => write!(f, "Unsupported record layout version: {}", v),
             S3AError::ChecksumMismatch { expected, actual } => {
                 write!(f, "Checksum mismatch: expected 0x{:08x}, got 0x{:08x}", expected, actual)
             }
@@ -91,6 +114,15 @@ impl fmt::Display for S3AError {
             S3AError::PayloadOverflow => write!(f, "Hyper-Tile payload capacity exceeded"),
             S3AError::RecordNotFound => write!(f, "Requested record was not found"),
             S3AError::InvalidCoordinate => write!(f, "Invalid coordinate address format (expected L<level>:T<tile>:R<offset>)"),
+            S3AError::FileUuidMismatch { expected, actual } => {
+                write!(f, "Tile file_uuid mismatch: expected {:016x}{:016x}, got {:016x}{:016x}", expected[0], expected[1], actual[0], actual[1])
+            }
+            S3AError::SealedFooterCorrupt => write!(f, "Sealed container footer corrupted"),
+            S3AError::SealedEndCapCorrupt => write!(f, "Sealed container end cap corrupted"),
+            S3AError::SealedTruncated => write!(f, "Sealed container truncated"),
+            S3AError::UnrepairableCorruption { group_idx, corrupted_count, max_repairable } => {
+                write!(f, "Group {} has {} corrupted tiles, exceeding max repairable {}", group_idx, corrupted_count, max_repairable)
+            }
         }
     }
 }
@@ -151,6 +183,56 @@ impl FromStr for S3ACoordinate {
     }
 }
 
+/// Addon identifier bitmasks for modular domain extensions.
+pub const ADDON_NONE: u32 = 0;
+pub const ADDON_EDU: u32 = 1 << 0;       // 0x0001: Scholar Explorer Educational & Cognitive Provenance Addon
+pub const ADDON_FINTECH: u32 = 1 << 1;   // 0x0002: High-Frequency Financial Tick Addon (reserved)
+pub const ADDON_ROBOTICS: u32 = 1 << 2;  // 0x0004: Kinematic Trajectory & Robotics Pack
+pub const ADDON_WEARABLE: u32 = 1 << 3;  // 0x0008: Wearable / Micro-Telemetry Pack
+pub const ADDON_GIS: u32 = 1 << 4;       // 0x0010: GIS Topographic Point Cloud & Mesh Pack
+pub const ADDON_DA: u32 = 1 << 5;        // 0x0020: Decentralized Data Availability / State Commitments Pack
+pub const ADDON_ONTOLOGY: u32 = 1 << 6;  // 0x0040: Formal Ontology & Axiom Registry Pack
+
+/// Resolves the required addon capability bitmask and pack name for a given tile type.
+/// Returns None for domain-agnostic core tiles (0, 1, 2, 7, 8, 9).
+pub fn required_addon_for_tile(tile_type: u32) -> Option<(&'static str, u32)> {
+    #[cfg(feature = "std")]
+    {
+        let reg = global_registry();
+        if let Some(desc) = reg.get(tile_type) {
+            return desc.required_addon.map(|mask| (desc.owner_pack, mask));
+        }
+        None
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        match tile_type {
+            3 => Some(("s3a-pack-wearable", ADDON_WEARABLE)),
+            4 => Some(("s3a-pack-robotics", ADDON_ROBOTICS)),
+            5 => Some(("s3a-pack-gis", ADDON_GIS)),
+            6 => Some(("s3a-pack-da", ADDON_DA)),
+            10..=15 | 18 | 20 => Some(("s3a-pack-scholar", ADDON_EDU)),
+            16..=17 => Some(("s3a-pack-ontology", ADDON_ONTOLOGY)),
+            _ => None,
+        }
+    }
+}
+
+/// Generic S3A Addon Trait defining domain extensions.
+pub trait S3AAddon {
+    fn addon_id(&self) -> u32;
+    fn name(&self) -> &'static str;
+    fn version(&self) -> &'static str;
+    fn tile_range(&self) -> core::ops::RangeInclusive<u32>;
+    fn descriptors(&self) -> &'static [TileTypeDescriptor] {
+        &[]
+    }
+}
+
+/// S3APack is an alias trait for modular domain packs implementing the S3A addon contract.
+pub trait S3APack: S3AAddon {}
+impl<T: S3AAddon + ?Sized> S3APack for T {}
+
 /// S3A File Header Slot (64 bytes, 8-byte aligned).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
@@ -164,7 +246,8 @@ pub struct FileHeader {
     pub created_timestamp: u64,
     pub commit_timestamp: u64,
     pub header_crc32: u32,
-    pub _reserved2: [u32; 5],
+    pub addon_mask: u32,
+    pub file_uuid: [u64; 2],
 }
 
 impl FileHeader {
@@ -179,7 +262,8 @@ impl FileHeader {
             created_timestamp,
             commit_timestamp: created_timestamp,
             header_crc32: 0,
-            _reserved2: [0u32; 5],
+            addon_mask: 0,
+            file_uuid: [0, 0],
         }
     }
 
@@ -194,8 +278,22 @@ impl FileHeader {
             created_timestamp,
             commit_timestamp,
             header_crc32: 0,
-            _reserved2: [0u32; 5],
+            addon_mask: 0,
+            file_uuid: [0, 0],
         }
+    }
+
+    pub fn with_file_uuid(mut self, file_uuid: [u64; 2]) -> Self {
+        self.file_uuid = file_uuid;
+        self
+    }
+
+    pub fn has_addon(&self, mask: u32) -> bool {
+        (self.addon_mask & mask) != 0
+    }
+
+    pub fn enable_addon(&mut self, mask: u32) {
+        self.addon_mask |= mask;
     }
 
     pub fn verify(&self) -> Result<(), S3AError> {
@@ -230,16 +328,16 @@ impl DualFileHeader {
 }
 
 
-/// Simplex convex hull bounding manifold embedded in Hyper-Tile header (216 bytes, 8-byte aligned).
+/// Simplex convex hull bounding manifold embedded in Hyper-Tile header (208 bytes, 8-byte aligned).
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct SimplexHull {
     pub dim: u32,
     pub radius: f32,
     pub min_bounds: [f32; MAX_HULL_DIMENSIONS],
     pub max_bounds: [f32; MAX_HULL_DIMENSIONS],
     pub centroid: [f32; MAX_HULL_DIMENSIONS],
-    pub _reserved: [u32; 4],
+    pub _reserved: [u32; 2],
 }
 
 impl SimplexHull {
@@ -250,7 +348,7 @@ impl SimplexHull {
             min_bounds: [f32::INFINITY; MAX_HULL_DIMENSIONS],
             max_bounds: [f32::NEG_INFINITY; MAX_HULL_DIMENSIONS],
             centroid: [0.0; MAX_HULL_DIMENSIONS],
-            _reserved: [0u32; 4],
+            _reserved: [0u32; 2],
         }
     }
 
@@ -285,24 +383,111 @@ impl MicroHull {
 }
 
 /// Tile Type enumeration values stored as u32 in header.
+/// Core engine owns tiles 0..=8. Tile 9 is strictly reserved for boundary markers.
+/// Domain packs (e.g. Wearable 3, Robotics 4, GIS 5, DA 6, Scholar 10..=15) define their tile types in their respective crates.
 pub struct TileType;
 impl TileType {
     pub const TELEMETRY: u32 = 0;
     pub const EMBEDDING: u32 = 1;
     pub const HYBRID: u32 = 2;
-    pub const WEARABLE_MICRO: u32 = 3;
-    pub const ROBOTICS_KINEMATIC: u32 = 4;
-    pub const GIS_SURVEY_MESH: u32 = 5;
-    pub const DATA_AVAILABILITY: u32 = 6;
     pub const QUANTIZED_EMBEDDING_INT8: u32 = 7;
     pub const QUANTIZED_EMBEDDING_4BIT: u32 = 8;
+    pub const RESERVED_BOUNDARY: u32 = 9;
+    pub const RESERVED_PACK_SLOT: u32 = 9;
+    /// Core changeable metadata marks tile (Tile 19)
+    pub const MARKS: u32 = 19;
+    /// Core xAPI 1.0.3 Statement Body blob tile (Tile 21)
+    pub const STATEMENT_BODY: u32 = 21;
+    /// Core xAPI 1.0.3 Statement Index tile (Tile 22)
+    pub const STATEMENT_INDEX: u32 = 22;
+    /// Core xAPI 1.0.3 Document Store tile (Tile 23: State / Profile APIs)
+    pub const DOCUMENT_STORE: u32 = 23;
+    /// Core xAPI 1.0.3 Attachment Blob tile (Tile 24)
+    pub const ATTACHMENT_BLOB: u32 = 24;
+    /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
+    /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
+    #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]
     pub const LEARNING_RECORD_STORE: u32 = 9;
-    pub const HUMAN_LRS: u32 = 10;
-    pub const AI_TRACE_LOG: u32 = 11;
-    pub const ACADEMIC_PAPERS: u32 = 12;
-    pub const RESEARCH_GRAPH: u32 = 13;
-    pub const SRS_WORKSPACE: u32 = 14;
-    pub const SRS_MANIFEST: u32 = 15;
+}
+
+// Mark kinds for MarkRecord.mark_kind
+pub const MARK_QUARANTINE: u32 = 1;
+pub const MARK_NEEDS_REVIEW: u32 = 2;
+pub const MARK_CONSENT_WITHDRAWN: u32 = 3;
+pub const MARK_LEGAL_HOLD: u32 = 4;
+pub const MARK_ACCESS_HEAT: u32 = 5;
+pub const MARK_RETENTION_EXPIRED: u32 = 6;
+
+// Mark actions for MarkRecord.set_or_clear
+pub const MARK_CLEAR: u8 = 0;
+pub const MARK_SET: u8 = 1;
+
+// Target wildcards
+pub const MARK_TARGET_ALL_RECORDS: u32 = u32::MAX;
+
+/// CHANGEABLE METADATA MARK RECORD (64 bytes, 8-byte aligned, Pod/Zeroable).
+/// Tracks mutable administrative, regulatory, and policy status (quarantine, review, consent withdrawal,
+/// legal holds, access heat) separate from immutable primary records.
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct MarkRecord {
+    pub target_tile_type: u32,  // Tile type of target (e.g. TileType::TELEMETRY, ScholarTileType::HUMAN_LRS) (offset 0..4)
+    pub record_index: u32,       // Record offset within tile, or MARK_TARGET_ALL_RECORDS (u32::MAX) (offset 4..8)
+    pub target_tile_id: u64,     // Tile ID in archive (offset 8..16)
+    pub generation: u64,         // Archive generation when mark was appended (offset 16..24)
+    pub timestamp: u64,          // Timestamp of mark action in epoch seconds (offset 24..32)
+    pub actor_hash: u64,         // Identity hash of actor asserting or clearing mark (offset 32..40)
+    pub mark_kind: u32,          // MARK_QUARANTINE, MARK_NEEDS_REVIEW, etc. (offset 40..44)
+    pub set_or_clear: u8,        // MARK_SET (1) or MARK_CLEAR (0) (offset 44)
+    pub _padding: [u8; 3],       // Alignment padding (offset 45..48)
+    pub _reserved: [u64; 2],     // Reserved for future extensions (all zeros) (offset 48..64)
+}
+
+impl MarkRecord {
+    pub fn new(
+        target_tile_type: u32,
+        target_tile_id: u64,
+        record_index: u32,
+        generation: u64,
+        mark_kind: u32,
+        set_or_clear: u8,
+        timestamp: u64,
+        actor_hash: u64,
+    ) -> Self {
+        Self {
+            target_tile_type,
+            record_index,
+            target_tile_id,
+            generation,
+            timestamp,
+            actor_hash,
+            mark_kind,
+            set_or_clear,
+            _padding: [0u8; 3],
+            _reserved: [0u64; 2],
+        }
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.set_or_clear == MARK_SET
+    }
+
+    pub fn is_cleared(&self) -> bool {
+        self.set_or_clear == MARK_CLEAR
+    }
+
+    /// Returns true if this mark represents a durable policy mark (QUARANTINE, CONSENT_WITHDRAWN, LEGAL_HOLD)
+    /// that must be preserved across snapshot exports.
+    pub fn is_policy_mark(&self) -> bool {
+        matches!(
+            self.mark_kind,
+            MARK_QUARANTINE | MARK_CONSENT_WITHDRAWN | MARK_LEGAL_HOLD
+        )
+    }
+
+    pub fn is_whole_tile(&self) -> bool {
+        self.record_index == MARK_TARGET_ALL_RECORDS
+    }
 }
 
 /// Category 1: 960-bit SIMD Blocked-Bloom Filter Metadata (128 bytes, 8-byte aligned).
@@ -427,18 +612,22 @@ impl Default for TileLearnedIndex {
 
 /// Hyper-Tile Header (512 bytes, 8-byte aligned).
 /// Exactly 512 bytes total:
-/// - Base fields: 48 bytes
-/// - SimplexHull: 212 bytes
-/// - filter: 128 bytes
-/// - provenance: 32 bytes
-/// - lifecycle: 24 bytes
-/// - security: 16 bytes
-/// - encoding: 16 bytes
-/// - learned_index: 8 bytes
-/// - _padding: 16 bytes
-/// Total = 56 + 216 + 128 + 32 + 24 + 16 + 16 + 8 + 16 = 512 bytes.
+/// - Base fields: 48 bytes (0..48)
+/// - SimplexHull: 208 bytes (48..256)
+/// - filter: 128 bytes (256..384)
+/// - provenance: 32 bytes (384..416)
+/// - lifecycle: 24 bytes (416..440)
+/// - security: 16 bytes (440..456)
+/// - encoding: 16 bytes (456..472)
+/// - learned_index: 8 bytes (472..480)
+/// - Self-addressing:
+///   - generation: 8 bytes (480..488)
+///   - tile_index: 4 bytes (488..492)
+///   - _reserved_addr: 4 bytes (492..496)
+///   - file_uuid: 16 bytes (496..512)
+/// Total = 48 + 208 + 128 + 32 + 24 + 16 + 16 + 8 + 8 + 4 + 4 + 16 = 512 bytes.
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct HyperTileHeader {
     pub tile_id: u64,
     pub tile_type: u32,
@@ -448,7 +637,7 @@ pub struct HyperTileHeader {
     pub data_crc32: u32,
     pub header_crc32: u32,
     pub payload_bytes: u32,
-    pub _reserved1: u32,
+    pub record_layout_version: u32,
     pub hull: SimplexHull,
     pub filter: TileFilterMetadata,
     pub provenance: TileProvenanceMetadata,
@@ -456,11 +645,19 @@ pub struct HyperTileHeader {
     pub security: TileSecurityMetadata,
     pub encoding: TileEncodingMetadata,
     pub learned_index: TileLearnedIndex,
-    pub _padding: [u32; 6],
+    pub generation: u64,
+    pub tile_index: u32,
+    pub _reserved_addr: u32,
+    pub file_uuid: [u64; 2],
 }
 
 impl HyperTileHeader {
     pub fn new(tile_id: u64, tile_type: u32) -> Self {
+        #[cfg(feature = "std")]
+        let default_version = global_registry().get(tile_type).map(|d| d.current_layout_version).unwrap_or(1);
+        #[cfg(not(feature = "std"))]
+        let default_version = 1;
+
         Self {
             tile_id,
             tile_type,
@@ -470,7 +667,7 @@ impl HyperTileHeader {
             data_crc32: 0,
             header_crc32: 0,
             payload_bytes: 0,
-            _reserved1: 0,
+            record_layout_version: default_version,
             hull: SimplexHull::empty(),
             filter: TileFilterMetadata::default(),
             provenance: TileProvenanceMetadata::default(),
@@ -478,7 +675,10 @@ impl HyperTileHeader {
             security: TileSecurityMetadata::default(),
             encoding: TileEncodingMetadata::default(),
             learned_index: TileLearnedIndex::default(),
-            _padding: [0u32; 6],
+            generation: 1,
+            tile_index: 0,
+            _reserved_addr: 0,
+            file_uuid: [0, 0],
         }
     }
 }
@@ -495,7 +695,7 @@ pub struct MicroTileHeader {
     pub data_crc32: u32,
     pub header_crc32: u32,
     pub payload_bytes: u16,
-    pub _reserved1: u16,
+    pub record_layout_version: u16,
     pub hull: MicroHull,
     pub _reserved2: [u32; 16],
 }
@@ -511,9 +711,58 @@ impl MicroTileHeader {
             data_crc32: 0,
             header_crc32: 0,
             payload_bytes: 0,
-            _reserved1: 0,
+            record_layout_version: 1,
             hull: MicroHull::empty(),
             _reserved2: [0u32; 16],
+        }
+    }
+}
+
+pub const SEALED_ENDCAP_MAGIC: [u8; 8] = *b"S3AEND\0\x01";
+pub const SEALED_ENDCAP_SIZE: usize = 64;
+pub const SEALED_ANCHORS_MAGIC: [u8; 8] = *b"ANCHORS\0";
+
+/// Sealed file directory entry (40 bytes, 8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct SealedDirectoryEntry {
+    pub tile_index: u32,
+    pub tile_type: u32,
+    pub generation: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub xxh3_64: u64,
+}
+
+/// Fixed 64-byte end cap at the tail of a sealed S3A archive (8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct SealedEndCap {
+    pub magic: [u8; 8],
+    pub footer_offset: u64,
+    pub footer_length: u64,
+    pub tile_count: u32,
+    pub k: u16,
+    pub m: u16,
+    pub file_uuid: [u64; 2],
+    pub footer_crc32: u32,
+    pub endcap_crc32: u32,
+    pub _reserved: [u8; 8],
+}
+
+impl Default for SealedEndCap {
+    fn default() -> Self {
+        Self {
+            magic: SEALED_ENDCAP_MAGIC,
+            footer_offset: 0,
+            footer_length: 0,
+            tile_count: 0,
+            k: 16,
+            m: 2,
+            file_uuid: [0, 0],
+            footer_crc32: 0,
+            endcap_crc32: 0,
+            _reserved: [0u8; 8],
         }
     }
 }
@@ -546,153 +795,6 @@ impl TelemetryRecord {
 
     pub fn mark_tombstone(&mut self) {
         self.flags |= FLAG_TOMBSTONE;
-    }
-}
-
-/// DECENTRALIZED DATA AVAILABILITY (DA) & BLOCKCHAIN INDEXER RECORD (64 bytes, 8-byte aligned).
-/// Designed for L2 Rollups, State Channels, and Decentralized AI Model Weight Commitment Verification.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct DACommitmentRecord {
-    pub block_height: u64,          // Block height / L2 slot index
-    pub state_root_hash: [u8; 32],   // 256-bit State Root or Polynomial KZG commitment
-    pub timestamp_sec: u32,         // Block / Slot timestamp
-    pub quorum_bitmask: u32,        // Validator availability quorum signoff bitmask
-    pub transaction_count: u32,     // Number of bundled L2 / AI transactions
-    pub _reserved: [u32; 3],
-}
-
-impl DACommitmentRecord {
-    pub fn new(
-        block_height: u64,
-        state_root_hash: [u8; 32],
-        timestamp_sec: u32,
-        quorum_bitmask: u32,
-        transaction_count: u32,
-    ) -> Self {
-        Self {
-            block_height,
-            state_root_hash,
-            timestamp_sec,
-            quorum_bitmask,
-            transaction_count,
-            _reserved: [0u32; 3],
-        }
-    }
-}
-
-/// GIS SURVEYING & SUBSURFACE POINT CLOUD / MESH RECORD (32 bytes, 8-byte aligned).
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct GISSurveyPointRecord {
-    pub latitude_microdeg: i32,  // Latitude in micro-degrees
-    pub longitude_microdeg: i32, // Longitude in micro-degrees
-    pub elevation_mm: i32,       // Elevation/Depth above/below sea level in millimeters
-    pub point_class: u16,        // Classification (0=Ground, 1=Subsurface Strata, 2=Vegetation, 3=Structure)
-    pub intensity: u16,          // LiDAR/Radar return intensity
-    pub color_rgb: u32,          // Packed 24-bit RGB point color
-    pub timestamp_sec: u32,      // Survey timestamp
-    pub _reserved: u32,
-    pub _padding: u32,
-}
-
-impl GISSurveyPointRecord {
-    pub fn new(
-        latitude_deg: f64,
-        longitude_deg: f64,
-        elevation_m: f64,
-        point_class: u16,
-        intensity: u16,
-        timestamp_sec: u32,
-    ) -> Self {
-        Self {
-            latitude_microdeg: (latitude_deg * 1_000_000.0) as i32,
-            longitude_microdeg: (longitude_deg * 1_000_000.0) as i32,
-            elevation_mm: (elevation_m * 1000.0) as i32,
-            point_class,
-            intensity,
-            color_rgb: 0x00FFFFFF,
-            timestamp_sec,
-            _reserved: 0,
-            _padding: 0,
-        }
-    }
-
-    pub fn latitude_deg(&self) -> f64 {
-        (self.latitude_microdeg as f64) / 1_000_000.0
-    }
-
-    pub fn longitude_deg(&self) -> f64 {
-        (self.longitude_microdeg as f64) / 1_000_000.0
-    }
-
-    pub fn elevation_m(&self) -> f64 {
-        (self.elevation_mm as f64) / 1000.0
-    }
-}
-
-/// ROBOTICS PLATFORM KINEMATIC & IMU STATE RECORD (72 bytes, 8-byte aligned).
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct RoboticsKinematicRecord {
-    pub timestamp_us: u64, // Microsecond-precision timestamp
-    pub robot_id: u32,      // Robot / Joint / Actuator ID
-    pub joint_mask: u32,    // Joint bitmask
-    pub position_xyz: [f32; 3], // 3D Position [X, Y, Z] in meters
-    pub orientation_quat: [f32; 4], // Quaternion [W, X, Y, Z]
-    pub linear_velocity: [f32; 3], // Linear Velocity [Vx, Vy, Vz]
-    pub angular_velocity: [f32; 3], // Angular Velocity [Wx, Wy, Wz]
-    pub _padding: u32,
-}
-
-impl RoboticsKinematicRecord {
-    pub fn new(
-        timestamp_us: u64,
-        robot_id: u32,
-        position_xyz: [f32; 3],
-        orientation_quat: [f32; 4],
-        linear_velocity: [f32; 3],
-        angular_velocity: [f32; 3],
-    ) -> Self {
-        Self {
-            timestamp_us,
-            robot_id,
-            joint_mask: 0xFFFF,
-            position_xyz,
-            orientation_quat,
-            linear_velocity,
-            angular_velocity,
-            _padding: 0,
-        }
-    }
-}
-
-/// Ultra-Compact Quantized Wearable Telemetry Record (16 bytes) for Heart Rate / IMU / PPG / Gyro in Earbuds & Smart Rings.
-#[repr(C, align(4))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
-pub struct CompactWearableRecord {
-    pub timestamp_sec: u32, // Relative seconds timestamp (fits >130 years)
-    pub sensor_id: u8,      // Sensor ID (0=PPG HeartRate, 1=Accel, 2=Gyro, 3=Temp, 4=SpO2)
-    pub metric_id: u8,      // Metric ID
-    pub quantized_val: i16, // INT16 scaled value (e.g. HeartRate * 256.0, Temp * 100.0)
-    pub quality_flags: u16, // Signal quality, Motion artifact bits
-    pub _reserved: [u8; 6],
-}
-
-impl CompactWearableRecord {
-    pub fn new(timestamp_sec: u32, sensor_id: u8, metric_id: u8, float_value: f32) -> Self {
-        Self {
-            timestamp_sec,
-            sensor_id,
-            metric_id,
-            quantized_val: (float_value * 256.0) as i16,
-            quality_flags: 0x0001,
-            _reserved: [0u8; 6],
-        }
-    }
-
-    pub fn float_value(&self) -> f32 {
-        (self.quantized_val as f32) / 256.0
     }
 }
 
@@ -957,272 +1059,6 @@ impl LearningActivityRecord {
     }
 }
 
-/// HUMAN ACTIVITY SQL LRS RECORD (64 bytes, 8-byte aligned).
-/// Captures human researcher reviews, approvals, rework decisions, and xAPI activity statements.
-/// Contains a shared 128-bit `session_uuid` and direct O(1) coordinate pointer to the corresponding AI trace.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct HumanLrsRecord {
-    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
-    pub timestamp_sec: u64,            // Recorded timestamp (offset 16..24)
-    pub actor_hash: u64,               // Hash of researcher / human actor (offset 24..32)
-    pub verb_id: u32,                  // xAPI verb ID (e.g. accepted, reworked, decided) (offset 32..36)
-    pub decision_score: f32,           // Feedback / rework score (offset 36..40)
-    pub ai_trace_coord: S3ACoordinate, // Direct O(1) pointer to AI agent trace step (offset 40..56)
-    pub object_hash: u32,              // Hash of target artifact / paper / claim (offset 56..60)
-    pub flags: u32,                    // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 60..64)
-}
-
-impl HumanLrsRecord {
-    pub fn new(
-        session_uuid: [u64; 2],
-        timestamp_sec: u64,
-        actor_hash: u64,
-        verb_id: u32,
-        decision_score: f32,
-        ai_trace_coord: S3ACoordinate,
-        object_hash: u32,
-    ) -> Self {
-        Self {
-            session_uuid,
-            timestamp_sec,
-            actor_hash,
-            verb_id,
-            decision_score,
-            ai_trace_coord,
-            object_hash,
-            flags: FLAG_ACTIVE as u32,
-        }
-    }
-
-    pub fn is_tombstone(&self) -> bool {
-        (self.flags & (FLAG_TOMBSTONE as u32)) != 0
-    }
-}
-
-/// AI AGENT TRACEABLE LOG METADATA RECORD (64 bytes, 8-byte aligned).
-/// Captures agent reasoning steps, tool calls, hallucination events, and claim verifications.
-/// Matches the human SQL LRS via shared 128-bit `session_uuid` and direct O(1) coordinate pointer.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct AiTraceRecord {
-    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
-    pub timestamp_sec: u64,            // Execution timestamp (offset 16..24)
-    pub agent_id: u64,                 // AI Agent hash (offset 24..32)
-    pub step_type: u32,                // Step category (reasoning, tool_call, claim, hallucination) (offset 32..36)
-    pub confidence: f32,               // Model confidence / reward score (offset 36..40)
-    pub human_coord: S3ACoordinate,    // Direct O(1) pointer to corresponding human decision (offset 40..56)
-    pub hilbert_index: u32,            // 3D spatial cluster coordinate (offset 56..60)
-    pub flags: u32,                    // Active, tombstone, warning flags (offset 60..64)
-}
-
-impl AiTraceRecord {
-    pub fn new(
-        session_uuid: [u64; 2],
-        timestamp_sec: u64,
-        agent_id: u64,
-        step_type: u32,
-        confidence: f32,
-        human_coord: S3ACoordinate,
-        hilbert_index: u32,
-    ) -> Self {
-        Self {
-            session_uuid,
-            timestamp_sec,
-            agent_id,
-            step_type,
-            confidence,
-            human_coord,
-            hilbert_index,
-            flags: FLAG_ACTIVE as u32,
-        }
-    }
-
-    pub fn is_tombstone(&self) -> bool {
-        (self.flags & (FLAG_TOMBSTONE as u32)) != 0
-    }
-}
-
-/// ACADEMIC PAPER & RESEARCH METADATA RECORD (64 bytes, 8-byte aligned).
-/// Captures literature metadata with 3D Skilling Hilbert curve spatial coordinates.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct AcademicPaperRecord {
-    pub paper_id: u64,                 // 64-bit hash of DOI / URI (offset 0..8)
-    pub timestamp_sec: u64,            // Publication timestamp (offset 8..16)
-    pub hilbert_index: u64,            // 3D Skilling Hilbert curve index (offset 16..24)
-    pub topic_x: f32,                  // 3D coordinate X (topic/cluster) (offset 24..28)
-    pub topic_y: f32,                  // 3D coordinate Y (methodology/field) (offset 28..32)
-    pub topic_z: f32,                  // 3D coordinate Z (year/recency) (offset 32..36)
-    pub citation_count: u32,           // Citation count (offset 36..40)
-    pub year: u16,                     // Publication year (offset 40..42)
-    pub venue_id: u16,                 // Venue / service ID (offset 42..44)
-    pub open_access_flag: u16,         // 1 = OA PDF, 0 = Paywalled (offset 44..46)
-    pub warning_count: u16,            // Provenance warning count (offset 46..48)
-    pub doi_prefix_hash: u64,          // Hash of publisher DOI prefix (offset 48..56)
-    pub flags: u64,                    // Active, tombstone, reviewed (offset 56..64)
-}
-
-impl AcademicPaperRecord {
-    pub fn new(
-        paper_id: u64,
-        timestamp_sec: u64,
-        hilbert_index: u64,
-        topic_x: f32,
-        topic_y: f32,
-        topic_z: f32,
-        citation_count: u32,
-        year: u16,
-        venue_id: u16,
-        open_access_flag: u16,
-        warning_count: u16,
-        doi_prefix_hash: u64,
-    ) -> Self {
-        Self {
-            paper_id,
-            timestamp_sec,
-            hilbert_index,
-            topic_x,
-            topic_y,
-            topic_z,
-            citation_count,
-            year,
-            venue_id,
-            open_access_flag,
-            warning_count,
-            doi_prefix_hash,
-            flags: FLAG_ACTIVE,
-        }
-    }
-}
-
-/// RESEARCH KNOWLEDGE GRAPH EDGE RECORD (64 bytes, 8-byte aligned).
-/// Captures subject-predicate-object knowledge graph relations.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct ResearchGraphEdgeRecord {
-    pub subject_hash: u64,             // Node A identifier hash (offset 0..8)
-    pub object_hash: u64,              // Node B identifier hash (offset 8..16)
-    pub timestamp_sec: u64,            // Extraction timestamp (offset 16..24)
-    pub hilbert_coord: u64,            // Spatial cluster coordinate (offset 24..32)
-    pub predicate_id: u32,             // Predicate type (contains, authored_by, cites) (offset 32..36)
-    pub weight: f32,                   // Edge weight / confidence (offset 36..40)
-    pub flags: u64,                    // Active, tombstone (offset 40..48)
-    pub _reserved: [u64; 2],           // Padding to 64 bytes (offset 48..64)
-}
-
-impl ResearchGraphEdgeRecord {
-    pub fn new(
-        subject_hash: u64,
-        object_hash: u64,
-        timestamp_sec: u64,
-        hilbert_coord: u64,
-        predicate_id: u32,
-        weight: f32,
-    ) -> Self {
-        Self {
-            subject_hash,
-            object_hash,
-            timestamp_sec,
-            hilbert_coord,
-            predicate_id,
-            weight,
-            flags: FLAG_ACTIVE,
-            _reserved: [0u64; 2],
-        }
-    }
-}
-
-/// SCHOLAR RESEARCH SNAPSHOT (SRS) MANIFEST HEADER (512 bytes, exact sector-aligned, Pod/Zeroable).
-/// Encapsulates portable research object identity, Project UUID, Snapshot UUID, parent lineage,
-/// and hardware CRC32C checksums as defined in SECS-SRS-1.0.0.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
-pub struct SrsManifestHeader {
-    pub magic: [u8; 8],                // b"S3ASTOR1" (offset 0..8)
-    pub schema_version: u32,           // SRS specification version (e.g. 1) (offset 8..12)
-    pub archive_flags: u32,            // Bitmask: IS_IMMUTABLE, IS_SNAPSHOT, etc. (offset 12..16)
-    pub project_uuid: [u64; 2],        // 128-bit persistent project identifier (offset 16..32)
-    pub snapshot_uuid: [u64; 2],       // 128-bit unique checkpoint identifier (offset 32..48)
-    pub parent_snapshot_uuid: [u64; 2],// 128-bit parent checkpoint (0 if initial root) (offset 48..64)
-    pub origin_session_uuid: [u64; 2], // 128-bit active session identifier (offset 64..80)
-    pub created_at_sec: u64,           // Unix epoch seconds (offset 80..88)
-    pub tile_count: u32,               // Number of Hyper-Tiles in container (offset 88..92)
-    pub crc32c_checksum: u32,          // Hardware CRC32C of entire payload (offset 92..96)
-    pub total_records: u64,            // Total record count across all tiles (offset 96..104)
-    pub _reserved1: [u64; 32],         // Zero-padded: 256 bytes (offset 104..360)
-    pub _reserved2: [u64; 19],         // Zero-padded: 152 bytes (offset 360..512)
-}
-
-impl SrsManifestHeader {
-    pub const MAGIC: [u8; 8] = *b"S3ASTOR1";
-    pub const FLAG_IMMUTABLE: u32 = 1 << 0;
-    pub const FLAG_SNAPSHOT: u32 = 1 << 1;
-    pub const FLAG_WASM_EXPORTED: u32 = 1 << 2;
-
-    pub fn new(
-        project_uuid: [u64; 2],
-        snapshot_uuid: [u64; 2],
-        parent_snapshot_uuid: [u64; 2],
-        origin_session_uuid: [u64; 2],
-        created_at_sec: u64,
-        tile_count: u32,
-        total_records: u64,
-    ) -> Self {
-        Self {
-            magic: Self::MAGIC,
-            schema_version: 1,
-            archive_flags: Self::FLAG_IMMUTABLE | Self::FLAG_SNAPSHOT,
-            project_uuid,
-            snapshot_uuid,
-            parent_snapshot_uuid,
-            origin_session_uuid,
-            created_at_sec,
-            tile_count,
-            crc32c_checksum: 0,
-            total_records,
-            _reserved1: [0u64; 32],
-            _reserved2: [0u64; 19],
-        }
-    }
-}
-
-/// SCHOLAR RESEARCH WORKSPACE RECORD (64 bytes, 8-byte aligned, Pod/Zeroable).
-/// Encapsulates research question hash, collection masks, and topic centroid.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
-pub struct SrsWorkspaceRecord {
-    pub project_uuid: [u64; 2],        // 128-bit project UUID (offset 0..16)
-    pub question_hash: u64,            // Hash of current research question (offset 16..24)
-    pub collection_mask: u64,          // Active collection bitmask (offset 24..32)
-    pub topic_centroid_xyz: [f32; 3],  // Topic cluster centroid coordinates (offset 32..44)
-    pub status: u32,                   // Workspace status (open, investigating, synthesized) (offset 44..48)
-    pub pinned_works_count: u32,       // Number of pinned works (offset 48..52)
-    pub claims_count: u32,             // Number of extracted claims (offset 52..56)
-    pub flags: u64,                    // Flags (offset 56..64)
-}
-
-impl SrsWorkspaceRecord {
-    pub fn new(
-        project_uuid: [u64; 2],
-        question_hash: u64,
-        collection_mask: u64,
-        topic_centroid_xyz: [f32; 3],
-        status: u32,
-    ) -> Self {
-        Self {
-            project_uuid,
-            question_hash,
-            collection_mask,
-            topic_centroid_xyz,
-            status,
-            pinned_works_count: 0,
-            claims_count: 0,
-            flags: FLAG_ACTIVE,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,55 +1066,11 @@ mod tests {
     use std::format;
 
     #[test]
-    fn test_da_commitment_record_layout() {
-        assert_eq!(size_of::<DACommitmentRecord>(), 64);
-        let rec = DACommitmentRecord::new(100_000, [0xAA; 32], 1600000000, 0xFF, 500);
-        assert_eq!(rec.block_height, 100_000);
-        assert_eq!(rec.transaction_count, 500);
-    }
-
-    #[test]
-    fn test_gis_survey_point_record() {
-        assert_eq!(size_of::<GISSurveyPointRecord>(), 32);
-        let point = GISSurveyPointRecord::new(37.774929, -122.419416, 125.5, 0, 100, 1600000000);
-
-        assert!((point.latitude_deg() - 37.774929).abs() < 1e-5);
-        assert!((point.longitude_deg() - (-122.419416)).abs() < 1e-5);
-        assert!((point.elevation_m() - 125.5).abs() < 1e-3);
-    }
-
-    #[test]
-    fn test_robotics_kinematic_record_layout() {
-        assert_eq!(size_of::<RoboticsKinematicRecord>(), 72);
-        let rec = RoboticsKinematicRecord::new(
-            1_000_000,
-            42,
-            [1.0, 2.0, 3.0],
-            [1.0, 0.0, 0.0, 0.0],
-            [0.5, 0.0, 0.0],
-            [0.0, 0.1, 0.0],
-        );
-        assert_eq!(rec.timestamp_us, 1_000_000);
-        assert_eq!(rec.position_xyz, [1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn test_wearable_micro_tile_sizes() {
+    fn test_micro_tile_profile_sizes() {
         assert_eq!(MICRO_TILE_SIZE, 4096);
         assert_eq!(size_of::<MicroTileHeader>(), MICRO_TILE_HEADER_SIZE);
-        assert_eq!(size_of::<CompactWearableRecord>(), 16);
         assert_eq!(size_of::<CompactEmbeddingRecord32>(), 48);
         assert_eq!(MICRO_TILE_PAYLOAD_SIZE, 3968);
-
-        // Capacity: 3,968 / 16 = 248 wearable records in a single 4 KB flash page!
-        assert_eq!(MICRO_TILE_PAYLOAD_SIZE / size_of::<CompactWearableRecord>(), 248);
-    }
-
-    #[test]
-    fn test_compact_wearable_record_quantization() {
-        let rec = CompactWearableRecord::new(100, 1, 10, 72.5);
-        assert_eq!(rec.sensor_id, 1);
-        assert!((rec.float_value() - 72.5).abs() < 0.01);
     }
 
     #[test]
@@ -1309,24 +1101,11 @@ mod tests {
         assert_eq!(size_of::<TileEncodingMetadata>(), 16);
         assert_eq!(size_of::<TileLearnedIndex>(), 8);
         assert_eq!(size_of::<LearningActivityRecord>(), 64);
-        assert_eq!(size_of::<HumanLrsRecord>(), 64);
-        assert_eq!(size_of::<AiTraceRecord>(), 64);
-        assert_eq!(size_of::<AcademicPaperRecord>(), 64);
-        assert_eq!(size_of::<ResearchGraphEdgeRecord>(), 64);
-    }
-
-    #[test]
-    fn test_cross_trace_human_and_ai_with_shared_uuid() {
-        let session_uuid = [0x1234_5678_9ABC_DEF0, 0x0FED_CBA9_8765_4321];
-        let ai_coord = S3ACoordinate::new(0, 1, 5);
-        let human_coord = S3ACoordinate::new(0, 2, 8);
-
-        let human = HumanLrsRecord::new(session_uuid, 1600000000, 42, 1, 1.0, ai_coord, 100);
-        let ai = AiTraceRecord::new(session_uuid, 1600000005, 99, 2, 0.95, human_coord, 500);
-
-        assert_eq!(human.session_uuid, ai.session_uuid);
-        assert_eq!(human.ai_trace_coord, ai_coord);
-        assert_eq!(ai.human_coord, human_coord);
+        assert_eq!(size_of::<MarkRecord>(), 64);
+        assert_eq!(core::mem::align_of::<MarkRecord>(), 8);
+        assert_eq!(size_of::<SealedDirectoryEntry>(), 40);
+        assert_eq!(size_of::<SealedEndCap>(), SEALED_ENDCAP_SIZE);
+        assert_eq!(core::mem::align_of::<SealedEndCap>(), 8);
     }
 
     #[test]
@@ -1352,51 +1131,6 @@ mod tests {
 
         assert!(hull.contains_point(&[5.0, 5.0, 5.0]));
         assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
-    }
-
-    #[test]
-    fn test_srs_manifest_header_layout() {
-        assert_eq!(size_of::<SrsManifestHeader>(), 512);
-        let project_uuid = [0x123456789abcdef0, 0x0fedcba987654321];
-        let snapshot_uuid = [0x1111222233334444, 0x5555666677778888];
-        let parent_uuid = [0, 0];
-        let session_uuid = [0xaaaabbbbccccdddd, 0xeeeeffff00001111];
-
-        let manifest = SrsManifestHeader::new(
-            project_uuid,
-            snapshot_uuid,
-            parent_uuid,
-            session_uuid,
-            1600000000,
-            5,
-            1250,
-        );
-
-        assert_eq!(manifest.magic, SrsManifestHeader::MAGIC);
-        assert_eq!(manifest.project_uuid, project_uuid);
-        assert_eq!(manifest.snapshot_uuid, snapshot_uuid);
-        assert_eq!(manifest.tile_count, 5);
-        assert_eq!(manifest.total_records, 1250);
-        assert_eq!(manifest.archive_flags & SrsManifestHeader::FLAG_SNAPSHOT, SrsManifestHeader::FLAG_SNAPSHOT);
-    }
-
-    #[test]
-    fn test_srs_workspace_record_layout() {
-        assert_eq!(size_of::<SrsWorkspaceRecord>(), 64);
-        let project_uuid = [0x123456789abcdef0, 0x0fedcba987654321];
-        let ws = SrsWorkspaceRecord::new(
-            project_uuid,
-            999888,
-            0b1011,
-            [0.25, 0.5, 0.75],
-            1,
-        );
-
-        assert_eq!(ws.project_uuid, project_uuid);
-        assert_eq!(ws.question_hash, 999888);
-        assert_eq!(ws.collection_mask, 0b1011);
-        assert_eq!(ws.topic_centroid_xyz, [0.25, 0.5, 0.75]);
-        assert_eq!(ws.status, 1);
     }
 }
 

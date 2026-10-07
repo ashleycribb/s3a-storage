@@ -1,0 +1,15 @@
+{
+  "case_name": "valid_empty",
+  "category": "valid",
+  "description": "Empty valid S3A file with 0 tiles and generation 1",
+  "expected_outcome": "ok",
+  "file_size_bytes": 512,
+  "header": {
+    "active_slot": 0,
+    "generation": 1,
+    "tile_count": 0,
+    "addon_mask": 0
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

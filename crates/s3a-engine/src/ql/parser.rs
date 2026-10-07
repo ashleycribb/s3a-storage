@@ -1,4 +1,5 @@
 use crate::ql::ast::*;
+use crate::ql::error::QlError;
 use crate::ql::lexer::Token;
 use s3a_core::S3ACoordinate;
 
@@ -28,17 +29,21 @@ impl Parser {
         tok
     }
 
-    fn expect(&mut self, expected: Token) -> Result<(), String> {
+    fn expect(&mut self, expected: Token) -> Result<(), QlError> {
         let current = self.peek().clone();
         if current == expected {
             self.advance();
             Ok(())
         } else {
-            Err(format!("Expected token {:?}, found {:?}", expected, current))
+            Err(QlError::Parse {
+                message: format!("Expected token {:?}, found {:?}", expected, current),
+                line: 0,
+                col: 0,
+            })
         }
     }
 
-    fn parse_file_path(&mut self) -> Result<String, String> {
+    fn parse_file_path(&mut self) -> Result<String, QlError> {
         match self.peek().clone() {
             Token::StringLiteral(s) => {
                 self.advance();
@@ -48,31 +53,57 @@ impl Parser {
                 self.advance();
                 Ok(s)
             }
-            other => Err(format!("Expected file path string or identifier, found {:?}", other)),
+            other => Err(QlError::Parse {
+                message: format!("Expected file path string or identifier, found {:?}", other),
+                line: 0,
+                col: 0,
+            }),
         }
     }
 
-    fn parse_u64(&mut self) -> Result<u64, String> {
+    fn parse_u32(&mut self) -> Result<u32, QlError> {
+        match self.peek().clone() {
+            Token::Number(n) => {
+                self.advance();
+                Ok(n as u32)
+            }
+            other => Err(QlError::Parse {
+                message: format!("Expected unsigned 32-bit integer, found {:?}", other),
+                line: 0,
+                col: 0,
+            }),
+        }
+    }
+
+    fn parse_u64(&mut self) -> Result<u64, QlError> {
         match self.peek().clone() {
             Token::Number(n) => {
                 self.advance();
                 Ok(n as u64)
             }
-            other => Err(format!("Expected unsigned integer number, found {:?}", other)),
+            other => Err(QlError::Parse {
+                message: format!("Expected unsigned integer number, found {:?}", other),
+                line: 0,
+                col: 0,
+            }),
         }
     }
 
-    fn parse_f64(&mut self) -> Result<f64, String> {
+    fn parse_f64(&mut self) -> Result<f64, QlError> {
         match self.peek().clone() {
             Token::Number(n) => {
                 self.advance();
                 Ok(n)
             }
-            other => Err(format!("Expected number, found {:?}", other)),
+            other => Err(QlError::Parse {
+                message: format!("Expected number, found {:?}", other),
+                line: 0,
+                col: 0,
+            }),
         }
     }
 
-    fn parse_vector_3d(&mut self) -> Result<[f32; 3], String> {
+    fn parse_vector_3d(&mut self) -> Result<[f32; 3], QlError> {
         self.expect(Token::LBracket)?;
         let x = self.parse_f64()? as f32;
         self.expect(Token::Comma)?;
@@ -83,7 +114,7 @@ impl Parser {
         Ok([x, y, z])
     }
 
-    fn parse_float_vector(&mut self) -> Result<Vec<f32>, String> {
+    fn parse_float_vector(&mut self) -> Result<Vec<f32>, QlError> {
         self.expect(Token::LBracket)?;
         let mut vec = Vec::new();
         loop {
@@ -99,21 +130,48 @@ impl Parser {
                 self.advance();
                 break;
             } else {
-                return Err(format!("Expected ',' or ']' in vector, found {:?}", self.peek()));
+                return Err(QlError::Parse {
+                    message: format!("Expected ',' or ']' in vector, found {:?}", self.peek()),
+                    line: 0,
+                    col: 0,
+                });
             }
         }
         Ok(vec)
     }
 
-    pub fn parse_statement(&mut self) -> Result<S3AStatement, String> {
+    pub fn parse_statement(&mut self) -> Result<S3AStatement, QlError> {
+        // Parse optional preamble: VERSION <n>; or PRAGMA VERSION <n>;
+        let mut version = None;
+        if self.peek() == &Token::Pragma {
+            self.advance();
+            self.expect(Token::Version)?;
+            version = Some(self.parse_u32()?);
+            if self.peek() == &Token::Semicolon {
+                self.advance();
+            }
+        } else if self.peek() == &Token::Version {
+            self.advance();
+            version = Some(self.parse_u32()?);
+            if self.peek() == &Token::Semicolon {
+                self.advance();
+            }
+        }
+
         let stmt = match self.peek() {
-            Token::Fetch => self.parse_fetch()?,
-            Token::Sift => self.parse_sift()?,
-            Token::Insert => self.parse_insert()?,
-            Token::Delete => self.parse_delete()?,
-            Token::Compact => self.parse_compact()?,
-            Token::Fuse => self.parse_fuse()?,
-            other => return Err(format!("Unexpected query start token: {:?}", other)),
+            Token::Fetch => self.parse_fetch(version)?,
+            Token::Sift => self.parse_sift(version)?,
+            Token::Insert => self.parse_insert(version)?,
+            Token::Delete => self.parse_delete(version)?,
+            Token::Compact => self.parse_compact(version)?,
+            Token::Fuse => self.parse_fuse(version)?,
+            other => {
+                return Err(QlError::Parse {
+                    message: format!("Unexpected query start token: {:?}", other),
+                    line: 0,
+                    col: 0,
+                });
+            }
         };
 
         // Consume optional trailing semicolon
@@ -124,7 +182,7 @@ impl Parser {
         Ok(stmt)
     }
 
-    fn parse_fetch(&mut self) -> Result<S3AStatement, String> {
+    fn parse_fetch(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Fetch)?;
         self.expect(Token::Record)?;
         self.expect(Token::At)?;
@@ -132,18 +190,32 @@ impl Parser {
         let coord_str = match self.advance() {
             Token::Coordinate(s) => s.clone(),
             Token::Identifier(s) => s.clone(),
-            other => return Err(format!("Expected S3A coordinate (e.g. L0:T4:R12), found {:?}", other)),
+            other => {
+                return Err(QlError::Parse {
+                    message: format!("Expected S3A coordinate (e.g. L0:T4:R12), found {:?}", other),
+                    line: 0,
+                    col: 0,
+                });
+            }
         };
 
-        let coordinate: S3ACoordinate = coord_str.parse().map_err(|e| format!("Invalid coordinate format: {}", e))?;
+        let coordinate: S3ACoordinate = coord_str.parse().map_err(|e| QlError::Parse {
+            message: format!("Invalid coordinate format: {}", e),
+            line: 0,
+            col: 0,
+        })?;
 
         self.expect(Token::From)?;
         let from_path = self.parse_file_path()?;
 
-        Ok(S3AStatement::Fetch(FetchStatement { coordinate, from_path }))
+        Ok(S3AStatement::Fetch(FetchStatement {
+            coordinate,
+            from_path,
+            version,
+        }))
     }
 
-    fn parse_sift(&mut self) -> Result<S3AStatement, String> {
+    fn parse_sift(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Sift)?;
 
         let domain = match self.advance() {
@@ -153,7 +225,16 @@ impl Parser {
             Token::Embeddings => SiftDomain::Embeddings,
             Token::DaCommitments => SiftDomain::DaCommitments,
             Token::LearningActivities => SiftDomain::LearningActivities,
-            other => return Err(format!("Expected SIFT domain, found {:?}", other)),
+            Token::HumanLrs => SiftDomain::HumanLrs,
+            Token::AiTraces => SiftDomain::AiTraces,
+            Token::AcademicPapers => SiftDomain::AcademicPapers,
+            other => {
+                return Err(QlError::Parse {
+                    message: format!("Expected SIFT domain, found {:?}", other),
+                    line: 0,
+                    col: 0,
+                });
+            }
         };
 
         self.expect(Token::From)?;
@@ -193,10 +274,11 @@ impl Parser {
             from_path,
             conditions,
             limit,
+            version,
         }))
     }
 
-    fn parse_condition(&mut self) -> Result<Condition, String> {
+    fn parse_condition(&mut self) -> Result<Condition, QlError> {
         match self.peek() {
             Token::Time => {
                 self.advance();
@@ -283,11 +365,21 @@ impl Parser {
                 let metric = match self.advance() {
                     Token::Cosine => SimilarityMetric::Cosine,
                     Token::DotProduct => SimilarityMetric::DotProduct,
-                    other => return Err(format!("Expected COSINE or DOT_PRODUCT, found {:?}", other)),
+                    other => {
+                        return Err(QlError::Parse {
+                            message: format!("Expected COSINE or DOT_PRODUCT, found {:?}", other),
+                            line: 0,
+                            col: 0,
+                        });
+                    }
                 };
                 self.expect(Token::Threshold)?;
                 let threshold = self.parse_f64()? as f32;
-                Ok(Condition::Similarity { vector, metric, threshold })
+                Ok(Condition::Similarity {
+                    vector,
+                    metric,
+                    threshold,
+                })
             }
             Token::Compose => {
                 self.advance();
@@ -335,11 +427,15 @@ impl Parser {
                     time_weight,
                 })
             }
-            other => Err(format!("Unknown or unsupported WHERE condition: {:?}", other)),
+            other => Err(QlError::Parse {
+                message: format!("Unknown or unsupported WHERE condition: {:?}", other),
+                line: 0,
+                col: 0,
+            }),
         }
     }
 
-    fn parse_insert(&mut self) -> Result<S3AStatement, String> {
+    fn parse_insert(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Insert)?;
         self.expect(Token::Telemetry)?;
         self.expect(Token::LParen)?;
@@ -362,10 +458,11 @@ impl Parser {
             metric_id,
             value,
             into_path,
+            version,
         }))
     }
 
-    fn parse_delete(&mut self) -> Result<S3AStatement, String> {
+    fn parse_delete(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Delete)?;
         self.expect(Token::Telemetry)?;
         self.expect(Token::Where)?;
@@ -391,7 +488,13 @@ impl Parser {
                     self.expect(Token::Equal)?;
                     timestamp = Some(self.parse_u64()?);
                 }
-                other => return Err(format!("Unexpected field in DELETE WHERE clause: {:?}", other)),
+                other => {
+                    return Err(QlError::Parse {
+                        message: format!("Unexpected field in DELETE WHERE clause: {:?}", other),
+                        line: 0,
+                        col: 0,
+                    });
+                }
             }
 
             if self.peek() == &Token::And {
@@ -401,9 +504,21 @@ impl Parser {
             }
         }
 
-        let sensor_id = sensor_id.ok_or_else(|| "Missing SENSOR_ID in DELETE clause".to_string())?;
-        let metric_id = metric_id.ok_or_else(|| "Missing METRIC_ID in DELETE clause".to_string())?;
-        let timestamp = timestamp.ok_or_else(|| "Missing TIME in DELETE clause".to_string())?;
+        let sensor_id = sensor_id.ok_or_else(|| QlError::Parse {
+            message: "Missing SENSOR_ID in DELETE clause".to_string(),
+            line: 0,
+            col: 0,
+        })?;
+        let metric_id = metric_id.ok_or_else(|| QlError::Parse {
+            message: "Missing METRIC_ID in DELETE clause".to_string(),
+            line: 0,
+            col: 0,
+        })?;
+        let timestamp = timestamp.ok_or_else(|| QlError::Parse {
+            message: "Missing TIME in DELETE clause".to_string(),
+            line: 0,
+            col: 0,
+        })?;
 
         self.expect(Token::From)?;
         let from_path = self.parse_file_path()?;
@@ -413,18 +528,22 @@ impl Parser {
             metric_id,
             timestamp,
             from_path,
+            version,
         }))
     }
 
-    fn parse_compact(&mut self) -> Result<S3AStatement, String> {
+    fn parse_compact(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Compact)?;
         self.expect(Token::Archive)?;
         let archive_path = self.parse_file_path()?;
 
-        Ok(S3AStatement::Compact(CompactStatement { archive_path }))
+        Ok(S3AStatement::Compact(CompactStatement {
+            archive_path,
+            version,
+        }))
     }
 
-    fn parse_fuse(&mut self) -> Result<S3AStatement, String> {
+    fn parse_fuse(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
         self.expect(Token::Fuse)?;
         self.expect(Token::Tiles)?;
         self.expect(Token::From)?;
@@ -440,7 +559,11 @@ impl Parser {
                 self.advance();
                 break;
             } else {
-                return Err(format!("Expected ',' or ')' in FROM list, found {:?}", self.peek()));
+                return Err(QlError::Parse {
+                    message: format!("Expected ',' or ')' in FROM list, found {:?}", self.peek()),
+                    line: 0,
+                    col: 0,
+                });
             }
         }
 
@@ -461,7 +584,13 @@ impl Parser {
                     let val = match self.advance() {
                         Token::True => true,
                         Token::False => false,
-                        other => return Err(format!("Expected TRUE or FALSE, found {:?}", other)),
+                        other => {
+                            return Err(QlError::Parse {
+                                message: format!("Expected TRUE or FALSE, found {:?}", other),
+                                line: 0,
+                                col: 0,
+                            });
+                        }
                     };
                     match opt.to_ascii_uppercase().as_str() {
                         "RESOLVE_VERSIONED_UPDATES" => resolve_versioned_updates = val,
@@ -485,6 +614,7 @@ impl Parser {
             resolve_versioned_updates,
             purge_tombstones,
             recalculate_simplex_hulls,
+            version,
         }))
     }
 }

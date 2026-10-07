@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use s3a_core::SrsManifestHeader;
+use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, ScholarQueryExt, SrsManifestHeader};
 use s3a_engine::{
     execute_query, MmapReader, QuerySieve, S3ACoordinate, S3ACrudEngine, TelemetryRecord,
 };
@@ -227,7 +227,7 @@ fn execute_tool(tool_name: &str, args_json: &str, default_path: &str) -> (String
         }
         "s3a_intake_srs" => {
             let snapshot_file = parse_str(args_json, "snapshot_file").unwrap_or_else(|| "project.snapshot.s3a".to_string());
-            match S3ACrudEngine::intake_srs_snapshot(&snapshot_file) {
+            match intake_srs_snapshot(&snapshot_file) {
                 Ok(b) => (
                     format!(
                         "Mounted SRS snapshot '{}' in < 1ms: Project UUID {:016X}{:016X}, Papers: {}, Edges: {}, Human Decisions: {}, AI Traces: {}",

@@ -1,0 +1,29 @@
+{
+  "case_name": "sealed_footer_missing",
+  "category": "valid",
+  "description": "Sealed archive with footer missing; reader rebuilds directory by scanning self-addressed tiles",
+  "expected_outcome": "ok_with_warning",
+  "file_size_bytes": 131584,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "telemetry": 5
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "Telemetry device 100"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": false,
+  "rebuilt_directory": true,
+  "out_of_order_detected": false,
+  "repaired_tiles_count": 0
+}

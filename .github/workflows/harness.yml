@@ -1,0 +1,48 @@
+name: S3A Research Agent Harness CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - "crates/s3a-harness/**"
+      - "crates/s3a-core/**"
+      - "crates/s3a-engine/**"
+      - "crates/s3a-pack-scholar/**"
+      - ".github/workflows/harness.yml"
+  pull_request:
+    branches: [ "main", "master" ]
+    paths:
+      - "crates/s3a-harness/**"
+      - "crates/s3a-core/**"
+      - "crates/s3a-engine/**"
+      - "crates/s3a-pack-scholar/**"
+      - ".github/workflows/harness.yml"
+
+jobs:
+  test:
+    name: Test & Lint (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify Formatting
+        run: cargo fmt --check -p s3a-harness
+
+      - name: Clippy Linter (-D warnings)
+        run: cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings
+
+      - name: Run Harness Tests
+        run: cargo test -p s3a-harness --all-targets

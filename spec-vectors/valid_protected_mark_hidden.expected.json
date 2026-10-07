@@ -1,0 +1,33 @@
+{
+  "case_name": "valid_protected_mark_hidden",
+  "category": "valid",
+  "description": "Record masked by active MARK_CONSENT_WITHDRAWN; hidden in default queries, visible with include_hidden",
+  "expected_outcome": "ok",
+  "file_size_bytes": 262656,
+  "header": {
+    "active_slot": 0,
+    "generation": 3,
+    "tile_count": 2,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "marks": 1,
+    "telemetry": 1
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "sensor 1, value 99.9 (protected by consent mark)"
+    },
+    {
+      "tile_type": 19,
+      "record_index": 0,
+      "summary": "mark_kind 3 (MARK_CONSENT_WITHDRAWN), target L0:T1:R0"
+    }
+  ],
+  "records_hidden_by_default": true,
+  "records_visible_with_override": true,
+  "visible_records": 0,
+  "hidden_records": 1
+}

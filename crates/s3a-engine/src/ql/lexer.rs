@@ -1,4 +1,5 @@
 use std::fmt;
+use crate::ql::error::QlError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -22,6 +23,8 @@ pub enum Token {
     With,
     True,
     False,
+    Version,
+    Pragma,
 
     // Domain keywords
     Telemetry,
@@ -30,6 +33,9 @@ pub enum Token {
     Embeddings,
     DaCommitments,
     LearningActivities,
+    HumanLrs,
+    AiTraces,
+    AcademicPapers,
 
     // Condition keywords
     Time,
@@ -86,6 +92,8 @@ pub struct Lexer<'a> {
     _input: &'a str,
     chars: Vec<char>,
     pos: usize,
+    pub line: u32,
+    pub col: u32,
 }
 
 impl<'a> Lexer<'a> {
@@ -94,9 +102,10 @@ impl<'a> Lexer<'a> {
             _input: input,
             chars: input.chars().collect(),
             pos: 0,
+            line: 1,
+            col: 1,
         }
     }
-
 
     fn peek(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
@@ -104,8 +113,14 @@ impl<'a> Lexer<'a> {
 
     fn advance(&mut self) -> Option<char> {
         let ch = self.chars.get(self.pos).copied();
-        if ch.is_some() {
+        if let Some(c) = ch {
             self.pos += 1;
+            if c == '\n' {
+                self.line += 1;
+                self.col = 1;
+            } else {
+                self.col += 1;
+            }
         }
         ch
     }
@@ -127,7 +142,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_token(&mut self) -> Result<Token, String> {
+    pub fn next_token(&mut self) -> Result<Token, QlError> {
         self.skip_whitespace();
 
         let ch = match self.peek() {
@@ -145,6 +160,8 @@ impl<'a> Lexer<'a> {
             '[' => { self.advance(); return Ok(Token::LBracket); }
             ']' => { self.advance(); return Ok(Token::RBracket); }
             '"' | '\'' => {
+                let start_line = self.line;
+                let start_col = self.col;
                 let quote = self.advance().unwrap();
                 let mut s = String::new();
                 while let Some(c) = self.advance() {
@@ -153,7 +170,11 @@ impl<'a> Lexer<'a> {
                     }
                     s.push(c);
                 }
-                return Err("Unterminated string literal".to_string());
+                return Err(QlError::Parse {
+                    message: "Unterminated string literal".to_string(),
+                    line: start_line,
+                    col: start_col,
+                });
             }
             _ => {}
         }
@@ -168,10 +189,16 @@ impl<'a> Lexer<'a> {
             return self.lex_ident_or_keyword();
         }
 
-        Err(format!("Unexpected character: '{}' at position {}", ch, self.pos))
+        Err(QlError::Parse {
+            message: format!("Unexpected character: '{}'", ch),
+            line: self.line,
+            col: self.col,
+        })
     }
 
-    fn lex_number(&mut self) -> Result<Token, String> {
+    fn lex_number(&mut self) -> Result<Token, QlError> {
+        let start_line = self.line;
+        let start_col = self.col;
         let mut s = String::new();
         if self.peek() == Some('-') {
             s.push(self.advance().unwrap());
@@ -202,11 +229,15 @@ impl<'a> Lexer<'a> {
 
         match s.parse::<f64>() {
             Ok(num) => Ok(Token::Number(num)),
-            Err(_) => Err(format!("Failed to parse number: '{}'", s)),
+            Err(_) => Err(QlError::Parse {
+                message: format!("Failed to parse number: '{}'", s),
+                line: start_line,
+                col: start_col,
+            }),
         }
     }
 
-    fn lex_ident_or_keyword(&mut self) -> Result<Token, String> {
+    fn lex_ident_or_keyword(&mut self) -> Result<Token, QlError> {
         let mut s = String::new();
         while let Some(c) = self.peek() {
             if c.is_ascii_alphanumeric() || c == '_' || c == ':' {
@@ -223,6 +254,8 @@ impl<'a> Lexer<'a> {
 
         let upper = s.to_ascii_uppercase();
         let token = match upper.as_str() {
+            "VERSION" => Token::Version,
+            "PRAGMA" => Token::Pragma,
             "FETCH" => Token::Fetch,
             "RECORD" => Token::Record,
             "AT" => Token::At,
@@ -249,6 +282,9 @@ impl<'a> Lexer<'a> {
             "EMBEDDINGS" => Token::Embeddings,
             "DA_COMMITMENTS" => Token::DaCommitments,
             "LEARNING_ACTIVITIES" | "ACTIVITIES" | "LRS" => Token::LearningActivities,
+            "HUMAN_LRS" => Token::HumanLrs,
+            "AI_TRACES" | "AI_TRACE_LOG" => Token::AiTraces,
+            "ACADEMIC_PAPERS" | "PAPERS" => Token::AcademicPapers,
 
             "TIME" => Token::Time,
             "SENSOR_ID" => Token::SensorId,
@@ -282,7 +318,7 @@ impl<'a> Lexer<'a> {
         Ok(token)
     }
 
-    pub fn tokenize_all(&mut self) -> Result<Vec<Token>, String> {
+    pub fn tokenize_all(&mut self) -> Result<Vec<Token>, QlError> {
         let mut tokens = Vec::new();
         loop {
             let tok = self.next_token()?;

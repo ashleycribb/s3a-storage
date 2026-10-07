@@ -1,0 +1,29 @@
+{
+  "case_name": "sealed_endcap_corrupt",
+  "category": "valid",
+  "description": "Sealed archive with corrupt end cap; reader detects endcap corruption and rebuilds directory by scanning tiles",
+  "expected_outcome": "ok_with_warning",
+  "file_size_bytes": 393832,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "telemetry": 5
+  },
+  "sample_records": [
+    {
+      "tile_type": 0,
+      "record_index": 0,
+      "summary": "Telemetry device 100"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": false,
+  "rebuilt_directory": true,
+  "out_of_order_detected": false,
+  "repaired_tiles_count": 0
+}
