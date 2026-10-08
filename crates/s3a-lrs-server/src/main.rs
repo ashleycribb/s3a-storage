@@ -168,6 +168,25 @@ pub fn run_daily_anchor_job(
     Ok((snap_path, audit_snap_path, fp_hex))
 }
 
+/// Validates that an archive name is a bare filename matching ^[A-Za-z0-9_.-]+\.s3a$,
+/// with no "/", "\", ".." or absolute path.
+pub fn is_valid_archive_name(name: &str) -> bool {
+    if !name.ends_with(".s3a") || name.len() <= 4 {
+        return false;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return false;
+    }
+    if std::path::Path::new(name).is_absolute() {
+        return false;
+    }
+    let stem = &name[..name.len() - 4];
+    if stem.is_empty() {
+        return false;
+    }
+    stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+}
+
 /// Configuration for the S3A LRS Server.
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -175,6 +194,7 @@ pub struct ServerConfig {
     pub port: u16,
     pub archive_path: PathBuf,
     pub audit_archive_path: PathBuf,
+    pub data_dir: PathBuf,
     pub credentials: Vec<AuthCredential>,
     pub insecure_dev: bool,
     pub enable_scholar: bool,
@@ -192,6 +212,7 @@ impl Default for ServerConfig {
             port: 8080,
             archive_path: PathBuf::from("lrs_data.s3a"),
             audit_archive_path: PathBuf::from("lrs_data.audit.s3a"),
+            data_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             credentials: Vec::new(),
             insecure_dev: false,
             enable_scholar: true,
@@ -217,58 +238,114 @@ pub struct AppState {
 
 impl AppState {
     /// Opens or returns a cached LrsStore for a specified archive file or name.
+    ///
+    /// Any archive name must be a bare filename matching ^[A-Za-z0-9_.-]+\.s3a$,
+    /// resolved inside data_dir, canonicalized and confirmed to land inside it.
+    /// Refuses to create new archive files through a request.
     pub fn get_or_open_store(&self, archive_str: &str) -> Result<Arc<LrsStore>, s3a_engine::LrsStoreError> {
-        let p = PathBuf::from(archive_str);
-        let key = p.file_name().and_then(|s| s.to_str()).unwrap_or(archive_str).to_string();
+        if !is_valid_archive_name(archive_str) {
+            return Err(s3a_engine::LrsStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", archive_str),
+            )));
+        }
 
+        // Fast path: cached in memory
         {
             let map = self.stores.read().unwrap();
-            if let Some(s) = map.get(&key) {
+            if let Some(s) = map.get(archive_str) {
                 return Ok(s.clone());
             }
         }
 
+        let canonical_data_dir = std::fs::canonicalize(&self.config.data_dir)?;
+        let target_path = canonical_data_dir.join(archive_str);
+
+        // Refuse to create new archive files through a request
+        if !target_path.is_file() {
+            return Err(s3a_engine::LrsStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Archive '{}' does not exist in data directory", archive_str),
+            )));
+        }
+
+        // Canonicalize target and ensure it lands inside data directory
+        let canonical_target = std::fs::canonicalize(&target_path)?;
+        if !canonical_target.starts_with(&canonical_data_dir)
+            || canonical_target.parent() != Some(canonical_data_dir.as_path())
+        {
+            return Err(s3a_engine::LrsStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Archive '{}' resolves outside data directory", archive_str),
+            )));
+        }
+
         let mut map = self.stores.write().unwrap();
-        if let Some(s) = map.get(&key) {
+        if let Some(s) = map.get(archive_str) {
             return Ok(s.clone());
         }
 
-        let store = LrsStore::open_or_create(&p)?;
+        let store = LrsStore::open_or_create(&canonical_target)?;
         if self.config.enable_scholar {
             let _ = store.writer().enable_addon(s3a_core::ADDON_EDU);
         }
-        map.insert(key, store.clone());
+        map.insert(archive_str.to_string(), store.clone());
         Ok(store)
     }
 
     /// Resolves active LrsStore and canonical archive name based on credentials, query params, or defaults.
+    ///
+    /// 1. A credential with an assigned archive always uses it; ignores ?archive= and x-s3a-archive / x-archive headers.
+    /// 2. A credential without an archive uses the default archive only. Honors the override param/header only if
+    ///    the credential has scope "admin" AND --admin-api-override is set.
+    /// 3. Any archive name (from credentials, CLI or override) must be a bare filename matching ^[A-Za-z0-9_.-]+\.s3a$,
+    ///    with no "/", "\", ".." or absolute path, resolving inside data_dir and not escaping it.
     pub fn resolve_store_and_archive(
         &self,
         cred: Option<&AuthCredential>,
         params: &HashMap<String, String>,
         headers: &HashMap<String, String>,
-    ) -> (Arc<LrsStore>, String) {
-        // 1. Check credential mapping
+    ) -> Result<(Arc<LrsStore>, String), String> {
+        // 1. A credential with an assigned archive always uses it;
+        //    ignore ?archive= and x-s3a-archive / x-archive headers for that credential.
         if let Some(c) = cred {
             if let Some(ref arch) = c.archive {
-                if let Ok(st) = self.get_or_open_store(arch) {
-                    return (st, arch.clone());
+                if !is_valid_archive_name(arch) {
+                    return Err(format!("Credential assigned invalid archive name '{}'", arch));
                 }
+                let st = self.get_or_open_store(arch)
+                    .map_err(|e| format!("Failed to open credential archive '{}': {:?}", arch, e))?;
+                return Ok((st, arch.clone()));
             }
         }
 
-        // 2. Check query param or header override
-        if let Some(arch) = params.get("archive").or_else(|| headers.get("x-s3a-archive")).or_else(|| headers.get("x-archive")) {
-            if let Ok(st) = self.get_or_open_store(arch) {
-                return (st, arch.clone());
+        // 2. Check override param/header for credentials without an assigned archive
+        let override_opt = params.get("archive")
+            .or_else(|| headers.get("x-s3a-archive"))
+            .or_else(|| headers.get("x-archive"));
+
+        if let Some(override_arch) = override_opt {
+            if !is_valid_archive_name(override_arch) {
+                return Err(format!(
+                    "Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$ with no '/', '\\', '..', or absolute path",
+                    override_arch
+                ));
+            }
+
+            let is_admin = cred.map(|c| c.has_scope("admin")).unwrap_or(false);
+            if is_admin && self.config.admin_api_override {
+                let st = self.get_or_open_store(override_arch)
+                    .map_err(|e| format!("Failed to open override archive '{}': {:?}", override_arch, e))?;
+                return Ok((st, override_arch.clone()));
             }
         }
 
         // 3. Fallback to default configured archive
         let default_name = self.config.archive_path.file_name().and_then(|s| s.to_str()).unwrap_or("lrs_data.s3a").to_string();
-        (self.default_store.clone(), default_name)
+        Ok((self.default_store.clone(), default_name))
     }
 }
+
 
 fn main() {
     let mut config = ServerConfig::default();
@@ -290,9 +367,20 @@ fn main() {
                     i += 1;
                 }
             }
+            "--data-dir" => {
+                if i + 1 < args.len() {
+                    config.data_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
             "-a" | "--archive" => {
                 if i + 1 < args.len() {
-                    config.archive_path = PathBuf::from(&args[i + 1]);
+                    let val = &args[i + 1];
+                    if !is_valid_archive_name(val) {
+                        eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$ with no '/', '\\', '..', or absolute path.", val);
+                        std::process::exit(1);
+                    }
+                    config.archive_path = PathBuf::from(val);
                     i += 1;
                 }
             }
@@ -319,7 +407,15 @@ fn main() {
                     let path = PathBuf::from(&args[i + 1]);
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         if let Ok(creds) = serde_json::from_str::<Vec<AuthCredential>>(&content) {
-                            config.credentials.extend(creds);
+                            for cred in creds {
+                                if let Some(ref a) = cred.archive {
+                                    if !is_valid_archive_name(a) {
+                                        eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
+                                        std::process::exit(1);
+                                    }
+                                }
+                                config.credentials.push(cred);
+                            }
                         } else {
                             for line in content.lines() {
                                 let line = line.trim();
@@ -332,7 +428,12 @@ fn main() {
                                         vec!["all".to_string()]
                                     };
                                     let archive = if parts.len() >= 4 && !parts[3].trim().is_empty() {
-                                        Some(parts[3].trim().to_string())
+                                        let a = parts[3].trim().to_string();
+                                        if !is_valid_archive_name(&a) {
+                                            eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
+                                            std::process::exit(1);
+                                        }
+                                        Some(a)
                                     } else {
                                         None
                                     };
@@ -371,7 +472,12 @@ fn main() {
                             vec!["all".to_string()]
                         };
                         let archive = if parts.len() >= 4 && !parts[3].trim().is_empty() {
-                            Some(parts[3].trim().to_string())
+                            let a = parts[3].trim().to_string();
+                            if !is_valid_archive_name(&a) {
+                                eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
+                                std::process::exit(1);
+                            }
+                            Some(a)
                         } else {
                             None
                         };
@@ -434,12 +540,23 @@ fn main() {
         }
     }
 
+    // Ensure data directory exists and canonicalize it
+    std::fs::create_dir_all(&config.data_dir).expect("Failed to create data directory");
+    config.data_dir = std::fs::canonicalize(&config.data_dir).expect("Failed to canonicalize data directory");
+
+    let archive_name = config.archive_path.file_name().and_then(|s| s.to_str()).unwrap_or("lrs_data.s3a").to_string();
+    if !is_valid_archive_name(&archive_name) {
+        eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", archive_name);
+        std::process::exit(1);
+    }
+    config.archive_path = config.data_dir.join(&archive_name);
+
     // Default audit archive path if not explicitly configured
-    if config.audit_archive_path == PathBuf::from("lrs_data.audit.s3a") && config.archive_path != PathBuf::from("lrs_data.s3a") {
-        let mut p = config.archive_path.clone();
-        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("lrs");
-        p.set_file_name(format!("{}.audit.s3a", stem));
-        config.audit_archive_path = p;
+    if config.audit_archive_path == PathBuf::from("lrs_data.audit.s3a") {
+        let stem = archive_name.strip_suffix(".s3a").unwrap_or(&archive_name);
+        config.audit_archive_path = config.data_dir.join(format!("{}.audit.s3a", stem));
+    } else if config.audit_archive_path.is_relative() {
+        config.audit_archive_path = config.data_dir.join(&config.audit_archive_path);
     }
 
     // Auth fails closed: server refuses to start without credentials unless --insecure-dev is passed
@@ -475,8 +592,19 @@ fn main() {
     let agent_registry = s3a_pack_scholar::records::seed_default_agents();
 
     let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-    let default_key = config.archive_path.file_name().and_then(|s| s.to_str()).unwrap_or("lrs_data.s3a").to_string();
-    stores.write().unwrap().insert(default_key, store.clone());
+    stores.write().unwrap().insert(archive_name.clone(), store.clone());
+
+    // Pre-create and cache all archives named in credentials at startup (Requirement 4)
+    for cred in &config.credentials {
+        if let Some(ref arch) = cred.archive {
+            let arch_path = config.data_dir.join(arch);
+            let cred_store = LrsStore::open_or_create(&arch_path).expect("Failed to open credential archive");
+            if config.enable_scholar {
+                let _ = cred_store.writer().enable_addon(s3a_core::ADDON_EDU);
+            }
+            stores.write().unwrap().insert(arch.clone(), cred_store);
+        }
+    }
 
     let state = Arc::new(AppState {
         default_store: store.clone(),
@@ -486,6 +614,7 @@ fn main() {
         config,
         agent_registry,
     });
+
 
     if state.config.enable_daily_anchoring {
         let store_clone = state.default_store.clone();
@@ -766,10 +895,15 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Resolve Active Store and Archive (Multi-Archive Support)
-    // -------------------------------------------------------------------------
-    let (active_store, active_archive) = state.resolve_store_and_archive(matched_cred, &query_params, &headers_map);
+    let (active_store, active_archive) = match state.resolve_store_and_archive(matched_cred, &query_params, &headers_map) {
+        Ok(res) => res,
+        Err(err_msg) => {
+            let resp = make_error_response(403, &format!("Forbidden: {}", err_msg));
+            log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 403);
+            let _ = req.respond(resp);
+            return;
+        }
+    };
 
     // -------------------------------------------------------------------------
     // X-Experience-API-Version Header Validation (xAPI 1.0.3 §4.1.1)
@@ -2185,7 +2319,7 @@ fn make_response_empty(status_code: u16) -> Response<Cursor<Vec<u8>>> {
 }
 
 fn make_error_response(status_code: u16, msg: &str) -> Response<Cursor<Vec<u8>>> {
-    let err_body = format!("{{\"error\":\"{}\"}}", msg);
+    let err_body = serde_json::json!({ "error": msg }).to_string();
     Response::new(
         StatusCode(status_code),
         vec![
@@ -2316,18 +2450,28 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let default_path = temp_dir.join("test_routing_default.s3a");
         let audit_path = temp_dir.join("test_routing_audit.s3a");
+        let scholar_path = temp_dir.join("scholar.s3a");
+        let usage_path = temp_dir.join("usage.s3a");
 
         let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let scholar_store = LrsStore::open_or_create(&scholar_path).unwrap();
+        let usage_store = LrsStore::open_or_create(&usage_path).unwrap();
         let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
         stores.write().unwrap().insert("test_routing_default.s3a".to_string(), default_store.clone());
+        stores.write().unwrap().insert("scholar.s3a".to_string(), scholar_store.clone());
+        stores.write().unwrap().insert("usage.s3a".to_string(), usage_store.clone());
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
 
         let state = Arc::new(AppState {
             default_store: default_store.clone(),
             store: default_store,
             stores,
             audit_writer,
-            config: ServerConfig::default(),
+            config,
             agent_registry: Vec::new(),
         });
 
@@ -2335,15 +2479,17 @@ mod tests {
         let empty_headers = HashMap::new();
 
         // 1. Researcher credential resolves to scholar.s3a
-        let (_res_store, res_archive) = state.resolve_store_and_archive(Some(&researcher), &empty_params, &empty_headers);
+        let (_res_store, res_archive) = state.resolve_store_and_archive(Some(&researcher), &empty_params, &empty_headers).unwrap();
         assert_eq!(res_archive, "scholar.s3a");
 
         // 2. Explorer credential resolves to usage.s3a
-        let (_exp_store, exp_archive) = state.resolve_store_and_archive(Some(&explorer), &empty_params, &empty_headers);
+        let (_exp_store, exp_archive) = state.resolve_store_and_archive(Some(&explorer), &empty_params, &empty_headers).unwrap();
         assert_eq!(exp_archive, "usage.s3a");
 
         let _ = std::fs::remove_file(&default_path);
         let _ = std::fs::remove_file(&audit_path);
+        let _ = std::fs::remove_file(&scholar_path);
+        let _ = std::fs::remove_file(&usage_path);
     }
 
     #[test]
@@ -2650,4 +2796,431 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_is_valid_archive_name_rules() {
+        assert!(is_valid_archive_name("scholar.s3a"));
+        assert!(is_valid_archive_name("usage.s3a"));
+        assert!(is_valid_archive_name("lrs_data.s3a"));
+        assert!(is_valid_archive_name("my-archive_01.s3a"));
+        assert!(is_valid_archive_name("test.archive-v2.s3a"));
+
+        // Must reject directory traversal
+        assert!(!is_valid_archive_name("../../etc/x.s3a"));
+        assert!(!is_valid_archive_name("../x.s3a"));
+        assert!(!is_valid_archive_name("foo..bar.s3a"));
+        assert!(!is_valid_archive_name("..s3a"));
+
+        // Must reject slashes and backslashes
+        assert!(!is_valid_archive_name("/etc/x.s3a"));
+        assert!(!is_valid_archive_name("\\etc\\x.s3a"));
+        assert!(!is_valid_archive_name("sub/x.s3a"));
+        assert!(!is_valid_archive_name("sub\\x.s3a"));
+
+        // Must reject absolute paths
+        assert!(!is_valid_archive_name("C:\\temp\\x.s3a"));
+        assert!(!is_valid_archive_name("C:/temp/x.s3a"));
+        assert!(!is_valid_archive_name("/x.s3a"));
+
+        // Must reject non-bare or wrong extension
+        assert!(!is_valid_archive_name(".s3a"));
+        assert!(!is_valid_archive_name("x.s3a.bak"));
+        assert!(!is_valid_archive_name("x.txt"));
+        assert!(!is_valid_archive_name(""));
+        assert!(!is_valid_archive_name("foo bar.s3a"));
+    }
+
+    #[test]
+    fn test_explorer_with_override_param_still_writes_to_assigned_usage_archive() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_exp_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let default_path = temp_dir.join("lrs_data.s3a");
+        let audit_path = temp_dir.join("lrs_data.audit.s3a");
+        let usage_path = temp_dir.join("usage.s3a");
+        let scholar_path = temp_dir.join("scholar.s3a");
+
+        let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let usage_store = LrsStore::open_or_create(&usage_path).unwrap();
+        let scholar_store = LrsStore::open_or_create(&scholar_path).unwrap();
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
+
+        let explorer = AuthCredential {
+            user: "explorer".to_string(),
+            pass: "explorer123".to_string(),
+            scopes: vec!["statements/write".to_string()],
+            archive: Some("usage.s3a".to_string()),
+        };
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores.write().unwrap().insert("usage.s3a".to_string(), usage_store.clone());
+        stores.write().unwrap().insert("scholar.s3a".to_string(), scholar_store.clone());
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
+        config.audit_archive_path = audit_path.clone();
+        config.credentials.push(explorer.clone());
+
+        let state = Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store,
+            stores,
+            audit_writer,
+            config,
+            agent_registry: Vec::new(),
+        });
+
+        // 1. Direct resolution check: explorer with ?archive=scholar.s3a ignores override and resolves to usage.s3a
+        let mut params = HashMap::new();
+        params.insert("archive".to_string(), "scholar.s3a".to_string());
+        let headers = HashMap::new();
+
+        let (_resolved_store, resolved_name) = state.resolve_store_and_archive(Some(&explorer), &params, &headers).unwrap();
+        assert_eq!(resolved_name, "usage.s3a");
+
+        // 2. HTTP request test through server
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let stmt = serde_json::json!({
+            "actor": { "account": { "homePage": "https://ashecribb.dev/explorer", "name": "device-001" } },
+            "verb": { "id": s3a_pack_scholar::xapi::USAGE_VERB_SEARCHED },
+            "object": { "id": "https://example.com/paper/42" },
+            "context": {
+                "contextActivities": {
+                    "category": [{ "id": s3a_pack_scholar::xapi::SCHOLAR_EXPLORER_USAGE_PROFILE_IRI }]
+                }
+            }
+        });
+        let body = serde_json::to_vec(&stmt).unwrap();
+
+        let resp = ureq::post(&format!("{}/xapi/statements?archive=scholar.s3a", addr))
+            .set("Authorization", "Basic ZXhwbG9yZXI6ZXhwbG9yZXIxMjM=") // explorer:explorer123
+            .set("X-Experience-API-Version", "1.0.3")
+            .set("Content-Type", "application/json")
+            .send_bytes(&body)
+            .expect("Explorer write with ?archive=scholar.s3a must succeed");
+
+        assert_eq!(resp.status(), 200);
+
+        // Verify it wrote to usage.s3a
+        let usage_page = usage_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(usage_page.statements.len(), 1, "Statement must be written to usage.s3a");
+
+        // Verify scholar.s3a remains untouched
+        let scholar_page = scholar_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(scholar_page.statements.len(), 0, "scholar.s3a must NOT have any statements written");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_archive_override_path_traversal_rejected_with_403() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_trav_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let default_path = temp_dir.join("lrs_data.s3a");
+        let audit_path = temp_dir.join("lrs_data.audit.s3a");
+
+        let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
+        config.audit_archive_path = audit_path.clone();
+        config.insecure_dev = true;
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+
+        let state = Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store,
+            stores,
+            audit_writer: audit_writer.clone(),
+            config,
+            agent_registry: Vec::new(),
+        });
+
+        // 1. Direct resolve check
+        let mut params = HashMap::new();
+        params.insert("archive".to_string(), "../../etc/x.s3a".to_string());
+        let res = state.resolve_store_and_archive(None, &params, &HashMap::new());
+        assert!(res.is_err(), "?archive=../../etc/x.s3a must return Err");
+
+        // 2. HTTP request check
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let resp = ureq::get(&format!("{}/xapi/statements?archive=../../etc/x.s3a", addr))
+            .set("X-Experience-API-Version", "1.0.3")
+            .call();
+
+        match resp {
+            Err(ureq::Error::Status(403, r)) => {
+                let err_json: serde_json::Value = serde_json::from_reader(r.into_reader()).unwrap();
+                assert!(err_json["error"].as_str().unwrap().contains("Forbidden"));
+            }
+            other => panic!("Expected 403 Forbidden, got {:?}", other),
+        }
+
+        // Verify audit archive contains 403 entry
+        let audit_bytes = audit_writer.read_all_bytes().unwrap();
+        let audit_str = String::from_utf8_lossy(&audit_bytes);
+        assert!(audit_str.contains("\"status\":403") || audit_str.contains("\"status\": 403"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_archive_override_absolute_path_rejected_with_403() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_abs_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let default_path = temp_dir.join("lrs_data.s3a");
+        let audit_path = temp_dir.join("lrs_data.audit.s3a");
+
+        let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
+        config.audit_archive_path = audit_path.clone();
+        config.insecure_dev = true;
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+
+        let state = Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store,
+            stores,
+            audit_writer: audit_writer.clone(),
+            config,
+            agent_registry: Vec::new(),
+        });
+
+        // 1. Direct resolve check with absolute path
+        let mut params = HashMap::new();
+        params.insert("archive".to_string(), "/etc/x.s3a".to_string());
+        assert!(state.resolve_store_and_archive(None, &params, &HashMap::new()).is_err());
+
+        // 2. HTTP request check
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let resp = ureq::get(&format!("{}/xapi/statements?archive=/etc/x.s3a", addr))
+            .set("X-Experience-API-Version", "1.0.3")
+            .call();
+
+        match resp {
+            Err(ureq::Error::Status(403, _)) => {}
+            other => panic!("Expected 403 Forbidden for absolute path, got {:?}", other),
+        }
+
+        let audit_bytes = audit_writer.read_all_bytes().unwrap();
+        let audit_str = String::from_utf8_lossy(&audit_bytes);
+        assert!(audit_str.contains("\"status\":403") || audit_str.contains("\"status\": 403"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_unknown_archive_name_rejected_and_no_file_created() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_unknown_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let default_path = temp_dir.join("lrs_data.s3a");
+        let audit_path = temp_dir.join("lrs_data.audit.s3a");
+
+        let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
+
+        let admin = AuthCredential {
+            user: "admin".to_string(),
+            pass: "admin123".to_string(),
+            scopes: vec!["admin".to_string(), "all".to_string()],
+            archive: None,
+        };
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
+        config.audit_archive_path = audit_path.clone();
+        config.admin_api_override = true;
+        config.credentials.push(admin.clone());
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+
+        let state = Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store,
+            stores,
+            audit_writer: audit_writer.clone(),
+            config,
+            agent_registry: Vec::new(),
+        });
+
+        let nonexistent_target = temp_dir.join("unknown_random_archive.s3a");
+        assert!(!nonexistent_target.exists(), "Target file must not exist before test");
+
+        // 1. Direct resolve check
+        let mut params = HashMap::new();
+        params.insert("archive".to_string(), "unknown_random_archive.s3a".to_string());
+        let res = state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new());
+        assert!(res.is_err(), "Unknown archive name must be rejected with Err");
+        assert!(!nonexistent_target.exists(), "No file must be created by resolve_store_and_archive");
+
+        // 2. HTTP request check
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let resp = ureq::get(&format!("{}/xapi/statements?archive=unknown_random_archive.s3a", addr))
+            .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=") // admin:admin123
+            .set("X-Experience-API-Version", "1.0.3")
+            .call();
+
+        match resp {
+            Err(ureq::Error::Status(403, _)) => {}
+            other => panic!("Expected 403 Forbidden for unknown archive, got {:?}", other),
+        }
+
+        // Verify that no file was created!
+        assert!(!nonexistent_target.exists(), "Unknown archive file must NOT be created on disk");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_admin_with_override_flag_picks_existing_allowed_archive() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_admin_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let default_path = temp_dir.join("lrs_data.s3a");
+        let audit_path = temp_dir.join("lrs_data.audit.s3a");
+        let allowed_path = temp_dir.join("custom_allowed.s3a");
+
+        let default_store = LrsStore::open_or_create(&default_path).unwrap();
+        let allowed_store = LrsStore::open_or_create(&allowed_path).unwrap();
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
+
+        let admin = AuthCredential {
+            user: "admin".to_string(),
+            pass: "admin123".to_string(),
+            scopes: vec!["admin".to_string(), "all".to_string()],
+            archive: None,
+        };
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = default_path.clone();
+        config.audit_archive_path = audit_path.clone();
+        config.admin_api_override = true;
+        config.credentials.push(admin.clone());
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores.write().unwrap().insert("custom_allowed.s3a".to_string(), allowed_store.clone());
+
+        let state = Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store.clone(),
+            stores,
+            audit_writer,
+            config,
+            agent_registry: Vec::new(),
+        });
+
+        // 1. With admin_api_override = true, admin successfully picks custom_allowed.s3a
+        let mut params = HashMap::new();
+        params.insert("archive".to_string(), "custom_allowed.s3a".to_string());
+        let (_store_res, name_res) = state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new()).unwrap();
+        assert_eq!(name_res, "custom_allowed.s3a");
+
+        // HTTP POST through server writing to custom_allowed.s3a
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let stmt = serde_json::json!({
+            "actor": { "mbox": "mailto:admin@example.com" },
+            "verb": { "id": "http://adlnet.gov/expapi/verbs/experienced" },
+            "object": { "id": "http://example.com/item/admin-01" }
+        });
+        let body = serde_json::to_vec(&stmt).unwrap();
+
+        let resp = ureq::post(&format!("{}/xapi/statements?archive=custom_allowed.s3a", addr))
+            .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=")
+            .set("X-Experience-API-Version", "1.0.3")
+            .set("Content-Type", "application/json")
+            .send_bytes(&body)
+            .expect("Admin write to custom_allowed.s3a must succeed");
+
+        assert_eq!(resp.status(), 200);
+        let custom_page = allowed_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(custom_page.statements.len(), 1, "custom_allowed.s3a must contain the written statement");
+        let default_page = default_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(default_page.statements.len(), 0, "default store must NOT contain the statement");
+
+        // 2. If admin_api_override is false, override is NOT honored and admin uses default archive only
+        let mut disabled_config = state.config.clone();
+        disabled_config.admin_api_override = false;
+        let mut disabled_state = (*state).clone();
+        disabled_state.config = disabled_config;
+
+        let (_d_store, d_name) = disabled_state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new()).unwrap();
+        assert_eq!(d_name, "lrs_data.s3a", "Override must be ignored when --admin-api-override is not set");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+

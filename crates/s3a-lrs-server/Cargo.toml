@@ -22,3 +22,6 @@ humantime = { workspace = true }
 crc32c = { workspace = true }
 tiny_http = "0.12"
 urlencoding = "2.1"
+
+[dev-dependencies]
+ureq = { workspace = true }

@@ -97,19 +97,23 @@ fn test_e2e_harness_lrs_store_statements_and_timeline() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let archive_path = std::env::temp_dir().join(format!(
+    let temp_dir = std::env::temp_dir();
+    let archive_name = format!(
         "s3a_e2e_lrs_{}_{}.s3a",
         std::process::id(),
         temp_ts
-    ));
+    );
+    let archive_path = temp_dir.join(&archive_name);
 
     let child = Command::new(&server_exe)
         .arg("--port")
         .arg(port.to_string())
         .arg("--host")
         .arg("127.0.0.1")
+        .arg("--data-dir")
+        .arg(temp_dir.to_str().unwrap())
         .arg("--archive")
-        .arg(archive_path.to_str().unwrap())
+        .arg(&archive_name)
         .arg("--insecure-dev")
         .arg("--admin-api-override")
         .spawn()

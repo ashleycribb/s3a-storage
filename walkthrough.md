@@ -850,9 +850,9 @@ This fix round completed the production verification pipeline for RFC 3161 CMS t
 
 ---
 
-### 15.6 Final Workspace Test Verification
+### 15.6 Workspace Test Verification (Phase A)
 
-`	ext
+```text
 Workspace Test Summary:
 - s3a-cabi:             3 passed
 - s3a-cli:              5 passed
@@ -872,4 +872,72 @@ Workspace Test Summary:
 - Doc-tests:           11 passed (0 tests across all crates)
 ----------------------------------------------------------------------------------------------------
 Total Passed:         248 passed; 0 failed; 2 ignored; finished in 18.2s
-`
+```
+
+---
+
+## 16. S3A LRS Server Archive-Selection Hole Closure & Path Confinement
+
+### 16.1 Threat Model & Security Hole Closure
+
+Prior to this hardening, `s3a-lrs-server` dynamically resolved destination archives from request query parameters (`?archive=`) and headers (`X-S3A-Archive`, `X-Archive`) through `get_or_open_store`, which called `LrsStore::open_or_create(&PathBuf::from(archive_str))`. This introduced critical vulnerabilities:
+1. **Unassigned Archive Injection**: Clients assigned to dedicated archives (such as `explorer` assigned to `usage.s3a`) could divert writes to other archives (such as `scholar.s3a`).
+2. **Arbitrary File Creation**: Request overrides could create arbitrary `.s3a` files on the host filesystem at runtime.
+3. **Directory Traversal & Absolute Path Escape**: Lack of filename validation permitted path traversal sequences (e.g. `../../etc/x.s3a`) or absolute paths (e.g. `/etc/x.s3a`), potentially writing outside the storage root.
+
+### 16.2 Security Policies Implemented
+
+1. **Strict Credential Archive Mapping**:
+   - A credential with an assigned archive (e.g. `explorer` mapped to `usage.s3a`) **always** uses its assigned archive.
+   - All `?archive=` query parameters, `X-S3A-Archive`, and `X-Archive` headers are ignored for that credential.
+2. **Restricted Admin Override Mode**:
+   - A credential without an assigned archive defaults to the server's primary archive (`config.archive_path`).
+   - Query parameter and header overrides are honored **only if** the credential has scope `"admin"` (or `"all"`) **AND** the server was started with `--admin-api-override`.
+3. **Bare Filename Validation & Directory Confinement (`--data-dir`)**:
+   - Every archive name (from credentials, CLI flags, or request overrides) must be a bare filename matching `^[A-Za-z0-9_.-]+\.s3a$`.
+   - The archive name must not contain `/`, `\`, `..`, or represent an absolute path (`is_valid_archive_name`).
+   - Archive names resolve strictly inside `--data-dir` (default: current working directory).
+   - Paths are canonicalized via `std::fs::canonicalize` and verified to reside inside the canonical data directory (`canonical_target.starts_with(&canonical_data_dir)` and `canonical_target.parent() == Some(&canonical_data_dir)`).
+   - Violations are rejected immediately with **HTTP 403 Forbidden** and an immutable audit event is written to `.audit.s3a`.
+4. **No Dynamic Archive Creation at Request Time**:
+   - Requests cannot create new archive files.
+   - Only archives explicitly named in credentials or via `--archive` at startup are created.
+   - Any request targeting an unknown or non-existent archive file is rejected with **HTTP 403 Forbidden** and logged to the audit store.
+
+### 16.3 Security Test Suite (`s3a-lrs-server`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_is_valid_archive_name_rules` | Rejects `..`, `/`, `\`, absolute paths (`/x.s3a`, `C:\x.s3a`), non-`.s3a` extensions, empty stems | **PASS** |
+| `test_explorer_with_override_param_still_writes_to_assigned_usage_archive` | Explorer with `?archive=scholar.s3a` ignores override; writes statement to `usage.s3a` while `scholar.s3a` remains untouched (0 statements) | **PASS** |
+| `test_archive_override_path_traversal_rejected_with_403` | Traversal `?archive=../../etc/x.s3a` returns HTTP 403 Forbidden; logs 403 audit entry to audit archive | **PASS** |
+| `test_archive_override_absolute_path_rejected_with_403` | Absolute path `?archive=/etc/x.s3a` returns HTTP 403 Forbidden; logs 403 audit entry | **PASS** |
+| `test_unknown_archive_name_rejected_and_no_file_created` | Admin override requesting `unknown_random_archive.s3a` returns HTTP 403 Forbidden; asserts no file is created on disk | **PASS** |
+| `test_admin_with_override_flag_picks_existing_allowed_archive` | Admin with `--admin-api-override` successfully routes to existing `custom_allowed.s3a`; without flag falls back to default archive | **PASS** |
+
+---
+
+### 16.4 Final Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Summary:
+- s3a-cabi:             3 passed
+- s3a-cli:              5 passed (cli_ops: 5)
+- s3a-core:            18 passed
+- s3a-engine:         101 passed (lib: 83, checkpoint_gates: 7, crash_harness: 7, ql_v1: 4; 2 ignored interop)
+- s3a-harness:         21 passed (lib: 9, protocol_and_sandbox: 11, e2e_lrs: 1)
+- s3a-lrs-server:      14 passed (lib + security tests: 14)
+- s3a-pack-da:          3 passed
+- s3a-pack-gis:         4 passed
+- s3a-pack-ontology:    4 passed
+- s3a-pack-robotics:    4 passed
+- s3a-pack-scholar:    36 passed (lib: 35, session_join_compaction: 1)
+- s3a-pack-wearable:    3 passed
+- s3a-simd:            13 passed
+- s3a-spec-vectors:    25 passed
+- s3a-wasm-snapshot:    5 passed
+- Doc-tests:           11 passed (0 tests across all crates)
+----------------------------------------------------------------------------------------------------
+Total Passed:         256 passed; 0 failed; 2 ignored; finished in 18.5s
+```
+
