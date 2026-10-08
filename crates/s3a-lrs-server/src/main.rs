@@ -237,6 +237,129 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Initializes application state at startup:
+    /// 1. Ensures data directory exists and is canonicalized.
+    /// 2. Validates default archive filename and resolves inside data directory.
+    /// 3. Opens/creates default store and caches it in `stores` under its canonical bare filename key.
+    /// 4. Iterates over credentials, pre-opening any assigned archives without opening any file twice,
+    ///    logging and returning an error instead of panicking on failure.
+    pub fn init_with_audit(
+        mut config: ServerConfig,
+        audit_writer: Arc<ConcurrentTileWriter>,
+    ) -> Result<Arc<AppState>, String> {
+        // Ensure data directory exists and canonicalize it
+        std::fs::create_dir_all(&config.data_dir)
+            .map_err(|e| format!("Failed to create data directory {:?}: {}", config.data_dir, e))?;
+        config.data_dir = std::fs::canonicalize(&config.data_dir)
+            .map_err(|e| format!("Failed to canonicalize data directory {:?}: {}", config.data_dir, e))?;
+
+        let archive_name = config
+            .archive_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("lrs_data.s3a")
+            .to_string();
+
+        if !is_valid_archive_name(&archive_name) {
+            return Err(format!(
+                "Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$",
+                archive_name
+            ));
+        }
+        config.archive_path = config.data_dir.join(&archive_name);
+
+        println!("[s3a-lrs-server] Opening S3A archive: {:?}", config.archive_path);
+        let default_store = LrsStore::open_or_create(&config.archive_path)
+            .map_err(|e| format!("Failed to open default S3A archive {:?}: {}", config.archive_path, e))?;
+
+        if config.enable_scholar {
+            let _ = default_store.writer().enable_addon(s3a_core::ADDON_EDU);
+        }
+
+        // Canonical bare filename key inside data_dir
+        let canonical_default_path = std::fs::canonicalize(&config.archive_path)
+            .unwrap_or_else(|_| config.archive_path.clone());
+        let canonical_default_key = canonical_default_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&archive_name)
+            .to_string();
+
+        let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        {
+            let mut map = stores.write().unwrap();
+            map.insert(canonical_default_key.clone(), default_store.clone());
+            if archive_name != canonical_default_key {
+                map.insert(archive_name.clone(), default_store.clone());
+            }
+        }
+
+        // Pre-create and cache all archives named in credentials at startup
+        for cred in &config.credentials {
+            if let Some(ref arch) = cred.archive {
+                if !is_valid_archive_name(arch) {
+                    return Err(format!(
+                        "Invalid archive name '{}' in credentials for user '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$",
+                        arch, cred.user
+                    ));
+                }
+                let arch_path = config.data_dir.join(arch);
+
+                let canonical_arch_key = if arch_path.is_file() {
+                    std::fs::canonicalize(&arch_path)
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .unwrap_or_else(|| arch.clone())
+                } else {
+                    arch.clone()
+                };
+
+                // Never open one file twice: check if already in stores cache!
+                let already_open = {
+                    let map = stores.read().unwrap();
+                    map.get(&canonical_arch_key)
+                        .cloned()
+                        .or_else(|| map.get(arch).cloned())
+                };
+
+                if let Some(existing_store) = already_open {
+                    let mut map = stores.write().unwrap();
+                    map.insert(canonical_arch_key, existing_store.clone());
+                    map.insert(arch.clone(), existing_store);
+                    continue;
+                }
+
+                // Open or create the credential archive; never panic on failure!
+                let cred_store = LrsStore::open_or_create(&arch_path)
+                    .map_err(|e| format!("Failed to open credential archive '{}' at {:?}: {}", arch, arch_path, e))?;
+
+                if config.enable_scholar {
+                    let _ = cred_store.writer().enable_addon(s3a_core::ADDON_EDU);
+                }
+
+                let final_canonical_key = std::fs::canonicalize(&arch_path)
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| arch.clone());
+
+                let mut map = stores.write().unwrap();
+                map.insert(final_canonical_key, cred_store.clone());
+                map.insert(arch.clone(), cred_store);
+            }
+        }
+
+        let agent_registry = s3a_pack_scholar::records::seed_default_agents();
+
+        Ok(Arc::new(AppState {
+            default_store: default_store.clone(),
+            store: default_store,
+            stores,
+            audit_writer,
+            config,
+            agent_registry,
+        }))
+    }
+
     /// Opens or returns a cached LrsStore for a specified archive file or name.
     ///
     /// Any archive name must be a bare filename matching ^[A-Za-z0-9_.-]+\.s3a$,
@@ -280,7 +403,24 @@ impl AppState {
             )));
         }
 
+        let canonical_name = canonical_target
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(archive_str)
+            .to_string();
+
+        // Fast path 2: cached under canonical bare filename key
+        {
+            let map = self.stores.read().unwrap();
+            if let Some(s) = map.get(&canonical_name) {
+                return Ok(s.clone());
+            }
+        }
+
         let mut map = self.stores.write().unwrap();
+        if let Some(s) = map.get(&canonical_name) {
+            return Ok(s.clone());
+        }
         if let Some(s) = map.get(archive_str) {
             return Ok(s.clone());
         }
@@ -289,7 +429,10 @@ impl AppState {
         if self.config.enable_scholar {
             let _ = store.writer().enable_addon(s3a_core::ADDON_EDU);
         }
-        map.insert(archive_str.to_string(), store.clone());
+        map.insert(canonical_name.clone(), store.clone());
+        if archive_str != canonical_name {
+            map.insert(archive_str.to_string(), store.clone());
+        }
         Ok(store)
     }
 
@@ -565,55 +708,46 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("[s3a-lrs-server] Opening S3A archive: {:?}", config.archive_path);
-    let store = LrsStore::open_or_create(&config.archive_path).expect("Failed to open S3A LRS archive");
-
     println!("[s3a-lrs-server] Opening audit archive: {:?}", config.audit_archive_path);
     let audit_writer = if config.audit_archive_path.exists()
         && std::fs::metadata(&config.audit_archive_path).map(|m| m.len()).unwrap_or(0) >= FILE_HEADER_SIZE as u64
     {
-        ConcurrentTileWriter::open_append(&config.audit_archive_path)
-            .expect("Failed to open audit archive")
+        match ConcurrentTileWriter::open_append(&config.audit_archive_path) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[s3a-lrs-server] ERROR: Failed to open audit archive {:?}: {}", config.audit_archive_path, e);
+                std::process::exit(1);
+            }
+        }
     } else {
-        ConcurrentTileWriter::create(&config.audit_archive_path)
-            .expect("Failed to create audit archive")
+        match ConcurrentTileWriter::create(&config.audit_archive_path) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[s3a-lrs-server] ERROR: Failed to create audit archive {:?}: {}", config.audit_archive_path, e);
+                std::process::exit(1);
+            }
+        }
     };
 
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port)
+    let state = match AppState::init_with_audit(config, Arc::new(audit_writer)) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[s3a-lrs-server] ERROR: {}", err);
+            std::process::exit(1);
+        }
+    };
+
+    let addr: SocketAddr = format!("{}:{}", state.config.host, state.config.port)
         .parse()
         .expect("Invalid host/port configuration");
-    let server = Server::http(addr).expect("Failed to bind HTTP server");
-    println!("[s3a-lrs-server] Listening on http://{}", addr);
-
-    if config.enable_scholar {
-        let _ = store.writer().enable_addon(s3a_core::ADDON_EDU);
-    }
-
-    let agent_registry = s3a_pack_scholar::records::seed_default_agents();
-
-    let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-    stores.write().unwrap().insert(archive_name.clone(), store.clone());
-
-    // Pre-create and cache all archives named in credentials at startup (Requirement 4)
-    for cred in &config.credentials {
-        if let Some(ref arch) = cred.archive {
-            let arch_path = config.data_dir.join(arch);
-            let cred_store = LrsStore::open_or_create(&arch_path).expect("Failed to open credential archive");
-            if config.enable_scholar {
-                let _ = cred_store.writer().enable_addon(s3a_core::ADDON_EDU);
-            }
-            stores.write().unwrap().insert(arch.clone(), cred_store);
+    let server = match Server::http(addr) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-lrs-server] ERROR: Failed to bind HTTP server on {}: {}", addr, e);
+            std::process::exit(1);
         }
-    }
-
-    let state = Arc::new(AppState {
-        default_store: store.clone(),
-        store,
-        stores,
-        audit_writer: Arc::new(audit_writer),
-        config,
-        agent_registry,
-    });
+    };
+    println!("[s3a-lrs-server] Listening on http://{}", addr);
 
 
     if state.config.enable_daily_anchoring {
@@ -3219,6 +3353,118 @@ mod tests {
 
         let (_d_store, d_name) = disabled_state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new()).unwrap();
         assert_eq!(d_name, "lrs_data.s3a", "Override must be ignored when --admin-api-override is not set");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_startup_with_archive_matching_credential_shares_store_instance() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_pinned_matching_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = PathBuf::from("scholar.s3a");
+        config.audit_archive_path = PathBuf::from("scholar.audit.s3a");
+
+        let pinned_cred = AuthCredential {
+            user: "researcher".to_string(),
+            pass: "researcher123".to_string(),
+            scopes: vec!["all".to_string()],
+            archive: Some("scholar.s3a".to_string()),
+        };
+        config.credentials.push(pinned_cred.clone());
+
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("scholar.audit.s3a")).unwrap());
+
+        // 1. Startup must NOT panic with "Archive file is already locked by another process"
+        let state = AppState::init_with_audit(config, audit_writer)
+            .expect("Server initialization must succeed without lock panic when credential archive matches --archive");
+
+        // 2. Both the default store and the pinned credential resolve to the exact same Arc<LrsStore>
+        let (default_store, default_name) = state.resolve_store_and_archive(None, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(default_name, "scholar.s3a");
+
+        let (cred_store, cred_name) = state.resolve_store_and_archive(Some(&pinned_cred), &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(cred_name, "scholar.s3a");
+
+        assert!(
+            Arc::ptr_eq(&default_store, &cred_store),
+            "Both default store and credential store must resolve to the exact same Arc<LrsStore> instance"
+        );
+        assert!(Arc::ptr_eq(&state.default_store, &cred_store));
+
+        // 3. HTTP server starts and operations on pinned credential write to the shared store
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let stmt = serde_json::json!({
+            "actor": { "mbox": "mailto:researcher@example.com" },
+            "verb": { "id": "http://adlnet.gov/expapi/verbs/experienced" },
+            "object": { "id": "https://example.com/items/shared-store-1" }
+        });
+        let body = serde_json::to_vec(&stmt).unwrap();
+
+        let resp = ureq::post(&format!("{}/xapi/statements", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("X-Experience-API-Version", "1.0.3")
+            .set("Content-Type", "application/json")
+            .send_bytes(&body)
+            .expect("Statement write with pinned credential must succeed");
+
+        assert_eq!(resp.status(), 200);
+
+        // Statement is visible from both references because they point to the exact same store
+        let page_default = default_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(page_default.statements.len(), 1);
+
+        let page_cred = cred_store.query_statements(StatementFilter::default()).unwrap();
+        assert_eq!(page_cred.statements.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_credential_archive_open_error_refuses_to_start_without_panic() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_open_fail_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = PathBuf::from("lrs_data.s3a");
+        config.audit_archive_path = PathBuf::from("lrs_data.audit.s3a");
+
+        // Create a directory where the archive file should be, causing open_or_create to fail
+        let conflict_dir = temp_dir.join("conflict.s3a");
+        std::fs::create_dir_all(&conflict_dir).unwrap();
+
+        let bad_cred = AuthCredential {
+            user: "bad".to_string(),
+            pass: "bad123".to_string(),
+            scopes: vec!["all".to_string()],
+            archive: Some("conflict.s3a".to_string()),
+        };
+        config.credentials.push(bad_cred);
+
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+
+        let res = AppState::init_with_audit(config, audit_writer);
+        assert!(res.is_err(), "Must refuse to start when a credential archive cannot be opened");
+        let err_msg = res.err().unwrap();
+        assert!(
+            err_msg.contains("Failed to open credential archive 'conflict.s3a'"),
+            "Error message must clearly identify the failed archive: {}", err_msg
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

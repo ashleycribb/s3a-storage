@@ -917,7 +917,28 @@ Prior to this hardening, `s3a-lrs-server` dynamically resolved destination archi
 
 ---
 
-### 16.4 Final Workspace Test Totals (`cargo test --workspace`)
+### 16.4 Startup Archive Deduplication & Panic Prevention
+
+When a credential's assigned archive matches the server's default archive (e.g. `--archive scholar.s3a` alongside a credential pinned to `scholar.s3a`), the server previously panicked during startup at `main.rs:601` with:
+```text
+Archive file is already locked by another process
+```
+because the default store was opened outside the `stores` cache, causing the credential pre-opening loop to open the same file a second time.
+
+**Resolution:**
+1. **Canonical Key Pre-population (`AppState::init_with_audit`)**: At startup, the default store is opened and inserted into `stores` under its canonical bare filename inside `data_dir` before evaluating credential archives.
+2. **Credential Archive Deduplication**: The credential loop checks whether `stores` already contains the archive under its canonical key or raw name. If present, it reuses the open `Arc<LrsStore>` instance and registers key aliases without reopening the file.
+3. **Canonical Bare Filename Cache Lookup in `get_or_open_store`**: `get_or_open_store` verifies and canonicalizes target paths and checks `stores` using the canonical bare filename key, ensuring requests and credentials pinned to the default archive resolve to the identical `Arc<LrsStore>` instance.
+4. **Graceful Startup Failure (Zero Panics)**: Replaced `.expect("Failed to open credential archive")` with logging and clean termination (`std::process::exit(1)`) returning clear error messages if an archive fails to open.
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_startup_with_archive_matching_credential_shares_store_instance` | Starts with `--archive scholar.s3a` and credential pinned to `scholar.s3a`; verifies server starts without lock panic; asserts `Arc::ptr_eq(&default_store, &cred_store)` is true; verifies live HTTP writes to pinned credential appear in default store | **PASS** |
+| `test_credential_archive_open_error_refuses_to_start_without_panic` | Asserts that when a credential archive cannot be opened (e.g. conflicting directory), server initialization returns `Err` with a clear diagnostic message instead of panicking | **PASS** |
+
+---
+
+### 16.5 Final Workspace Test Totals (`cargo test --workspace`)
 
 ```text
 Workspace Test Summary:
@@ -926,7 +947,7 @@ Workspace Test Summary:
 - s3a-core:            18 passed
 - s3a-engine:         101 passed (lib: 83, checkpoint_gates: 7, crash_harness: 7, ql_v1: 4; 2 ignored interop)
 - s3a-harness:         21 passed (lib: 9, protocol_and_sandbox: 11, e2e_lrs: 1)
-- s3a-lrs-server:      14 passed (lib + security tests: 14)
+- s3a-lrs-server:      16 passed (lib + security + deduplication tests: 16)
 - s3a-pack-da:          3 passed
 - s3a-pack-gis:         4 passed
 - s3a-pack-ontology:    4 passed
@@ -938,6 +959,6 @@ Workspace Test Summary:
 - s3a-wasm-snapshot:    5 passed
 - Doc-tests:           11 passed (0 tests across all crates)
 ----------------------------------------------------------------------------------------------------
-Total Passed:         256 passed; 0 failed; 2 ignored; finished in 18.5s
+Total Passed:         258 passed; 0 failed; 2 ignored; finished in 22.8s
 ```
 
