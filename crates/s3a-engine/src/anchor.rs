@@ -64,6 +64,33 @@ pub fn compute_sealed_bytes_fingerprint(file_bytes: &[u8]) -> Result<[u8; 32], S
     }
 
     let endcap_bytes = &file_bytes[file_len - SEALED_ENDCAP_SIZE..];
+
+    // Check v2 end cap
+    if endcap_bytes[0..8] == s3a_core::SEALED_ENDCAP_MAGIC_V2 {
+        let endcap: s3a_core::SealedEndCapV2 = bytemuck::pod_read_unaligned(endcap_bytes);
+        if endcap.endcap_crc32 != crate::sealed::compute_endcap_crc32_v2(&endcap) {
+            return Err(S3AError::SealedEndCapCorrupt);
+        }
+        let index_end = endcap.index_offset + endcap.index_len;
+        if index_end + (SEALED_ENDCAP_SIZE as u64) > file_len as u64 {
+            return Err(S3AError::SealedTruncated);
+        }
+        let index_slice = &file_bytes[endcap.index_offset as usize..index_end as usize];
+        let actual_hash: [u8; 32] = sha2::Sha256::digest(index_slice).into();
+        if actual_hash != endcap.index_hash {
+            return Err(S3AError::SealedIndexHashMismatch);
+        }
+        if index_slice.len() < s3a_core::SEALED_INDEX_HEADER_SIZE_V2 {
+            return Err(S3AError::CorruptedHeader);
+        }
+        let index_hdr: s3a_core::SealedIndexHeaderV2 =
+            bytemuck::pod_read_unaligned(&index_slice[..s3a_core::SEALED_INDEX_HEADER_SIZE_V2]);
+        if index_hdr.magic != s3a_core::SEALED_INDEX_MAGIC_V2 {
+            return Err(S3AError::CorruptedHeader);
+        }
+        return Ok(index_hdr.seal_hash);
+    }
+
     let endcap: SealedEndCap = bytemuck::pod_read_unaligned(endcap_bytes);
     if endcap.magic != SEALED_ENDCAP_MAGIC {
         return Err(S3AError::SealedEndCapCorrupt);
@@ -197,7 +224,72 @@ pub fn attach_anchor_to_sealed_bytes(
     }
 
     let endcap_offset = file_len - SEALED_ENDCAP_SIZE;
-    let mut endcap: SealedEndCap = bytemuck::pod_read_unaligned(&file_bytes[endcap_offset..]);
+    let endcap_bytes = &file_bytes[endcap_offset..];
+
+    if endcap_bytes[0..8] == s3a_core::SEALED_ENDCAP_MAGIC_V2 {
+        let mut endcap: s3a_core::SealedEndCapV2 = bytemuck::pod_read_unaligned(endcap_bytes);
+        if endcap.endcap_crc32 != crate::sealed::compute_endcap_crc32_v2(&endcap) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Corrupted v2 end cap CRC"));
+        }
+
+        let index_offset = endcap.index_offset as usize;
+        let index_len = endcap.index_len as usize;
+        if index_offset + index_len > endcap_offset {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Index truncated"));
+        }
+
+        let index_slice = &file_bytes[index_offset..index_offset + index_len];
+        if index_slice.len() < s3a_core::SEALED_INDEX_HEADER_SIZE_V2 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Index header too small"));
+        }
+        let index_hdr: s3a_core::SealedIndexHeaderV2 =
+            bytemuck::pod_read_unaligned(&index_slice[..s3a_core::SEALED_INDEX_HEADER_SIZE_V2]);
+
+        let data_end = FILE_HEADER_SIZE + (index_hdr.tile_count as usize * HYPER_TILE_SIZE);
+        let parity_len = if (endcap.flags & s3a_core::SEALED_FLAG_PARITY_ENABLED) != 0 && index_hdr.k > 0 {
+            let num_groups = (index_hdr.tile_count as usize + index_hdr.k as usize - 1) / (index_hdr.k as usize);
+            num_groups * (index_hdr.m as usize) * HYPER_TILE_SIZE
+        } else {
+            0
+        };
+
+        let anchors_start = data_end + parity_len;
+        let anchors_end = index_offset;
+
+        let mut existing_anchors = if anchors_end > anchors_start {
+            let anchors_slice = &file_bytes[anchors_start..anchors_end];
+            extract_anchors_from_footer(anchors_slice, 0, 0)
+        } else {
+            Vec::new()
+        };
+
+        if let Some(pos) = existing_anchors
+            .iter()
+            .position(|a| a.method == new_anchor.method && a.uri == new_anchor.uri)
+        {
+            existing_anchors[pos] = new_anchor;
+        } else {
+            existing_anchors.push(new_anchor);
+        }
+
+        let new_anchors_section = serialize_anchors_section(&existing_anchors)?;
+
+        // Index directory bytes remain unchanged!
+        let index_bytes = file_bytes[index_offset..index_offset + index_len].to_vec();
+
+        let new_index_offset = anchors_start + new_anchors_section.len();
+        endcap.index_offset = new_index_offset as u64;
+        endcap.endcap_crc32 = crate::sealed::compute_endcap_crc32_v2(&endcap);
+
+        file_bytes.truncate(anchors_start);
+        file_bytes.extend_from_slice(&new_anchors_section);
+        file_bytes.extend_from_slice(&index_bytes);
+        file_bytes.extend_from_slice(bytemuck::bytes_of(&endcap));
+
+        return Ok(());
+    }
+
+    let mut endcap: SealedEndCap = bytemuck::pod_read_unaligned(endcap_bytes);
     if endcap.magic != SEALED_ENDCAP_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

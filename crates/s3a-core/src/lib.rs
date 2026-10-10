@@ -17,6 +17,11 @@ pub mod hilbert;
 pub mod dop;
 pub mod registry;
 pub mod lrs;
+pub mod consent;
+pub mod schema;
+pub mod erasure;
+pub mod columnar;
+pub mod array;
 
 pub use hilbert::{point_to_hilbert_3d, hilbert_to_point_3d, compare_hilbert_vs_morton_locality, compare_hilbert_vs_morton_curve_continuity, morton_to_point_3d, s3a_morton_3d};
 pub use dop::{Dop14Hull, toroidal_distance_3d, toroidal_interval_contains};
@@ -26,6 +31,11 @@ pub use registry::{
     TilePayloadMigrator, migrate_tile_payload,
 };
 pub use lrs::*;
+pub use consent::*;
+pub use schema::*;
+pub use erasure::*;
+pub use columnar::*;
+pub use array::*;
 #[cfg(feature = "std")]
 pub use registry::{global_registry, with_global_registry_mut};
 
@@ -93,6 +103,9 @@ pub enum S3AError {
     SealedEndCapCorrupt,
     SealedTruncated,
     UnrepairableCorruption { group_idx: usize, corrupted_count: usize, max_repairable: usize },
+    SealedIndexHashMismatch,
+    SealedChainBreak,
+    SealedSwappedGeneration,
 }
 
 impl fmt::Display for S3AError {
@@ -123,6 +136,9 @@ impl fmt::Display for S3AError {
             S3AError::UnrepairableCorruption { group_idx, corrupted_count, max_repairable } => {
                 write!(f, "Group {} has {} corrupted tiles, exceeding max repairable {}", group_idx, corrupted_count, max_repairable)
             }
+            S3AError::SealedIndexHashMismatch => write!(f, "Sealed footer index hash mismatch"),
+            S3AError::SealedChainBreak => write!(f, "Sealed hash chain break detected"),
+            S3AError::SealedSwappedGeneration => write!(f, "Sealed generation reordering or swapped seal detected"),
         }
     }
 }
@@ -404,6 +420,16 @@ impl TileType {
     pub const DOCUMENT_STORE: u32 = 23;
     /// Core xAPI 1.0.3 Attachment Blob tile (Tile 24)
     pub const ATTACHMENT_BLOB: u32 = 24;
+    /// Core Columnar Partition Tile (Tile 65 / 0x0041)
+    pub const COLUMNAR: u32 = 65;
+    /// Core N-Dimensional Array Tile (Tile 66 / 0x0042)
+    pub const ARRAY: u32 = 66;
+    /// Core Participant Consent Tile (Tile 71 / 0x0047)
+    pub const CONSENT: u32 = 71;
+    /// Core Right-to-be-Forgotten Erasure Tile (Tile 73 / 0x0049)
+    pub const ERASURE: u32 = 73;
+    /// Core Embedded Schema Registry Tile (Tile 77 / 0x004D)
+    pub const SCHEMA: u32 = 77;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
     #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]
@@ -719,6 +745,12 @@ impl MicroTileHeader {
 }
 
 pub const SEALED_ENDCAP_MAGIC: [u8; 8] = *b"S3AEND\0\x01";
+pub const SEALED_ENDCAP_MAGIC_V1: [u8; 8] = *b"S3AEND\0\x01";
+pub const SEALED_ENDCAP_MAGIC_V2: [u8; 8] = *b"S3AEND\0\x02";
+pub const SEALED_INDEX_MAGIC_V2: [u8; 8] = *b"S3AIDX02";
+pub const SEALED_FLAG_PARITY_ENABLED: u16 = 1 << 0;
+pub const SEALED_INDEX_HEADER_SIZE_V2: usize = 128;
+pub const SEALED_INDEX_ENTRY_SIZE_V2: usize = 80;
 pub const SEALED_ENDCAP_SIZE: usize = 64;
 pub const SEALED_ANCHORS_MAGIC: [u8; 8] = *b"ANCHORS\0";
 
@@ -765,6 +797,86 @@ impl Default for SealedEndCap {
             _reserved: [0u8; 8],
         }
     }
+}
+
+/// Fixed 64-byte end cap at the tail of a v2 sealed S3A archive (8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct SealedEndCapV2 {
+    pub magic: [u8; 8],
+    pub index_offset: u64,
+    pub index_len: u64,
+    pub index_hash: [u8; 32],
+    pub footer_version: u16,
+    pub flags: u16,
+    pub endcap_crc32: u32,
+}
+
+impl Default for SealedEndCapV2 {
+    fn default() -> Self {
+        Self {
+            magic: SEALED_ENDCAP_MAGIC_V2,
+            index_offset: 0,
+            index_len: 0,
+            index_hash: [0u8; 32],
+            footer_version: 2,
+            flags: 0,
+            endcap_crc32: 0,
+        }
+    }
+}
+
+/// Header preceding the tile index entries in the v2 sealed footer directory (128 bytes, 8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct SealedIndexHeaderV2 {
+    pub magic: [u8; 8],
+    pub tile_count: u32,
+    pub flags: u16,
+    pub k: u16,
+    pub m: u16,
+    pub _padding: [u8; 6],
+    pub file_uuid: [u64; 2],
+    pub prev_seal_hash: [u8; 32],
+    pub seal_generation: u64,
+    pub sealed_timestamp: u64,
+    pub seal_hash: [u8; 32],
+    pub _reserved: [u8; 8],
+}
+
+impl Default for SealedIndexHeaderV2 {
+    fn default() -> Self {
+        Self {
+            magic: SEALED_INDEX_MAGIC_V2,
+            tile_count: 0,
+            flags: 0,
+            k: 16,
+            m: 2,
+            _padding: [0u8; 6],
+            file_uuid: [0, 0],
+            prev_seal_hash: [0u8; 32],
+            seal_generation: 1,
+            sealed_timestamp: 0,
+            seal_hash: [0u8; 32],
+            _reserved: [0u8; 8],
+        }
+    }
+}
+
+/// Individual tile entry in the v2 sealed footer directory (80 bytes, 8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct SealedTileIndexEntry {
+    pub offset: u64,
+    pub length: u64,
+    pub type_id: u32,
+    pub type_version: u16,
+    pub _pad: [u8; 2],
+    pub record_count: u32,
+    pub tile_index: u32,
+    pub min_key: u64,
+    pub max_key: u64,
+    pub payload_hash: [u8; 32],
 }
 
 /// Telemetry record layout (32 bytes).
@@ -1106,6 +1218,26 @@ mod tests {
         assert_eq!(size_of::<SealedDirectoryEntry>(), 40);
         assert_eq!(size_of::<SealedEndCap>(), SEALED_ENDCAP_SIZE);
         assert_eq!(core::mem::align_of::<SealedEndCap>(), 8);
+        assert_eq!(size_of::<ConsentRecord>(), 136);
+        assert_eq!(core::mem::align_of::<ConsentRecord>(), 8);
+        assert_eq!(size_of::<CompactSchemaHeader>(), 32);
+        assert_eq!(core::mem::align_of::<CompactSchemaHeader>(), 8);
+        assert_eq!(size_of::<CompactSchemaTypeRecord>(), 80);
+        assert_eq!(core::mem::align_of::<CompactSchemaTypeRecord>(), 8);
+        assert_eq!(size_of::<CompactSchemaFieldRecord>(), 48);
+        assert_eq!(core::mem::align_of::<CompactSchemaFieldRecord>(), 8);
+        assert_eq!(size_of::<ColumnarTileHeader>(), 32);
+        assert_eq!(core::mem::align_of::<ColumnarTileHeader>(), 8);
+        assert_eq!(size_of::<ColumnDescriptor>(), 104);
+        assert_eq!(core::mem::align_of::<ColumnDescriptor>(), 8);
+        assert_eq!(size_of::<ArrayTileHeader>(), 320);
+        assert_eq!(core::mem::align_of::<ArrayTileHeader>(), 8);
+        assert_eq!(size_of::<SealedEndCapV2>(), 64);
+        assert_eq!(core::mem::align_of::<SealedEndCapV2>(), 8);
+        assert_eq!(size_of::<SealedIndexHeaderV2>(), 128);
+        assert_eq!(core::mem::align_of::<SealedIndexHeaderV2>(), 8);
+        assert_eq!(size_of::<SealedTileIndexEntry>(), 80);
+        assert_eq!(core::mem::align_of::<SealedTileIndexEntry>(), 8);
     }
 
     #[test]

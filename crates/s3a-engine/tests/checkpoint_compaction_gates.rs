@@ -183,11 +183,11 @@ fn test_injected_record_drop_or_duplication_fails_during_gate_and_nothing_commit
     fault_injection::reset();
     clear_quarantine(in_path);
 
-    // 4. Verify clean compaction succeeds once fault injection is reset
+    // 4. Verify clean compaction succeeds once fault injection is reset (outputs telemetry + schema tile)
     let clean_res = Compactor::compact(&[in_path], out_path);
     assert!(clean_res.is_ok(), "Clean compaction must succeed without fault injection");
     let reader = MmapReader::open(out_path).unwrap();
-    assert_eq!(reader.tile_count(), 1);
+    assert_eq!(reader.tile_count(), 2);
     assert!(reader.verify_checksums().is_ok());
 }
 
@@ -363,7 +363,7 @@ fn test_quarantining_generation_n_does_not_block_generation_n_plus_1() {
     );
     assert!(out_path.exists());
     let reader = MmapReader::open(out_path).unwrap();
-    assert_eq!(reader.tile_count(), 1);
+    assert_eq!(reader.tile_count(), 2);
     assert!(reader.verify_checksums().is_ok());
 }
 

@@ -1,19 +1,19 @@
-//! Sealed file footer and Reed-Solomon parity repair for S3A archives (v1.1-draft)
-//!
-//! Sealed files (.snapshot.s3a, exports, cold archives) append a tamper-evident
-//! directory, Reed-Solomon $K+M$ erasure parity over Hyper-Tiles, and a fixed 64-byte
-//! end cap at the tail of the file.
-
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use bytemuck::{bytes_of, cast_slice, from_bytes};
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use sha2::{Digest, Sha256};
+
 use s3a_core::{
     FileHeader, HyperTileHeader, S3AError, SealedDirectoryEntry, SealedEndCap,
+    SealedEndCapV2, SealedIndexHeaderV2, SealedTileIndexEntry,
     FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET,
-    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, SEALED_ENDCAP_MAGIC,
-    SEALED_ENDCAP_SIZE,
+    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC_V1,
+    SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE, SEALED_FLAG_PARITY_ENABLED,
+    SEALED_INDEX_ENTRY_SIZE_V2, SEALED_INDEX_HEADER_SIZE_V2, SEALED_INDEX_MAGIC_V2,
 };
 
 use crate::erasure::{invert_matrix, ReedSolomonCodec, GF};
@@ -36,17 +36,193 @@ pub struct SealedVerifyReport {
     pub out_of_order_detected: bool,
     pub directory: Vec<SealedDirectoryEntry>,
     pub anchors: Vec<crate::anchor::AnchorProof>,
+    pub footer_version: u16,
+    pub seal_hash: [u8; 32],
+    pub prev_seal_hash: [u8; 32],
+    pub seal_generation: u64,
+    pub parity_enabled: bool,
+    pub v2_entries: Vec<SealedTileIndexEntry>,
 }
 
-/// Computes the CRC32C of the SealedEndCap excluding the endcap_crc32 field itself (first 52 bytes).
+/// Configuration options for sealing an archive in v2 format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealOptionsV2 {
+    pub enable_parity: bool,
+    pub k: u16,
+    pub m: u16,
+    pub prev_seal_hash: [u8; 32],
+    pub seal_generation: u64,
+}
+
+impl Default for SealOptionsV2 {
+    fn default() -> Self {
+        Self {
+            enable_parity: false,
+            k: DEFAULT_SEAL_K,
+            m: DEFAULT_SEAL_M,
+            prev_seal_hash: [0u8; 32],
+            seal_generation: 1,
+        }
+    }
+}
+
+/// Computes the CRC32C of the SealedEndCap (v1) excluding the endcap_crc32 field itself (first 52 bytes).
 pub fn compute_endcap_crc32(endcap: &SealedEndCap) -> u32 {
     let bytes = bytes_of(endcap);
     crc32c::crc32c(&bytes[0..52])
 }
 
-/// Seals an in-memory S3A archive byte buffer by stamping self-addressing fields, generating
-/// a directory, computing Reed-Solomon parity tiles over groups of K, and appending a 64-byte end cap.
-pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
+/// Computes the CRC32C of the SealedEndCapV2 excluding the endcap_crc32 field itself (first 60 bytes).
+pub fn compute_endcap_crc32_v2(endcap: &SealedEndCapV2) -> u32 {
+    let bytes = bytes_of(endcap);
+    crc32c::crc32c(&bytes[0..60])
+}
+
+/// Computes the authoritative 32-byte SHA-256 seal hash for a v2 sealed archive.
+///
+/// Commits to:
+/// - prev_seal_hash (32 bytes)
+/// - seal_generation (8 bytes, little-endian)
+/// - tile_count (4 bytes, little-endian)
+/// - file_uuid (16 bytes, little-endian)
+/// - The byte sequence of all `SealedTileIndexEntry` records in the directory
+pub fn compute_seal_hash_v2(
+    prev_seal_hash: &[u8; 32],
+    seal_generation: u64,
+    tile_count: u32,
+    file_uuid: [u64; 2],
+    entries: &[SealedTileIndexEntry],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"S3ASEAL2");
+    hasher.update(prev_seal_hash);
+    hasher.update(&seal_generation.to_le_bytes());
+    hasher.update(&tile_count.to_le_bytes());
+    hasher.update(&file_uuid[0].to_le_bytes());
+    hasher.update(&file_uuid[1].to_le_bytes());
+    let entries_bytes = cast_slice::<SealedTileIndexEntry, u8>(entries);
+    hasher.update(entries_bytes);
+    hasher.finalize().into()
+}
+
+/// Walks a sequence of v2 seal index headers and verifies the hash chain.
+///
+/// Fails if:
+/// - Generation numbers are not strictly increasing by 1 (`SealedSwappedGeneration`).
+/// - Any `prev_seal_hash` does not match the predecessor's `seal_hash` (`SealedChainBreak`).
+/// - The root seal (generation 1) has a non-zero `prev_seal_hash` (`SealedChainBreak`).
+pub fn verify_seal_chain(chain: &[SealedIndexHeaderV2]) -> Result<(), S3AError> {
+    if chain.is_empty() {
+        return Ok(());
+    }
+    if chain[0].seal_generation == 1 && chain[0].prev_seal_hash != [0u8; 32] {
+        return Err(S3AError::SealedChainBreak);
+    }
+    for i in 1..chain.len() {
+        if chain[i].seal_generation != chain[i - 1].seal_generation + 1 {
+            return Err(S3AError::SealedSwappedGeneration);
+        }
+        if chain[i].prev_seal_hash != chain[i - 1].seal_hash {
+            return Err(S3AError::SealedChainBreak);
+        }
+    }
+    Ok(())
+}
+
+/// Reads and verifies the tile directory of a v2 sealed S3A archive by reading ONLY the tail bytes.
+///
+/// This performs an index lookup without reading the file body, supporting efficient HTTP range reads.
+pub fn read_sealed_index_v2<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+) -> Result<(SealedEndCapV2, SealedIndexHeaderV2, Vec<SealedTileIndexEntry>), S3AError> {
+    if file_len < (FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE) as u64 {
+        return Err(S3AError::BufferTooSmall {
+            required: FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE,
+            provided: file_len as usize,
+        });
+    }
+
+    // 1. Read the 64-byte end cap at the tail of the file
+    reader
+        .seek(SeekFrom::Start(file_len - (SEALED_ENDCAP_SIZE as u64)))
+        .map_err(|_| S3AError::OutOfBounds)?;
+
+    let mut endcap_buf = [0u8; SEALED_ENDCAP_SIZE];
+    reader
+        .read_exact(&mut endcap_buf)
+        .map_err(|_| S3AError::SealedTruncated)?;
+
+    let endcap: SealedEndCapV2 = bytemuck::pod_read_unaligned(&endcap_buf);
+    if endcap.magic != SEALED_ENDCAP_MAGIC_V2 {
+        return Err(S3AError::SealedEndCapCorrupt);
+    }
+
+    let expected_crc = compute_endcap_crc32_v2(&endcap);
+    if endcap.endcap_crc32 != expected_crc {
+        return Err(S3AError::SealedEndCapCorrupt);
+    }
+
+    if endcap.index_offset + endcap.index_len + (SEALED_ENDCAP_SIZE as u64) > file_len {
+        return Err(S3AError::SealedTruncated);
+    }
+
+    if endcap.index_len < SEALED_INDEX_HEADER_SIZE_V2 as u64 {
+        return Err(S3AError::CorruptedHeader);
+    }
+
+    // 2. Read ONLY the index directory range
+    reader
+        .seek(SeekFrom::Start(endcap.index_offset))
+        .map_err(|_| S3AError::OutOfBounds)?;
+
+    let mut index_bytes = vec![0u8; endcap.index_len as usize];
+    reader
+        .read_exact(&mut index_bytes)
+        .map_err(|_| S3AError::SealedTruncated)?;
+
+    // 3. Verify index_hash
+    let actual_hash: [u8; 32] = Sha256::digest(&index_bytes).into();
+    if actual_hash != endcap.index_hash {
+        return Err(S3AError::SealedIndexHashMismatch);
+    }
+
+    // 4. Parse index header
+    let header: SealedIndexHeaderV2 =
+        bytemuck::pod_read_unaligned(&index_bytes[..SEALED_INDEX_HEADER_SIZE_V2]);
+    if header.magic != SEALED_INDEX_MAGIC_V2 {
+        return Err(S3AError::CorruptedHeader);
+    }
+
+    let expected_entries_len = (header.tile_count as usize) * SEALED_INDEX_ENTRY_SIZE_V2;
+    if index_bytes.len() != SEALED_INDEX_HEADER_SIZE_V2 + expected_entries_len {
+        return Err(S3AError::CorruptedHeader);
+    }
+
+    let entries_slice = &index_bytes[SEALED_INDEX_HEADER_SIZE_V2..];
+    let entries_vec: &[SealedTileIndexEntry] = cast_slice(entries_slice);
+    let entries = entries_vec.to_vec();
+
+    // 5. Verify seal hash internally
+    let expected_seal_hash = compute_seal_hash_v2(
+        &header.prev_seal_hash,
+        header.seal_generation,
+        header.tile_count,
+        header.file_uuid,
+        &entries,
+    );
+    if expected_seal_hash != header.seal_hash {
+        return Err(S3AError::ChecksumMismatch {
+            expected: crc32c::crc32c(&expected_seal_hash),
+            actual: crc32c::crc32c(&header.seal_hash),
+        });
+    }
+
+    Ok((endcap, header, entries))
+}
+
+/// Seals an in-memory S3A archive byte buffer according to v1 format.
+pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     if k == 0 || m == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -191,7 +367,7 @@ pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
 
     // 4. End cap
     let mut endcap = SealedEndCap {
-        magic: SEALED_ENDCAP_MAGIC,
+        magic: SEALED_ENDCAP_MAGIC_V1,
         footer_offset,
         footer_length,
         tile_count,
@@ -210,16 +386,15 @@ pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     Ok(out_data)
 }
 
-/// Seals an S3A archive file by stamping self-addressing fields, generating a directory,
-/// computing Reed-Solomon parity tiles over groups of K, and appending a 64-byte end cap.
-pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
+/// Seals an S3A archive file according to v1 format.
+pub fn seal_archive_v1<P: AsRef<Path>, Q: AsRef<Path>>(
     in_path: P,
     out_path: Q,
     k: u16,
     m: u16,
 ) -> io::Result<()> {
     let in_bytes = std::fs::read(in_path.as_ref())?;
-    let out_data = seal_buffer(&in_bytes, k, m)?;
+    let out_data = seal_buffer_v1(&in_bytes, k, m)?;
 
     let mut out_file = OpenOptions::new()
         .write(true)
@@ -233,14 +408,264 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
     Ok(())
 }
 
+/// Seals an in-memory S3A archive byte buffer according to v2 format.
+pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Vec<u8>> {
+    let k = options.k;
+    let m = options.m;
+    if options.enable_parity && (k == 0 || m == 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RS parameters k and m must be >= 1 when parity is enabled",
+        ));
+    }
+
+    if in_bytes.len() < FILE_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Buffer too small for S3A dual file header",
+        ));
+    }
+
+    let slot_a: &FileHeader = from_bytes(
+        &in_bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let slot_b: &FileHeader = from_bytes(
+        &in_bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+
+    let (active_header, _) = resolve_active_header(slot_a, slot_b)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
+
+    let tile_count = active_header.tile_count;
+    let expected_data_len = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
+    if in_bytes.len() < expected_data_len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Buffer truncated before all committed tiles are read",
+        ));
+    }
+
+    let file_uuid = if active_header.file_uuid != [0, 0] {
+        active_header.file_uuid
+    } else {
+        generate_file_uuid()
+    };
+
+    let mut out_data = in_bytes[..expected_data_len].to_vec();
+
+    // Ensure active slot in out_data has file_uuid stamped
+    let slot_a_mut: &mut FileHeader = bytemuck::from_bytes_mut(
+        &mut out_data[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    if slot_a_mut.file_uuid == [0, 0] {
+        slot_a_mut.file_uuid = file_uuid;
+        slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
+    }
+
+    // Stamp self-addressing metadata (file_uuid, tile_index, generation) into all tiles
+    for i in 0..tile_count as usize {
+        let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        let mut hdr: HyperTileHeader =
+            *from_bytes(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
+        let mut changed = false;
+
+        if hdr.file_uuid == [0, 0] {
+            hdr.file_uuid = file_uuid;
+            changed = true;
+            if hdr.tile_index == 0 && i != 0 {
+                hdr.tile_index = i as u32;
+            }
+        }
+        if hdr.generation == 0 {
+            hdr.generation = active_header.generation;
+            changed = true;
+        }
+
+        if changed {
+            hdr.header_crc32 = compute_tile_header_crc32(&hdr);
+            out_data[offset..offset + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&hdr));
+        }
+    }
+
+    // 1. Build v2 directory entries
+    let mut entries: Vec<SealedTileIndexEntry> = Vec::with_capacity(tile_count as usize);
+    for i in 0..tile_count as usize {
+        let offset = (FILE_HEADER_SIZE + i * HYPER_TILE_SIZE) as u64;
+        let tile_bytes = &out_data[offset as usize..offset as usize + HYPER_TILE_SIZE];
+        let hdr: &HyperTileHeader = from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let payload_bytes = hdr.payload_bytes as usize;
+        let payload = if HYPER_TILE_HEADER_SIZE + payload_bytes <= HYPER_TILE_SIZE {
+            &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_bytes]
+        } else {
+            &tile_bytes[HYPER_TILE_HEADER_SIZE..]
+        };
+        let payload_hash: [u8; 32] = Sha256::digest(payload).into();
+
+        entries.push(SealedTileIndexEntry {
+            offset,
+            length: HYPER_TILE_SIZE as u64,
+            type_id: hdr.tile_type,
+            type_version: hdr.record_layout_version as u16,
+            _pad: [0u8; 2],
+            record_count: hdr.record_count,
+            tile_index: hdr.tile_index,
+            min_key: hdr.min_timestamp,
+            max_key: hdr.max_timestamp,
+            payload_hash,
+        });
+    }
+
+    // 2. Parity shards if enabled via Reed-Solomon (galois_8)
+    let mut parity_bytes: Vec<u8> = Vec::new();
+    let k_usize = k as usize;
+    let m_usize = m as usize;
+    if options.enable_parity && tile_count > 0 {
+        let num_groups = (tile_count as usize + k_usize - 1) / k_usize;
+        for g in 0..num_groups {
+            let start_tile = g * k_usize;
+            let end_tile = (start_tile + k_usize).min(tile_count as usize);
+            let k_g = end_tile - start_tile;
+
+            let rs = ReedSolomon::new(k_g, m_usize)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ReedSolomon error: {}", e)))?;
+
+            let mut shards: Vec<Vec<u8>> = Vec::with_capacity(k_g + m_usize);
+            for i in start_tile..end_tile {
+                let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                shards.push(out_data[offset..offset + HYPER_TILE_SIZE].to_vec());
+            }
+            for _ in 0..m_usize {
+                shards.push(vec![0u8; HYPER_TILE_SIZE]);
+            }
+
+            rs.encode(&mut shards)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("RS encode error: {}", e)))?;
+
+            for p in 0..m_usize {
+                parity_bytes.extend_from_slice(&shards[k_g + p]);
+            }
+        }
+    }
+
+    // 3. Assemble index directory
+    let seal_hash = compute_seal_hash_v2(
+        &options.prev_seal_hash,
+        options.seal_generation,
+        tile_count,
+        file_uuid,
+        &entries,
+    );
+
+    let sealed_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let flags = if options.enable_parity {
+        SEALED_FLAG_PARITY_ENABLED
+    } else {
+        0
+    };
+
+    let index_header = SealedIndexHeaderV2 {
+        magic: SEALED_INDEX_MAGIC_V2,
+        tile_count,
+        flags,
+        k,
+        m,
+        _padding: [0u8; 6],
+        file_uuid,
+        prev_seal_hash: options.prev_seal_hash,
+        seal_generation: options.seal_generation,
+        sealed_timestamp,
+        seal_hash,
+        _reserved: [0u8; 8],
+    };
+
+    let index_offset = (out_data.len() + parity_bytes.len()) as u64;
+    let mut index_bytes = Vec::with_capacity(SEALED_INDEX_HEADER_SIZE_V2 + entries.len() * SEALED_INDEX_ENTRY_SIZE_V2);
+    index_bytes.extend_from_slice(bytes_of(&index_header));
+    index_bytes.extend_from_slice(cast_slice(&entries));
+
+    let index_len = index_bytes.len() as u64;
+    let index_hash: [u8; 32] = Sha256::digest(&index_bytes).into();
+
+    // 4. Construct v2 End Cap
+    let mut endcap = SealedEndCapV2 {
+        magic: SEALED_ENDCAP_MAGIC_V2,
+        index_offset,
+        index_len,
+        index_hash,
+        footer_version: 2,
+        flags,
+        endcap_crc32: 0,
+    };
+    endcap.endcap_crc32 = compute_endcap_crc32_v2(&endcap);
+
+    out_data.extend_from_slice(&parity_bytes);
+    out_data.extend_from_slice(&index_bytes);
+    out_data.extend_from_slice(bytes_of(&endcap));
+
+    Ok(out_data)
+}
+
+/// Seals an S3A archive file according to v2 format.
+pub fn seal_archive_v2<P: AsRef<Path>, Q: AsRef<Path>>(
+    in_path: P,
+    out_path: Q,
+    options: &SealOptionsV2,
+) -> io::Result<()> {
+    let in_bytes = std::fs::read(in_path.as_ref())?;
+    let out_data = seal_buffer_v2(&in_bytes, options)?;
+
+    let mut out_file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(out_path.as_ref())?;
+    out_file.write_all(&out_data)?;
+    out_file.flush()?;
+    out_file.sync_all()?;
+
+    Ok(())
+}
+
+/// Default seal buffer function (creates a v2 archive with parity enabled by default).
+pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
+    let options = SealOptionsV2 {
+        enable_parity: true,
+        k,
+        m,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+    };
+    seal_buffer_v2(in_bytes, &options)
+}
+
+/// Default seal archive function (creates a v2 archive with parity enabled by default).
+pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
+    in_path: P,
+    out_path: Q,
+    k: u16,
+    m: u16,
+) -> io::Result<()> {
+    let options = SealOptionsV2 {
+        enable_parity: true,
+        k,
+        m,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+    };
+    seal_archive_v2(in_path, out_path, &options)
+}
+
 /// Verifies a sealed S3A archive according to S3A specification reader rules.
 ///
-/// 1. Inspects the 64-byte end cap at the tail of the file.
-/// 2. If end cap or footer is missing or corrupt, reports warnings and reconstructs directory by scanning tiles.
-/// 3. Validates tile self-addressing (file_uuid, tile_index, generation).
-/// 4. Reassembles out-of-order tiles if detected.
-/// 5. Validates data and header CRCs.
-/// 6. If corruption is found and RS parity is intact, repairs tiles in memory (and writes to `repair_out` if specified).
+/// Supports both v2 and v1 sealed formats with full backward compatibility:
+/// - Detects v2 End Cap (`S3AEND\0\x02`), parses directory index, verifies index_hash & seal chain,
+///   and reconstructs damaged tiles via Reed-Solomon erasure coding if parity is enabled.
+/// - Falls back to v1 End Cap (`S3AEND\0\x01`) and directory structure for older archives.
+/// - Rebuilds directory by scanning tiles if footer is missing or corrupted.
 pub fn verify_sealed_archive<P: AsRef<Path>>(
     path: P,
     repair_out: Option<&Path>,
@@ -267,20 +692,296 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     let mut warnings = Vec::new();
     let mut rebuilt_directory = false;
 
-    // Try reading end cap
+    // Detect version from candidate endcap at the tail
+    if file_len >= FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE {
+        let candidate_bytes = &file_bytes[file_len - SEALED_ENDCAP_SIZE..];
+        let magic = &candidate_bytes[0..8];
+
+        if magic == &SEALED_ENDCAP_MAGIC_V2 {
+            let endcap: SealedEndCapV2 = bytemuck::pod_read_unaligned(candidate_bytes);
+            let expected_crc = compute_endcap_crc32_v2(&endcap);
+            if endcap.endcap_crc32 != expected_crc {
+                warnings.push("endcap_corrupt, directory rebuilt by scanning".into());
+                rebuilt_directory = true;
+            } else if endcap.index_offset + endcap.index_len + (SEALED_ENDCAP_SIZE as u64) > file_len as u64 {
+                warnings.push("footer_truncated, directory rebuilt by scanning".into());
+                rebuilt_directory = true;
+            } else {
+                // Read and verify index directory
+                let index_slice = &file_bytes[endcap.index_offset as usize..(endcap.index_offset + endcap.index_len) as usize];
+                let actual_index_hash: [u8; 32] = Sha256::digest(index_slice).into();
+                if actual_index_hash != endcap.index_hash {
+                    return Err(S3AError::SealedIndexHashMismatch);
+                }
+
+                if index_slice.len() < SEALED_INDEX_HEADER_SIZE_V2 {
+                    return Err(S3AError::CorruptedHeader);
+                }
+
+                let index_hdr: SealedIndexHeaderV2 = bytemuck::pod_read_unaligned(&index_slice[..SEALED_INDEX_HEADER_SIZE_V2]);
+                if index_hdr.magic != SEALED_INDEX_MAGIC_V2 {
+                    return Err(S3AError::CorruptedHeader);
+                }
+
+                let expected_entries_len = (index_hdr.tile_count as usize) * SEALED_INDEX_ENTRY_SIZE_V2;
+                if index_slice.len() != SEALED_INDEX_HEADER_SIZE_V2 + expected_entries_len {
+                    return Err(S3AError::CorruptedHeader);
+                }
+
+                let entries_slice = &index_slice[SEALED_INDEX_HEADER_SIZE_V2..];
+                let v2_entries_slice: &[SealedTileIndexEntry] = cast_slice(entries_slice);
+                let v2_entries = v2_entries_slice.to_vec();
+
+                // Verify seal hash and seal chain
+                let expected_seal_hash = compute_seal_hash_v2(
+                    &index_hdr.prev_seal_hash,
+                    index_hdr.seal_generation,
+                    index_hdr.tile_count,
+                    index_hdr.file_uuid,
+                    &v2_entries,
+                );
+                if expected_seal_hash != index_hdr.seal_hash {
+                    return Err(S3AError::ChecksumMismatch {
+                        expected: crc32c::crc32c(&expected_seal_hash),
+                        actual: crc32c::crc32c(&index_hdr.seal_hash),
+                    });
+                }
+                verify_seal_chain(&[index_hdr])?;
+
+                let tile_count = index_hdr.tile_count;
+                let mut tiles_raw = Vec::with_capacity(tile_count as usize);
+                let mut directory = Vec::with_capacity(tile_count as usize);
+                let mut out_of_order_detected = false;
+
+                for (i, entry) in v2_entries.iter().enumerate() {
+                    let offset = entry.offset as usize;
+                    if offset + HYPER_TILE_SIZE > file_len {
+                        return Err(S3AError::SealedTruncated);
+                    }
+                    let tile = file_bytes[offset..offset + HYPER_TILE_SIZE].to_vec();
+                    let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                    if hdr.tile_index != i as u32 {
+                        out_of_order_detected = true;
+                    }
+                    directory.push(SealedDirectoryEntry {
+                        tile_index: entry.tile_index,
+                        tile_type: entry.type_id,
+                        generation: index_hdr.seal_generation,
+                        offset: entry.offset,
+                        length: entry.length,
+                        xxh3_64: 0,
+                    });
+                    tiles_raw.push(tile);
+                }
+
+                // Verify file_uuid
+                for tile in &tiles_raw {
+                    let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                    if index_hdr.file_uuid != [0, 0] || hdr.file_uuid != [0, 0] {
+                        let is_legacy = hdr.record_layout_version <= 1 && hdr.file_uuid == [0, 0];
+                        if !is_legacy && hdr.file_uuid != index_hdr.file_uuid {
+                            return Err(S3AError::FileUuidMismatch {
+                                expected: index_hdr.file_uuid,
+                                actual: hdr.file_uuid,
+                            });
+                        }
+                    }
+                }
+
+                // Corruption and parity repair inspection
+                let mut repaired_tiles = Vec::new();
+                let parity_enabled = (endcap.flags & SEALED_FLAG_PARITY_ENABLED) != 0;
+                let k_usize = index_hdr.k as usize;
+                let m_usize = index_hdr.m as usize;
+                let num_groups = if tile_count == 0 || k_usize == 0 {
+                    0
+                } else {
+                    (tile_count as usize + k_usize - 1) / k_usize
+                };
+
+                let data_end_offset = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
+                let parity_end_offset = if parity_enabled {
+                    data_end_offset + (num_groups * m_usize * HYPER_TILE_SIZE)
+                } else {
+                    data_end_offset
+                };
+
+                for g in 0..num_groups {
+                    let start_tile = g * k_usize;
+                    let end_tile = (start_tile + k_usize).min(tile_count as usize);
+                    let k_g = end_tile - start_tile;
+
+                    let mut corrupted_in_group = Vec::new();
+                    for j in 0..k_g {
+                        let t_idx = start_tile + j;
+                        let tile = &tiles_raw[t_idx];
+                        let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                        let payload_len = hdr.payload_bytes as usize;
+                        let expected_header_crc = compute_tile_header_crc32(hdr);
+                        let actual_data_crc = if HYPER_TILE_HEADER_SIZE + payload_len <= tile.len() {
+                            crc32c::crc32c(&tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_len])
+                        } else {
+                            0
+                        };
+
+                        let payload = if HYPER_TILE_HEADER_SIZE + payload_len <= tile.len() {
+                            &tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_len]
+                        } else {
+                            &tile[HYPER_TILE_HEADER_SIZE..]
+                        };
+                        let actual_payload_hash: [u8; 32] = Sha256::digest(payload).into();
+
+                        let is_corrupted = (hdr.header_crc32 != 0 && hdr.header_crc32 != expected_header_crc)
+                            || (hdr.data_crc32 != actual_data_crc)
+                            || (actual_payload_hash != v2_entries[t_idx].payload_hash);
+
+                        if is_corrupted {
+                            corrupted_in_group.push(j);
+                        }
+                    }
+
+                    if corrupted_in_group.is_empty() {
+                        continue;
+                    }
+
+                    if !parity_enabled {
+                        let bad_idx = start_tile + corrupted_in_group[0];
+                        let bad_hdr: &HyperTileHeader = from_bytes(&tiles_raw[bad_idx][..HYPER_TILE_HEADER_SIZE]);
+                        return Err(S3AError::ChecksumMismatch {
+                            expected: bad_hdr.data_crc32,
+                            actual: 0,
+                        });
+                    }
+
+                    if corrupted_in_group.len() > m_usize {
+                        return Err(S3AError::UnrepairableCorruption {
+                            group_idx: g,
+                            corrupted_count: corrupted_in_group.len(),
+                            max_repairable: m_usize,
+                        });
+                    }
+
+                    // RS reconstruction
+                    let rs = ReedSolomon::new(k_g, m_usize)
+                        .map_err(|_| S3AError::OutOfBounds)?;
+
+                    let group_parity_offset = data_end_offset + (g * m_usize * HYPER_TILE_SIZE);
+                    let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(k_g + m_usize);
+
+                    for j in 0..k_g {
+                        let t_idx = start_tile + j;
+                        if corrupted_in_group.contains(&j) {
+                            shards.push(None);
+                        } else {
+                            shards.push(Some(tiles_raw[t_idx].clone()));
+                        }
+                    }
+
+                    for p in 0..m_usize {
+                        let p_start = group_parity_offset + p * HYPER_TILE_SIZE;
+                        let p_end = p_start + HYPER_TILE_SIZE;
+                        if p_end <= file_len {
+                            shards.push(Some(file_bytes[p_start..p_end].to_vec()));
+                        } else {
+                            shards.push(None);
+                        }
+                    }
+
+                    rs.reconstruct(&mut shards)
+                        .map_err(|_| S3AError::UnrepairableCorruption {
+                            group_idx: g,
+                            corrupted_count: corrupted_in_group.len(),
+                            max_repairable: m_usize,
+                        })?;
+
+                    for &missing_col in &corrupted_in_group {
+                        let repaired = shards[missing_col].as_ref().ok_or(S3AError::CorruptedHeader)?;
+                        let rep_hdr: &HyperTileHeader = from_bytes(&repaired[..HYPER_TILE_HEADER_SIZE]);
+                        let rep_payload_len = rep_hdr.payload_bytes as usize;
+                        let rep_data_crc = crc32c::crc32c(
+                            &repaired[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + rep_payload_len],
+                        );
+                        if rep_data_crc != rep_hdr.data_crc32 {
+                            return Err(S3AError::ChecksumMismatch {
+                                expected: rep_hdr.data_crc32,
+                                actual: rep_data_crc,
+                            });
+                        }
+
+                        let global_idx = (start_tile + missing_col) as u32;
+                        tiles_raw[global_idx as usize] = repaired.clone();
+                        repaired_tiles.push(global_idx);
+                    }
+                }
+
+                // Extract anchors if present
+                let anchors = if endcap.index_offset as usize > parity_end_offset {
+                    let anchors_slice = &file_bytes[parity_end_offset..endcap.index_offset as usize];
+                    if anchors_slice.len() >= 12 && &anchors_slice[0..8] == &SEALED_ANCHORS_MAGIC {
+                        crate::anchor::extract_anchors_from_footer(anchors_slice, 0, 0)
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+
+                // Output repair if requested
+                if let Some(out_p) = repair_out {
+                    let mut out_file = OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(out_p)
+                        .map_err(|_| S3AError::CorruptedHeader)?;
+
+                    out_file.write_all(&file_bytes[..FILE_HEADER_SIZE]).map_err(|_| S3AError::CorruptedHeader)?;
+                    for tile in &tiles_raw {
+                        out_file.write_all(tile).map_err(|_| S3AError::CorruptedHeader)?;
+                    }
+                    if endcap.index_offset as usize > data_end_offset {
+                        out_file.write_all(&file_bytes[data_end_offset..file_len]).map_err(|_| S3AError::CorruptedHeader)?;
+                    } else {
+                        out_file.write_all(&file_bytes[endcap.index_offset as usize..file_len]).map_err(|_| S3AError::CorruptedHeader)?;
+                    }
+                    out_file.flush().map_err(|_| S3AError::CorruptedHeader)?;
+                    out_file.sync_all().map_err(|_| S3AError::CorruptedHeader)?;
+                }
+
+                return Ok(SealedVerifyReport {
+                    is_sealed: true,
+                    tile_count,
+                    k: index_hdr.k,
+                    m: index_hdr.m,
+                    file_uuid: index_hdr.file_uuid,
+                    rebuilt_directory,
+                    warnings,
+                    repaired_tiles,
+                    out_of_order_detected,
+                    directory,
+                    anchors,
+                    footer_version: 2,
+                    seal_hash: index_hdr.seal_hash,
+                    prev_seal_hash: index_hdr.prev_seal_hash,
+                    seal_generation: index_hdr.seal_generation,
+                    parity_enabled,
+                    v2_entries,
+                });
+            }
+        }
+    }
+
+    // Version 1 verification path
     let mut endcap_opt: Option<SealedEndCap> = None;
     if file_len >= FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE {
         let candidate_bytes = &file_bytes[file_len - SEALED_ENDCAP_SIZE..];
         let candidate: SealedEndCap = bytemuck::pod_read_unaligned(candidate_bytes);
-        if candidate.magic == SEALED_ENDCAP_MAGIC {
+        if candidate.magic == SEALED_ENDCAP_MAGIC_V1 {
             let expected_crc = compute_endcap_crc32(&candidate);
             if candidate.endcap_crc32 == expected_crc {
-                // Check if footer range is physically inside the file
                 let footer_end = candidate.footer_offset + candidate.footer_length;
                 if footer_end + (SEALED_ENDCAP_SIZE as u64) <= file_len as u64 {
-                    // Check footer CRC
-                    let footer_slice = &file_bytes
-                        [candidate.footer_offset as usize..footer_end as usize];
+                    let footer_slice = &file_bytes[candidate.footer_offset as usize..footer_end as usize];
                     if crc32c::crc32c(footer_slice) == candidate.footer_crc32 {
                         endcap_opt = Some(candidate);
                     } else {
@@ -295,16 +996,12 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 warnings.push("endcap_corrupt, directory rebuilt by scanning".into());
                 rebuilt_directory = true;
             }
+        } else if candidate_bytes[0..6] == *b"S3AEND" {
+            warnings.push("endcap_corrupt, directory rebuilt by scanning".into());
+            rebuilt_directory = true;
         } else {
-            // Not a sealed end cap or magic corrupt
-            // Check if it was supposed to be sealed
-            if candidate_bytes[0..6] == *b"S3AEND" {
-                warnings.push("endcap_corrupt, directory rebuilt by scanning".into());
-                rebuilt_directory = true;
-            } else {
-                warnings.push("footer_missing, directory rebuilt by scanning".into());
-                rebuilt_directory = true;
-            }
+            warnings.push("footer_missing, directory rebuilt by scanning".into());
+            rebuilt_directory = true;
         }
     } else {
         warnings.push("footer_missing, directory rebuilt by scanning".into());
@@ -318,7 +1015,6 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         active_header.file_uuid
     };
 
-    // Extract tiles and directory
     let mut tiles_raw: Vec<Vec<u8>> = Vec::new();
     let mut directory: Vec<SealedDirectoryEntry> = Vec::new();
     let mut out_of_order_detected = false;
@@ -326,8 +1022,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     let m = endcap_opt.as_ref().map(|ec| ec.m).unwrap_or(DEFAULT_SEAL_M);
 
     if let Some(ec) = &endcap_opt {
-        let footer_slice = &file_bytes
-            [ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
+        let footer_slice = &file_bytes[ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
         let dir_byte_len = (ec.tile_count as usize) * std::mem::size_of::<SealedDirectoryEntry>();
         let dir_entries: &[SealedDirectoryEntry] = cast_slice(&footer_slice[..dir_byte_len]);
 
@@ -345,7 +1040,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             tiles_raw.push(tile);
         }
     } else {
-        // Fallback: Scan self-addressed tiles from file_bytes
+        // Fallback: Scan self-addressed tiles
         let mut scan_offset = FILE_HEADER_SIZE;
         let mut tile_idx = 0u32;
         let target_tile_count = if active_header.tile_count > 0 {
@@ -402,7 +1097,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     }
 
     // Verify self-addressing file_uuid on every tile
-    for (_i, tile) in tiles_raw.iter().enumerate() {
+    for tile in &tiles_raw {
         let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
         if file_uuid != [0, 0] || hdr.file_uuid != [0, 0] {
             let is_legacy = hdr.record_layout_version <= 1 && hdr.file_uuid == [0, 0];
@@ -415,7 +1110,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         }
     }
 
-    // Parity repair inspection
+    // Parity repair inspection for v1
     let mut repaired_tiles = Vec::new();
     let k_usize = k as usize;
     let m_usize = m as usize;
@@ -427,8 +1122,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     };
 
     if let Some(ec) = &endcap_opt {
-        let footer_slice = &file_bytes
-            [ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
+        let footer_slice = &file_bytes[ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
         let dir_byte_len = (ec.tile_count as usize) * std::mem::size_of::<SealedDirectoryEntry>();
         let parity_slice = &footer_slice[dir_byte_len..];
 
@@ -437,7 +1131,6 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             let end_tile = (start_tile + k_usize).min(tile_count as usize);
             let k_g = end_tile - start_tile;
 
-            // Check which data tiles are corrupted
             let mut corrupted_in_group = Vec::new();
             for j in 0..k_g {
                 let t_idx = start_tile + j;
@@ -471,12 +1164,10 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 });
             }
 
-            // Perform Reed-Solomon repair
             let codec = ReedSolomonCodec::new(k_g, m_usize)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))
                 .map_err(|_| S3AError::OutOfBounds)?;
 
-            // Extract parity tiles for this group
             let group_parity_offset = g * m_usize * HYPER_TILE_SIZE;
             let mut parity_tiles: Vec<&[u8]> = Vec::with_capacity(m_usize);
             for p in 0..m_usize {
@@ -487,7 +1178,6 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 }
             }
 
-            // Gather k_g surviving shards
             let mut available_shard_indices = Vec::new();
             let mut available_shard_data: Vec<&[u8]> = Vec::new();
 
@@ -513,16 +1203,13 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 });
             }
 
-            // Invert submatrix
             let mut submatrix = vec![vec![0u8; k_g]; k_g];
             for (r, &shard_idx) in available_shard_indices.iter().enumerate() {
                 submatrix[r].copy_from_slice(&codec.matrix[shard_idx]);
             }
 
-            let inv = invert_matrix(&submatrix, k_g)
-                .map_err(|_| S3AError::CorruptedHeader)?;
+            let inv = invert_matrix(&submatrix, k_g).map_err(|_| S3AError::CorruptedHeader)?;
 
-            // Reconstruct corrupted data tiles
             let mut group_repaired: Vec<(usize, u32, Vec<u8>)> = Vec::new();
             for &missing_col in &corrupted_in_group {
                 let mut repaired = vec![0u8; HYPER_TILE_SIZE];
@@ -537,7 +1224,6 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                     }
                 }
 
-                // Verify reconstructed tile
                 let rep_hdr: &HyperTileHeader = from_bytes(&repaired[..HYPER_TILE_HEADER_SIZE]);
                 let rep_payload_len = rep_hdr.payload_bytes as usize;
                 let rep_data_crc = crc32c::crc32c(
@@ -560,8 +1246,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             }
         }
     } else {
-        // Without footer parity, verify existing tiles directly
-        for (_i, tile) in tiles_raw.iter().enumerate() {
+        for tile in &tiles_raw {
             let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
             let payload_len = hdr.payload_bytes as usize;
             let expected_hdr_crc = compute_tile_header_crc32(hdr);
@@ -585,7 +1270,6 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         }
     }
 
-    // Write to repair_out if provided and repair or reordering occurred
     if let Some(out_p) = repair_out {
         let mut out_file = OpenOptions::new()
             .write(true)
@@ -594,23 +1278,16 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             .open(out_p)
             .map_err(|_| S3AError::CorruptedHeader)?;
 
-        // Write header
-        out_file
-            .write_all(&file_bytes[..FILE_HEADER_SIZE])
-            .map_err(|_| S3AError::CorruptedHeader)?;
-        // Write repaired/ordered tiles
+        out_file.write_all(&file_bytes[..FILE_HEADER_SIZE]).map_err(|_| S3AError::CorruptedHeader)?;
         for tile in &tiles_raw {
-            out_file
-                .write_all(tile)
-                .map_err(|_| S3AError::CorruptedHeader)?;
+            out_file.write_all(tile).map_err(|_| S3AError::CorruptedHeader)?;
         }
         out_file.flush().map_err(|_| S3AError::CorruptedHeader)?;
         out_file.sync_all().map_err(|_| S3AError::CorruptedHeader)?;
     }
 
     let anchors = if let Some(ec) = &endcap_opt {
-        let footer_slice = &file_bytes
-            [ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
+        let footer_slice = &file_bytes[ec.footer_offset as usize..(ec.footer_offset + ec.footer_length) as usize];
         let dir_byte_len = (ec.tile_count as usize) * std::mem::size_of::<SealedDirectoryEntry>();
         let parity_byte_len = num_groups * m_usize * HYPER_TILE_SIZE;
         crate::anchor::extract_anchors_from_footer(footer_slice, dir_byte_len, parity_byte_len)
@@ -630,6 +1307,12 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         out_of_order_detected,
         directory,
         anchors,
+        footer_version: if is_sealed { 1 } else { 0 },
+        seal_hash: [0u8; 32],
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+        parity_enabled: is_sealed,
+        v2_entries: Vec::new(),
     })
 }
 

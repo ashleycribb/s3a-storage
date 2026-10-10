@@ -551,6 +551,71 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 65: Vertically Partitioned Columnar Tile (variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::COLUMNAR,
+        name: "columnar",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 66: N-Dimensional Array Tile (variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::ARRAY,
+        name: "array",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 71: Participant Consent & Governance (136B Pod records)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::CONSENT,
+        name: "consent",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 136,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 73: Right-to-be-Forgotten Erasure Tile (144B Pod records)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::ERASURE,
+        name: "erasure",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 144,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 77: Embedded Schema Registry (self-describing, variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::SCHEMA,
+        name: "schema",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     Ok(())
 }
 

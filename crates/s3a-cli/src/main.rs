@@ -352,11 +352,21 @@ fn main() {
             }
         }
         "seal" => {
-            if args.len() < 4 {
-                println!("Usage: s3a-cli seal <in_file> <out_file>");
+            let parity = args.iter().any(|a| a == "--parity");
+            let positional: Vec<&str> = args[2..].iter().filter(|a| !a.starts_with("--")).map(|s| s.as_str()).collect();
+            if positional.len() < 2 {
+                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity]");
                 return;
             }
-            seal_file(&args[2], &args[3]);
+            seal_file(positional[0], positional[1], parity);
+        }
+        "repair" => {
+            let positional: Vec<&str> = args[2..].iter().filter(|a| !a.starts_with("--")).map(|s| s.as_str()).collect();
+            if positional.len() < 2 {
+                println!("Usage: s3a-cli repair <in_file> <out_file>");
+                return;
+            }
+            repair_file(positional[0], positional[1]);
         }
         "anchor" => {
             if args.len() < 3 {
@@ -1436,7 +1446,8 @@ fn inspect_file(path: &str, json_mode: bool) {
 
             for i in 0..reader.tile_count() as usize {
                 if let Some((header, _)) = reader.get_tile(i) {
-                    let tile_type_str = match header.tile_type {
+                    let resolved_schema_name = reader.resolve_tile_type_name(header.tile_type);
+                    let tile_type_str: &str = match header.tile_type {
                         TileType::TELEMETRY => "TELEMETRY",
                         TileType::EMBEDDING => "EMBEDDING",
                         TileType::HYBRID => "HYBRID",
@@ -1447,13 +1458,24 @@ fn inspect_file(path: &str, json_mode: bool) {
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
                         TileType::LEARNING_RECORD_STORE => "LEARNING_RECORD_STORE (xAPI / RL Trajectory)",
+                        TileType::COLUMNAR => "COLUMNAR (Vertically Partitioned Columnar Tile)",
+                        TileType::ARRAY => "ARRAY (N-Dimensional Array / Tensor Tile)",
+                        TileType::CONSENT => "CONSENT (Subject Privacy & Governance)",
+                        TileType::ERASURE => "ERASURE (Right-to-be-Forgotten Cryptographic Audit Receipt)",
+                        TileType::SCHEMA => "SCHEMA (Embedded Schema Registry)",
                         ScholarTileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
                         ScholarTileType::AI_TRACE_LOG => "AI_TRACE_LOG (Reasoning / Hallucination / Tool)",
                         ScholarTileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Literature 3D Slices)",
                         ScholarTileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
                         ScholarTileType::SRS_WORKSPACE => "SRS_WORKSPACE (Workspace Pod)",
                         ScholarTileType::SRS_MANIFEST => "SRS_MANIFEST (Manifest Pod)",
-                        _ => "UNKNOWN",
+                        _ => {
+                            if resolved_schema_name != "UNKNOWN" {
+                                &resolved_schema_name
+                            } else {
+                                "UNKNOWN"
+                            }
+                        }
                     };
                     let bloom_occupied = header.filter.bits.iter().map(|b| b.count_ones()).sum::<u32>();
                     let layout_str = if header.record_layout_version == 0 {
@@ -1588,13 +1610,48 @@ fn escape_cli_json(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn seal_file(in_path: &str, out_path: &str) {
-    match s3a_engine::seal_archive(in_path, out_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M) {
+fn seal_file(in_path: &str, out_path: &str, enable_parity: bool) {
+    let _ = s3a_engine::append_schema_tile_if_missing(in_path);
+    let options = s3a_engine::SealOptionsV2 {
+        enable_parity,
+        k: s3a_engine::DEFAULT_SEAL_K,
+        m: s3a_engine::DEFAULT_SEAL_M,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+    };
+    match s3a_engine::seal_archive_v2(in_path, out_path, &options) {
         Ok(_) => {
-            println!("Sealed S3A archive created successfully at '{}' (Reed-Solomon 16+2 parity)", out_path);
+            let parity_desc = if enable_parity {
+                " (Reed-Solomon 16+2 parity)"
+            } else {
+                ""
+            };
+            println!("Sealed S3A archive created successfully at '{}'{}", out_path, parity_desc);
         }
         Err(e) => {
             eprintln!("Error sealing archive: {}", e);
+        }
+    }
+}
+
+fn repair_file(in_path: &str, out_path: &str) {
+    match s3a_engine::verify_sealed_archive(in_path, Some(Path::new(out_path))) {
+        Ok(report) => {
+            if !report.repaired_tiles.is_empty() {
+                println!(
+                    "Successfully repaired {} damaged tile(s) via Reed-Solomon parity. Output written to '{}'.",
+                    report.repaired_tiles.len(),
+                    out_path
+                );
+            } else {
+                println!(
+                    "No damaged tiles detected; archive is intact. Output written to '{}'.",
+                    out_path
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Error repairing archive: {}", e);
         }
     }
 }
@@ -1628,11 +1685,15 @@ fn verify_file(
                 "verified"
             };
 
-            let computed_fp = s3a_engine::compute_sealed_fingerprint(
-                report.file_uuid,
-                report.tile_count,
-                &report.directory,
-            );
+            let computed_fp = if report.footer_version == 2 {
+                report.seal_hash
+            } else {
+                s3a_engine::compute_sealed_fingerprint(
+                    report.file_uuid,
+                    report.tile_count,
+                    &report.directory,
+                )
+            };
             let computed_fp_hex = hex::encode(computed_fp);
 
             if anchor_mode {

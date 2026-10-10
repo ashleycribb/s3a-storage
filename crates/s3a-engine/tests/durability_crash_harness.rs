@@ -418,9 +418,9 @@ fn test_marks_survive_compaction_and_remap() {
     writer.write_hyper_tile(TileType::MARKS, &[m_quarantine, m_legal_hold, m_review_set, m_review_clear], None, None).unwrap();
     drop(writer);
 
-    // 3. Compact into output archive
+    // 3. Compact into output archive (1 telemetry tile + 1 marks tile + 1 schema tile)
     let compacted_tiles = Compactor::compact(&[input_file.path()], out_file.path()).unwrap();
-    assert_eq!(compacted_tiles, 2); // 1 telemetry tile + 1 marks tile
+    assert_eq!(compacted_tiles, 3);
 
     // 4. Verify output archive
     let reader = MmapReader::open(out_file.path()).unwrap();

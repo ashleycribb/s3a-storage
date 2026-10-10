@@ -317,6 +317,7 @@ fn generate_valid_after_compaction(dir: &Path) -> io::Result<String> {
 
     let mut map = std::collections::BTreeMap::new();
     map.insert("0".to_string(), 2);
+    map.insert("77".to_string(), 0);
 
     let sample_records = vec![
         SampleRecord {
@@ -339,11 +340,11 @@ fn generate_valid_after_compaction(dir: &Path) -> io::Result<String> {
         expected_outcome: "ok".to_string(),
         error_class: None,
         expected_error_message: None,
-        file_size_bytes: Some(512 + HYPER_TILE_SIZE as u64),
+        file_size_bytes: Some(512 + 2 * HYPER_TILE_SIZE as u64),
         header: Some(HeaderExpectation {
-            active_slot: 1,
-            generation: 2,
-            tile_count: 1,
+            active_slot: 0,
+            generation: 3,
+            tile_count: 2,
             addon_mask: 0,
         }),
         records_per_tile_type: map,

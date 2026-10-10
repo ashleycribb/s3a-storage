@@ -164,6 +164,81 @@ pub fn project_telemetry_to_arrow(records: &[TelemetryRecord]) -> ArrowRecordBat
     }
 }
 
+/// Converts a Columnar Tile payload into an Apache Arrow RecordBatchDescriptor,
+/// optionally projecting only selected columns.
+pub fn project_columnar_to_arrow(
+    payload: &[u8],
+    projected_columns: Option<&[&str]>,
+) -> std::io::Result<ArrowRecordBatchDescriptor> {
+    use s3a_core::columnar::{ColumnDataType, ColumnarTileView};
+
+    let view = ColumnarTileView::parse(payload)?;
+    let num_rows = view.header.record_count as usize;
+
+    let mut arrow_fields = Vec::new();
+    let mut arrow_columns = Vec::new();
+
+    for desc in view.descriptors {
+        let col_name = desc.name_as_str();
+        if let Some(proj) = projected_columns {
+            if !proj.contains(&col_name) {
+                continue;
+            }
+        }
+
+        let dtype = match desc.data_type {
+            x if x == ColumnDataType::UInt32 as u16 => "UInt32",
+            x if x == ColumnDataType::UInt64 as u16 => "UInt64",
+            x if x == ColumnDataType::Int32 as u16 => "Int32",
+            x if x == ColumnDataType::Float32 as u16 => "Float32",
+            x if x == ColumnDataType::Float64 as u16 => "Float64",
+            _ => "UInt8",
+        };
+
+        arrow_fields.push(ArrowField {
+            name: Box::leak(col_name.to_string().into_boxed_str()),
+            data_type: dtype,
+            nullable: desc.nullable != 0,
+        });
+
+        match desc.data_type {
+            x if x == ColumnDataType::UInt32 as u16 => {
+                let slice: &[u32] = view.read_column_slice(desc)?;
+                arrow_columns.push(ArrowColumnVector::UInt32(slice.to_vec()));
+            }
+            x if x == ColumnDataType::UInt64 as u16 => {
+                let slice: &[u64] = view.read_column_slice(desc)?;
+                arrow_columns.push(ArrowColumnVector::UInt64(slice.to_vec()));
+            }
+            x if x == ColumnDataType::Int32 as u16 => {
+                let slice: &[i32] = view.read_column_slice(desc)?;
+                arrow_columns.push(ArrowColumnVector::Int32(slice.to_vec()));
+            }
+            x if x == ColumnDataType::Float32 as u16 => {
+                let slice: &[f32] = view.read_column_slice(desc)?;
+                arrow_columns.push(ArrowColumnVector::Float32(slice.to_vec()));
+            }
+            x if x == ColumnDataType::Float64 as u16 => {
+                let slice: &[f64] = view.read_column_slice(desc)?;
+                arrow_columns.push(ArrowColumnVector::Float64(slice.to_vec()));
+            }
+            _ => {
+                let bytes = view.read_column_data(desc)?;
+                arrow_columns.push(ArrowColumnVector::FixedSizeBinary {
+                    data: bytes.to_vec(),
+                    byte_width: 1,
+                });
+            }
+        }
+    }
+
+    Ok(ArrowRecordBatchDescriptor {
+        schema: ArrowSchema { fields: arrow_fields },
+        num_rows,
+        columns: arrow_columns,
+    })
+}
+
 
 
 /// Generates Apache Iceberg `v1.metadata.json` for Snowflake External Tables and AWS Athena.

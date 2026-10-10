@@ -487,74 +487,112 @@ A Scholar Research Snapshot container (`.snapshot.s3a`) is an immutable, self-co
 
 ---
 
-## 10. Sealed File Format & Reed-Solomon Parity
+## 10. Sealed File Format & Reed-Solomon Parity (v2 Specification)
 
-Sealed files (`.snapshot.s3a`, exports, cold archives, and immutable packages) append an audit directory, Reed-Solomon erasure parity, and an end cap at the tail of the file. Live database archives MUST NOT use the sealed footer, continuing to use the dual-slot A/B atomic commit protocol.
+Sealed files (`.snapshot.s3a`, exports, cold archives, and immutable packages) append an audit directory index, optional Reed-Solomon erasure parity, and a 64-byte end cap at the tail of the file. Live database archives MUST NOT use the sealed footer, continuing to use the dual-slot A/B atomic commit protocol.
 
-### 10.1 Sealed Layout
+### 10.1 Sealed Layout v2
 
-A sealed archive appends three consecutive structures immediately after the final committed Hyper-Tile:
+In v2, the tile directory index is placed immediately prior to the 64-byte End Cap at the EOF. Readers can locate and access any tile in the file by reading ONLY the tail bytes (End Cap + index directory), enabling sub-millisecond HTTP range read access on cloud object storage:
+
 ```
 +---------------------------------------------------------------+
-| Hyper-Tile 0 .. N-1 (Data Tiles)                              |
+| Hyper-Tile 0 .. N-1 (Committed Data Tiles)                    |
 +---------------------------------------------------------------+
-| Sealed Directory (N * 40 Bytes)                               |
-|   SealedDirectoryEntry 0 .. N-1                               |
+| Optional Reed-Solomon Parity Shards (num_groups * M * 128 KB) |
 +---------------------------------------------------------------+
-| Reed-Solomon Parity Tiles (num_groups * M * 131,072 Bytes)    |
-|   Parity Hyper-Tiles                                          |
+| Optional ANCHORS Extension Slice (Variable Length, 8-byte align)|
 +---------------------------------------------------------------+
-| Sealed End Cap (64 Bytes, Fixed at EOF)                       |
+| Sealed Tile Directory Index (128 + N * 80 Bytes)              |
+|   SealedIndexHeaderV2 (128 Bytes, 8-byte aligned)             |
+|   SealedTileIndexEntry 0 .. N-1 (N * 80 Bytes, 8-byte aligned)|
++---------------------------------------------------------------+
+| Sealed End Cap v2 (64 Bytes, Fixed at EOF)                    |
 +---------------------------------------------------------------+
 ```
 
-### 10.2 SealedDirectoryEntry Layout (40 Bytes, 8-Byte Aligned)
+### 10.2 SealedTileIndexEntry Layout (80 Bytes, 8-Byte Aligned)
 
-For every committed Hyper-Tile $i \in [0, N-1]$, the directory contains an entry:
+For every committed Hyper-Tile $i \in [0, N-1]$, the directory contains an 80-byte self-describing entry:
 
 | Byte Offset | Type | Field Name | Description |
 |:---:|:---:|:---|:---|
-| `0 .. 4` | `u32` | `tile_index` | 0-based logical index of the tile in the archive sequence. |
-| `4 .. 8` | `u32` | `tile_type` | Tile type identifier from the registry. |
-| `8 .. 16` | `u64` | `generation` | Archive generation when tile was committed. |
-| `16 .. 24` | `u64` | `offset` | Absolute byte offset of the Hyper-Tile from start of file. |
-| `24 .. 32` | `u64` | `length` | Physical tile length in bytes (MUST be 131,072). |
-| `32 .. 40` | `u64` | `xxh3_64` | 64-bit XXH3 integrity hash of the entire 128 KB tile. |
+| `0 .. 8` | `u64` | `offset` | Absolute byte offset of the Hyper-Tile from start of file. |
+| `8 .. 16` | `u64` | `length` | Physical tile length in bytes (MUST be 131,072 for Hyper-Tiles). |
+| `16 .. 20` | `u32` | `type_id` | Tile type identifier from the registry (§14.6). |
+| `20 .. 22` | `u16` | `type_version` | Record layout version of the tile. |
+| `22 .. 24` | `[u8; 2]` | `_pad` | Reserved alignment padding (MUST be zeroed). |
+| `24 .. 28` | `u32` | `record_count` | Number of committed active records in this tile. |
+| `28 .. 32` | `u32` | `tile_index` | 0-based logical sequence index of the tile. |
+| `32 .. 40` | `u64` | `min_key` | Minimum indexing key in tile (e.g. earliest timestamp). |
+| `40 .. 48` | `u64` | `max_key` | Maximum indexing key in tile (e.g. latest timestamp). |
+| `48 .. 80` | `[u8; 32]` | `payload_hash` | SHA-256 cryptographic digest of the tile payload bytes. |
 
-### 10.3 Reed-Solomon Erasure Parity
+### 10.3 SealedIndexHeaderV2 Layout (128 Bytes, 8-Byte Aligned)
 
-1. **Group Partitioning**: Data tiles are partitioned into groups of $K$ consecutive tiles (default $K=16$).
-2. **Parity Generation**: For each group, $M$ parity tiles (default $M=2$) of 128 KB each are computed using Reed-Solomon erasure coding over GF($2^8$) with an invertible matrix.
-3. **Repair Capability**: Any group containing up to $M$ damaged, corrupted, or missing tiles can be fully reconstructed.
-
-### 10.4 SealedEndCap Layout (64 Bytes, Fixed at EOF)
-
-The final 64 bytes of a sealed S3A archive comprise the `SealedEndCap`:
+Preceding the tile index entries in the directory, a 128-byte header defines the container epoch:
 
 | Byte Offset | Type | Field Name | Description |
 |:---:|:---:|:---|:---|
-| `0 .. 8` | `[u8; 8]` | `magic` | Magic identifier. MUST be ASCII bytes `b"S3AEND\0\x01"` (`0x53, 0x33, 0x41, 0x45, 0x4E, 0x44, 0x00, 0x01`). |
-| `8 .. 16` | `u64` | `footer_offset` | Absolute byte offset where the sealed footer directory begins. |
-| `16 .. 24` | `u64` | `footer_length` | Total byte length of directory and parity tiles combined. |
-| `24 .. 28` | `u32` | `tile_count` | Number of committed data tiles indexed by this sealed archive. |
-| `28 .. 30` | `u16` | `k` | Reed-Solomon data shard parameter per group (default 16). |
-| `30 .. 32` | `u16` | `m` | Reed-Solomon parity shard parameter per group (default 2). |
-| `32 .. 48` | `[u64; 2]` | `file_uuid` | 128-bit file UUID matching the archive and tile headers. |
-| `48 .. 52` | `u32` | `footer_crc32` | CRC32C checksum of the entire footer slice (directory + parity). |
-| `52 .. 56` | `u32` | `endcap_crc32` | CRC32C checksum of the first 52 bytes of the end cap (`0..52`). |
-| `56 .. 64` | `[u8; 8]` | `_reserved` | Reserved alignment padding (MUST be zeroed). |
+| `0 .. 8` | `[u8; 8]` | `magic` | Directory magic: ASCII `b"S3AIDX02"`. |
+| `8 .. 12` | `u32` | `tile_count` | Number of committed data tiles indexed in this archive. |
+| `12 .. 14` | `u16` | `flags` | Bit 0 (`0x0001`): `SEALED_FLAG_PARITY_ENABLED`. |
+| `14 .. 16` | `u16` | `k` | Reed-Solomon data shard parameter per group (default 16). |
+| `16 .. 18` | `u16` | `m` | Reed-Solomon parity shard parameter per group (default 2). |
+| `18 .. 24` | `[u8; 6]` | `_padding` | Alignment padding (MUST be zeroed). |
+| `24 .. 40` | `[u64; 2]` | `file_uuid` | 128-bit file UUID matching the archive and tile headers. |
+| `40 .. 72` | `[u8; 32]` | `prev_seal_hash` | SHA-256 digest of predecessor seal (all zero for genesis). |
+| `72 .. 80` | `u64` | `seal_generation` | Monotonically increasing seal sequence generation number. |
+| `80 .. 88` | `u64` | `sealed_timestamp`| Unix epoch seconds when the archive seal was stamped. |
+| `88 .. 120` | `[u8; 32]` | `seal_hash` | Authoritative 32-byte SHA-256 seal chain fingerprint. |
+| `120 .. 128` | `[u8; 8]` | `_reserved` | Reserved alignment padding (MUST be zeroed). |
 
-### 10.5 Reader Conformance Rules for Sealed Files
+### 10.4 SealedEndCapV2 Layout (64 Bytes, Fixed at EOF)
+
+The final 64 bytes of a sealed S3A archive comprise the `SealedEndCapV2`:
+
+| Byte Offset | Type | Field Name | Description |
+|:---:|:---:|:---|:---|
+| `0 .. 8` | `[u8; 8]` | `magic` | Magic identifier. MUST be ASCII bytes `b"S3AEND\0\x02"`. |
+| `8 .. 16` | `u64` | `index_offset` | Absolute byte offset where the tile directory index begins. |
+| `16 .. 24` | `u64` | `index_len` | Total byte length of index directory (`128 + tile_count * 80`). |
+| `24 .. 56` | `[u8; 32]` | `index_hash` | SHA-256 cryptographic digest over the entire index directory. |
+| `56 .. 58` | `u16` | `footer_version` | Footer format version (MUST be `2` for v2 archives). |
+| `58 .. 60` | `u16` | `flags` | Bit 0: Parity enabled flag (`SEALED_FLAG_PARITY_ENABLED`). |
+| `60 .. 64` | `u32` | `endcap_crc32` | CRC32C checksum of the first 60 bytes of the end cap (`0..60`). |
+
+### 10.5 Seal Hash Chain & Tamper Evidence
+
+Each seal records `prev_seal_hash` and `seal_generation`:
+$$\text{seal\_hash} = \text{SHA-256}(b"\text{S3ASEAL2}" \parallel \text{prev\_seal\_hash} \parallel \text{seal\_generation} \parallel \text{tile\_count} \parallel \text{file\_uuid} \parallel \text{entries\_bytes})$$
+
+1. **Genesis Rule**: The root seal (`seal_generation == 1`) MUST have `prev_seal_hash` equal to 32 all-zero bytes (`[0u8; 32]`).
+2. **Chain Monotonicity**: Each subsequent seal generation MUST increment by exactly 1 (`gen_{i} = gen_{i-1} + 1`), and its `prev_seal_hash` MUST match the predecessor's `seal_hash`.
+3. **Verification**: Readers verify the chain and fail closed on any break (`SealedChainBreak`) or swapped/reordered seal (`SealedSwappedGeneration`).
+4. **Anchor Invariance**: Because decentralized anchors (OpenTimestamps and RFC 3161 TSAs) commit to `seal_hash`, anchoring a v2 archive mathematically attests to the entire cumulative history of the dataset.
+
+### 10.6 Optional Reed-Solomon Erasure Parity
+
+1. **Off By Default**: In v2 archives, Reed-Solomon parity shards are optional and disabled by default (`flags = 0`). Sealing with `s3a-cli seal <in> <out>` creates a compact, zero-overhead archive. Parity is enabled with the `--parity` flag.
+2. **Galois Field $K+M$ Coding**: When enabled (`SEALED_FLAG_PARITY_ENABLED`), data tiles are grouped into blocks of $K$ (default 16) and encoded using the maintained `reed-solomon-erasure` crate into $M$ (default 2) 128 KB parity shards over GF($2^8$).
+3. **Automatic Repair**: The CLI command `s3a-cli repair <in_file> <out_file>` inspects all data tiles, reconstructs up to $M$ damaged or corrupted tiles per group using surviving data and parity shards, re-verifies hashes, and writes an intact archive to `<out_file>`. If corruptions exceed $M$, it fails cleanly with `UnrepairableCorruption`.
+
+### 10.7 Legacy v1 Compatibility (Back-Compat)
+
+1. **v1 Archive Support**: Containers sealed with footer version 1 (`b"S3AEND\0\x01"`, 40-byte directory entries, and endcap format with `footer_offset`/`footer_length`) remain 100% readable and verifiable.
+2. **Automatic Detection**: Compliant v2 readers inspect the last 64 bytes. If `b"S3AEND\0\x01"` is detected, the reader automatically falls back to the v1 verification and directory parsing path without requiring user intervention.
+
+### 10.8 Reader Conformance Rules for Sealed Files
 
 A compliant reader opening a sealed S3A container MUST follow these rules:
 
-1. **End Cap Inspection**: Check the last 64 bytes of the file. If the magic is missing or `endcap_crc32` does not match, the reader MUST report `endcap_corrupt` or `footer_missing` and fall back to rebuilding the directory by scanning self-addressed tiles from offset 512.
-2. **Truncation Detection**: If physical file truncation cuts off mid-tile, the reader MUST fail with `SealedTruncated`.
-3. **Out-of-Order Recovery**: If the directory or scanner discovers tiles out of order (`tile_index != physical_index`), the reader MUST reassemble tiles into logical sequence by `tile_index`.
-4. **Parity Repair Execution**:
-   - If a data tile fails its header or data CRC, and valid parity shards are present with corrupted tiles in the group $\le M$, the reader MUST reconstruct the damaged tile in memory and report the tile as `repaired`.
-   - **Non-Destructive Guarantee**: In-memory verification MUST NOT silently modify the source file on disk. Repaired bytes are only written to disk if an explicit repair destination (`--repair <out>`) is instructed.
-   - If corrupted tiles in any group exceed $M$, the reader MUST fail closed with `UnrepairableCorruption`.
+1. **Tail Inspection & Range Reads**: Inspect the final 64 bytes. Validate `magic` and `endcap_crc32`.
+   - In v2: Read the index directory at `index_offset..index_offset + index_len`. Verify `index_hash`. Parse `SealedIndexHeaderV2` and `SealedTileIndexEntry` records. Range reads for individual tiles use `entry.offset` and `entry.length`.
+   - In v1: Parse `SealedEndCap` at EOF and directory entries at `footer_offset`.
+2. **Corruption & Scanning Fallback**: If the end cap is missing or corrupt, report `endcap_corrupt` or `footer_missing` and fall back to scanning self-addressed tiles from offset 512.
+3. **Truncation Detection**: If physical file truncation cuts off mid-tile or before EOF, fail with `SealedTruncated`.
+4. **Out-of-Order Recovery**: If tiles are out of logical order, sort by `tile_index`.
+5. **Parity Repair Execution**: If tiles are damaged and valid parity shards are present, reconstruct damaged tiles in memory. If written to disk, write only to an explicit repair destination (`--repair <out>` or `s3a-cli repair`).
 
 ---
 
@@ -672,3 +710,508 @@ To assist independent implementers, the following historic deviations in the ref
    - In the final specification, Tile ID 9 is strictly `RESERVED_BOUNDARY` (`TileTypeFlags::RESERVED`). Greenfield educational records MUST be written to Tile 10 (`HumanLrsRecord`) or Tile 28 (`elr_learning_event`).
 3. **Tile Self-Addressing & Generation (Resolved in v1.1)**:
    - In specification v1.0, tile headers did not carry generation or file UUID. In specification v1.1-draft, `HyperTileHeader` embeds `generation: u64`, `tile_index: u32`, and `file_uuid: [u64; 2]`, establishing complete self-addressing across all tiles. Archive commits synchronize generation between `FileHeader` and all committed tiles.
+
+---
+
+## 14. Tile Type Catalog
+
+### 14.1 Overview & Common Tile Header
+
+The **Tile Type Catalog** establishes a standardized, extensible vocabulary of tile abstractions across the S3A Hyper-Tile ecosystem. While `HyperTileHeader` (§3.1) provides physical framing, self-addressing, and low-level hardware checksums across every 128 KB block, the Tile Type Catalog defines the logical semantic contracts governing how payloads are structured, parsed, indexed, and audited.
+
+All cataloged tile types share a canonical 64-byte logical header prefix embedded within the tile metadata framing:
+
+#### Common Tile Header Layout (64 Bytes, 8-Byte Aligned, Little-Endian)
+
+The unpadded functional fields (`type_id` 2 B, `type_version` 2 B, `flags` 2 B, `record_count` 4 B, `payload_len` 8 B, and `payload_hash` 32 B) sum to exactly **50 bytes**. To guarantee strict natural 8-byte hardware alignment across 64-bit CPU architectures without compiler-induced struct divergence, the canonical on-disk header incorporates 14 bytes of explicit zeroed reserved padding, yielding a fixed **64-byte** structure. All integer fields are encoded in **Little-Endian (LE)** byte order.
+
+| Offset (Bytes) | Size | Field Name | Type | Endianness | Description |
+|:---:|:---:|:---|:---:|:---:|:---|
+| `0 .. 2` | 2 B | `type_id` | `u16` | Little-Endian | Canonical tile type identifier from the allocation bands (e.g. 64–127 for Core). |
+| `2 .. 4` | 2 B | `type_version` | `u16` | Little-Endian | Per-type schema/layout specification version (1-based, starts at 1). |
+| `4 .. 6` | 2 B | `flags` | `u16` | Little-Endian | Type-specific bitmask flags (e.g., compression, encryption, ordering). |
+| `6 .. 8` | 2 B | `_reserved1` | `u16` | Little-Endian | Explicit alignment padding (MUST be written as `0`, ignored by reader). |
+| `8 .. 12` | 4 B | `record_count` | `u32` | Little-Endian | Number of logical entries, elements, or records in the payload. |
+| `12 .. 16` | 4 B | `_reserved2` | `u32` | Little-Endian | Explicit alignment padding to 8-byte boundary (MUST be written as `0`). |
+| `16 .. 24` | 8 B | `payload_len` | `u64` | Little-Endian | Byte length of active payload data ($0 \le \text{payload\_len} \le 130,560$). |
+| `24 .. 56` | 32 B | `payload_hash` | `[u8; 32]` | Raw Bytes | SHA-256 cryptographic digest calculated over the active payload bytes. |
+| `56 .. 64` | 8 B | `_reserved3` | `u64` | Little-Endian | Trailing alignment padding to 64 bytes (MUST be written as `0`). |
+
+> **Header Size Summary**:
+> - Unpadded functional fields: $2 + 2 + 2 + 4 + 8 + 32 = 50\text{ bytes}$.
+> - Explicit zero padding (`_reserved1` + `_reserved2` + `_reserved3`): $2 + 4 + 8 = 14\text{ bytes}$.
+> - Canonical aligned on-disk header size: $50 + 14 = 64\text{ bytes}$ (exact power-of-two 64-byte cache-line alignment).
+
+#### Reader Skip Enforcement Rule
+A compliant S3A reader MUST inspect `type_id` upon reading each tile. If the reader encounters an unrecognized, unsupported, or private `type_id`, the reader **MUST skip the unknown tile using `payload_len` and MUST NOT fail closed or abort execution**. Readers MUST continue processing subsequent known tiles in the container uninterrupted.
+
+---
+
+### 14.2 Allocation Bands & ID Mapping Scheme
+
+To prevent identifier collisions with historical wire formats, tile type identifiers (`type_id`) are partitioned into strict numerical bands:
+
+| Range (`u16`) | Allocation Category | Governance & Description |
+|:---|:---|:---|
+| **0 – 32** | **Legacy Frozen Wire Assignments** | Historical v1.0–v1.2 allocations (including boundary guard 9). Permanently frozen for backward compatibility. |
+| **33 – 63** | **Reserved for Standard Packs** | Reserved for future foundational domain pack specifications. |
+| **64 – 127** | **Core Catalog Primitives** | Standardized in this specification (Types 64–77). Guaranteed disjoint from all legacy IDs. |
+| **128 – 255** | **Reserved Core Extensions** | Reserved for future core architectural primitives. |
+| **256 – 4095** | **Registered Domain Packs** | Governed through specification amendments and domain pack RFCs (e.g. Scholar, Ontology, Robotics, GIS, Wearable). |
+| **4096 – 65535** | **Private & Experimental** | Uncoordinated, vendor-specific, experimental, or internal organization tile types. No registry coordination required. |
+
+#### Existing Tile ID Mapping & Renumbering Analysis
+
+In the initial reference implementation (spec v1.0 through v1.2), tile types were assigned sequentially in `u32` space (IDs 0 through 32), mixing core engine primitives with early domain pack assignments (e.g. Wearable on 3, Robotics on 4, GIS on 5, DA on 6, and Scholar on 10–15, 18, 20, 32).
+
+To ensure zero collisions with legacy implementations while providing a clean architectural taxonomy, all new Core catalog types are assigned exclusively in the **64–127 band**, leaving legacy IDs 0–32 untouched and frozen.
+
+The table below maps the historical wire assignments into the Catalog ID scheme and documents the planned renumbering:
+
+| Historical Wire ID | Canonical Type Name | Owning Layer | Historical Role | Modern Catalog Type ID | Code Renumbering Status | Notes / Conflicts |
+|:---:|:---|:---|:---|:---:|:---:|:---|
+| **0** | `telemetry` | Core Engine | Core (`time-series`) | `75` (`0x004B`) | None (Legacy 0 Frozen) | Wire ID 0 maps to Core `time-series` |
+| **1** | `embedding_128` | Core Engine | Core (`vector`) | `67` (`0x0043`) | None (Legacy 1 Frozen) | Historical dense float32 vector format |
+| **2** | `hybrid_index` | Core Engine | Core (`index`) | `69` (`0x0045`) | None (Legacy 2 Frozen) | Historical inverted keyword/sparse index |
+| **3** | `wearable_micro` | Wearable Pack | Registered Pack | `320–335` | **Do Not Renumber in Code** | Legacy pack assigned in legacy band; frozen |
+| **4** | `robotics_kinematic`| Robotics Pack | Registered Pack | `288–303` | **Do Not Renumber in Code** | Legacy pack assigned in legacy band; frozen |
+| **5** | `gis_survey_mesh` | GIS Pack | Registered Pack | `304–319` | **Do Not Renumber in Code** | Legacy pack assigned in legacy band; frozen |
+| **6** | `data_availability`| DA Pack | Registered Pack | `336–351` | **Do Not Renumber in Code** | Legacy pack assigned in legacy band; frozen |
+| **7** | `quantized_embedding_int8` | Core Engine | Core (`vector`) | `67` (`0x0043`) | None (Legacy 7 Frozen) | Int8 quantized vector format |
+| **8** | `quantized_embedding_4bit` | Core Engine | Core (`vector`) | `67` (`0x0043`) | None (Legacy 8 Frozen) | 4-bit nibble quantized vector format |
+| **9** | `reserved_boundary`| Core Engine | Core Boundary | *N/A* (Boundary) | None (Legacy 9 Frozen) | Boundary guard; writes rejected |
+| **10** | `human_lrs` | Scholar Pack | Registered Pack | `256–271` | **Do Not Renumber in Code** | Scholar xAPI activity trace |
+| **11** | `ai_trace_log` | Scholar Pack | Registered Pack / `provenance` | `72` (`0x0048`) / `256` | **Do Not Renumber in Code** | AI agent dual-trace provenance |
+| **12** | `academic_papers` | Scholar Pack | Registered Pack / `record` | `64` (`0x0040`) / `256` | **Do Not Renumber in Code** | Scholar paper metadata record |
+| **13** | `research_graph` | Scholar Pack | Registered Pack / `graph` | `74` (`0x004A`) / `256` | **Do Not Renumber in Code** | Citation / co-authorship graph |
+| **14** | `srs_workspace` | Scholar Pack | Registered Pack | `256–271` | **Do Not Renumber in Code** | Spaced repetition workspace |
+| **15** | `srs_manifest` | Scholar Pack | Registered Pack | `256–271` | **Do Not Renumber in Code** | Snapshot manifest header |
+| **16** | `ontology_concept`| Ontology Pack | Registered Pack | `272–287` | **Do Not Renumber in Code** | Formal concept registry |
+| **17** | `ontology_axiom` | Ontology Pack | Registered Pack | `272–287` | **Do Not Renumber in Code** | Subsumption & relationship axioms |
+| **18** | `agent_registry` | Scholar Pack | Registered Pack / `provenance` | `72` (`0x0048`) / `256` | **Do Not Renumber in Code** | Authorized AI agent catalog |
+| **19** | `marks` | Core Policy | Core (`consent` / `erasure`) | `71` (`0x0047`) / `73` | None (Legacy 19 Frozen) | Policy flags (consent, legal hold, expiry) |
+| **20** | `note_claims` | Scholar Pack | Registered Pack | `256–271` | **Do Not Renumber in Code** | Research claim notes & Bloom filter |
+| **21** | `statement_body` | Core LRS | Core (`blob` / `record`) | `68` (`0x0044`) / `64` | None (Legacy 21 Frozen) | xAPI statement JSON blob |
+| **22** | `statement_index` | Core LRS | Core (`index`) | `69` (`0x0045`) | None (Legacy 22 Frozen) | Secondary statement index |
+| **23** | `document_store` | Core LRS | Core (`blob`) | `68` (`0x0044`) | None (Legacy 23 Frozen) | Document profile attachments |
+| **24** | `attachment_blob` | Core LRS | Core (`blob`) | `68` (`0x0044`) | None (Legacy 24 Frozen) | Raw binary attachments |
+| **25–31**| `elr_*` | Core ELR | Core (`record`) | `64` (`0x0040`) | None (Legacy 25–31 Frozen)| IEEE P2997 enterprise learner records |
+| **32** | `citation_fingerprint` | Scholar Pack | Registered Pack / `provenance` | `72` (`0x0048`) / `256` | **Do Not Renumber in Code** | Cryptographic DOI citation fingerprint |
+
+> **Specification Authority Note on Renumbering**: Existing compiled crates and production archives MUST NOT renumber wire IDs 0–32 in code or disk images. The legacy mapping is frozen for backward compatibility. New domain packs MUST allocate exclusively within `256–4095`. Core catalog types operate on assigned IDs `64–127`.
+
+---
+
+### 14.3 Core Tile Specifications
+
+#### 14.3.1 Record Tile (`record`) — Type ID: `64` (`0x0040`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `TileWriter::write_hyper_tile` in `crates/s3a-engine/src/lib.rs:621`; Reader: `MmapReader::get_tile` in `crates/s3a-engine/src/lib.rs:798`; Test: `test_tile_writer_and_mmap_reader_roundtrip` in `crates/s3a-engine/src/lib.rs:3348`).
+- **Purpose**: High-throughput storage of fixed-size, plain-old-data (Pod) tabular structs aligned to 8-byte boundaries, enabling zero-copy memory mapping and constant-time $O(1)$ random access by record index.
+- **Header Extension Fields**:
+  - `record_size`: `u32` — Exact byte size of each record struct (MUST be a multiple of 8).
+  - `record_layout_version`: `u16` — Schema evolution version of the record struct.
+  - `schema_id`: `u32` — Target schema identifier defined in a `schema` tile, or 0 if self-evident.
+- **Payload Layout**:
+  - Array of contiguous byte slices: `[RecordStruct; record_count]`. Total active payload length equals `record_count * record_size`.
+- **Required vs Optional Fields**:
+  - Required: `record_size` (must be $> 0$ and $\le 130,560$), `record_layout_version`, `record_count`.
+  - Optional: `schema_id` (defaults to 0).
+- **Integrity Rules**:
+  - `payload_len` MUST strictly equal `record_count * record_size`.
+  - Every individual record MUST be 8-byte aligned relative to payload start (offset 512).
+  - `payload_hash` MUST equal the SHA-256 digest of `payload_bytes`.
+- **Academic Research Example**: Longitudinal clinical trial survey responses recording patient ID, treatment arm, visit week, and 12 standardized biomarker ratings across 50,000 patient-weeks.
+- **Why It Matters**: Fixed-size record tiles eliminate serialization and deserialization overhead by allowing operating systems to map binary files directly into compiled computational structs in CPU memory. This enables research pipelines to stream hundreds of millions of experimental observations across cluster nodes without runtime parsing penalties.
+
+---
+
+#### 14.3.2 Columnar Tile (`columnar`) — Type ID: `65` (`0x0041`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `encode_columnar_telemetry` in `crates/s3a-engine/src/lib.rs:56`, `ColumnarTileBuilder::build` in `crates/s3a-core/src/columnar.rs:172`, `Compactor::compact_with_columnar_opt_in` in `crates/s3a-engine/src/lib.rs:2630`; Reader: `decode_columnar_telemetry` in `crates/s3a-engine/src/lib.rs:108`, `ColumnarTileView::parse` in `crates/s3a-core/src/columnar.rs:207`, `QuerySieve::query_telemetry_with_coords` in `crates/s3a-engine/src/lib.rs:1700`; Test: `test_roundtrip_equality_vs_record_tile` in `crates/s3a-engine/tests/columnar_tile.rs:39`, `test_compaction_opt_in_columnar_roundtrip` in `crates/s3a-engine/tests/columnar_tile.rs:198`).
+- **Purpose**: Vertically partitioned column-oriented storage designed for vectorized analytical scans (SIMD), high-ratio dictionary/Run-Length compression, and selective attribute projections.
+- **Header Extension Fields**:
+  - `column_count`: `u16` — Number of attribute columns stored in this tile.
+  - `compression_codec`: `u16` — Compression algorithm applied to columns ($0 = \text{Raw}$, $1 = \text{LZ4}$, $2 = \text{ZSTD}$, $3 = \text{Snappy}$).
+  - `null_bitmap_offset`: `u32` — Byte offset within payload to the packed validity/null bitmaps.
+  - `column_descriptors_offset`: `u32` — Byte offset within payload to the column metadata array.
+- **Payload Layout**:
+  1. `ColumnDescriptors`: Array of `[ColumnDescriptor; column_count]`, each declaring data type (`u16`), offset (`u32`), uncompressed length (`u32`), and compressed length (`u32`).
+  2. `NullBitmaps`: Packed bitmasks ($\lceil \text{record\_count} / 8 \rceil$ bytes per column) indicating value presence.
+  3. `ColumnData`: Contiguous blocks of homogeneous, column-wise values.
+- **Required vs Optional Fields**:
+  - Required: `column_count`, `null_bitmap_offset`, `column_descriptors_offset`.
+  - Optional: `compression_codec` (defaults to 0 for uncompressed raw vectors).
+- **Integrity Rules**:
+  - Every column vector MUST contain exactly `record_count` logical values (inclusive of nulls).
+  - Decompressed column buffers MUST match the declared primitive byte width $\times \text{record\_count}$.
+  - `payload_hash` covers the raw on-disk columnar byte stream before decompression.
+- **Academic Research Example**: Genome-Wide Association Study (GWAS) summary statistics storing Chromosome, Base-Pair Position, Reference Allele, Effect Allele, Beta Coefficient, and $P$-value across 15 million genetic variants.
+- **Why It Matters**: Columnar tiles allow analytical queries to read only the specific attributes needed for a hypothesis test, avoiding costly disk I/O across unreferenced fields. Vectorized CPU instructions can evaluate filter conditions across millions of data points simultaneously at memory bus bandwidth.
+
+---
+
+#### 14.3.3 N-Dimensional Array Tile (`array`) — Type ID: `66` (`0x0042`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `S3ACrudEngine::write_array_chunk` in `crates/s3a-engine/src/lib.rs:2448`, `ArrayTileBuilder::build` in `crates/s3a-core/src/array.rs:192`; Reader: `S3ACrudEngine::read_array_slice` in `crates/s3a-engine/src/lib.rs:2476`, `ArrayTileView::parse` in `crates/s3a-core/src/array.rs:206`; Test: `test_array_roundtrip_2d_3d_4d` in `crates/s3a-engine/tests/array_tile.rs:43`, `test_array_slice_across_chunk_boundaries` in `crates/s3a-engine/tests/array_tile.rs:98`).
+- **Purpose**: Native storage of dense multi-dimensional tensors, volumetric imaging cubes, and numerical simulation grids with explicit spatial dimensionality, units, and chunk coordinates.
+- **Header Extension Fields**:
+  - `ndim`: `u16` — Dimensionality of the array ($1 \le \text{ndim} \le 8$).
+  - `dtype`: `u16` — Numerical primitive type ($1 = \text{i8}$, $2 = \text{u8}$, $3 = \text{i16}$, $4 = \text{u16}$, $5 = \text{i32}$, $6 = \text{u32}$, $7 = \text{f32}$, $8 = \text{f64}$, $9 = \text{c64}$).
+  - `shape`: `[u64; 8]` — Full tensor dimensions $[D_0, D_1, \dots, D_{\text{ndim}-1}]$. Unused dimensions MUST be `0`.
+  - `chunk_coords`: `[u64; 8]` — Logical chunk coordinate offset $[C_0, C_1, \dots, C_{\text{ndim}-1}]$ within a partitioned dataset.
+  - `axis_names`: `[u8; 64]` — Null-terminated comma-separated list of axis names (e.g., `b"time,depth,lat,lon\0"`).
+  - `units`: `[u8; 64]` — Null-terminated physical measurement units (e.g., `b"micromoles_per_liter\0"`).
+- **Payload Layout**:
+  - Contiguous row-major (C-order) primitive elements representing the active tensor block. Byte length equals $\prod_{i=0}^{\text{ndim}-1} \text{shape}[i] \times \text{sizeof(dtype)}$.
+- **Required vs Optional Fields**:
+  - Required: `ndim`, `dtype`, `shape[0..ndim]`, `chunk_coords[0..ndim]`.
+  - Optional: `axis_names` (defaults to empty string), `units` (defaults to arbitrary units).
+- **Integrity Rules**:
+  - `payload_len` MUST strictly equal $\prod \text{shape} \times \text{sizeof(dtype)}$.
+  - `ndim` MUST NOT exceed 8.
+  - Every active dimension $\text{shape}[i]$ MUST be $> 0$.
+- **Academic Research Example**: 4D Functional Magnetic Resonance Imaging (fMRI) volumetric brain scans ($64 \times 64 \times 32 \times 1200$ voxels over time) capturing Blood-Oxygen-Level-Dependent (BOLD) signals during language acquisition tasks.
+- **Why It Matters**: Multidimensional array tiles provide native, self-describing storage for tensor datasets without requiring external scientific formats like HDF5 or NetCDF. Researchers can directly map multidimensional observations into NumPy or PyTorch arrays for accelerated machine learning and scientific modeling.
+
+---
+
+#### 14.3.4 Vector Embedding Tile (`vector`) — Type ID: `67` (`0x0043`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `TileWriter::write_hyper_tile` in `crates/s3a-engine/src/lib.rs:621`; Reader: `QuerySieve::query_embeddings_spatial` in `crates/s3a-engine/src/lib.rs:1877`; Test: `test_composable_s3a_ql_algebraic_scoring` in `crates/s3a-engine/src/lib.rs:3954`; SIMD distance kernels: `cosine_similarity` in `crates/s3a-simd/src/lib.rs:136`).
+- **Purpose**: High-density dense embedding storage supporting approximate nearest neighbor (ANN) search, semantic similarity retrieval, and SIMD-accelerated distance metrics (Cosine, Dot Product, Euclidean L2).
+- **Header Extension Fields**:
+  - `dimensions`: `u32` — Dimensionality of the embedded vector space (e.g. 128, 256, 384, 768, 1536).
+  - `metric_kind`: `u16` — Mathematical distance metric ($0 = \text{Cosine}$, $1 = \text{DotProduct}$, $2 = \text{EuclideanL2}$, $3 = \text{Manhattan}$).
+  - `quantization`: `u16` — Numerical representation ($0 = \text{Float32}$, $1 = \text{Int8}$, $2 = \text{Packed4Bit}$).
+  - `model_name`: `[u8; 48]` — UTF-8 name of the foundation/embedding model that produced the vectors.
+  - `model_version`: `[u8; 16]` — Canonical version or checkpoint hash of the embedding model.
+- **Payload Layout**:
+  - For `Float32`: Contiguous sequence of `[RecordId (u64), Timestamp (u64), [f32; dimensions]]`.
+  - For `Int8`: Contiguous sequence of `[RecordId (u64), Timestamp (u64), Scale (f32), Offset (f32), Flags (u64), [i8; dimensions]]`.
+  - For `Packed4Bit`: Contiguous sequence of `[RecordId (u64), Timestamp (u64), Scale (f32), Offset (f32), Flags (u64), [u8; dimensions / 2]]`.
+- **Required vs Optional Fields**:
+  - Required: `dimensions` ($> 0$), `metric_kind`, `quantization`.
+  - Optional: `model_name` and `model_version` (RECOMMENDED for scientific reproducibility).
+- **Integrity Rules**:
+  - Vector element counts MUST match `dimensions`.
+  - When `metric_kind == 0` (Cosine), vectors stored in `Float32` SHOULD be normalized ($|v| = 1.0 \pm 10^{-4}$).
+  - Tile `SimplexHull` (§3.2.1) MUST enclose all vector endpoints to support bounding-sphere branch pruning during search.
+- **Academic Research Example**: 768-dimensional SPECTER2 document embeddings representing semantic concept vectors for 12,000 biomedical review papers in an Alzheimer's disease meta-analysis.
+- **Why It Matters**: Dedicated vector tiles embed neural representations alongside model provenance, ensuring semantic embeddings remain reproducible across evolving foundation model checkpoints. Native AVX-512 and NEON SIMD kernels can directly scan embeddings to power sub-millisecond semantic search without separate vector databases.
+
+---
+
+#### 14.3.5 Chunked Blob Tile (`blob`) — Type ID: `68` (`0x0044`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `LrsStore::store_statement` in `crates/s3a-engine/src/lrs_store.rs:1779`; Reader: `LrsStore::get_attachment` in `crates/s3a-engine/src/lrs_store.rs:2545`; Test: `test_attachments_store_and_retrieve` in `crates/s3a-engine/src/lrs_store.rs:3512`).
+- **Purpose**: Storage of arbitrary unstructured binary objects (PDF manuscripts, high-resolution microscopy TIFFs, audio captures, raw spectrometer dumps) partitioned into deterministic 128 KB chunk streams.
+- **Header Extension Fields**:
+  - `blob_id`: `[u8; 16]` — 128-bit UUID uniquely identifying the overall binary object.
+  - `total_blob_size`: `u64` — Total unfragmented byte length of the complete binary object across all chunks.
+  - `chunk_index`: `u32` — 0-based sequential chunk index within the object ($0 \le \text{chunk\_index} < \text{total\_chunks}$).
+  - `total_chunks`: `u32` — Total number of Hyper-Tile chunks comprising this binary object.
+  - `mime_type`: `[u8; 32]` — Null-terminated ASCII media type (e.g., `b"application/pdf\0"`, `b"image/tiff\0"`).
+  - `chunk_hash`: `[u8; 32]` — SHA-256 cryptographic digest calculated exclusively over this tile's payload chunk.
+- **Payload Layout**:
+  - Raw binary byte stream containing up to 130,560 bytes of the active slice: `blob_bytes[chunk_index * 130560 .. (chunk_index + 1) * 130560]`.
+- **Required vs Optional Fields**:
+  - Required: `blob_id`, `total_blob_size`, `chunk_index`, `total_chunks`, `chunk_hash`.
+  - Optional: `mime_type` (defaults to `b"application/octet-stream\0"`).
+- **Integrity Rules**:
+  - `chunk_hash` MUST match the SHA-256 digest of active payload bytes.
+  - If `chunk_index == total_chunks - 1`, `payload_len` MUST equal `total_blob_size - (chunk_index * 130560)`.
+  - Readers assembling the blob MUST verify that all chunks $0 \le i < \text{total\_chunks}$ are contiguous and share the same `blob_id`.
+- **Academic Research Example**: High-resolution 80 MB cryo-electron microscopy (Cryo-EM) protein structure density map `.mrc` files attached directly alongside their atomic model coordinates.
+- **Why It Matters**: Chunked blob tiles allow massive non-tabular research assets to reside in the exact same container as their analytical metadata, eliminating broken external URL links. Per-chunk cryptographic digests guarantee that raw primary source data has never suffered silent corruption or bit rot.
+
+---
+
+#### 14.3.6 Secondary Index Tile (`index`) — Type ID: `69` (`0x0045`) (Core)
+- **Status**: **IMPLEMENTED** (Writer: `TileWriter::write_hyper_tile_ext` in `crates/s3a-engine/src/lib.rs:461` and `bloom_filter_insert` in `crates/s3a-simd/src/lib.rs:271`; Reader: `can_reject_tile_bloom` in `crates/s3a-simd/src/lib.rs:301`; Test: `test_simd_bloom_filter_rejection` in `crates/s3a-simd/src/lib.rs:459`).
+- **Purpose**: Secondary associative indexing structures providing sub-millisecond point lookups, inverted key sieving, and range scans over primary record tiles without full-archive table scans.
+- **Header Extension Fields**:
+  - `target_tile_type`: `u16` — Tile `type_id` indexed by this structure (e.g. `64` / `0x0040` for records).
+  - `index_kind`: `u16` — Mathematical indexing structure ($1 = \text{BTree}$, $2 = \text{HashTable}$, $3 = \text{InvertedList}$, $4 = \text{LearnedSplineCDF}$).
+  - `key_type`: `u16` — Data type of indexed keys ($1 = \text{u64}$, $2 = \text{UUID128}$, $3 = \text{Hash256}$, $4 = \text{StringPrefix32}$).
+  - `fanout_or_buckets`: `u32` — B-Tree branch fanout factor or Hash bucket slot count.
+- **Payload Layout**:
+  - For B-Trees: Page-aligned node structures containing sorted `[Key, TargetTileIndex (u32), RecordOffset (u32)]` tuples.
+  - For Hash Tables: Power-of-two linear probing slot arrays containing `[KeyHash (u64), TargetTileIndex (u32), RecordOffset (u32)]`.
+  - For Inverted Lists: Key identifiers mapped to variable-length, delta-compressed post lists of matching tile indices.
+- **Required vs Optional Fields**:
+  - Required: `target_tile_type`, `index_kind`, `key_type`.
+  - Optional: `fanout_or_buckets` (inferred from node capacity if 0).
+- **Integrity Rules**:
+  - Keys within B-Tree leaf and interior nodes MUST be strictly monotonically ascending.
+  - Target tile references (`TargetTileIndex`) MUST refer to valid, existing tiles within the same archive file.
+  - `payload_hash` covers the entire binary index serialization.
+- **Academic Research Example**: Inverted author and DOI index mapping 1,500,000 digital object identifiers directly to their publication record tiles across a decade of physics preprints.
+- **Why It Matters**: Secondary index tiles turn massive multi-gigabyte research archives into instantly queryable databases without requiring external search engines. Researchers can locate specific records among billions of observations in a single disk seek.
+
+---
+
+### 14.4 Trust & Integrity Tile Specifications
+
+#### 14.4.1 Cryptographic Seal Tile (`seal`) — Type ID: `70` (`0x0046`) (Core Trust)
+- **Status**: **IMPLEMENTED** (Writer: `seal_archive` in `crates/s3a-engine/src/sealed.rs:646` / `seal_archive_v2` in `crates/s3a-engine/src/sealed.rs:613`; Reader: `verify_sealed_archive` in `crates/s3a-engine/src/sealed.rs:669` / `read_sealed_index_v2` in `crates/s3a-engine/src/sealed.rs:163`; Test: `test_seal_and_verify_roundtrip` in `crates/s3a-engine/src/sealed.rs:1347` / `test_index_lookup_reads_only_footer_bytes` in `crates/s3a-engine/tests/sealed_footer_v2.rs:66` / `test_cli_seal_anchor_upgrade_and_verify` in `crates/s3a-cli/tests/cli_ops.rs:114`).
+- **Purpose**: Establishes verifiable container immutability, Merkle epoch chain links, and cryptographic anchor proofs anchored to public decentralized timestamping calendars.
+- **Header Extension Fields**:
+  - `snapshot_hash`: `[u8; 32]` — Authoritative canonical archive fingerprint (SHA-256 over directory entries §11.1).
+  - `prev_seal_hash`: `[u8; 32]` — SHA-256 fingerprint of the previous sealed epoch in an evolving dataset chain (all zeros for genesis).
+  - `epoch_sequence`: `u64` — Strictly monotonic epoch revision number ($0, 1, 2, \dots$).
+  - `sealed_timestamp`: `u64` — Unix epoch timestamp when the sealing operation was finalized.
+  - `anchor_count`: `u32` — Number of cryptographic attestation proofs embedded in this tile's payload.
+- **Payload Layout**:
+  - Sequence of serialized `AnchorProof` structures (§11.3):
+    1. `proof_type`: `u16` ($1 = \text{OpenTimestamps}$, $2 = \text{RFC3161}$).
+    2. `proof_len`: `u32` — Byte length of proof payload.
+    3. `proof_bytes`: Binary OTS execution graph or ASN.1 DER `TimeStampResp` token.
+- **Required vs Optional Fields**:
+  - Required: `snapshot_hash`, `prev_seal_hash`, `epoch_sequence`, `sealed_timestamp`.
+  - Optional: `anchor_count` (0 if sealed locally prior to public calendar submission).
+- **Integrity Rules**:
+  - `snapshot_hash` MUST reconcile byte-for-byte with the archive's canonical directory fingerprint.
+  - Embedded OpenTimestamps proofs MUST trace a valid Merkle path matching the independent Bitcoin block header at the attested height.
+  - Embedded RFC 3161 proofs MUST validate against trusted X.509 root certificates and match `messageImprint`.
+- **Academic Research Example**: Tamper-evident freezing of a completed phase-III oncology clinical trial dataset prior to submission to regulatory authorities (FDA/EMA).
+- **Why It Matters**: Seal tiles provide mathematical certainty that scientific datasets have remained untouched since their recorded moment of publication or submission. By chaining cryptographic proofs to public timestamping infrastructure, researchers establish undeniable chronological priority for scientific breakthroughs.
+
+---
+
+#### 14.4.2 Subject Consent & Governance Tile (`consent`) — Type ID: `71` (`0x0047`) (Core Trust)
+- **Status**: **IMPLEMENTED** (Writer: `S3ACrudEngine::grant_consent` in `crates/s3a-engine/src/lib.rs:2106`, `TileWriter::write_hyper_tile` in `crates/s3a-engine/src/lib.rs:621`; Reader: `QuerySieve::query_consent_records` in `crates/s3a-engine/src/lib.rs:1426`; Test: `test_consent_grant_query_visible` in `crates/s3a-engine/tests/consent_and_schema_tiles.rs:85`).
+- **Purpose**: Enforces declarative research participant consent boundaries, institutional review board (IRB) scope constraints, and GDPR/HIPAA compliance directly within the storage layer.
+- **Header Extension Fields**:
+  - `record_count`: `u32` — Number of `ConsentRecord` structures embedded in this tile.
+  - `payload_bytes`: `u32` — Byte length of active consent record stream.
+- **Payload Layout**:
+  - Contiguous array of `ConsentRecord` structures (exactly 136 bytes each, 8-byte aligned, `Pod`/`Zeroable`):
+    - `subject_id`: `[u8; 16]` — 128-bit pseudonymized UUID participant identifier (offset 0..16).
+    - `study_id`: `u64` — Institutional Review Board protocol / study ID (offset 16..24).
+    - `purpose`: `u32` — Declared processing purpose (`1 = Research`, `2 = Analytics`, `3 = ModelTraining`, `4 = Sharing`) (offset 24..28).
+    - `scope`: `u32` — Tile type / record kind mask covered (0 = full wildcard) (offset 28..32).
+    - `granted_at`: `u64` — Unix epoch timestamp when consent was granted (offset 32..40).
+    - `expires_at`: `u64` — Unix epoch expiration timestamp (0 = no expiration) (offset 40..48).
+    - `withdrawn_at`: `u64` — Unix epoch withdrawal timestamp (0 = active) (offset 48..56).
+    - `legal_hold`: `u8` — Legal hold indicator (`1 = ActiveLegalHold`, `0 = Standard`) (offset 56..57).
+    - `_reserved`: `[u8; 7]` — 8-byte alignment padding (offset 57..64).
+    - `granted_by`: `u64` — Actor ID of authorized human/admin actor (offset 64..72).
+    - `prev_consent_hash`: `[u8; 32]` — Cryptographic chain digest over prior subject consent record (offset 72..104).
+    - `consent_hash`: `[u8; 32]` — SHA-256 cryptographic digest over preceding 104 bytes (offset 104..136).
+- **Required vs Optional Fields**:
+  - Required: `subject_id`, `study_id`, `purpose`, `scope`, `granted_at`, `granted_by`, `consent_hash`.
+  - Optional: `expires_at` (0 = indefinite), `withdrawn_at` (0 = not withdrawn), `legal_hold` (0 = no hold).
+- **Integrity Rules**:
+  - **Append-Only Governance**: Consent revocation is strictly append-only; existing records are NEVER edited in place. The latest record per `(subject_id, study_id, purpose)` determines active consent status.
+  - **Engine Read/Export Enforcement**: `QuerySieve` evaluates subject consent for the declared purpose before returning records. Queries and exports with a declared purpose skip records whose participant lacks active consent for that purpose (default export purpose = `Research`; `ModelTraining` strictly requires explicit consent).
+  - **Legal Hold Invariant**: If `legal_hold != 0` on an active consent record or subject, compliant purge (`purge_telemetry_record`) and compaction routines MUST refuse deletion and MUST preserve all records.
+  - **Tile 19 Compatibility**: Tile 19 administrative marks (`MARK_CONSENT_WITHDRAWN`, `MARK_LEGAL_HOLD`) remain fully honored; Tile 71 is additive without requiring data migration.
+  - **Human Authorization Gate**: Consent records can ONLY be authored by authorized human/administrative actors (`is_admin_or_human == true`); autonomous AI agents are forbidden from authoring consent records.
+  - **Hash Chain Verification**: Per-subject cryptographic hashes (`prev_consent_hash` $\to$ `consent_hash`) form an immutable audit chain verifiable via `QuerySieve::verify_consent_chain`.
+- **Academic Research Example**: Longitudinal psychiatric cohort consent tracking permitting academic depression biomarker discovery while strictly forbidding commercial re-identification.
+- **Why It Matters**: Consent tiles embed human research participant rights directly into the physical storage substrate rather than relying on external policy software. Compliant analytical engines can automatically mask or refuse access to participant data when consent expires or purposes do not match.
+
+---
+
+#### 14.4.3 Multi-Agent Provenance Tile (`provenance`) — Type ID: `72` (`0x0048`) (Core Trust)
+- **Status**: **IMPLEMENTED** (Writer: `ScholarCrudExt::create_ai_traces` in `crates/s3a-pack-scholar/src/ext.rs:66`; Reader: `ScholarQueryExt::query_ai_traces` in `crates/s3a-pack-scholar/src/ext.rs:378`; Test: `test_dual_trace_human_and_ai_cross_reference` in `crates/s3a-pack-scholar/src/lib.rs:215`; Agent registry tracking in `crates/s3a-pack-scholar/src/ext.rs:159`).
+- **Purpose**: Audits the end-to-end lineage of research findings, capturing whether artifacts were produced by a human researcher, an autonomous AI agent, or a foundation model, including model versions, parameters, and input record digests.
+- **Header Extension Fields**:
+  - `actor_kind`: `u16` — Nature of the producing entity ($1 = \text{HumanResearcher}$, $2 = \text{AutonomousAiAgent}$, $3 = \text{FoundationModel}$, $4 = \text{LaboratorySensor}$).
+  - `model_version`: `[u8; 32]` — Canonical checkpoint hash or release string of the producing model.
+  - `tool_call_id`: `u64` — Deterministic identifier linking to the execution tool step or laboratory protocol.
+  - `input_hash_count`: `u16` — Number of upstream input artifact hashes committed in the payload.
+- **Payload Layout**:
+  - Header parameters followed by an array of 32-byte cryptographic hashes `[InputRecordHash; input_hash_count]` referencing the exact prior records from which this finding was derived.
+- **Required vs Optional Fields**:
+  - Required: `actor_kind`, `input_hash_count`.
+  - Optional: `model_version` (REQUIRED if `actor_kind` is AI or Model), `tool_call_id`.
+- **Integrity Rules**:
+  - If `actor_kind == 2` (AI Agent), the agent ID MUST be registered in the container's active `agent_registry` tile.
+  - All declared upstream `InputRecordHash` digests SHOULD resolve to committed records within the current or parent archives.
+- **Academic Research Example**: Automated systematic literature review provenance documenting that a meta-analysis summary was generated by an AI research agent analyzing 42 specific paper hashes.
+- **Why It Matters**: Provenance tiles solve the reproducibility crisis by tracking whether scientific claims originated from human experimentation, automated instruments, or generative AI models. Reviewers can verify the exact computational lineage and input artifacts that produced every scientific figure and finding.
+
+---
+
+#### 14.4.4 Right-to-be-Forgotten Erasure Tile (`erasure`) — Type ID: `73` (`0x0049`) (Core Trust)
+- **Status**: **IMPLEMENTED** (Writer: `S3ACrudEngine::record_erasure` in `crates/s3a-engine/src/lib.rs:2208`, `S3ACrudEngine::create_erasure_record` in `crates/s3a-engine/src/lib.rs:2176`; Reader: `QuerySieve::query_erasure_records` in `crates/s3a-engine/src/lib.rs:1542`, `QuerySieve::verify_erasure_chain` in `crates/s3a-engine/src/lib.rs:1563`; Test: `test_erase_record_gone_after_compaction_and_receipt_remains_and_verifies` in `crates/s3a-engine/tests/erasure_tile.rs:69`, `test_legal_hold_blocks_erasure` in `crates/s3a-engine/tests/erasure_tile.rs:136`).
+- **Purpose**: Provides verifiable cryptographic audit receipts proving permanent data destruction under GDPR Article 17, HIPAA, or IRB mandates while preserving archive Merkle chain continuity.
+- **Header Extension Fields**:
+  - `record_count`: `u32` — Number of `ErasureRecord` audit receipts embedded in this tile.
+  - `payload_bytes`: `u32` — Byte length of active erasure record stream.
+- **Payload Layout**:
+  - **Zero Bytes of Erased Data Retained**: The payload NEVER retains any erased target data. The payload contains contiguous 144-byte `ErasureRecord` audit receipts (`[ErasureRecord; record_count]`, 8-byte aligned, `Pod`/`Zeroable`):
+    - `erased_record_hash`: `[u8; 32]` — SHA-256 digest of the destroyed record (offset 0..32).
+    - `target_tile_type`: `u16` — Tile type of target record (offset 32..34).
+    - `target_record_index`: `u32` — Record index within target tile (offset 34..38).
+    - `reason`: `u16` — Regulatory justification (`1 = Withdrawal`, `2 = RetentionExpiry`, `3 = LegalRequest`, `4 = Correction`) (offset 38..40).
+    - `authority_id`: `u64` — Authorized human/admin compliance actor ID (offset 40..48).
+    - `requested_at`: `u64` — Unix epoch timestamp when destruction was requested (offset 48..56).
+    - `executed_at`: `u64` — Unix epoch timestamp when purge was finalized (offset 56..64).
+    - `prev_erasure_hash`: `[u8; 32]` — Cryptographic chain digest over prior erasure receipt (offset 64..96).
+    - `erasure_hash`: `[u8; 32]` — SHA-256 cryptographic digest over preceding 96 bytes (offset 96..128).
+    - `_reserved`: `[u8; 16]` — Alignment padding (offset 128..144).
+- **Required vs Optional Fields**:
+  - Required: `erased_record_hash`, `target_tile_type`, `target_record_index`, `reason`, `authority_id`, `requested_at`, `executed_at`, `erasure_hash`.
+  - Optional: `prev_erasure_hash` (zeros for genesis erasure record).
+- **Integrity Rules**:
+  - **Zero Payload Retained**: Erased data bytes are never retained in the tile payload.
+  - **Purge Execution**: Compaction overwrites the target record bytes with zero bytes (`0x00`) via `TileFusionEngine`.
+  - **Legal Hold Enforcement**: An active legal hold (via `ConsentRecord::legal_hold`) strictly blocks erasure purge and returns a clear error.
+  - **Idempotency & Auditing**: Writing multiple erasure records for the same record hash is idempotent.
+  - **Cryptographic Receipt Chain**: Erasure receipts form a per-record cryptographic chain (`prev_erasure_hash` $\to$ `erasure_hash`), verified via `QuerySieve::verify_erasure_chain`.
+  - **Human Authorization Gate**: Erasure can only be requested by an authorized human/admin actor (`is_admin_or_human == true`); AI agents are forbidden from authorizing erasure.
+- **Academic Research Example**: Formal GDPR Article 17 erasure certificate proving that a withdrawn participant's genomic sequencing reads have been purged from a university biobank repository.
+- **Why It Matters**: Erasure tiles provide verifiable mathematical proof of compliance with privacy mandates without corrupting the cryptographic integrity of historical archive chains. Institutions can audit that sensitive data was irreversibly destroyed under valid legal authority while maintaining immutable audit trails.
+
+---
+
+### 14.5 Structural & Semantic Tile Specifications
+
+#### 14.5.1 Attributed Graph Tile (`graph`) — Type ID: `74` (`0x004A`) (Core Structure)
+- **Status**: **IMPLEMENTED** (Writer: `ScholarCrudExt::create_research_graph_edges` in `crates/s3a-pack-scholar/src/ext.rs:118`; Reader: `ScholarQueryExt::query_research_graph` in `crates/s3a-pack-scholar/src/ext.rs:478`; Test: `test_srs_snapshot_export_and_intake_roundtrip` in `crates/s3a-pack-scholar/src/lib.rs:270`).
+- **Purpose**: High-performance storage of attributed networks, citation graphs, taxonomic hierarchies, and knowledge graphs in cache-aligned binary arrays.
+- **Header Extension Fields**:
+  - `node_count`: `u32` — Total count of discrete vertices/nodes represented in this graph segment.
+  - `edge_count`: `u32` — Total count of directed or undirected connections in this segment.
+  - `graph_kind`: `u16` — Graph topology ($1 = \text{Directed}$, $2 = \text{Undirected}$, $3 = \text{Bipartite}$, $4 = \text{Hypergraph}$).
+  - `node_type`: `u16` — Entity type identifier for nodes.
+  - `edge_type`: `u16` — Relationship type identifier for edges (e.g. `cites`, `refutes`, `collaborates_with`).
+- **Payload Layout**:
+  - Compact Compressed Sparse Row (CSR) representation:
+    1. `NodeOffsets`: Array of `u32` offsets into the edge array (`node_count + 1` entries).
+    2. `EdgeTargets`: Contiguous array of destination node IDs (`edge_count` entries of `u32` or `u64`).
+    3. `EdgeWeights`: Optional contiguous array of `f32` relationship weights.
+- **Required vs Optional Fields**:
+  - Required: `node_count`, `edge_count`, `graph_kind`, `node_type`, `edge_type`.
+  - Optional: `EdgeWeights` (defaults to unweighted edges if omitted).
+- **Integrity Rules**:
+  - All destination node indices in `EdgeTargets` MUST be $< \text{node\_count}$ (or refer to valid external node keys).
+  - CSR node offsets MUST be strictly monotonic: $\text{NodeOffsets}[i] \le \text{NodeOffsets}[i+1]$.
+- **Academic Research Example**: Global scientific citation graph connecting 450,000 papers with 6,200,000 citation edges categorized as supportive, contradictory, or neutral.
+- **Why It Matters**: Graph tiles store complex relational topologies in cache-aligned binary arrays optimized for multi-hop graph traversal algorithms. Researchers can run PageRank, community detection, or claim verification algorithms directly on memory-mapped files without spinning up external graph databases.
+
+---
+
+#### 14.5.2 Monotonic Time-Series Tile (`time-series`) — Type ID: `75` (`0x004B`) (Core Structure)
+- **Status**: **IMPLEMENTED** (Writer: `TileWriter::write_hyper_tile` in `crates/s3a-engine/src/lib.rs:621`; Reader: `MmapReader::get_tile` in `crates/s3a-engine/src/lib.rs:798`; Test: `test_tile_writer_and_mmap_reader_roundtrip` in `crates/s3a-engine/src/lib.rs:3348`).
+- **Purpose**: Compact streaming storage of monotonically ordered temporal metrics supporting SIMD delta-of-delta compression, downsampling, and learned monotonic index lookups.
+- **Header Extension Fields**:
+  - `time_unit`: `u16` — Temporal unit of timestamps ($0 = \text{Seconds}$, $1 = \text{Milliseconds}$, $2 = \text{Microseconds}$, $3 = \text{Nanoseconds}$).
+  - `encoding_mode`: `u16` — Encoding algorithm ($0 = \text{Raw}$, $1 = \text{DeltaFrameOfReference}$, $2 = \text{DoubleDelta}$, $3 = \text{GorillaFloat}$).
+  - `base_timestamp`: `u64` — Minimum baseline timestamp offset for the entire tile.
+  - `sample_interval`: `u32` — Regular sampling period in `time_unit` increments, or 0 for irregular streams.
+- **Payload Layout**:
+  - Packed bitstream:
+    1. Bit-packed timestamp deltas relative to `base_timestamp`.
+    2. Bit-packed or quantized value observations.
+- **Required vs Optional Fields**:
+  - Required: `time_unit`, `encoding_mode`, `base_timestamp`.
+  - Optional: `sample_interval` (0 indicates variable sampling frequency).
+- **Integrity Rules**:
+  - Timestamps MUST be strictly monotonically non-decreasing ($\Delta t \ge 0$).
+  - Decoded timestamps MUST fall within the range $[\text{min\_timestamp}, \text{max\_timestamp}]$ declared in the tile header.
+- **Academic Research Example**: 250 Hz continuous biometric wearable telemetry recording photoplethysmography (PPG) pulse intervals and galvanic skin conductance during cognitive fatigue trials.
+- **Why It Matters**: Time-series tiles compress dense temporal sensor telemetry by up to 90% using SIMD-optimized integer and floating-point delta algorithms. Analytical engines can binary-search billions of timestamped data points in microseconds using embedded monotonic learned index models.
+
+---
+
+#### 14.5.3 Geospatial & Mesh Tile (`spatial`) — Type ID: `76` (`0x004C`) (Core Structure)
+- **Status**: **IMPLEMENTED** (Writer: `GisCrudExt::create_gis_points` in `crates/s3a-pack-gis/src/ext.rs:14`; Reader: `GisMmapExt::query_gis_mesh_3d` in `crates/s3a-pack-gis/src/ext.rs:70`; Test: `test_gis_write_and_query_mesh_3d` in `crates/s3a-pack-gis/src/lib.rs:91`).
+- **Purpose**: Storage of 2D/3D vector geometries, topographic coordinates, and spatial meshes supporting spatial R-Tree filtering and bounding-hull branch pruning.
+- **Header Extension Fields**:
+  - `srid`: `u32` — Spatial Reference System Identifier (e.g. `4326` for WGS84, `3857` for Web Mercator).
+  - `geometry_type`: `u16` — Primitive geometry ($1 = \text{Point}$, $2 = \text{LineString}$, $3 = \text{Polygon}$, $4 = \text{MultiPolygon}$, $5 = \text{Mesh3D}$).
+  - `index_kind`: `u16` — Spatial clustering algorithm ($1 = \text{MortonZOrder}$, $2 = \text{HilbertCurve}$, $3 = \text{RTreeLeaf}$).
+  - `bbox`: `[f64; 6]` — Bounding box coordinates $[X_{\min}, Y_{\min}, Z_{\min}, X_{\max}, Y_{\max}, Z_{\max}]$.
+- **Payload Layout**:
+  - FlatGeobuf or Well-Known Binary (WKB) coordinate buffers followed by polygon rings or vertex/triangle mesh indices.
+- **Required vs Optional Fields**:
+  - Required: `srid`, `geometry_type`, `bbox`.
+  - Optional: `index_kind` (defaults to unindexed coordinate list if 0).
+- **Integrity Rules**:
+  - All vertices and geometry points in the payload MUST fall strictly within the declared `bbox` volume.
+  - Polygons MUST be topologically valid (closed exterior rings with counter-clockwise winding).
+- **Academic Research Example**: High-resolution LIDAR canopy elevation mesh and forest ecology biodiversity survey plots across 1,000 square kilometers of conservation parkland.
+- **Why It Matters**: Spatial tiles integrate geographic and geometric indexing directly into tile headers to prune non-matching geographic regions before reading payload data. Spatial data scientists can run fast bounding-box filters and spatial joins on terabyte-scale datasets directly from disk.
+
+---
+
+#### 14.5.4 Embedded Schema Registry Tile (`schema`) — Type ID: `77` (`0x004D`) (Core Structure)
+- **Status**: **IMPLEMENTED** (Writer: `append_schema_tile_if_missing` in `crates/s3a-engine/src/lib.rs:1292`, `Compactor::compact_pass` in `crates/s3a-engine/src/lib.rs:2703`; Reader: `MmapReader::get_schema_definitions` in `crates/s3a-engine/src/lib.rs:908`, `MmapReader::resolve_tile_type_name` in `crates/s3a-engine/src/lib.rs:924`; Test: `test_schema_tile_roundtrip` in `crates/s3a-engine/tests/consent_and_schema_tiles.rs:395`, `test_inspect_shows_schema_names` in `crates/s3a-engine/tests/consent_and_schema_tiles.rs:512`).
+- **Purpose**: Embeds canonical field dictionaries, data types, and layout contracts directly into the archive file, enabling self-describing, zero-dependency data interchange and decades-long archival readability.
+- **Header Extension Fields**:
+  - `record_count`: `u32` — Must be 0 for variable-length serialized schema payload.
+  - `record_layout_version`: `u16` — Layout version for the schema binary encoding (1).
+  - `payload_bytes`: `u32` — Total byte length of encoded schema payload.
+- **Payload Layout**:
+  - Binary encoding formatted as `CompactSchemaHeader` + sequential `CompactSchemaTypeRecord` blocks with interleaved `CompactSchemaFieldRecord` lists:
+    1. `CompactSchemaHeader` (32 bytes, 8-byte aligned):
+       - `magic`: `[u8; 4]` (`*b"S3AS"`)
+       - `version`: `u16` (1)
+       - `type_count`: `u16` — Total number of declared type records
+       - `total_fields`: `u32` — Total number of declared field records across all types
+       - `schema_crc32`: `u32` — CRC32C checksum over trailing type and field payload bytes
+       - `_reserved`: `[u8; 16]` — Reserved padding
+    2. `CompactSchemaTypeRecord` (80 bytes, 8-byte aligned per type):
+       - `type_id`: `u32` — Tile type ID
+       - `type_version`: `u32` — Record layout version
+       - `record_size`: `u32` — Fixed record byte size
+       - `field_count`: `u32` — Number of field records following this type
+       - `name`: `[u8; 32]` — Null-terminated UTF-8 type name
+       - `owning_pack`: `[u8; 32]` — Null-terminated UTF-8 owning pack name
+    3. `CompactSchemaFieldRecord` (48 bytes, 8-byte aligned per field):
+       - `field_id`: `u16` — 1-based sequential field number
+       - `field_type`: `u16` — Primitive type enum (`1=u8, 2=u16, 3=u32, 4=u64, 5=u128, 6=f32, 7=f64, 8=bool, 9=string, 10=uuid128, 11=bytes32, 12=bytes64, 13=opaque_blob`)
+       - `byte_offset`: `u32` — Byte offset within record struct
+       - `byte_len`: `u32` — Byte length of field
+       - `null_allowed`: `u8` — Nullability flag (`0 = Required`, `1 = Nullable`)
+       - `_padding`: `[u8; 3]` — Alignment padding
+       - `name`: `[u8; 32]` — Null-terminated UTF-8 field name
+- **Required vs Optional Fields**:
+  - Required: `magic`, `version`, `type_count`, `total_fields`, `schema_crc32`.
+  - Optional: Field definitions can be empty for opaque binary tiles.
+- **Integrity Rules**:
+  - **Seal and Compaction Emission**: On compaction (`Compactor::compact_pass`) and seal (`seal_file`), the engine automatically emits a Schema tile enumerating every tile type present in the container.
+  - **Graceful Reader Fallback**: Readers encountering unknown tile types query embedded schema definitions to resolve human-readable type names and field layouts, safely skipping payloads they cannot natively decode.
+  - **CLI `inspect` Integration**: `s3a-cli inspect` resolves tile type names from the embedded Schema tile, displaying the canonical names instead of `"UNKNOWN"`.
+  - `schema_crc32` MUST validate against decoded type and field descriptor bytes.
+- **Academic Research Example**: Embedded data dictionary in a public 20-year astronomical sky survey archive defining telescope sensor calibration parameters and spectral band classifications.
+- **Why It Matters**: Embedded schema tiles guarantee that archive files remain completely decipherable decades into the future without relying on external compiler tools or source code repositories. Scientific archivists can inspect, validate, and convert historical datasets using self-contained structural metadata stored right inside the container.
+
+---
+
+### 14.6 Adoption Examples Matrix
+
+The table below illustrates how diverse academic disciplines and research workflows compose multiple tile types within a single unified S3A archive container:
+
+| Research Use Case / Dataset | Composed Tile Types | Role of Each Tile Type in the Dataset | Realized Architectural Advantage |
+|:---|:---|:---|:---|
+| **Scholar Study**<br>*(Longitudinal Multimodal Learning Trial)* | • `record` (`64` / `0x0040`)<br>• `time-series` (`75` / `0x004B`)<br>• `vector` (`67` / `0x0043`)<br>• `provenance` (`72` / `0x0048`)<br>• `consent` (`71` / `0x0047`) | • `record`: Learner assessment scores, demographics, and task completion logs.<br>• `time-series`: Micro-second keystroke and pupil dilation telemetry streams.<br>• `vector`: 384-D concept mastery embeddings.<br>• `provenance`: Distinguishes student submissions from AI tutoring interventions.<br>• `consent`: IRB ethics approvals and age-of-majority participant permissions. | Unifies heterogeneous biometric streams, assessment scores, and participant privacy rules into a single portable container without relational database sprawl. |
+| **Citation Graph**<br>*(Bibliometric Open Access Corpus)* | • `graph` (`74` / `0x004A`)<br>• `record` (`64` / `0x0040`)<br>• `blob` (`68` / `0x0044`)<br>• `index` (`69` / `0x0045`)<br>• `seal` (`70` / `0x0046`) | • `graph`: 10-million-edge citation and co-authorship topology.<br>• `record`: Paper publication dates, journal venue metadata, and author IDs.<br>• `blob`: Complete Open Access PDF manuscripts and LaTeX source tarballs.<br>• `index`: Sub-millisecond inverted search index on paper DOIs and ISBNs.<br>• `seal`: Daily OpenTimestamps Bitcoin anchoring proving corpus state at snapshot time. | Enables multi-hop citation traversals and full-text document retrieval in a single memory-mapped container with cryptographic proof of document authenticity. |
+| **Semantic Paper Search**<br>*(Neural Literature Discovery Engine)* | • `vector` (`67` / `0x0043`)<br>• `index` (`69` / `0x0045`)<br>• `record` (`64` / `0x0040`)<br>• `schema` (`77` / `0x004D`) | • `vector`: 768-D SPECTER2 abstract embeddings.<br>• `index`: Quantized inverted vector cluster indices and learned CDF search models.<br>• `record`: Paper titles, abstract text strings, and venue classifications.<br>• `schema`: Embedded field dictionary defining biomedical keyword taxonomies. | Delivers sub-millisecond nearest-neighbor search directly against raw file storage, eliminating the need to deploy and synchronize an external vector database cluster. |
+| **IRB Consent Audit**<br>*(Longitudinal Clinical Research Biobank)* | • `consent` (`71` / `0x0047`)<br>• `erasure` (`73` / `0x0049`)<br>• `seal` (`70` / `0x0046`)<br>• `provenance` (`72` / `0x0048`) | • `consent`: Subject-specific consent permissions, study scopes, and expiration dates.<br>• `erasure`: Verifiable zero-payload destruction receipts for withdrawn participants.<br>• `seal`: Chained epoch seals proving audit logs were not retrospectively altered.<br>• `provenance`: Institutional compliance officer authorizations and tool logs. | Guarantees compliance with GDPR Article 17 and HIPAA audits by providing cryptographic, tamper-evident proof that sensitive medical data was destroyed under lawful order. |
+
+---
+
+### 14.7 Implementation Status Summary
+
+The table below catalogs all 14 tile abstractions defined in this section and summarizes their implementation status within the current reference codebase (`crates/s3a-core`, `crates/s3a-engine`, `crates/s3a-simd`, `crates/s3a-pack-*`, `crates/s3a-cli`).
+
+Per specification audit policy, a tile type is classified as **IMPLEMENTED** only if an on-disk writer AND reader exist in `crates/` alongside a dedicated automated test verifying round-trip operation. Any type lacking an on-disk writer, reader, or test in `crates/` is classified as **SPECIFIED-ONLY**.
+
+| Canonical Type Name | Type ID (Dec) | Type ID (Hex) | Category | Status | Verified Codebase Citations (Writer, Reader, Test) |
+|:---|:---:|:---:|:---:|:---:|:---|
+| `record` | 64 | `0x0040` | Core | **IMPLEMENTED** | **Writer**: `TileWriter::write_hyper_tile` (`crates/s3a-engine/src/lib.rs:621`)<br>**Reader**: `MmapReader::get_tile` (`crates/s3a-engine/src/lib.rs:798`)<br>**Test**: `test_tile_writer_and_mmap_reader_roundtrip` (`crates/s3a-engine/src/lib.rs:3348`) |
+| `columnar` | 65 | `0x0041` | Core | **IMPLEMENTED** | **Writer**: `encode_columnar_telemetry` (`crates/s3a-engine/src/lib.rs:56`) / `Compactor::compact_with_columnar_opt_in` (`crates/s3a-engine/src/lib.rs:2630`)<br>**Reader**: `decode_columnar_telemetry` (`crates/s3a-engine/src/lib.rs:108`) / `QuerySieve::query_telemetry_with_coords` (`crates/s3a-engine/src/lib.rs:1700`)<br>**Test**: `test_roundtrip_equality_vs_record_tile` (`crates/s3a-engine/tests/columnar_tile.rs:39`) / `test_compaction_opt_in_columnar_roundtrip` (`crates/s3a-engine/tests/columnar_tile.rs:198`) |
+| `array` | 66 | `0x0042` | Core | **IMPLEMENTED** | **Writer**: `S3ACrudEngine::write_array_chunk` (`crates/s3a-engine/src/lib.rs:2448`) / `ArrayTileBuilder::build` (`crates/s3a-core/src/array.rs:192`)<br>**Reader**: `S3ACrudEngine::read_array_slice` (`crates/s3a-engine/src/lib.rs:2476`) / `ArrayTileView::parse` (`crates/s3a-core/src/array.rs:206`)<br>**Test**: `test_array_roundtrip_2d_3d_4d` (`crates/s3a-engine/tests/array_tile.rs:43`) / `test_array_slice_across_chunk_boundaries` (`crates/s3a-engine/tests/array_tile.rs:98`) |
+| `vector` | 67 | `0x0043` | Core | **IMPLEMENTED** | **Writer**: `TileWriter::write_hyper_tile` (`crates/s3a-engine/src/lib.rs:621`)<br>**Reader**: `QuerySieve::query_embeddings_spatial` (`crates/s3a-engine/src/lib.rs:1877`)<br>**Test**: `test_composable_s3a_ql_algebraic_scoring` (`crates/s3a-engine/src/lib.rs:3954`) |
+| `blob` | 68 | `0x0044` | Core | **IMPLEMENTED** | **Writer**: `LrsStore::store_statement` attachments (`crates/s3a-engine/src/lrs_store.rs:1779`)<br>**Reader**: `LrsStore::get_attachment` (`crates/s3a-engine/src/lrs_store.rs:2545`)<br>**Test**: `test_attachments_store_and_retrieve` (`crates/s3a-engine/src/lrs_store.rs:3512`) |
+| `index` | 69 | `0x0045` | Core | **IMPLEMENTED** | **Writer**: `TileWriter::write_hyper_tile_ext` (`crates/s3a-engine/src/lib.rs:461`) / `bloom_filter_insert` (`crates/s3a-simd/src/lib.rs:271`)<br>**Reader**: `can_reject_tile_bloom` (`crates/s3a-simd/src/lib.rs:301`)<br>**Test**: `test_simd_bloom_filter_rejection` (`crates/s3a-simd/src/lib.rs:459`) |
+| `seal` | 70 | `0x0046` | Trust | **IMPLEMENTED** | **Writer**: `seal_archive` (`crates/s3a-engine/src/sealed.rs:646`) / `seal_archive_v2` (`crates/s3a-engine/src/sealed.rs:613`)<br>**Reader**: `verify_sealed_archive` (`crates/s3a-engine/src/sealed.rs:669`) / `read_sealed_index_v2` (`crates/s3a-engine/src/sealed.rs:163`)<br>**Test**: `test_seal_and_verify_roundtrip` (`crates/s3a-engine/src/sealed.rs:1347`) / `test_index_lookup_reads_only_footer_bytes` (`crates/s3a-engine/tests/sealed_footer_v2.rs:66`) |
+| `consent` | 71 | `0x0047` | Trust | **IMPLEMENTED** | **Writer**: `S3ACrudEngine::grant_consent` (`crates/s3a-engine/src/lib.rs:2106`) / `TileWriter::write_hyper_tile` (`crates/s3a-engine/src/lib.rs:621`)<br>**Reader**: `QuerySieve::query_consent_records` (`crates/s3a-engine/src/lib.rs:1426`)<br>**Test**: `test_consent_grant_query_visible` (`crates/s3a-engine/tests/consent_and_schema_tiles.rs:85`) |
+| `provenance` | 72 | `0x0048` | Trust | **IMPLEMENTED** | **Writer**: `ScholarCrudExt::create_ai_traces` (`crates/s3a-pack-scholar/src/ext.rs:66`)<br>**Reader**: `ScholarQueryExt::query_ai_traces` (`crates/s3a-pack-scholar/src/ext.rs:378`)<br>**Test**: `test_dual_trace_human_and_ai_cross_reference` (`crates/s3a-pack-scholar/src/lib.rs:215`) |
+| `erasure` | 73 | `0x0049` | Trust | **IMPLEMENTED** | **Writer**: `S3ACrudEngine::record_erasure` (`crates/s3a-engine/src/lib.rs:2208`) / `S3ACrudEngine::create_erasure_record` (`crates/s3a-engine/src/lib.rs:2176`)<br>**Reader**: `QuerySieve::query_erasure_records` (`crates/s3a-engine/src/lib.rs:1542`) / `QuerySieve::verify_erasure_chain` (`crates/s3a-engine/src/lib.rs:1563`)<br>**Test**: `test_erase_record_gone_after_compaction_and_receipt_remains_and_verifies` (`crates/s3a-engine/tests/erasure_tile.rs:69`) / `test_legal_hold_blocks_erasure` (`crates/s3a-engine/tests/erasure_tile.rs:136`) |
+| `graph` | 74 | `0x004A` | Structure | **IMPLEMENTED** | **Writer**: `ScholarCrudExt::create_research_graph_edges` (`crates/s3a-pack-scholar/src/ext.rs:118`)<br>**Reader**: `ScholarQueryExt::query_research_graph` (`crates/s3a-pack-scholar/src/ext.rs:478`)<br>**Test**: `test_srs_snapshot_export_and_intake_roundtrip` (`crates/s3a-pack-scholar/src/lib.rs:270`) |
+| `time-series` | 75 | `0x004B` | Structure | **IMPLEMENTED** | **Writer**: `TileWriter::write_hyper_tile` (`crates/s3a-engine/src/lib.rs:621`)<br>**Reader**: `MmapReader::get_tile` (`crates/s3a-engine/src/lib.rs:798`)<br>**Test**: `test_tile_writer_and_mmap_reader_roundtrip` (`crates/s3a-engine/src/lib.rs:3348`) |
+| `spatial` | 76 | `0x004C` | Structure | **IMPLEMENTED** | **Writer**: `GisCrudExt::create_gis_points` (`crates/s3a-pack-gis/src/ext.rs:14`)<br>**Reader**: `GisMmapExt::query_gis_mesh_3d` (`crates/s3a-pack-gis/src/ext.rs:70`)<br>**Test**: `test_gis_write_and_query_mesh_3d` (`crates/s3a-pack-gis/src/lib.rs:91`) |
+| `schema` | 77 | `0x004D` | Structure | **IMPLEMENTED** | **Writer**: `append_schema_tile_if_missing` (`crates/s3a-engine/src/lib.rs:1292`) / `Compactor::compact_pass` (`crates/s3a-engine/src/lib.rs:2703`)<br>**Reader**: `MmapReader::get_schema_definitions` (`crates/s3a-engine/src/lib.rs:908`) / `MmapReader::resolve_tile_type_name` (`crates/s3a-engine/src/lib.rs:924`)<br>**Test**: `test_schema_tile_roundtrip` (`crates/s3a-engine/tests/consent_and_schema_tiles.rs:395`) / `test_inspect_shows_schema_names` (`crates/s3a-engine/tests/consent_and_schema_tiles.rs:512`) |
+
+

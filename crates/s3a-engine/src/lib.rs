@@ -8,6 +8,7 @@ use bytemuck::{bytes_of, from_bytes, Pod};
 use memmap2::Mmap;
 
 pub use s3a_core::*;
+use sha2::Digest;
 use s3a_simd::{
     can_reject_tile_point, can_reject_tile_range, can_reject_tile_time,
     can_reject_tile_bloom, bloom_filter_insert,
@@ -47,9 +48,106 @@ pub use tiering::{TileStorageAdapter, LocalStorageAdapter, RustFsAdapter, RustFs
 pub use lakehouse::{
     SnowflakeBatchRequest, handle_snowflake_batch_request,
     ArrowSchema, ArrowField, ArrowColumnVector, ArrowRecordBatchDescriptor,
-    project_telemetry_to_arrow,
+    project_telemetry_to_arrow, project_columnar_to_arrow,
     generate_iceberg_metadata, generate_delta_metadata,
 };
+
+/// Encodes a slice of TelemetryRecords into a Columnar Tile payload.
+pub fn encode_columnar_telemetry(records: &[TelemetryRecord]) -> Vec<u8> {
+    let mut builder = ColumnarTileBuilder::new(records.len() as u32, TileType::TELEMETRY);
+    let n = records.len();
+    let mut ts = Vec::with_capacity(n);
+    let mut sensor = Vec::with_capacity(n);
+    let mut metric = Vec::with_capacity(n);
+    let mut val = Vec::with_capacity(n);
+
+    let mut min_ts = u64::MAX;
+    let mut max_ts = u64::MIN;
+    let mut min_sensor = u32::MAX;
+    let mut max_sensor = u32::MIN;
+    let mut min_metric = u32::MAX;
+    let mut max_metric = u32::MIN;
+    let mut min_val = f64::MAX;
+    let mut max_val = f64::MIN;
+    let mut flags = Vec::with_capacity(n);
+
+    for r in records {
+        ts.push(r.timestamp);
+        sensor.push(r.sensor_id);
+        metric.push(r.metric_id);
+        val.push(r.value);
+        flags.push(r.flags);
+
+        if r.timestamp < min_ts { min_ts = r.timestamp; }
+        if r.timestamp > max_ts { max_ts = r.timestamp; }
+        if r.sensor_id < min_sensor { min_sensor = r.sensor_id; }
+        if r.sensor_id > max_sensor { max_sensor = r.sensor_id; }
+        if r.metric_id < min_metric { min_metric = r.metric_id; }
+        if r.metric_id > max_metric { max_metric = r.metric_id; }
+        if r.value < min_val { min_val = r.value; }
+        if r.value > max_val { max_val = r.value; }
+    }
+
+    if records.is_empty() {
+        min_ts = 0; max_ts = 0;
+        min_sensor = 0; max_sensor = 0;
+        min_metric = 0; max_metric = 0;
+        min_val = 0.0; max_val = 0.0;
+    }
+
+    builder.add_column("timestamp", ColumnDataType::UInt64, &ts, None, min_ts as f64, max_ts as f64);
+    builder.add_column("sensor_id", ColumnDataType::UInt32, &sensor, None, min_sensor as f64, max_sensor as f64);
+    builder.add_column("metric_id", ColumnDataType::UInt32, &metric, None, min_metric as f64, max_metric as f64);
+    builder.add_column("value", ColumnDataType::Float64, &val, None, min_val, max_val);
+    builder.add_column("flags", ColumnDataType::UInt64, &flags, None, 0.0, 0.0);
+
+    builder.build()
+}
+
+/// Decodes a Columnar Tile payload into row-based TelemetryRecords.
+pub fn decode_columnar_telemetry(payload: &[u8]) -> io::Result<Vec<TelemetryRecord>> {
+    let view = ColumnarTileView::parse(payload)?;
+    let n = view.header.record_count as usize;
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+
+    let desc_ts = view.find_column("timestamp").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Missing 'timestamp' column in columnar telemetry")
+    })?;
+    let desc_sensor = view.find_column("sensor_id").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Missing 'sensor_id' column in columnar telemetry")
+    })?;
+    let desc_metric = view.find_column("metric_id").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Missing 'metric_id' column in columnar telemetry")
+    })?;
+    let desc_val = view.find_column("value").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "Missing 'value' column in columnar telemetry")
+    })?;
+    let desc_flags = view.find_column("flags");
+
+    let col_ts: &[u64] = view.read_column_slice(desc_ts)?;
+    let col_sensor: &[u32] = view.read_column_slice(desc_sensor)?;
+    let col_metric: &[u32] = view.read_column_slice(desc_metric)?;
+    let col_val: &[f64] = view.read_column_slice(desc_val)?;
+    let col_flags: Option<&[u64]> = if let Some(df) = desc_flags {
+        view.read_column_slice(df).ok()
+    } else {
+        None
+    };
+
+    let mut records = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut rec = TelemetryRecord::default();
+        rec.timestamp = col_ts[i];
+        rec.sensor_id = col_sensor[i];
+        rec.metric_id = col_metric[i];
+        rec.value = col_val[i];
+        rec.flags = col_flags.map(|cf| cf[i]).unwrap_or(1);
+        records.push(rec);
+    }
+    Ok(records)
+}
 
 /// Zero-allocation 4 KB Micro-Tile Memory Buffer for embedded microcontrollers (Earbuds, Smart Glasses, Wristbands).
 pub struct MicroTileBuffer {
@@ -805,6 +903,36 @@ impl MmapReader {
         }
         Ok(())
     }
+
+    /// Extracts all schema type definitions embedded within any Schema Tile (Tile 77) in the archive.
+    pub fn get_schema_definitions(&self) -> Vec<SchemaTypeDefinition> {
+        let count = self.tile_count() as usize;
+        for i in 0..count {
+            if let Some((header, payload)) = self.get_tile(i) {
+                if header.tile_type == TileType::SCHEMA {
+                    if let Ok(types) = decode_schema_payload(payload) {
+                        return types;
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Resolves the human-readable canonical name for a given tile type.
+    /// Checks global registry first, then embedded Schema Tile definitions, falling back to "UNKNOWN".
+    pub fn resolve_tile_type_name(&self, tile_type: u32) -> String {
+        let reg = s3a_core::registry::global_registry();
+        if let Some(desc) = reg.get(tile_type) {
+            return desc.name.to_string();
+        }
+        for def in self.get_schema_definitions() {
+            if def.type_id == tile_type {
+                return def.name;
+            }
+        }
+        "UNKNOWN".to_string()
+    }
 }
 
 /// Recovers and hardens an S3A archive:
@@ -1003,10 +1131,228 @@ impl TileFusionEngine {
     }
 }
 
+/// Constructs a canonical SchemaTypeDefinition for a registered or well-known tile type.
+pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
+    match tile_type {
+        TileType::TELEMETRY => SchemaTypeDefinition {
+            type_id: TileType::TELEMETRY,
+            type_version: 1,
+            name: "telemetry".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 32,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 4, byte_offset: 0, byte_len: 8, null_allowed: false, name: "timestamp".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 3, byte_offset: 8, byte_len: 4, null_allowed: false, name: "sensor_id".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 3, byte_offset: 12, byte_len: 4, null_allowed: false, name: "metric_id".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 10, byte_offset: 16, byte_len: 8, null_allowed: false, name: "value".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 4, byte_offset: 24, byte_len: 8, null_allowed: false, name: "flags".to_string() },
+            ],
+        },
+        TileType::EMBEDDING => SchemaTypeDefinition {
+            type_id: TileType::EMBEDDING,
+            type_version: 1,
+            name: "embedding_128".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 528,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 4, byte_offset: 0, byte_len: 8, null_allowed: false, name: "id".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 4, byte_offset: 8, byte_len: 8, null_allowed: false, name: "timestamp".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 13, byte_offset: 16, byte_len: 512, null_allowed: false, name: "vector".to_string() },
+            ],
+        },
+        TileType::MARKS => SchemaTypeDefinition {
+            type_id: TileType::MARKS,
+            type_version: 1,
+            name: "marks".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 4, byte_offset: 0, byte_len: 8, null_allowed: false, name: "mark_id".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 3, byte_offset: 8, byte_len: 4, null_allowed: false, name: "target_tile_type".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 3, byte_offset: 12, byte_len: 4, null_allowed: false, name: "mark_kind".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 4, byte_offset: 16, byte_len: 8, null_allowed: false, name: "target_tile_id".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 3, byte_offset: 24, byte_len: 4, null_allowed: false, name: "record_index".to_string() },
+                SchemaFieldDefinition { field_id: 6, field_type: 1, byte_offset: 28, byte_len: 1, null_allowed: false, name: "set_or_clear".to_string() },
+                SchemaFieldDefinition { field_id: 7, field_type: 4, byte_offset: 32, byte_len: 8, null_allowed: false, name: "timestamp".to_string() },
+                SchemaFieldDefinition { field_id: 8, field_type: 4, byte_offset: 40, byte_len: 8, null_allowed: false, name: "actor_id".to_string() },
+            ],
+        },
+        TileType::CONSENT => SchemaTypeDefinition {
+            type_id: TileType::CONSENT,
+            type_version: 1,
+            name: "consent".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 136,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 12, byte_offset: 0, byte_len: 16, null_allowed: false, name: "subject_id".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 4, byte_offset: 16, byte_len: 8, null_allowed: false, name: "study_id".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 3, byte_offset: 24, byte_len: 4, null_allowed: false, name: "purpose".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 3, byte_offset: 28, byte_len: 4, null_allowed: false, name: "scope".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 4, byte_offset: 32, byte_len: 8, null_allowed: false, name: "granted_at".to_string() },
+                SchemaFieldDefinition { field_id: 6, field_type: 4, byte_offset: 40, byte_len: 8, null_allowed: false, name: "expires_at".to_string() },
+                SchemaFieldDefinition { field_id: 7, field_type: 4, byte_offset: 48, byte_len: 8, null_allowed: false, name: "withdrawn_at".to_string() },
+                SchemaFieldDefinition { field_id: 8, field_type: 1, byte_offset: 56, byte_len: 1, null_allowed: false, name: "legal_hold".to_string() },
+                SchemaFieldDefinition { field_id: 9, field_type: 4, byte_offset: 64, byte_len: 8, null_allowed: false, name: "granted_by".to_string() },
+                SchemaFieldDefinition { field_id: 10, field_type: 13, byte_offset: 72, byte_len: 32, null_allowed: false, name: "prev_consent_hash".to_string() },
+                SchemaFieldDefinition { field_id: 11, field_type: 13, byte_offset: 104, byte_len: 32, null_allowed: false, name: "consent_hash".to_string() },
+            ],
+        },
+        TileType::COLUMNAR => SchemaTypeDefinition {
+            type_id: TileType::COLUMNAR,
+            type_version: 1,
+            name: "columnar".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 0,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 2, byte_offset: 4, byte_len: 2, null_allowed: false, name: "column_count".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 3, byte_offset: 6, byte_len: 4, null_allowed: false, name: "record_count".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 2, byte_offset: 10, byte_len: 2, null_allowed: false, name: "compression_codec".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 3, byte_offset: 16, byte_len: 4, null_allowed: false, name: "source_tile_type".to_string() },
+            ],
+        },
+        TileType::ARRAY => SchemaTypeDefinition {
+            type_id: TileType::ARRAY,
+            type_version: 1,
+            name: "array".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 0,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 2, byte_offset: 6, byte_len: 2, null_allowed: false, name: "ndim".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 2, byte_offset: 8, byte_len: 2, null_allowed: false, name: "dtype".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 2, byte_offset: 10, byte_len: 2, null_allowed: false, name: "compression_codec".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 13, byte_offset: 16, byte_len: 64, null_allowed: false, name: "shape".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 13, byte_offset: 80, byte_len: 64, null_allowed: false, name: "chunk_shape".to_string() },
+                SchemaFieldDefinition { field_id: 6, field_type: 13, byte_offset: 144, byte_len: 64, null_allowed: false, name: "chunk_coords".to_string() },
+                SchemaFieldDefinition { field_id: 7, field_type: 13, byte_offset: 208, byte_len: 8, null_allowed: false, name: "fill_value".to_string() },
+                SchemaFieldDefinition { field_id: 8, field_type: 13, byte_offset: 216, byte_len: 32, null_allowed: false, name: "chunk_hash".to_string() },
+                SchemaFieldDefinition { field_id: 9, field_type: 9, byte_offset: 248, byte_len: 64, null_allowed: false, name: "axis_names".to_string() },
+            ],
+        },
+        TileType::ERASURE => SchemaTypeDefinition {
+            type_id: TileType::ERASURE,
+            type_version: 1,
+            name: "erasure".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 144,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 13, byte_offset: 0, byte_len: 32, null_allowed: false, name: "erased_record_hash".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 3, byte_offset: 32, byte_len: 4, null_allowed: false, name: "target_tile_type".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 3, byte_offset: 36, byte_len: 4, null_allowed: false, name: "record_index".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 4, byte_offset: 40, byte_len: 8, null_allowed: false, name: "target_tile_id".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 3, byte_offset: 48, byte_len: 4, null_allowed: false, name: "reason".to_string() },
+                SchemaFieldDefinition { field_id: 6, field_type: 3, byte_offset: 52, byte_len: 4, null_allowed: false, name: "_reserved_u32".to_string() },
+                SchemaFieldDefinition { field_id: 7, field_type: 4, byte_offset: 56, byte_len: 8, null_allowed: false, name: "authority".to_string() },
+                SchemaFieldDefinition { field_id: 8, field_type: 4, byte_offset: 64, byte_len: 8, null_allowed: false, name: "requested_at".to_string() },
+                SchemaFieldDefinition { field_id: 9, field_type: 4, byte_offset: 72, byte_len: 8, null_allowed: false, name: "executed_at".to_string() },
+                SchemaFieldDefinition { field_id: 10, field_type: 13, byte_offset: 80, byte_len: 32, null_allowed: false, name: "prev_erasure_hash".to_string() },
+                SchemaFieldDefinition { field_id: 11, field_type: 13, byte_offset: 112, byte_len: 32, null_allowed: false, name: "erasure_hash".to_string() },
+            ],
+        },
+        TileType::SCHEMA => SchemaTypeDefinition {
+            type_id: TileType::SCHEMA,
+            type_version: 1,
+            name: "schema".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 0,
+            fields: vec![
+                SchemaFieldDefinition { field_id: 1, field_type: 3, byte_offset: 0, byte_len: 4, null_allowed: false, name: "schema_id".to_string() },
+                SchemaFieldDefinition { field_id: 2, field_type: 2, byte_offset: 4, byte_len: 2, null_allowed: false, name: "schema_format".to_string() },
+                SchemaFieldDefinition { field_id: 3, field_type: 2, byte_offset: 6, byte_len: 2, null_allowed: false, name: "type_count".to_string() },
+                SchemaFieldDefinition { field_id: 4, field_type: 3, byte_offset: 8, byte_len: 4, null_allowed: false, name: "total_fields".to_string() },
+                SchemaFieldDefinition { field_id: 5, field_type: 3, byte_offset: 12, byte_len: 4, null_allowed: false, name: "schema_crc32".to_string() },
+            ],
+        },
+        other => {
+            let reg = s3a_core::registry::global_registry();
+            if let Some(desc) = reg.get(other) {
+                return SchemaTypeDefinition {
+                    type_id: other,
+                    type_version: desc.current_layout_version,
+                    name: desc.name.to_string(),
+                    owning_pack: desc.owner_pack.to_string(),
+                    record_size: desc.record_size as u32,
+                    fields: vec![
+                        SchemaFieldDefinition { field_id: 1, field_type: 13, byte_offset: 0, byte_len: desc.record_size as u32, null_allowed: false, name: "record_data".to_string() },
+                    ],
+                };
+            }
+            SchemaTypeDefinition {
+                type_id: other,
+                type_version: 1,
+                name: format!("tile_type_{}", other),
+                owning_pack: "unknown".to_string(),
+                record_size: 0,
+                fields: vec![],
+            }
+        }
+    }
+}
+
+/// Appends an embedded Schema Tile (Tile 77) describing all tile types present in the archive if not already present.
+pub fn append_schema_tile_if_missing<P: AsRef<Path>>(path: P) -> io::Result<bool> {
+    let path_ref = path.as_ref();
+    let reader = MmapReader::open(path_ref)?;
+    let tile_count = reader.tile_count() as usize;
+    if tile_count == 0 {
+        return Ok(false);
+    }
+
+    let mut present_types = std::collections::BTreeSet::new();
+    let mut has_schema = false;
+    let mut custom_schemas = std::collections::HashMap::new();
+
+    for i in 0..tile_count {
+        if let Some((header, payload)) = reader.get_tile(i) {
+            present_types.insert(header.tile_type);
+            if header.tile_type == TileType::SCHEMA {
+                has_schema = true;
+                if let Ok(types) = decode_schema_payload(payload) {
+                    for t in types {
+                        custom_schemas.insert(t.type_id, t);
+                    }
+                }
+            }
+        }
+    }
+
+    if has_schema {
+        return Ok(false);
+    }
+
+    drop(reader);
+
+    present_types.insert(TileType::SCHEMA);
+    let mut schema_defs = Vec::new();
+    for &tt in &present_types {
+        if let Some(custom) = custom_schemas.get(&tt) {
+            schema_defs.push(custom.clone());
+        } else {
+            schema_defs.push(standard_schema_for_type(tt));
+        }
+    }
+
+    let payload = encode_schema_payload(&schema_defs);
+    let mut writer = TileWriter::open_append(path_ref)?;
+    let mut schema_hdr = HyperTileHeader::new(writer.tile_count() as u64, TileType::SCHEMA);
+    schema_hdr.record_count = 0;
+    schema_hdr.record_layout_version = 1;
+    schema_hdr.payload_bytes = payload.len() as u32;
+    schema_hdr.data_crc32 = crc32c::crc32c(&payload);
+    schema_hdr.generation = writer.generation();
+    schema_hdr.tile_index = writer.tile_count() as u32;
+    schema_hdr.file_uuid = writer.file_uuid();
+    schema_hdr.header_crc32 = compute_tile_header_crc32(&schema_hdr);
+
+    writer.write_raw_hyper_tile(&schema_hdr, &payload)?;
+    Ok(true)
+}
+
 /// Query Sieve for high-performance single-cycle SIMD tile rejection and fast scanning.
 pub struct QuerySieve<'a> {
     reader: &'a MmapReader,
     include_hidden: bool,
+    purpose: Option<ConsentPurpose>,
+    now: u64,
 }
 
 impl<'a> QuerySieve<'a> {
@@ -1014,12 +1360,54 @@ impl<'a> QuerySieve<'a> {
         Self {
             reader,
             include_hidden: false,
+            purpose: None,
+            now: 0,
+        }
+    }
+
+    /// Initializes a QuerySieve configured for export operations (default purpose = Research).
+    pub fn for_export(reader: &'a MmapReader) -> Self {
+        let now_sec = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Self {
+            reader,
+            include_hidden: false,
+            purpose: Some(ConsentPurpose::Research),
+            now: now_sec,
         }
     }
 
     pub fn with_hidden_marks(mut self, include_hidden: bool) -> Self {
         self.include_hidden = include_hidden;
         self
+    }
+
+    pub fn with_purpose(mut self, purpose: ConsentPurpose) -> Self {
+        self.purpose = Some(purpose);
+        self
+    }
+
+    pub fn with_now(mut self, now: u64) -> Self {
+        self.now = now;
+        self
+    }
+
+    pub fn set_purpose(&mut self, purpose: ConsentPurpose) {
+        self.purpose = Some(purpose);
+    }
+
+    pub fn purpose(&self) -> Option<ConsentPurpose> {
+        self.purpose
+    }
+
+    pub fn set_now(&mut self, now: u64) {
+        self.now = now;
+    }
+
+    pub fn now(&self) -> u64 {
+        self.now
     }
 
     pub fn set_include_hidden(&mut self, include_hidden: bool) {
@@ -1034,7 +1422,112 @@ impl<'a> QuerySieve<'a> {
         self.reader
     }
 
-    /// Evaluates whether a record is hidden by policy marks (CONSENT_WITHDRAWN, QUARANTINE, or RETENTION_EXPIRED).
+    /// Queries all raw consent records matching optional subject_id filter.
+    pub fn query_consent_records(&self, subject_id: Option<&[u8; 16]>) -> Vec<ConsentRecord> {
+        let tile_count = self.reader.tile_count() as usize;
+        let mut results = Vec::new();
+        for i in 0..tile_count {
+            if let Some((header, payload)) = self.reader.get_tile(i) {
+                if header.tile_type == TileType::CONSENT {
+                    let records: &[ConsentRecord] = bytemuck::cast_slice(payload);
+                    for r in records {
+                        if let Some(target_sub) = subject_id {
+                            if &r.subject_id != target_sub {
+                                continue;
+                            }
+                        }
+                        results.push(*r);
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Verifies the cryptographic hash chain of consent records for a subject.
+    /// Returns Ok(true) if valid, or an Err(&str) explaining the failure.
+    pub fn verify_consent_chain(&self, subject_id: &[u8; 16]) -> Result<bool, &'static str> {
+        let records = self.query_consent_records(Some(subject_id));
+        if records.is_empty() {
+            return Ok(true);
+        }
+
+        let mut expected_prev_hash = [0u8; 32];
+        for (idx, r) in records.iter().enumerate() {
+            if !r.verify_hash() {
+                return Err("InvalidRecordHash: consent_hash does not match SHA-256 of record fields");
+            }
+            if idx == 0 {
+                if r.prev_consent_hash != [0u8; 32] {
+                    return Err("BrokenGenesisHash: first consent record must have zero prev_consent_hash");
+                }
+            } else if r.prev_consent_hash != expected_prev_hash {
+                return Err("BrokenChainHash: prev_consent_hash does not match previous record consent_hash");
+            }
+            expected_prev_hash = r.consent_hash;
+        }
+        Ok(true)
+    }
+
+    /// Evaluates whether a participant subject has active consent for a specific purpose.
+    /// Append-only semantics: the latest record per (subject, study, purpose) wins.
+    /// Expiration timestamp and withdrawal timestamp are verified against `now`.
+    pub fn is_subject_consent_active_for_purpose(
+        &self,
+        subject_id: &[u8; 16],
+        study_id: Option<u64>,
+        purpose: ConsentPurpose,
+        now: u64,
+    ) -> bool {
+        let records = self.query_consent_records(Some(subject_id));
+        let mut latest_record: Option<ConsentRecord> = None;
+
+        for r in records {
+            if r.purpose == purpose as u32 {
+                if let Some(sid) = study_id {
+                    if r.study_id != sid {
+                        continue;
+                    }
+                }
+                latest_record = Some(r);
+            }
+        }
+
+        if let Some(r) = latest_record {
+            r.is_active(now)
+        } else {
+            false
+        }
+    }
+
+    /// Evaluates if a subject is currently under legal hold from consent records.
+    pub fn is_subject_under_legal_hold(&self, subject_id: &[u8; 16]) -> bool {
+        let records = self.query_consent_records(Some(subject_id));
+        let mut latest_per_purpose: std::collections::HashMap<(u64, u32), ConsentRecord> = std::collections::HashMap::new();
+        for r in records {
+            latest_per_purpose.insert((r.study_id, r.purpose), r);
+        }
+        latest_per_purpose.values().any(|r| r.is_legal_hold())
+    }
+
+    /// Checks if a subject is allowed under the current sieve's declared purpose.
+    /// If no purpose is declared, returns true (consent check is bypassed for general queries).
+    /// If a purpose is declared, returns true only if active consent exists for that purpose.
+    pub fn is_subject_allowed(&self, subject_id: &[u8; 16]) -> bool {
+        if let Some(purpose) = self.purpose {
+            self.is_subject_consent_active_for_purpose(subject_id, None, purpose, self.now)
+        } else {
+            true
+        }
+    }
+
+    /// Checks if an actor ID is allowed under the current sieve's declared purpose.
+    pub fn is_actor_allowed(&self, actor_id: u64) -> bool {
+        let sub_id = actor_id_to_subject_id(actor_id);
+        self.is_subject_allowed(&sub_id)
+    }
+
+    /// Evaluates whether a record is hidden by policy marks (CONSENT_WITHDRAWN, QUARANTINE, or RETENTION_EXPIRED) or erasure.
     pub fn is_record_hidden(&self, target_tile_type: u32, target_tile_id: u64, record_index: u32) -> bool {
         if self.include_hidden {
             return false;
@@ -1042,6 +1535,85 @@ impl<'a> QuerySieve<'a> {
         self.is_marked(target_tile_type, target_tile_id, record_index, MARK_CONSENT_WITHDRAWN)
             || self.is_marked(target_tile_type, target_tile_id, record_index, MARK_QUARANTINE)
             || self.is_marked(target_tile_type, target_tile_id, record_index, MARK_RETENTION_EXPIRED)
+            || self.is_record_erased(target_tile_type, target_tile_id, record_index)
+    }
+
+    /// Queries all raw erasure records matching optional target hash filter.
+    pub fn query_erasure_records(&self, target_hash: Option<&[u8; 32]>) -> Vec<ErasureRecord> {
+        let tile_count = self.reader.tile_count() as usize;
+        let mut results = Vec::new();
+        for i in 0..tile_count {
+            if let Some((header, payload)) = self.reader.get_tile(i) {
+                if header.tile_type == TileType::ERASURE {
+                    let records: &[ErasureRecord] = bytemuck::cast_slice(payload);
+                    for r in records {
+                        if let Some(target) = target_hash {
+                            if &r.erased_record_hash != target {
+                                continue;
+                            }
+                        }
+                        results.push(*r);
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Verifies the cryptographic hash chain of erasure records.
+    /// Returns Ok(true) if valid, or an Err(&str) explaining the failure.
+    pub fn verify_erasure_chain(&self) -> Result<bool, &'static str> {
+        let records = self.query_erasure_records(None);
+        if records.is_empty() {
+            return Ok(true);
+        }
+
+        let mut expected_prev_hash = [0u8; 32];
+        for (idx, r) in records.iter().enumerate() {
+            if !r.verify_hash() {
+                return Err("InvalidRecordHash: erasure_hash does not match SHA-256 of record fields");
+            }
+            if idx == 0 {
+                if r.prev_erasure_hash != [0u8; 32] {
+                    return Err("BrokenGenesisHash: first erasure record must have zero prev_erasure_hash");
+                }
+            } else if r.prev_erasure_hash != expected_prev_hash {
+                return Err("BrokenChainHash: prev_erasure_hash does not match previous record erasure_hash");
+            }
+            expected_prev_hash = r.erasure_hash;
+        }
+        Ok(true)
+    }
+
+    /// Evaluates whether a record hash matches an active erasure record.
+    pub fn is_record_hash_erased(&self, record_hash: &[u8; 32]) -> bool {
+        let records = self.query_erasure_records(Some(record_hash));
+        !records.is_empty()
+    }
+
+    /// Evaluates whether a record at target tile coordinates is erased by checking active erasure records.
+    pub fn is_record_erased(&self, target_tile_type: u32, target_tile_id: u64, record_index: u32) -> bool {
+        let tile_count = self.reader.tile_count() as usize;
+        for i in 0..tile_count {
+            if let Some((header, payload)) = self.reader.get_tile(i) {
+                if header.tile_type == target_tile_type && header.tile_id == target_tile_id {
+                    let rec_size = if header.record_count > 0 && header.payload_bytes > 0 {
+                        header.payload_bytes as usize / header.record_count as usize
+                    } else {
+                        0
+                    };
+                    if rec_size > 0 {
+                        let offset = record_index as usize * rec_size;
+                        if offset + rec_size <= payload.len() {
+                            let chunk = &payload[offset..offset + rec_size];
+                            let chunk_hash: [u8; 32] = sha2::Sha256::digest(chunk).into();
+                            return self.is_record_hash_erased(&chunk_hash);
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Evaluates the active status of a mark_kind on a target record or tile.
@@ -1141,6 +1713,52 @@ impl<'a> QuerySieve<'a> {
                 if can_reject_tile_bloom(header, s as u64) {
                     continue;
                 }
+            }
+
+            if header.tile_type == TileType::COLUMNAR {
+                if let Ok(view) = ColumnarTileView::parse(payload) {
+                    if view.header.source_tile_type == TileType::TELEMETRY {
+                        // Min/max statistics pruning
+                        if view.can_prune_column("timestamp", min_ts as f64, max_ts as f64) {
+                            continue;
+                        }
+                        if let Some(s) = sensor_id {
+                            if view.can_prune_column("sensor_id", s as f64, s as f64) {
+                                continue;
+                            }
+                        }
+                        if let Some(m) = metric_id {
+                            if view.can_prune_column("metric_id", m as f64, m as f64) {
+                                continue;
+                            }
+                        }
+
+                        if let Ok(records) = decode_columnar_telemetry(payload) {
+                            for (rec_idx, rec) in records.iter().enumerate() {
+                                if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                                    continue;
+                                }
+                                let mut hasher = sha2::Sha256::new();
+                                sha2::Digest::update(&mut hasher, bytemuck::bytes_of(rec));
+                                let rec_hash: [u8; 32] = hasher.finalize().into();
+                                if self.is_record_hash_erased(&rec_hash) {
+                                    continue;
+                                }
+                                if rec.timestamp >= min_ts && rec.timestamp <= max_ts {
+                                    if let Some(s) = sensor_id {
+                                        if rec.sensor_id != s { continue; }
+                                    }
+                                    if let Some(m) = metric_id {
+                                        if rec.metric_id != m { continue; }
+                                    }
+                                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                                    all_records.push((*rec, coord));
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
             }
 
             if header.tile_type != TileType::TELEMETRY && header.tile_type != TileType::HYBRID {
@@ -1345,6 +1963,9 @@ impl<'a> QuerySieve<'a> {
                 if !self.include_hidden && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
                     continue;
                 }
+                if !self.is_actor_allowed(rec.actor_id) {
+                    continue;
+                }
                 if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
                     if let Some(a) = actor_id {
                         if rec.actor_id != a {
@@ -1452,6 +2073,243 @@ impl S3ACrudEngine {
         self.create_marks(&[mark])
     }
 
+    /// CREATE: Insert a new consent record (must be authored by authorized human/admin actor).
+    pub fn create_consent_record(&self, record: &ConsentRecord, is_admin_or_human: bool) -> io::Result<u64> {
+        self.create_consent_records(&[*record], is_admin_or_human)
+    }
+
+    /// CREATE: Insert multiple consent records (must be authored by authorized human/admin actor).
+    pub fn create_consent_records(&self, records: &[ConsentRecord], is_admin_or_human: bool) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        if !is_admin_or_human {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Consent records may only be authored by authorized human/admin actors, never AI agents",
+            ));
+        }
+        for r in records {
+            if !r.verify_hash() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Consent record hash mismatch (SHA-256 verification failed)",
+                ));
+            }
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.granted_at.max(r.withdrawn_at)).collect();
+        writer.write_hyper_tile(TileType::CONSENT, records, Some(&timestamps), None)
+    }
+
+    /// Appends a new consent grant for a participant subject, maintaining the cryptographic hash chain.
+    pub fn grant_consent(
+        &self,
+        subject_id: [u8; 16],
+        study_id: u64,
+        purpose: ConsentPurpose,
+        scope: u32,
+        granted_at: u64,
+        expires_at: u64,
+        legal_hold: bool,
+        granted_by: u64,
+        is_admin_or_human: bool,
+    ) -> io::Result<ConsentRecord> {
+        let prev_hash = if let Ok(reader) = MmapReader::open(&self.file_path) {
+            let sieve = QuerySieve::new(&reader);
+            let records = sieve.query_consent_records(Some(&subject_id));
+            records.last().map(|r| r.consent_hash).unwrap_or([0u8; 32])
+        } else {
+            [0u8; 32]
+        };
+
+        let record = ConsentRecord::new(
+            subject_id,
+            study_id,
+            purpose,
+            scope,
+            granted_at,
+            expires_at,
+            legal_hold,
+            granted_by,
+            prev_hash,
+        );
+
+        self.create_consent_record(&record, is_admin_or_human)?;
+        Ok(record)
+    }
+
+    /// Appends a consent withdrawal for a participant subject, maintaining the cryptographic hash chain.
+    pub fn withdraw_consent(
+        &self,
+        subject_id: [u8; 16],
+        study_id: u64,
+        purpose: ConsentPurpose,
+        scope: u32,
+        withdrawn_at: u64,
+        granted_by: u64,
+        is_admin_or_human: bool,
+    ) -> io::Result<ConsentRecord> {
+        let prev_hash = if let Ok(reader) = MmapReader::open(&self.file_path) {
+            let sieve = QuerySieve::new(&reader);
+            let records = sieve.query_consent_records(Some(&subject_id));
+            records.last().map(|r| r.consent_hash).unwrap_or([0u8; 32])
+        } else {
+            [0u8; 32]
+        };
+
+        let record = ConsentRecord::new_withdrawal(
+            subject_id,
+            study_id,
+            purpose,
+            scope,
+            withdrawn_at,
+            granted_by,
+            prev_hash,
+        );
+
+        self.create_consent_record(&record, is_admin_or_human)?;
+        Ok(record)
+    }
+
+    /// CREATE: Insert a new erasure record (must be authored by authorized human/admin actor).
+    pub fn create_erasure_record(&self, record: &ErasureRecord, is_admin_or_human: bool) -> io::Result<u64> {
+        self.create_erasure_records(&[*record], is_admin_or_human)
+    }
+
+    /// CREATE: Insert multiple erasure records (must be authored by authorized human/admin actor).
+    pub fn create_erasure_records(&self, records: &[ErasureRecord], is_admin_or_human: bool) -> io::Result<u64> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        if !is_admin_or_human {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Erasure records may only be authored by authorized human/admin actors, never AI agents",
+            ));
+        }
+        for r in records {
+            if !r.verify_hash() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Erasure record hash mismatch (SHA-256 verification failed)",
+                ));
+            }
+        }
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let timestamps: Vec<u64> = records.iter().map(|r| r.executed_at).collect();
+        writer.write_hyper_tile(TileType::ERASURE, records, Some(&timestamps), None)
+    }
+
+    /// Schedules and records an erasure receipt for a target record.
+    ///
+    /// Validates human/admin authority, checks active legal hold, enforces idempotency,
+    /// links the cryptographic erasure hash chain, and schedules purge by tombstoning the target.
+    pub fn record_erasure(
+        &self,
+        target_tile_type: u32,
+        target_tile_id: u64,
+        record_index: u32,
+        erased_record_hash: [u8; 32],
+        reason: ErasureReason,
+        authority: u64,
+        requested_at: u64,
+        executed_at: u64,
+        is_admin_or_human: bool,
+    ) -> io::Result<ErasureRecord> {
+        if !is_admin_or_human {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Erasure records may only be authored by authorized human/admin actors, never AI agents",
+            ));
+        }
+
+        // Open reader to check legal hold, idempotency, and previous hash
+        let prev_hash = if let Ok(reader) = MmapReader::open(&self.file_path) {
+            let sieve = QuerySieve::new(&reader);
+
+            // Legal hold check: target record or subject
+            if sieve.is_marked(target_tile_type, target_tile_id, record_index, MARK_LEGAL_HOLD) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Erasure blocked: target record is under active legal hold",
+                ));
+            }
+
+            // Check if telemetry subject under legal hold
+            if target_tile_type == TileType::TELEMETRY {
+                for i in 0..reader.tile_count() as usize {
+                    if let Some((header, payload)) = reader.get_tile(i) {
+                        if header.tile_type == TileType::TELEMETRY && header.tile_id == target_tile_id {
+                            let recs: &[TelemetryRecord] = bytemuck::cast_slice(payload);
+                            if let Some(target_rec) = recs.get(record_index as usize) {
+                                let sub = actor_id_to_subject_id(target_rec.sensor_id as u64);
+                                if sieve.is_subject_under_legal_hold(&sub) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "Erasure blocked: subject is under active legal hold",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Idempotency check: if this target was already erased, return existing record
+            let existing = sieve.query_erasure_records(None);
+            for rec in &existing {
+                if rec.target_tile_type == target_tile_type
+                    && rec.target_tile_id == target_tile_id
+                    && rec.record_index == record_index
+                    && rec.erased_record_hash == erased_record_hash
+                {
+                    return Ok(*rec);
+                }
+            }
+
+            existing.last().map(|r| r.erasure_hash).unwrap_or([0u8; 32])
+        } else {
+            [0u8; 32]
+        };
+
+        let record = ErasureRecord::new(
+            erased_record_hash,
+            target_tile_type,
+            target_tile_id,
+            record_index,
+            reason,
+            authority,
+            requested_at,
+            executed_at,
+            prev_hash,
+        );
+
+        // Append to Tile 73
+        self.create_erasure_record(&record, is_admin_or_human)?;
+
+        // If target is telemetry, schedule purge by appending tombstone
+        if target_tile_type == TileType::TELEMETRY {
+            if let Ok(reader) = MmapReader::open(&self.file_path) {
+                for i in 0..reader.tile_count() as usize {
+                    if let Some((header, payload)) = reader.get_tile(i) {
+                        if header.tile_type == TileType::TELEMETRY && header.tile_id == target_tile_id {
+                            let recs: &[TelemetryRecord] = bytemuck::cast_slice(payload);
+                            if let Some(target_rec) = recs.get(record_index as usize) {
+                                let mut tombstone = *target_rec;
+                                tombstone.mark_tombstone();
+                                let _ = self.create_telemetry(&[tombstone]);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(record)
+    }
+
     /// CREATE: Insert Learning Record Store (LRS) activity records with Bloom filter indexing.
     pub fn create_learning_activities(&self, records: &[LearningActivityRecord]) -> io::Result<u64> {
         if records.is_empty() {
@@ -1546,10 +2404,30 @@ impl S3ACrudEngine {
         Ok(true)
     }
 
+    /// Purges a telemetry record by tombstoning, verifying that the participant is not protected under an active legal hold.
+    pub fn purge_telemetry_record(&self, sensor_id: u32, metric_id: u32, timestamp: u64) -> io::Result<bool> {
+        let sub = actor_id_to_subject_id(sensor_id as u64);
+        if let Ok(reader) = MmapReader::open(&self.file_path) {
+            let sieve = QuerySieve::new(&reader);
+            if sieve.is_subject_under_legal_hold(&sub) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Purge blocked: participant subject is under active legal hold",
+                ));
+            }
+        }
+        self.delete_telemetry(sensor_id, metric_id, timestamp)
+    }
+
     /// GARBAGE COLLECTION / COMPACTION: Compact the S3A archive, purging tombstoned records and re-aligning tiles.
     pub fn purge_and_compact(&self) -> io::Result<u32> {
+        self.purge_and_compact_with_columnar_opt_in(&[])
+    }
+
+    /// Compact the S3A archive, optionally converting specified row tile types to Columnar tiles.
+    pub fn purge_and_compact_with_columnar_opt_in(&self, opt_in_types: &[u32]) -> io::Result<u32> {
         let temp_path = fsutil::unique_compact_temp_path(&self.file_path);
-        let res = Compactor::compact(&[&self.file_path], &temp_path);
+        let res = Compactor::compact_with_columnar_opt_in(&[&self.file_path], &temp_path, opt_in_types);
         if let Err(e) = res {
             let _ = std::fs::remove_file(&temp_path);
             return Err(e);
@@ -1564,6 +2442,165 @@ impl S3ACrudEngine {
 
     pub fn file_path(&self) -> &Path {
         &self.file_path
+    }
+
+    /// Writes an Array tile chunk to the archive.
+    pub fn write_array_chunk(&self, array_payload: &[u8]) -> io::Result<u64> {
+        let view = s3a_core::array::ArrayTileView::parse(array_payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+        if !view.verify_chunk_hash() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Array chunk SHA-256 hash mismatch",
+            ));
+        }
+
+        let mut writer = TileWriter::open_append(&self.file_path)?;
+        let mut hdr = HyperTileHeader::new(writer.tile_count() as u64, TileType::ARRAY);
+        hdr.record_count = view.header.total_elements() as u32;
+        hdr.record_layout_version = 1;
+        hdr.payload_bytes = array_payload.len() as u32;
+        hdr.data_crc32 = crc32c::crc32c(array_payload);
+        hdr.generation = writer.generation();
+        hdr.tile_index = writer.tile_count() as u32;
+        hdr.file_uuid = writer.file_uuid();
+        hdr.header_crc32 = compute_tile_header_crc32(&hdr);
+        writer.write_raw_hyper_tile(&hdr, array_payload)
+    }
+
+    /// Reads an N-dimensional slice across array chunks in the archive.
+    ///
+    /// Ranges specify `[start, end)` (half-open) along each axis in global array coordinates.
+    /// Missing chunks or unpopulated points are automatically populated with the fill value.
+    pub fn read_array_slice<T: Pod>(
+        &self,
+        ranges: &[(u64, u64)],
+        fill_value: T,
+    ) -> io::Result<Vec<T>> {
+        let reader = MmapReader::open(&self.file_path)?;
+        let ndim = ranges.len();
+        if ndim == 0 || ndim > s3a_core::array::MAX_ARRAY_DIMENSIONS {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid number of slice axes"));
+        }
+
+        // Calculate slice shape and total element capacity
+        let mut slice_shape = vec![0usize; ndim];
+        let mut total_elements = 1usize;
+        for i in 0..ndim {
+            let (start, end) = ranges[i];
+            if end <= start {
+                return Ok(Vec::new());
+            }
+            let len = (end - start) as usize;
+            slice_shape[i] = len;
+            total_elements = total_elements.checked_mul(len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Slice dimensions overflow usize")
+            })?;
+        }
+
+        // Initialize output buffer with fill_value
+        let mut output = vec![fill_value; total_elements];
+
+        // Scan all Array tiles in the container
+        let tile_count = reader.tile_count() as usize;
+        for i in 0..tile_count {
+            if let Some((hdr, payload)) = reader.get_tile(i) {
+                if hdr.tile_type != TileType::ARRAY {
+                    continue;
+                }
+
+                let view = match s3a_core::array::ArrayTileView::parse(payload) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let tile_ndim = view.header.ndim as usize;
+                if tile_ndim != ndim {
+                    continue;
+                }
+
+                // Check overlap between this chunk's bounding box and the query slice ranges
+                let mut overlaps = true;
+                for a in 0..ndim {
+                    let chunk_start = view.header.chunk_coords[a];
+                    let chunk_end = chunk_start + view.header.shape[a];
+                    let (req_start, req_end) = ranges[a];
+                    if req_end <= chunk_start || req_start >= chunk_end {
+                        overlaps = false;
+                        break;
+                    }
+                }
+                if !overlaps {
+                    continue;
+                }
+
+                // Copy overlapping elements from this chunk into slice output
+                let chunk_elements: &[T] = match view.read_elements() {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                // Helper to iterate coordinates recursively through active dimensions
+                fn copy_overlap<T: Copy>(
+                    dim: usize,
+                    ndim: usize,
+                    ranges: &[(u64, u64)],
+                    view: &s3a_core::array::ArrayTileView,
+                    chunk_elements: &[T],
+                    output: &mut [T],
+                    slice_shape: &[usize],
+                    current_global: &mut Vec<u64>,
+                ) {
+                    if dim == ndim {
+                        // All coordinates resolved: map to chunk local index and slice local index
+                        let mut chunk_idx = 0usize;
+                        for a in 0..ndim {
+                            let local = (current_global[a] - view.header.chunk_coords[a]) as usize;
+                            chunk_idx = chunk_idx * (view.header.shape[a] as usize) + local;
+                        }
+
+                        let mut slice_idx = 0usize;
+                        for a in 0..ndim {
+                            let slice_local = (current_global[a] - ranges[a].0) as usize;
+                            slice_idx = slice_idx * slice_shape[a] + slice_local;
+                        }
+
+                        if let Some(&val) = chunk_elements.get(chunk_idx) {
+                            output[slice_idx] = val;
+                        }
+                        return;
+                    }
+
+                    let (req_start, req_end) = ranges[dim];
+                    let chunk_start = view.header.chunk_coords[dim];
+                    let chunk_end = chunk_start + view.header.shape[dim];
+
+                    let overlap_start = req_start.max(chunk_start);
+                    let overlap_end = req_end.min(chunk_end);
+
+                    for coord in overlap_start..overlap_end {
+                        current_global.push(coord);
+                        copy_overlap(dim + 1, ndim, ranges, view, chunk_elements, output, slice_shape, current_global);
+                        current_global.pop();
+                    }
+                }
+
+                let mut current_global = Vec::with_capacity(ndim);
+                copy_overlap(
+                    0,
+                    ndim,
+                    ranges,
+                    &view,
+                    chunk_elements,
+                    &mut output,
+                    &slice_shape,
+                    &mut current_global,
+                );
+            }
+        }
+
+        Ok(output)
     }
 
     pub fn append_tile_records<T: Pod>(
@@ -1587,9 +2624,17 @@ pub struct Compactor;
 
 impl Compactor {
     pub fn compact<P: AsRef<Path>>(input_paths: &[P], output_path: P) -> io::Result<u32> {
+        Self::compact_with_columnar_opt_in(input_paths, output_path, &[])
+    }
+
+    pub fn compact_with_columnar_opt_in<P: AsRef<Path>>(
+        input_paths: &[P],
+        output_path: P,
+        opt_in_columnar_types: &[u32],
+    ) -> io::Result<u32> {
         let out_ref = output_path.as_ref();
 
-        match Self::compact_pass(input_paths, out_ref) {
+        match Self::compact_pass(input_paths, out_ref, opt_in_columnar_types) {
             Ok(count) => Ok(count),
             Err(first_err) => {
                 if out_ref.exists() {
@@ -1602,7 +2647,7 @@ impl Compactor {
                 }
 
                 // Retry once
-                match Self::compact_pass(input_paths, out_ref) {
+                match Self::compact_pass(input_paths, out_ref, opt_in_columnar_types) {
                     Ok(count) => Ok(count),
                     Err(second_err) => {
                         if out_ref.exists() {
@@ -1655,7 +2700,11 @@ impl Compactor {
         }
     }
 
-    fn compact_pass<P: AsRef<Path>>(input_paths: &[P], output_path: &Path) -> io::Result<u32> {
+    fn compact_pass<P: AsRef<Path>>(
+        input_paths: &[P],
+        output_path: &Path,
+        opt_in_columnar_types: &[u32],
+    ) -> io::Result<u32> {
         let mut preflight = crate::compactor_gates::CompactionPreflight::new();
         let mut input_acc = crate::compactor_gates::LiveRecordAccumulator::new();
         let mut output_acc = crate::compactor_gates::LiveRecordAccumulator::new();
@@ -1681,6 +2730,9 @@ impl Compactor {
         let mut embedding_input_tile_ids: Vec<(usize, u64)> = Vec::new();
         let mut unspecialized_tiles: Vec<(HyperTileHeader, Vec<u8>, usize)> = Vec::new();
         let mut input_marks: Vec<(usize, MarkRecord)> = Vec::new();
+        let mut input_consent_records: Vec<(usize, ConsentRecord)> = Vec::new();
+        let mut input_erasure_records: Vec<(usize, ErasureRecord)> = Vec::new();
+        let mut custom_schemas_map: std::collections::HashMap<u32, SchemaTypeDefinition> = std::collections::HashMap::new();
 
         for (input_idx, input_path) in input_paths.iter().enumerate() {
             let reader = MmapReader::open(input_path)?;
@@ -1706,6 +2758,29 @@ impl Compactor {
                         for m in marks {
                             input_marks.push((input_idx, *m));
                         }
+                    } else if header.tile_type == TileType::CONSENT {
+                        let consents: &[ConsentRecord] = bytemuck::cast_slice(payload);
+                        for c in consents {
+                            input_consent_records.push((input_idx, *c));
+                        }
+                    } else if header.tile_type == TileType::ERASURE {
+                        let erasures: &[ErasureRecord] = bytemuck::cast_slice(payload);
+                        for e in erasures {
+                            input_erasure_records.push((input_idx, *e));
+                        }
+                    } else if header.tile_type == TileType::COLUMNAR {
+                        if let Ok(records) = decode_columnar_telemetry(payload) {
+                            telemetry_input_tile_ids.push((input_idx, header.tile_id));
+                            telemetry_buffer.extend(records);
+                        } else {
+                            unspecialized_tiles.push((*header, payload.to_vec(), input_idx));
+                        }
+                    } else if header.tile_type == TileType::SCHEMA {
+                        if let Ok(types) = decode_schema_payload(payload) {
+                            for t in types {
+                                custom_schemas_map.insert(t.type_id, t);
+                            }
+                        }
                     } else {
                         unspecialized_tiles.push((*header, payload.to_vec(), input_idx));
                     }
@@ -1718,13 +2793,60 @@ impl Compactor {
             writer.enable_addon(accumulated_addon_mask)?;
         }
 
-        // Deduplicate telemetry records: keep latest active record, filtering out tombstones using O(N) HashMap
+        // Track subjects and targets under active legal hold
+        let mut legal_hold_subjects: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+        for (_, c) in &input_consent_records {
+            if c.is_legal_hold() {
+                legal_hold_subjects.insert(c.subject_id);
+            }
+        }
+        let mut legal_hold_marks: std::collections::HashSet<(u32, u64, u32)> = std::collections::HashSet::new();
+        for (_, m) in &input_marks {
+            if m.mark_kind == MARK_LEGAL_HOLD && m.is_set() {
+                legal_hold_marks.insert((m.target_tile_type, m.target_tile_id, m.record_index));
+            }
+        }
+
+        // Legal hold invariant: if any erasure targets a record under active legal hold, block compaction/purge
+        for (_, e) in &input_erasure_records {
+            if legal_hold_marks.iter().any(|(tt, tid, idx)| *tt == e.target_tile_type && *tid == e.target_tile_id && *idx == e.record_index) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Purge blocked: erased target record is under active legal hold",
+                ));
+            }
+        }
+
+        // Deduplicate telemetry records: keep latest active record, filtering out tombstones and erasures unless protected by legal hold
         let mut telemetry_map: std::collections::HashMap<(u32, u32, u64), TelemetryRecord> =
             std::collections::HashMap::with_capacity(telemetry_buffer.len());
         for rec in telemetry_buffer {
             let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
-            if rec.is_tombstone() {
-                telemetry_map.remove(&key);
+            let sub = actor_id_to_subject_id(rec.sensor_id as u64);
+            let under_hold = legal_hold_subjects.contains(&sub)
+                || legal_hold_marks.iter().any(|(tt, _, _)| *tt == TileType::TELEMETRY);
+
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, bytemuck::bytes_of(&rec));
+            let rec_hash: [u8; 32] = hasher.finalize().into();
+
+            let is_erased = input_erasure_records.iter().any(|(_, e)| {
+                e.erased_record_hash == rec_hash
+            });
+
+            if is_erased && under_hold {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Purge blocked: participant subject is under active legal hold",
+                ));
+            }
+
+            if rec.is_tombstone() || is_erased {
+                if under_hold {
+                    telemetry_map.insert(key, rec); // Retain under legal hold!
+                } else {
+                    telemetry_map.remove(&key);
+                }
             } else {
                 telemetry_map.insert(key, rec);
             }
@@ -1732,6 +2854,29 @@ impl Compactor {
 
         let mut deduped_telemetry: Vec<TelemetryRecord> = telemetry_map.into_values().collect();
         deduped_telemetry.sort_by_key(|r| r.timestamp);
+
+        // Zero out erased records in unspecialized tiles
+        for (header, payload, _input_idx) in &mut unspecialized_tiles {
+            if header.record_count > 0 && header.payload_bytes > 0 {
+                let rec_size = header.payload_bytes as usize / header.record_count as usize;
+                if rec_size > 0 {
+                    for (rec_idx, chunk) in payload[..header.payload_bytes as usize].chunks_exact_mut(rec_size).enumerate() {
+                        let mut hasher = sha2::Sha256::new();
+                        sha2::Digest::update(&mut hasher, &*chunk);
+                        let chunk_hash: [u8; 32] = hasher.finalize().into();
+
+                        let is_erased = input_erasure_records.iter().any(|(_, e)| {
+                            e.erased_record_hash == chunk_hash
+                                || (e.target_tile_type == header.tile_type && e.target_tile_id == header.tile_id && e.record_index == rec_idx as u32)
+                        });
+
+                        if is_erased {
+                            chunk.fill(0);
+                        }
+                    }
+                }
+            }
+        }
 
         // Accumulate input live records
         for rec in &deduped_telemetry {
@@ -1745,9 +2890,11 @@ impl Compactor {
                 let rec_size = header.payload_bytes as usize / header.record_count as usize;
                 if rec_size > 0 {
                     for chunk in payload[..header.payload_bytes as usize].chunks_exact(rec_size) {
-                        input_acc.push_record_bytes(chunk);
+                        if !chunk.iter().all(|&b| b == 0) {
+                            input_acc.push_record_bytes(chunk);
+                        }
                     }
-                } else {
+                } else if !payload[..header.payload_bytes as usize].iter().all(|&b| b == 0) {
                     input_acc.push_record_bytes(&payload[..header.payload_bytes as usize]);
                 }
             }
@@ -1772,17 +2919,43 @@ impl Compactor {
         }
 
         let mut tile_id_remap: std::collections::HashMap<(usize, u64), u64> = std::collections::HashMap::new();
+        let mut output_tile_types: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
-        // Compact telemetry into full 128 KB tiles
+        // Compact telemetry into full 128 KB tiles (or columnar if opted in)
+        let is_columnar_opt_in = opt_in_columnar_types.contains(&TileType::TELEMETRY);
         let tel_rec_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
         for chunk in output_telemetry.chunks(tel_rec_capacity) {
             let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
-            let new_tile_id = writer.write_hyper_tile(
-                TileType::TELEMETRY,
-                chunk,
-                Some(&timestamps),
-                None,
-            )?;
+            let new_tile_id = if is_columnar_opt_in {
+                output_tile_types.insert(TileType::COLUMNAR);
+                let col_payload = encode_columnar_telemetry(chunk);
+                let mut hdr = HyperTileHeader::new(writer.tile_count() as u64, TileType::COLUMNAR);
+                hdr.record_count = chunk.len() as u32;
+                hdr.record_layout_version = 1;
+                hdr.payload_bytes = col_payload.len() as u32;
+                hdr.data_crc32 = crc32c::crc32c(&col_payload);
+                hdr.generation = writer.generation();
+                hdr.tile_index = writer.tile_count() as u32;
+                hdr.file_uuid = writer.file_uuid();
+                if let (Some(&first), Some(&last)) = (timestamps.first(), timestamps.last()) {
+                    hdr.min_timestamp = first;
+                    hdr.max_timestamp = last;
+                }
+                for r in chunk {
+                    bloom_filter_insert(&mut hdr.filter.bits, r.sensor_id as u64, hdr.filter.hash_seed);
+                    bloom_filter_insert(&mut hdr.filter.bits, r.metric_id as u64, hdr.filter.hash_seed);
+                }
+                hdr.header_crc32 = compute_tile_header_crc32(&hdr);
+                writer.write_raw_hyper_tile(&hdr, &col_payload)?
+            } else {
+                output_tile_types.insert(TileType::TELEMETRY);
+                writer.write_hyper_tile(
+                    TileType::TELEMETRY,
+                    chunk,
+                    Some(&timestamps),
+                    None,
+                )?
+            };
             for &(inp_idx, old_tid) in &telemetry_input_tile_ids {
                 tile_id_remap.insert((inp_idx, old_tid), new_tile_id);
             }
@@ -1794,6 +2967,7 @@ impl Compactor {
         // Compact embeddings into full 128 KB tiles with calculated Simplex Hulls
         let emb_rec_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<EmbeddingRecord128>();
         for chunk in embedding_buffer.chunks(emb_rec_capacity) {
+            output_tile_types.insert(TileType::EMBEDDING);
             let timestamps: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
             let mut hull = SimplexHull::empty();
             hull.dim = 16; // Use first 16 dimensions for SIMD bounding hull indexing
@@ -1828,6 +3002,7 @@ impl Compactor {
         for (header, payload, input_idx) in unspecialized_tiles {
             let old_tile_id = header.tile_id;
             let mut h = header;
+            output_tile_types.insert(h.tile_type);
             h.file_uuid = writer.file_uuid();
             let new_tile_id = writer.write_raw_hyper_tile(&h, &payload)?;
             tile_id_remap.insert((input_idx, old_tile_id), new_tile_id);
@@ -1836,9 +3011,11 @@ impl Compactor {
                 let rec_size = header.payload_bytes as usize / header.record_count as usize;
                 if rec_size > 0 {
                     for chunk in payload[..header.payload_bytes as usize].chunks_exact(rec_size) {
-                        output_acc.push_record_bytes(chunk);
+                        if !chunk.iter().all(|&b| b == 0) {
+                            output_acc.push_record_bytes(chunk);
+                        }
                     }
-                } else {
+                } else if !payload[..header.payload_bytes as usize].iter().all(|&b| b == 0) {
                     output_acc.push_record_bytes(&payload[..header.payload_bytes as usize]);
                 }
             }
@@ -1865,6 +3042,7 @@ impl Compactor {
         }
 
         if !output_marks.is_empty() {
+            output_tile_types.insert(TileType::MARKS);
             let mark_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<MarkRecord>();
             for chunk in output_marks.chunks(mark_capacity) {
                 let timestamps: Vec<u64> = chunk.iter().map(|m| m.timestamp).collect();
@@ -1875,6 +3053,62 @@ impl Compactor {
                     None,
                 )?;
             }
+        }
+
+        // Carry consent records forward
+        if !input_consent_records.is_empty() {
+            output_tile_types.insert(TileType::CONSENT);
+            let consent_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ConsentRecord>();
+            let all_consents: Vec<ConsentRecord> = input_consent_records.into_iter().map(|(_, r)| r).collect();
+            for chunk in all_consents.chunks(consent_capacity) {
+                let timestamps: Vec<u64> = chunk.iter().map(|c| c.granted_at.max(c.withdrawn_at)).collect();
+                writer.write_hyper_tile(
+                    TileType::CONSENT,
+                    chunk,
+                    Some(&timestamps),
+                    None,
+                )?;
+            }
+        }
+
+        // Carry erasure records forward
+        if !input_erasure_records.is_empty() {
+            output_tile_types.insert(TileType::ERASURE);
+            let erasure_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ErasureRecord>();
+            let all_erasures: Vec<ErasureRecord> = input_erasure_records.into_iter().map(|(_, r)| r).collect();
+            for chunk in all_erasures.chunks(erasure_capacity) {
+                let timestamps: Vec<u64> = chunk.iter().map(|e| e.executed_at).collect();
+                writer.write_hyper_tile(
+                    TileType::ERASURE,
+                    chunk,
+                    Some(&timestamps),
+                    None,
+                )?;
+            }
+        }
+
+        // On compaction, write a schema tile listing every tile type present in the compacted archive
+        if !output_tile_types.is_empty() {
+            output_tile_types.insert(TileType::SCHEMA);
+            let mut schema_defs = Vec::new();
+            for &tt in &output_tile_types {
+                if let Some(custom) = custom_schemas_map.get(&tt) {
+                    schema_defs.push(custom.clone());
+                } else {
+                    schema_defs.push(standard_schema_for_type(tt));
+                }
+            }
+            let schema_payload = encode_schema_payload(&schema_defs);
+            let mut schema_hdr = HyperTileHeader::new(writer.tile_count() as u64, TileType::SCHEMA);
+            schema_hdr.record_count = 0;
+            schema_hdr.record_layout_version = 1;
+            schema_hdr.payload_bytes = schema_payload.len() as u32;
+            schema_hdr.data_crc32 = crc32c::crc32c(&schema_payload);
+            schema_hdr.generation = writer.generation();
+            schema_hdr.tile_index = writer.tile_count() as u32;
+            schema_hdr.file_uuid = writer.file_uuid();
+            schema_hdr.header_crc32 = compute_tile_header_crc32(&schema_hdr);
+            writer.write_raw_hyper_tile(&schema_hdr, &schema_payload)?;
         }
 
         // DURING GATE: Verify live-record count in = out and hash in = out
@@ -2095,18 +3329,19 @@ mod tests {
         let initial_count = writer.tile_count();
         assert_eq!(initial_count, 5);
 
-        // Run compaction via S3ACrudEngine
+        // Run compaction via S3ACrudEngine (emits domain tiles + self-describing schema tile)
         let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
         let compacted_count = engine.purge_and_compact().unwrap();
-        assert_eq!(compacted_count, 5);
+        assert_eq!(compacted_count, 6);
 
-        // Verify reader sees all 5 tiles and addon_mask is preserved
+        // Verify reader sees all 5 domain tiles + schema tile and addon_mask is preserved
         let reader = MmapReader::open(temp_file.path()).unwrap();
-        assert_eq!(reader.tile_count(), 5);
+        assert_eq!(reader.tile_count(), 6);
         assert_eq!(reader.addon_mask(), all_addons);
 
         let types: Vec<u32> = (0..5).map(|i| reader.get_tile(i).unwrap().0.tile_type).collect();
         assert_eq!(types, vec![3, 4, 5, 6, 10]);
+        assert_eq!(reader.get_tile(5).unwrap().0.tile_type, TileType::SCHEMA);
     }
 
     #[test]
@@ -2650,7 +3885,12 @@ mod tests {
         }
 
         // Wait for background worker to trigger automatic flush
-        thread::sleep(Duration::from_millis(300));
+        for _ in 0..20 {
+            if compactor.stats().flushed_records >= 100 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
 
         let stats = compactor.stats();
         assert!(stats.flushed_records >= 100, "Background compactor should have flushed batched records");
@@ -2912,14 +4152,14 @@ mod tests {
         assert_eq!(writer.tile_count(), 2);
         drop(writer);
 
-        // 2. Compact archive
+        // 2. Compact archive (outputs telemetry + tile 12 + schema tile)
         let compacted_count = Compactor::compact(&[input_file.path()], output_file.path()).unwrap();
-        assert_eq!(compacted_count, 2);
+        assert_eq!(compacted_count, 3);
 
         // 3. Verify output archive inherited addon_mask and preserved pack tile intact
         let reader = MmapReader::open(output_file.path()).unwrap();
         assert_eq!(reader.file_header().addon_mask & ADDON_EDU, ADDON_EDU);
-        assert_eq!(reader.tile_count(), 2);
+        assert_eq!(reader.tile_count(), 3);
 
         // Tile 0: compacted telemetry
         let (h0, _) = reader.get_tile(0).unwrap();
@@ -2929,6 +4169,10 @@ mod tests {
         let (h1, p1) = reader.get_tile(1).unwrap();
         assert_eq!(h1.tile_type, 12);
         assert_eq!(&p1[..64], &dummy_pack_payload);
+
+        // Tile 2: embedded schema tile
+        let (h2, _) = reader.get_tile(2).unwrap();
+        assert_eq!(h2.tile_type, TileType::SCHEMA);
 
         // Verify checksums pass on the compacted archive
         assert!(reader.verify_checksums().is_ok());
@@ -3060,9 +4304,9 @@ mod tests {
         writer.write_raw_hyper_tile(&h12, &dummy).unwrap();
         drop(writer);
 
-        // Compact
+        // Compact (outputs preserved tile 12 + schema tile)
         let compacted_count = Compactor::compact(&[input_file.path()], output_file.path()).unwrap();
-        assert_eq!(compacted_count, 1);
+        assert_eq!(compacted_count, 2);
 
         // Verify preserved byte-for-byte
         let reader = MmapReader::open(output_file.path()).unwrap();
@@ -3070,6 +4314,7 @@ mod tests {
         assert_eq!(compacted_header.tile_type, 12);
         assert_eq!(compacted_header.record_layout_version, 1);
         assert_eq!(&payload[..64], &dummy);
+        assert_eq!(reader.get_tile(1).unwrap().0.tile_type, TileType::SCHEMA);
     }
 
     #[test]
