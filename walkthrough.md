@@ -1147,5 +1147,258 @@ Workspace Test Suite Breakdown:
 Total Passed:         311 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
+---
+
+## 19. Phase 3 — Production Tools & Cryptographic Provenance Registry
+
+Phase 3 transitions `s3a-harness` from operational routing to production-grade execution with a strongly typed, schema-validated tool ecosystem, per-agent allowlists, and immutable input/result cryptographic provenance.
+
+### 19.1 Technical Architecture & Deliverables
+
+1. **ToolRegistry (`src/tools.rs`)**:
+   - `Tool` trait defining `name()`, `description()`, `input_schema() -> Value`, and `execute(&Value, &ToolExecutionContext) -> Result<Value, ToolError>`.
+   - Thread-safe registry (`RwLock<HashMap<String, Arc<dyn Tool>>>`) managing tool lifecycles.
+   - Enforces per-agent allowlists: agent attempts to call tools outside `agent_config.allowed_tools` are rejected before invocation (`ToolError::DisallowedTool`).
+   - Built-in MCP client connector (`McpExternalTool`) capable of registering and routing to external MCP JSON-RPC 2.0 servers.
+
+2. **The Six Canonical Tools**:
+   - `s3a_query`: Queries local S3A archives for papers, citations, and research claims matching topic keywords and publication year bounds.
+   - `s3a_write`: Appends research notes, claim assertions, and statements to sandbox S3A archives with SHA-256 content verification.
+   - `openalex_lookup`: Performs live HTTP resolution against OpenAlex REST endpoints (`https://api.openalex.org/works/...`) with deterministic offline catalog fallback.
+   - `crossref_lookup`: Resolves canonical bibliographic metadata, publisher, container title, and citation counts via Crossref.
+   - `retraction_watch_check`: Verifies DOIs against retraction registries and editorial integrity alerts (`clean`, `retracted`, `expression_of_concern`).
+   - `preflight_check`: Verifies citation existence, metadata fidelity, and retraction clearance before claims commit.
+
+3. **Cryptographic Provenance Logging**:
+   - Every tool call computes:
+     - `inputs_hash`: SHA-256 hexadecimal digest over canonical input parameters.
+     - `result_hash`: SHA-256 hexadecimal digest over canonical tool execution output.
+   - Automatically commits an immutable xAPI statement to the configured `Store` (`LocalStore` or `LrsStore`) under `https://ashecribb.dev/xapi/verbs/reviewed` with extension metadata for input/output hashes and execution timing.
+   - Records structured `ToolCallResult` entries directly into `RunState.tool_provenance`.
+
+### 19.2 Phase 3 Test Verifications (`crates/s3a-harness/tests/tool_registry_tests.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_tool_registry_list_tools_and_schemas` | Registry lists all 6 tools; all provide valid JSON Schema with `type: object` and properties | **PASS** |
+| `test_tool_registry_per_agent_allowlist_enforcement` | Allowed tool succeeds; unauthorized tool invocation rejected with `ToolError::DisallowedTool` | **PASS** |
+| `test_tool_call_logs_inputs_hash_and_result_hash_provenance` | Computes 64-character SHA-256 input and result digests; commits provenance statement to store | **PASS** |
+| `test_s3a_query_and_write_tools_in_sandbox` | Writes note to `<root>/exports/evidence.s3a`; queries archive with filters | **PASS** |
+| `test_openalex_and_crossref_lookup_tools` | Queries OpenAlex and Crossref endpoints; extracts title, citation counts, and publisher | **PASS** |
+| `test_retraction_watch_check_clean_and_retracted` | Correctly flags clean, retracted, and expression of concern DOIs | **PASS** |
+| `test_mcp_client_external_tool_delegation` | Registers external MCP tool into registry; delegates call and captures provenance | **PASS** |
+| `test_agent_runtime_executes_tools_and_populates_provenance` | AgentRuntime runs multi-step loop; automatically executes tools and populates `RunState.tool_provenance` | **PASS** |
+
+### 19.3 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:              5 passed (tests/cli_ops.rs: 5; src/main.rs: 0)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         134 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+- s3a-harness:         43 passed:
+  * unittests src/lib.rs: 9 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      16 passed (unittests src/main.rs: 16)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    36 passed:
+  * unittests src/lib.rs: 35 passed
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    25 passed (unittests src/lib.rs: 25; src/main.rs: 0)
+- s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
+- Doc-tests (12 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+---
+
+## 20. Phase 4 — Operability, Diagnostics & Snapshot Branch Diffing
+
+Phase 4 elevates `s3a-harness` into a production-grade, highly observable, and debuggable system with structured distributed logging, comprehensive pre-flight health diagnostics (`s3a-harness doctor`), snapshot branch lineage tracking, and differential execution analytics (`s3a-harness diff`).
+
+### 20.1 Technical Architecture & Deliverables
+
+1. **Structured Diagnostics (`src/doctor.rs`)**:
+   - `run_doctor` runs four decoupled health checks prior to agent execution:
+     - **Configuration Validation**: Verifies agent ID, model name, positive execution limits, and valid threshold intervals $[0.0, 1.0]$.
+     - **Model Reachability**: Pings model endpoint with completion probe; flags unreachable endpoints with actionable remediation advice.
+     - **Store Reachability**: Validates store connectivity via `Store::list_academic_verbs`.
+     - **Sandbox Integrity**: Validates root directory accessibility and creates `<root>/exports` if missing.
+   - CLI subcommand `s3a-harness doctor [--config <path>] [--model-url <url>] [--root <dir>] [--mock] [--json]` emits human-readable terminal reports or JSON payloads for CI/CD integration.
+
+2. **Structured Logging (`tracing` & `tracing-subscriber`)**:
+   - Integrated `tracing` instrumentation across `AgentRuntime`, `DecisionEngine`, and `ToolRegistry`.
+   - `init_logging(verbose: bool)` initializes structured output with standard `info` filtering or detailed `debug` diagnostics with turn counts, gate IDs, tool names, and provenance hashes.
+   - CLI flags `--verbose` and `-v` enable fine-grained execution tracing.
+
+3. **Runs as Snapshot Branches**:
+   - Every `RunState` tracks its provenance lineage:
+     - `base_snapshot_id: Option<String>`: The parent snapshot ID from which the execution branch diverged (specified via `--base-snapshot <id>` or auto-generated).
+     - `forked_snapshot_id: Option<String>`: The unique sealed snapshot branch ID committed at run completion or supervisory pause.
+   - Persisted states in `<sandbox>/runs/<run_id>.json` retain complete branch lineage for reproducible diffing.
+
+4. **Snapshot Branch & Execution Diffing (`s3a-harness diff`)**:
+   - `AgentRuntime::diff_runs` and `AgentRuntime::diff_saved_runs` perform structural comparison between two runs:
+     - Ancestor equivalence (`base_snapshot_match`).
+     - Terminal status comparison (`status_a` vs `status_b`).
+     - Turn counts, tool calls, and token usage deltas.
+     - Sequence divergence detection identifying the exact turn where tool selection diverged.
+     - Cryptographic tool provenance hash discrepancy counting.
+   - CLI subcommand `s3a-harness diff <runA> <runB> [--root <dir>] [--json]` renders side-by-side terminal comparison or structured JSON.
+
+### 20.2 Phase 4 Test Verifications (`crates/s3a-harness/tests/operability_tests.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_doctor_diagnostics_all_healthy` | Runs full doctor diagnostics against valid config, mock model, and store; asserts 4/4 checks pass | **PASS** |
+| `test_doctor_detects_invalid_config` | Detects invalid `limits.max_turns == 0`; flags unhealthy status with remediation instructions | **PASS** |
+| `test_doctor_detects_unreachable_model` | Detects failing backend (HTTP 503 probe); provides remediation instructions to start Ollama or pass `--mock` | **PASS** |
+| `test_run_snapshot_branch_forking` | Executes agent run with base snapshot; verifies `base_snapshot_id` preserved and `forked_snapshot_id` generated | **PASS** |
+| `test_diff_runs_identical_and_divergent` | Compares identical runs (0 divergence) vs divergent runs (divergence turn #2, different statuses) | **PASS** |
+| `test_diff_saved_runs_from_sandbox` | Loads two serialized runs from sandbox disk; verifies diff reporting across tool choices | **PASS** |
+| `test_init_logging_idempotence` | Initializes structured logging repeatedly without panic or re-initialization failures | **PASS** |
+
+### 20.3 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:              5 passed (tests/cli_ops.rs: 5; src/main.rs: 0)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         134 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+- s3a-harness:         50 passed:
+  * unittests src/lib.rs: 9 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/operability_tests.rs: 7 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      16 passed (unittests src/main.rs: 16)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    36 passed:
+  * unittests src/lib.rs: 35 passed
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    25 passed (unittests src/lib.rs: 25; src/main.rs: 0)
+- s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
+- Doc-tests (12 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+---
+
+## 21. Phase 5 — Training Loop, Trajectory Export & Action Evals
+
+Phase 5 completes the production hardening of `s3a-harness` by closing the flywheel between autonomous runtime execution, training dataset generation, local parameter fine-tuning, and strict action-asserted regression evaluation.
+
+### 21.1 Technical Architecture & Deliverables
+
+1. **Consent-Filtered Trajectory Exporter (`src/trajectory.rs`)**:
+   - `export_trajectories`: Traverses sealed runs across `<sandbox>/runs/*.json` and enforces purpose-bound data governance:
+     - Runs without `model_training` in their `consent_purposes` are filtered out.
+   - Dual format schemas:
+     - **ChatML** (`run_to_chatml`): Standard OpenAI function calling schema with `system`, `user`, `assistant` (with `tool_calls` specifying `id`, `name`, and input JSON), `tool` (with execution output JSON), and final completion messages.
+     - **ShareGPT** (`run_to_sharegpt`): Multi-turn conversational format with `<tool_call>` and `<tool_response>` delimiters.
+   - CLI command: `s3a-harness export-trajectories [--format chatml|sharegpt] [--root <dir>] [--out <file>] [--purpose model_training]`.
+
+2. **Action-Asserted Evaluation Benchmark (`src/eval.rs`)**:
+   - `run_eval_set`: Executes benchmarks from `evals/*.jsonl` asserting directly on **concrete actions taken**, rather than fragile natural language text:
+     - `expected_tool`: Verifies whether the agent called the expected tool.
+     - `should_hit_gate`: Asserts whether supervisory human gate intervention was triggered.
+     - `should_ask_human`: Asserts whether subjective judgments routed to `ask_human`.
+   - Comprehensive telemetry reporting: tracks total cases, passed/failed counts, overall success rate %, supervisory gate hits, and `ask_human` invocations.
+   - CLI command: `s3a-harness eval [--agent <id>] [--set <path>] [--root <dir>] [--mock] [--model-url <url>] [--json]`.
+
+3. **End-to-End Fine-Tuning Guide (`docs/training.md`)**:
+   - Complete documentation of the 6-step lifecycle:
+     1. Data extraction via `s3a-harness export-trajectories`.
+     2. Fast QLoRA fine-tuning using Unsloth on Llama-3.1-8B-Instruct.
+     3. 4-bit medium quantization to GGUF (`llama-quantize ... Q4_K_M`).
+     4. Local deployment with Ollama `Modelfile`.
+     5. Pointing `agents/<id>.toml` at the new fine-tuned model instance.
+     6. Mandatory verification gates before production promotion: 100% pass rate on safety action evals + $\ge 80.0\%$ shadow agreement rate.
+
+4. **Reference Evaluation Suite (`evals/scholar_evals.jsonl`)**:
+   - Real benchmark test cases covering bibliographic citation lookup, preflight verification, and subjective overstatement detection.
+
+### 21.2 Phase 5 Test Verifications (`crates/s3a-harness/tests/training_and_eval_tests.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_trajectory_export_chatml_and_sharegpt_formats` | Verifies ChatML structure (role: assistant tool_calls, role: tool) and ShareGPT conversational delimiters | **PASS** |
+| `test_trajectory_export_consent_filtering` | Accepts run with `model_training` consent; filters out run consented only for `clinical_care` | **PASS** |
+| `test_eval_runner_passes_action_assertions_and_tracks_metrics` | Runs eval suite; asserts expected tool, gate hits, and ask_human metrics; captures failure reasons | **PASS** |
+
+### 21.3 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:              5 passed (tests/cli_ops.rs: 5; src/main.rs: 0)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         134 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+- s3a-harness:         53 passed:
+  * unittests src/lib.rs: 9 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/operability_tests.rs: 7 passed
+  * tests/training_and_eval_tests.rs: 3 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      16 passed (unittests src/main.rs: 16)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    36 passed:
+  * unittests src/lib.rs: 35 passed
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    25 passed (unittests src/lib.rs: 25; src/main.rs: 0)
+- s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
+- Doc-tests (12 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+Total Passed:         329 passed; 0 failed; 2 ignored; 100% GREEN
+```
+
+
+
 
 

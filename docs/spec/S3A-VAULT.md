@@ -14,7 +14,7 @@
 
 > [!IMPORTANT]
 > **SPECIFICATION AUDIT STATUS: SPECIFIED-ONLY**  
-> In accordance with S3A Specification Audit Policy, all constructs, data structures, delegation contracts, physical asset bindings, supervisory gate protocols, transfer chains, and test vectors declared within this document are classified as **SPECIFIED-ONLY**. This specification governs identity custody, verifiable credentials, agent delegations, physical things, supervisory gates, and cryptographic holdings stored natively within standard S3A archives (`.vault.s3a` / `.s3a`).
+> In accordance with S3A Specification Audit Policy, all constructs, data structures, delegation contracts, physical asset bindings, gate network addresses, approval checkpoint protocols, transfer chains, and test vectors declared within this document are classified as **SPECIFIED-ONLY**. This specification governs identity custody, verifiable credentials, agent delegations, physical things, gate network addressing, approval checkpoints, and cryptographic holdings stored natively within standard S3A archives (`.vault.s3a` / `.s3a`).
 
 ---
 
@@ -34,7 +34,7 @@ The key words **"MUST"**, **"MUST NOT"**, **"REQUIRED"**, **"SHALL"**, **"SHALL 
 
 > [!WARNING]
 > **STRICT OUT-OF-SCOPE DECLARATION**:  
-> The S3A Vault is an architecture for **cryptographic identity, physical asset custody, autonomous agent delegation, educational credentials (W3C VC / Open Badges 3.0), research provenance, supervisory gates, and non-fungible digital holdings**.  
+> The S3A Vault is an architecture for **cryptographic identity, physical asset custody, autonomous agent delegation, educational credentials (W3C VC / Open Badges 3.0), research provenance, gate network addressing, approval checkpoints, and non-fungible digital holdings**.  
 > **Money, fiat currencies, payments, banking transactions, cryptocurrencies, payment tokens, and decentralized finance (DeFi) primitives are STRICTLY OUT OF SCOPE.**
 
 ---
@@ -307,7 +307,7 @@ Every action within the vault is permanently recorded in an append-only event lo
 | `8 .. 16` | `u64` | `timestamp` | Unix epoch timestamp of event execution. |
 | `16 .. 18` | `u16` | `event_type` | Event category (§7.2). |
 | `18 .. 20` | `u16` | `actor_kind` | `1 = Person`, `2 = Agent`, `3 = Organization`, `4 = Thing`. |
-| `20 .. 36` | `[u8; 16]` | `target_id` | UUID of affected item, grant, key, or gate. |
+| `20 .. 36` | `[u8; 16]` | `target_id` | UUID of affected item, grant, key, or checkpoint. |
 | `36 .. 68` | `[u8; 32]` | `prev_event_hash`| SHA-256 digest of preceding event record. |
 | `68 .. 76` | `u64` | `grant_id_suffix`| Lower 64 bits of `grant_id` relied upon (0 if human/thing). |
 | `76 .. 80` | `u32` | `record_crc32` | Castagnoli CRC32C over bytes `0..76`. |
@@ -320,7 +320,7 @@ Every action within the vault is permanently recorded in an append-only event lo
 - `0x0005` — `EVENT_GRANT_USED`: Agent performed action under active grant.
 - `0x0006` — `EVENT_KEY_ROTATED`: Identity keypair rotated.
 - `0x0007` — `EVENT_CONSENT_MODIFIED`: Consent scope updated for holding.
-- `0x0008` — `EVENT_GATE_EVALUATED`: Supervisory gate evaluated (approved/rejected/escalated).
+- `0x0008` — `EVENT_CHECKPOINT_EVALUATED`: Approval checkpoint evaluated (approved/rejected/escalated).
 - `0x0009` — `EVENT_THING_PROVISIONED`: Physical asset enrolled into vault custody.
 
 ### 7.3 Container Sealing Integration
@@ -345,7 +345,7 @@ Every `VaultItemRecord` embeds a 32-bit `consent_scope` bitmask:
 - `0x0008` — `SCOPE_HUMAN_APPROVAL_ON_EXPORT`: Autonomous agents CANNOT export this item; requires explicit human biometric consent.
 - `0x0010` — `SCOPE_MODEL_TRAINING_FORBIDDEN`: Data cannot be ingested into ML foundation model training pipelines.
 
-### 8.2 Vault Engine Export Gate
+### 8.2 Vault Engine Export Checkpoint
 
 When an export or transfer (`send_item`) is requested:
 1. The vault engine inspects the item's `consent_scope`.
@@ -419,7 +419,7 @@ Equipment lifecycle events are recorded as immutable, append-only records within
 To safeguard physical systems against autonomous misbehavior:
 1. **Telemetry vs. Control Separation**: The ability of an agent to read telemetry (`ACTION_READ`) never conveys the authority to actuate machinery or alter configuration.
 2. **Actuator Command Gating**: Setpoint changes, calibration adjustments, firmware upgrades, and emergency overrides require an explicit Delegation Grant with `ACTION_WRITE` specifically scoping physical control parameters.
-3. **Supervisory Review for Physical Impact**: Parameter changes that could cause physical damage, safety hazards, or process invalidation are classified as non-delegable judgment actions and route unconditionally to the **Human Review Gate** (§11.2).
+3. **Supervisory Review for Physical Impact**: Parameter changes that could cause physical damage, safety hazards, or process invalidation are classified as non-delegable judgment actions and route unconditionally to the **Human Review Checkpoint** (§12.2).
 
 ### 10.5 Mutual Attestation & Provisioning with Edge Profile
 
@@ -435,19 +435,127 @@ Physical things executing the lightweight S3A Edge Profile (`S3A-EDGE-PROFILE.md
 
 ---
 
-## 11. Gates (Supervisory & Operational Governance)
+## 11. Gate Addresses (Vault Network Addressing & Dialing Protocol)
 
-To enforce verifiable, fail-safe governance over autonomous agents and multi-party workflows, S3A Vaults implement formal **Supervisory Gate Contracts**.
+Every S3A Vault possesses an immutable network address designated as a **Gate Address**. Gates provide a decentralized, transport-agnostic addressing and dialing fabric enabling vaults to discover, authenticate, and exchange sealed records across local radios, store-and-forward relays, and cloud repositories.
 
-### 11.1 Supervisory Gate Architecture
+### 11.1 Principle: Gates as Network Addresses
 
-Gates operate as cryptographic evaluation checkpoints. Every gate invocation, approval, rejection, or escalation is permanently recorded as an immutable Pod struct in the vault event log.
+In the S3A Vault architecture, a **Gate** is the sovereign network endpoint of a vault instance:
+- **Permanent Address**: Every vault has a permanent gate address derived as a cryptographic digest of its master Ed25519 public key.
+- **Checksummed & Segmented Representation**: Encoded as a checksummed, human-readable word/segment format (e.g., `s3a-7f9a-c21d-e4b8-93`).
+- **Standardized URI Form**: Formatted canonically as:
+  ```
+  gate://<address>
+  ```
+  Example: `gate://s3a-7f9a-c21d-e4b8-93`.
+- **Mathematical Immutability**: Because the address is bound mathematically to the vault's root public key, it cannot be forged, spoofed, or arbitrarily reassigned.
 
-#### SupervisoryGateRecord Layout (128 Bytes + 64 Byte Sig = 192 Bytes, 8-Byte Aligned, Little-Endian)
+### 11.2 Gate Names & Signed Directory Records
+
+To support human-friendly discovery without sacrificing permanent cryptographic binding:
+1. **Optional Gate Names**:
+   - Vaults MAY register human-readable names formatted as:
+     ```
+     gate://<name>[.<namespace>]
+     ```
+     Examples: `gate://lab-alpha`, `gate://ashley.research`, `gate://sensor-station-04.biology`.
+2. **Signed Directory Records (`GateDirectoryRecord`)**:
+   - A gate name is mapped to its underlying gate address and current active endpoints within an append-only, cryptographically signed directory record.
+   - **Re-Pointable Names, Permanent Addresses**: Names are re-pointable as an entity changes network hosts, relays, or institutions; addresses remain permanent.
+   - **Endpoint Descriptors**: Directs callers to active transports:
+     - LRS Server / Cloud REST API (e.g. `https://lrs.institution.edu/s3a`).
+     - Store-and-Forward Relay (e.g. `relay://hub.s3a.network:8443`).
+     - Local Transports (BLE MAC/UUID, NFC NDEF record, Wi-Fi Direct SSID, USB serial port).
+
+#### GateDirectoryRecord Binary Layout (160 Bytes, 8-Byte Aligned, Little-Endian)
 | Offset | Type | Field Name | Description |
 |:---:|:---:|:---|:---|
-| `0 .. 16` | `[u8; 16]` | `gate_id` | Unique 128-bit UUID of the gate evaluation. |
-| `16 .. 18` | `u16` | `gate_type` | Gate category (§11.2). |
+| `0 .. 16` | `[u8; 16]` | `record_id` | Unique 128-bit UUID of this directory publication. |
+| `16 .. 48` | `[u8; 32]` | `gate_name` | Null-terminated UTF-8 gate alias (e.g. `lab-alpha.org\0`). |
+| `48 .. 80` | `[u8; 32]` | `gate_address` | 32-byte address / raw public key digest. |
+| `80 .. 112`| `[u8; 32]` | `endpoint_ref` | SHA-256 digest referencing active transport endpoint list. |
+| `112 .. 120`| `u64` | `valid_from` | Unix epoch timestamp of registration validity start. |
+| `120 .. 128`| `u64` | `valid_until`| Unix epoch timestamp of registration expiration. |
+| `128 .. 132`| `u32` | `directory_seq`| Monotonically increasing sequence number (for re-pointing). |
+| `132 .. 156`| `[u8; 24]` | `_reserved` | Explicit zero padding. |
+| `156 .. 160`| `u32` | `record_crc32`| Castagnoli CRC32C over bytes `0..156`. |
+
+### 11.3 Dial Flow & Challenge-Response Protocol
+
+When an agent, peer vault, phone reader, or edge instrument initiates communication with a target gate, it executes the normative 5-step **Dial Flow**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as Caller Vault / Client
+    participant Dir as Signed Directory / Relay
+    participant Target as Target Vault
+
+    Caller->>Dir: 1. Resolve: Query gate://<name> or lookup gate://<address>
+    Dir-->>Caller: Signed GateDirectoryRecord (Address + Endpoints)
+    Caller->>Target: 2. Connect: Establish transport session (TLS, BLE, USB)
+    Target-->>Caller: Cryptographic Challenge Nonce (32 random bytes)
+    Caller->>Target: 3. Challenge-Response: Ed25519 signature proving private key ownership
+    Target-->>Caller: Ownership Verified + Target Challenge Nonce (Mutual Auth)
+    Caller->>Target: 4. Present Access Code: Submit short-lived signed grant token
+    Target->>Target: Validate grant scope, expiry, max use count
+    Caller->>Target: 5. Act Within Grant: Synchronize or exchange sealed tiles
+```
+
+1. **Resolve**: Caller resolves `gate://<name>` via directory service to obtain the canonical `gate://<address>` and active endpoint connection parameters.
+2. **Connect**: Caller establishes physical or logical connection across available network transports (HTTPS, WebSocket, BLE GATT, Wi-Fi Direct, USB serial).
+3. **Challenge-Response (Key Ownership Proof)**: Target sends a cryptographic nonce (`[u8; 32]`). The caller returns an Ed25519 signature over the nonce, proving possession of the caller identity private key without disclosing it. Mutual authentication is established symmetrically.
+4. **Present Access Code**: Caller presents a valid, short-lived signed Access Code authorizing operations for this session.
+5. **Act Within Grant**: Target engine bounds session privileges strictly to the scopes and operations authorized in the Access Code.
+
+### 11.4 Access Codes (Short-Lived Signed Grants)
+
+Access to a vault gate requires a valid, revocable **Access Code**:
+- **Definition**: An Access Code is a cryptographically signed capability grant issued by the vault owner to a specific caller identity or session key.
+- **Grant Fields**:
+  - `target_gate_address`: Destination gate address where code is valid.
+  - `allowed_scopes`: Permitted tile types and record masks (e.g. telemetry, learner assertions).
+  - `allowed_actions`: Permitted operations (`ACTION_READ`, `ACTION_WRITE`, `ACTION_SEND_ITEM`).
+  - `expires_at`: Strict short-lived expiration timestamp (typically 60 seconds to 24 hours).
+  - `max_use_count`: Bounded usage counter (single-use or session-capped).
+  - `issuer_signature`: Ed25519 signature generated by the granting vault owner.
+- **Revocability**: Access codes are revocable on-demand by writing a revocation record to the vault event log.
+
+### 11.5 Offline Relay Delivery & Local Transports
+
+Vault network communication operates robustly across intermittent connectivity and air-gapped environments:
+1. **Relay Mailboxes**:
+   - When a recipient vault is offline, calling nodes deposit sealed, encrypted `.s3a` tiles into an intermediate store-and-forward relay mailbox.
+   - Tiles remain tamper-sealed via their `prev_seal_hash` container chains.
+   - When the destination vault comes online, it dials the relay, proves key ownership via challenge-response, downloads queued sealed tiles, and verifies their integrity prior to ingestion.
+2. **Local Dialing (Edge Profile Sharing)**:
+   - Near-field peer vaults and physical edge instruments dial directly over BLE, NFC, USB, or Wi-Fi Direct.
+   - Local transfers execute the standard sharing protocol defined in `S3A-EDGE-PROFILE.md`:
+     `Hello` $\to$ `Tile Inventory` $\to$ `Request Missing` $\to$ `Send Sealed Tiles` $\to$ `Verify Hash Chain & Signature` $\to$ `ACK`.
+
+### 11.6 Cryptographic & Privacy Boundaries
+
+The gate network architecture enforces strict non-disclosure invariants:
+- **No Private Keys on Infrastructure**: Directory servers, network routers, and store-and-forward relays NEVER hold private keys.
+- **Payload Inaccessibility**: Relays and directory operators CANNOT inspect, parse, or read consent-restricted payloads. Payloads remain end-to-end encrypted or protected by subject consent masks.
+- **Consent Boundary Enforcement**: Relay mailboxes reject deposits of tiles whose `consent_scope` restricts transit through untrusted third-party relays (`SCOPE_NO_REEXPORT` or `SCOPE_INTERNAL_ENTERPRISE`).
+
+---
+
+## 12. Approval Checkpoints (Supervisory & Operational Governance)
+
+To enforce verifiable, fail-safe governance over autonomous agents and multi-party workflows, S3A Vaults implement formal **Approval Checkpoint Contracts**.
+
+### 12.1 Approval Checkpoint Architecture
+
+Approval checkpoints operate as cryptographic evaluation checkpoints. Every checkpoint invocation, approval, rejection, or escalation is permanently recorded as an immutable Pod struct in the vault event log.
+
+#### ApprovalCheckpointRecord Layout (128 Bytes + 64 Byte Sig = 192 Bytes, 8-Byte Aligned, Little-Endian)
+| Offset | Type | Field Name | Description |
+|:---:|:---:|:---|:---|
+| `0 .. 16` | `[u8; 16]` | `checkpoint_id` | Unique 128-bit UUID of the checkpoint evaluation. |
+| `16 .. 18` | `u16` | `checkpoint_type` | Checkpoint category (§12.2). |
 | `18 .. 20` | `u16` | `outcome` | `0 = Pending`, `1 = Approved`, `2 = Rejected`, `3 = Escalated`, `4 = TimedOut`. |
 | `20 .. 24` | `u32` | `target_action` | Action code requested (e.g. `ACTION_WRITE`, `ACTION_SEND_ITEM`). |
 | `24 .. 40` | `[u8; 16]` | `requested_by` | UUID of the requesting agent or actor. |
@@ -461,73 +569,73 @@ Gates operate as cryptographic evaluation checkpoints. Every gate invocation, ap
 | `124 .. 128`| `u32` | `record_crc32` | Castagnoli CRC32C over bytes `0..124`. |
 | `128 .. 192`| `[u8; 64]` | `approver_signature` | Ed25519 signature over bytes `0..128` (zeros if pending/timeout). |
 
-### 11.2 The Four Canonical Gate Types
+### 12.2 The Four Canonical Checkpoint Types
 
 ```mermaid
 flowchart TD
-    Req["Agent Action Request"] --> G1{"Preflight Hallucination Gate"}
-    G1 -- Pass --> G2{"Consent & Export Gate"}
-    G1 -- Fail / Unverified Ref --> Rej["Rejected / Escalated"]
-    G2 -- Pass Scope --> G3{"Tool Execution Gate"}
-    G2 -- Scope Block / Training Denied --> Rej
-    G3 -- Allowlisted & Valid --> G4{"Judgment & Human Review Gate"}
-    G3 -- Sandbox Escape / Disallowed --> Rej
-    G4 -- Existence Check Only --> Exec["Execute Action"]
-    G4 -- Judgment Call or Low Conf --> Pause["Pause Run -> Ask Human"]
+    Req["Agent Action Request"] --> C1{"Preflight Hallucination Checkpoint"}
+    C1 -- Pass --> C2{"Consent & Export Checkpoint"}
+    C1 -- Fail / Unverified Ref --> Rej["Rejected / Escalated"]
+    C2 -- Pass Scope --> C3{"Tool Execution Checkpoint"}
+    C2 -- Scope Block / Training Denied --> Rej
+    C3 -- Allowlisted & Valid --> C4{"Judgment & Human Review Checkpoint"}
+    C3 -- Sandbox Escape / Disallowed --> Rej
+    C4 -- Existence Check Only --> Exec["Execute Action"]
+    C4 -- Judgment Call or Low Conf --> Pause["Pause Run -> Ask Human"]
     Pause --> Resume["Interactive Human Sign-Off"]
     Resume --> Exec
 ```
 
-#### 1. Preflight Hallucination Gate (`GATE_PREFLIGHT_HALLUCINATION = 1`)
+#### 1. Preflight Hallucination Checkpoint (`CHECKPOINT_PREFLIGHT_HALLUCINATION = 1`)
 - **Purpose**: Verifies all citations, claims, external references, and data assertions before an action is committed.
 - **Constraints**: AI models are restricted strictly to verifiable existence checks:
   - Assert DOI exists in canonical registries (OpenAlex, Crossref).
   - Verify document metadata matches cited values.
   - Assert retraction status is clear.
   - Verify exact text passage is present in source archive.
-- **Gate Failure**: Any hallucinated, unverified, or retracted reference immediately trips the gate, blocking the action and logging an evaluation event.
+- **Checkpoint Failure**: Any hallucinated, unverified, or retracted reference immediately trips the checkpoint, blocking the action and logging an evaluation event.
 
-#### 2. Human Review Gate (`GATE_HUMAN_REVIEW = 2`)
+#### 2. Human Review Checkpoint (`CHECKPOINT_HUMAN_REVIEW = 2`)
 - **Purpose**: Supervisory intervention for high-consequence judgment calls and sub-threshold confidence decisions.
 - **Trigger Conditions**:
-  - Any operation classified under the Non-Delegable Judgment Invariant (§3.2, §11.5).
+  - Any operation classified under the Non-Delegable Judgment Invariant (§3.2, §12.5).
   - Operational routing decisions where observed confidence falls below the agent's configured threshold (`observed_confidence < threshold_confidence`).
 - **Behavior**:
   - The agent loop immediately pauses with status `PausedWaitingHuman`.
   - Execution state is frozen into the vault / sandbox run ledger.
   - The human operator reviews the proposed action and submits a signed decision via `s3a-harness resume`.
 
-#### 3. Consent Gate (`GATE_CONSENT = 3`)
+#### 3. Consent Checkpoint (`CHECKPOINT_CONSENT = 3`)
 - **Purpose**: Enforces subject consent, GDPR, HIPAA, and IRB compliance across transfers, queries, and analytics.
 - **Verification Rules**:
   - Inbound and outbound items are checked against their `consent_scope` bitmask.
   - Operations attempting model training without explicit opt-in (`SCOPE_MODEL_TRAINING_FORBIDDEN`) are blocked at the engine layer.
   - If `SCOPE_HUMAN_APPROVAL_ON_EXPORT` is present, export cannot proceed autonomously.
 
-#### 4. Tool Execution Gate (`GATE_TOOL_EXECUTION = 4`)
+#### 4. Tool Execution Checkpoint (`CHECKPOINT_TOOL_EXECUTION = 4`)
 - **Purpose**: Enforces sandbox isolation, tool parameter schemas, and path boundaries before invoking external or local tools.
 - **Isolation Rules**:
   - Enforces strict agent tool allowlists configured in `agents/<id>.toml`.
   - Rejects path traversal escapes (all file writes confined to `<root>/exports`).
   - Records cryptographic hashes of tool inputs (`SHA-256(input)`) and tool outputs (`SHA-256(output)`) into the xAPI provenance ledger.
 
-### 11.3 Multi-Signature Quorums
+### 12.3 Multi-Signature Quorums
 
-For institutional or irreversible actions, gates MAY require an $M$-of-$N$ multi-signature quorum:
+For institutional or irreversible actions, checkpoints MAY require an $M$-of-$N$ multi-signature quorum:
 - **Quorum Scenarios**:
   - Irreversible record erasure (`erasure` tile purge).
   - Identity key revocation or master key rotation.
   - Large-scale credential mass-revocation.
   - Multi-institutional dataset exports.
-- **Protocol**: A `QuorumGateRecord` collects $M$ independent Ed25519 signatures from authorized organizational keys before transitioning `outcome` from `Pending` to `Approved`.
+- **Protocol**: A `QuorumCheckpointRecord` collects $M$ independent Ed25519 signatures from authorized organizational keys before transitioning `outcome` from `Pending` to `Approved`.
 
-### 11.4 Timeout & Escalation Policies
+### 12.4 Timeout & Escalation Policies
 
-1. **Deterministic Expiration (`expires_at`)**: Every pending gate evaluation defines a maximum lifetime.
+1. **Deterministic Expiration (`expires_at`)**: Every pending checkpoint evaluation defines a maximum lifetime.
 2. **Fail-Closed Default**: If `expires_at` is reached without required approvals, the outcome transitions to `TimedOut` and the requested action is rejected without execution.
-3. **Single-Escalation Rule**: To prevent runaway escalation loops, an agent run is permitted at most **one** automated model escalation (e.g. switching to a stronger model upon becoming stuck). Subsequent failures route directly to the Human Review Gate.
+3. **Single-Escalation Rule**: To prevent runaway escalation loops, an agent run is permitted at most **one** automated model escalation (e.g. switching to a stronger model upon becoming stuck). Subsequent failures route directly to the Human Review Checkpoint.
 
-### 11.5 Non-Delegable Judgment Invariant Integration
+### 12.5 Non-Delegable Judgment Invariant Integration
 
 The core architectural invariant of the S3A Vault guarantees human primacy over subjective scientific, ethical, and legal decisions:
 
@@ -543,16 +651,16 @@ $$\forall a \in \text{Actions}, \; \text{is\_judgment}(a) \implies \text{delegab
 
 ---
 
-## 12. Tile ID Registry Harmonization & Conflict Analysis
+## 13. Tile ID Registry Harmonization & Conflict Analysis
 
-### 12.1 Allocation Band Review
+### 13.1 Allocation Band Review
 
 Per `registry.md` and `S3A-TILE-SPEC.md`, tile type IDs are partitioned into strict bands:
 - **0 – 32**: Legacy Frozen Wire Assignments.
 - **33 – 63**: Reserved for Standard Domain Packs (allocated via spec amendment).
 - **64 – 127**: Core Catalog Primitives.
 
-### 12.2 Conflict-Free Mapping Table
+### 13.2 Conflict-Free Mapping Table
 
 The table below demonstrates how the S3A Vault maps to canonical allocations with **zero collisions**:
 
@@ -564,11 +672,11 @@ The table below demonstrates how the S3A Vault maps to canonical allocations wit
 | **Consent & Governance** | `71` | `0x0047` | Core Catalog | Active (`consent`) | **Zero Conflict**. Uses canonical subject consent primitive. |
 | **Agent Action Provenance** | `72` | `0x0048` | Core Catalog | Active (`provenance`) | **Zero Conflict**. Multi-agent lineage tracking linking agent tool steps to grants. |
 | **Educational Credentials** | `30` | `0x001E` | Core ELR | Active (`elr_credential_assertion`)| **Zero Conflict**. IEEE P2997 / Open Badges index projection. |
-| **Dedicated Vault Pack Range**| `36 – 40`| `0x0024..`| Standard Packs | Reserved (Amendable)| **Zero Conflict**. Standard Domain Pack band (33–63) is completely unallocated; reserved for specialized vault types: `36: vault_identity`, `37: vault_delegation`, `38: vault_holding`, `39: vault_transfer`, `40: vault_event_log`, plus supervisory gate records. |
+| **Dedicated Vault Pack Range**| `36 – 40`| `0x0024..`| Standard Packs | Reserved (Amendable)| **Zero Conflict**. Standard Domain Pack band (33–63) is completely unallocated; reserved for specialized vault types: `36: vault_identity`, `37: vault_delegation`, `38: vault_holding`, `39: vault_transfer`, `40: vault_event_log`, plus approval checkpoint and gate directory records. |
 
 ---
 
-## 13. Summary & Architecture Checklist
+## 14. Summary & Architecture Checklist
 
 1. **Native Format**: An S3A Vault is an ordinary `.s3a` archive (`.vault.s3a`); fully compatible with existing compactors, readers, and verification tools.
 2. **Key Custody**: Person keys reside in hardware keystores; agent keys reside in the execution harness and are never exposed to language models; organization keys reside in HSMs; thing keys reside in tamper-resistant secure elements.
@@ -576,7 +684,8 @@ The table below demonstrates how the S3A Vault maps to canonical allocations wit
 4. **Credential Standards**: Direct bidirectional translation between W3C Verifiable Credentials / Open Badges 3.0 and S3A storage primitives.
 5. **Ownership Provenance**: Cryptographic transfer hash chains verify current item ownership; optional LRS registry checks prevent double-sends.
 6. **Things & Physical Assets**: Hardware-anchored identity binding for physical instruments, on-device telemetry signing, equipment lifecycle logs, and seamless mutual attestation with the Edge Profile (`S3A-EDGE-PROFILE.md`).
-7. **Supervisory Gates**: Four canonical gate contracts (Preflight Hallucination, Human Review, Consent, Tool Execution) enforce fail-safe execution, multi-sig quorums, and auditability.
-8. **Consent Governance**: Native storage-level consent masks enforce participant privacy, restricting model training and commercial exploitation.
-9. **Disaster Recovery**: Guardian device authorization, BIP-39 deterministic recovery phrases, and encrypted snapshot containers with Reed-Solomon parity and OTS anchoring.
-10. **Non-Financial Guarantee**: Strictly excludes money, payments, and crypto tokens, focusing exclusively on identity, knowledge, learning credentials, physical assets, supervisory governance, and research data provenance.
+7. **Gate Addresses & Dialing Protocol**: Every vault possesses an immutable `gate://<address>` network address derived from its public key hash, with re-pointable directory names (`gate://<name>[.<namespace>]`), challenge-response mutual attestation, short-lived access codes, offline relay mailboxes, and edge dialing over BLE/NFC/Wi-Fi per S3A-EDGE-PROFILE.
+8. **Approval Checkpoints**: Four canonical checkpoint contracts (Preflight Hallucination, Human Review, Consent, Tool Execution) enforce fail-safe execution, multi-sig quorums, and auditability.
+9. **Consent Governance**: Native storage-level consent masks enforce participant privacy, restricting model training and commercial exploitation.
+10. **Disaster Recovery**: Guardian device authorization, BIP-39 deterministic recovery phrases, and encrypted snapshot containers with Reed-Solomon parity and OTS anchoring.
+11. **Non-Financial Guarantee**: Strictly excludes money, payments, and crypto tokens, focusing exclusively on identity, knowledge, learning credentials, physical assets, supervisory governance, and research data provenance.

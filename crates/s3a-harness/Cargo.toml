@@ -29,3 +29,6 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 ureq = { workspace = true }
 uuid = { version = "1.27", features = ["v7"] }
+sha2 = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "env-filter"] }

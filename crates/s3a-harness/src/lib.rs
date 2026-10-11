@@ -5,12 +5,16 @@
 pub mod agent;
 pub mod config;
 pub mod decision;
+pub mod doctor;
+pub mod eval;
 pub mod mcp;
 pub mod model;
 pub mod runtime;
 pub mod sandbox;
 pub mod srs;
 pub mod store;
+pub mod tools;
+pub mod trajectory;
 
 pub use agent::{
     EpistemicConfidenceTier, GateRejectionLog, GateStatus, HallucinationRisk, HumanGateRequest,
@@ -22,15 +26,37 @@ pub use decision::{
     is_claim_judgment_call, DecisionEngine, DecisionKind, DecisionRequest, DecisionResult,
     DecisionValue, OperationalDecisionType, ShadowEvaluation,
 };
+pub use doctor::{run_doctor, CheckResult, DoctorReport};
+pub use eval::{run_eval_set, EvalCase, EvalCaseResult, EvalResultSet};
 pub use mcp::S3AMcpDispatcher;
 pub use model::{
     ChatMessage, CompletionRequest, CompletionResponse, MockModel, Model, ModelError,
     OpenAiHttpAdapter,
 };
-pub use runtime::{AgentRuntime, RunState, RunStatus, ShadowReportSummary};
+pub use runtime::{AgentRuntime, RunDiffSummary, RunState, RunStatus, ShadowReportSummary};
 pub use sandbox::{Sandbox, SandboxError};
 pub use srs::SrsContainerManager;
 pub use store::{LocalStore, LrsStore, Store, StoreError};
+pub use tools::{
+    compute_sha256, CrossrefLookupTool, McpExternalTool, OpenAlexLookupTool,
+    RetractionWatchCheckTool, S3aQueryTool, S3aWriteTool, Tool, ToolCallResult, ToolError,
+    ToolExecutionContext, ToolInfo, ToolRegistry,
+};
+pub use trajectory::{
+    export_trajectories, is_consent_permitted, run_to_chatml, run_to_sharegpt,
+    TrajectoryExportSummary, TrajectoryFormat,
+};
+
+/// Initializes structured logging via tracing-subscriber.
+pub fn init_logging(verbose: bool) {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = if verbose {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+    };
+    let _ = fmt().with_env_filter(filter).with_target(false).try_init();
+}
 
 use uuid::Uuid;
 

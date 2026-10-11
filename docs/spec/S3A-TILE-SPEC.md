@@ -228,9 +228,9 @@ The Edge Profile specifies 4 KB and 8 KB flash-sector aligned micro-tiles, power
 
 ### 3.6 Digital Vault Profile Pointer
 
-For cryptographic identity custody, verifiable credentials (W3C VC / Open Badges 3.0), autonomous agent delegation grants, physical thing management, supervisory gates, and digital holdings stored natively within valid S3A archives (`.vault.s3a` / `.s3a`), S3A defines the companion **Digital Vault Specification** in [`S3A-VAULT.md`](S3A-VAULT.md).
+For cryptographic identity custody, verifiable credentials (W3C VC / Open Badges 3.0), autonomous agent delegation grants, physical thing management, gate network addressing, approval checkpoints, and digital holdings stored natively within valid S3A archives (`.vault.s3a` / `.s3a`), S3A defines the companion **Digital Vault Specification** in [`S3A-VAULT.md`](S3A-VAULT.md).
 
-The Vault Profile establishes Ed25519 key storage boundaries, anti-privilege-escalation agent governance, physical asset binding, supervisory gate contracts, ownership transfer chains, and disaster recovery mechanisms while strictly excluding financial currencies and tokens.
+The Vault Profile establishes Ed25519 key storage boundaries, anti-privilege-escalation agent governance, physical asset binding, vault gate network addressing (`gate://`), approval checkpoint contracts, ownership transfer chains, and disaster recovery mechanisms while strictly excluding financial currencies and tokens.
 
 ---
 

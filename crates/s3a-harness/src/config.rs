@@ -80,6 +80,7 @@ pub enum ConfigError {
     Io(std::io::Error),
     ParseError(String),
     MissingField(String),
+    InvalidValue(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -90,6 +91,7 @@ impl fmt::Display for ConfigError {
             Self::MissingField(field) => {
                 write!(f, "Missing required configuration field: '{}'", field)
             }
+            Self::InvalidValue(msg) => write!(f, "Invalid configuration value: {}", msg),
         }
     }
 }
@@ -103,10 +105,65 @@ impl From<std::io::Error> for ConfigError {
 }
 
 impl AgentConfig {
-    /// Load agent configuration from a TOML file.
+    /// Load agent configuration from a TOML file with automatic validation.
     pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = fs::read_to_string(path)?;
-        Self::parse_toml(&content)
+        let cfg = Self::parse_toml(&content)?;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// Validates configuration fields, thresholds in [0.0, 1.0], positive limits, and non-empty allowed tools.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.id.trim().is_empty() {
+            return Err(ConfigError::InvalidValue(
+                "agent.id cannot be empty".to_string(),
+            ));
+        }
+        if self.model.trim().is_empty() {
+            return Err(ConfigError::InvalidValue(
+                "agent.model cannot be empty".to_string(),
+            ));
+        }
+        if self.limits.max_turns == 0 {
+            return Err(ConfigError::InvalidValue(
+                "limits.max_turns must be > 0".to_string(),
+            ));
+        }
+        if self.limits.max_tool_calls == 0 {
+            return Err(ConfigError::InvalidValue(
+                "limits.max_tool_calls must be > 0".to_string(),
+            ));
+        }
+        if self.limits.timeout_secs == 0 {
+            return Err(ConfigError::InvalidValue(
+                "limits.timeout_secs must be > 0".to_string(),
+            ));
+        }
+        if self.limits.token_budget == 0 {
+            return Err(ConfigError::InvalidValue(
+                "limits.token_budget must be > 0".to_string(),
+            ));
+        }
+        for (name, val) in [
+            ("tool_selection", self.thresholds.tool_selection),
+            ("trimming", self.thresholds.trimming),
+            ("stuck_detection", self.thresholds.stuck_detection),
+            ("escalation", self.thresholds.escalation),
+        ] {
+            if !(0.0..=1.0).contains(&val) {
+                return Err(ConfigError::InvalidValue(format!(
+                    "decision_thresholds.{} ({}) must be between 0.0 and 1.0",
+                    name, val
+                )));
+            }
+        }
+        if self.allowed_tools.is_empty() {
+            return Err(ConfigError::InvalidValue(
+                "tools.allowed cannot be empty".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Parse AgentConfig from a TOML string.

@@ -31,6 +31,18 @@ fn main() {
         "shadow-report" => {
             run_shadow_report_cli(&args[2..]);
         }
+        "doctor" => {
+            run_doctor_cli(&args[2..]);
+        }
+        "diff" => {
+            run_diff_cli(&args[2..]);
+        }
+        "export-trajectories" => {
+            run_export_trajectories_cli(&args[2..]);
+        }
+        "eval" => {
+            run_eval_cli(&args[2..]);
+        }
         "package" | "export" => {
             run_package(&args[2..]);
         }
@@ -40,7 +52,13 @@ fn main() {
         "loop-demo" => {
             run_autonomous_loop_demo();
         }
-        _ => print_usage(),
+        "--help" | "-h" | "help" => {
+            print_usage();
+        }
+        _ => {
+            eprintln!("Unknown command: '{}'", args[1]);
+            print_usage();
+        }
     }
 }
 
@@ -51,6 +69,7 @@ fn print_usage() {
     println!("    --config <path>                     Path to agent TOML config (default: agents/scholar_reviewer.toml)");
     println!("    --root <dir>                        Sandbox root directory (default: current directory)");
     println!("    --goal <text>                       Research goal / task description");
+    println!("    --base-snapshot <id>                Base sealed snapshot ID to fork this run branch from");
     println!(
         "    --mock                              Use internal MockModel for offline/test execution"
     );
@@ -58,6 +77,41 @@ fn print_usage() {
     println!("    --model-url <url>                   Base URL for OpenAI-compatible endpoint (default: http://localhost:11434/v1)");
     println!("    --db <filename>                     Local S3A database filename inside root");
     println!("    --lrs-endpoint <url>                Optional remote LRS HTTP endpoint");
+    println!(
+        "    --verbose, -v                       Enable detailed structured tracing diagnostics"
+    );
+    println!();
+    println!("  s3a-harness doctor [OPTIONS]          Perform health and operability diagnostics");
+    println!("    --config <path>                     Agent config to validate (default: agents/scholar_reviewer.toml)");
+    println!("    --no-config                         Skip config file validation");
+    println!("    --root <dir>                        Sandbox root directory");
+    println!("    --mock                              Test against mock model backend");
+    println!("    --model-url <url>                   Model backend URL to test");
+    println!("    --db <filename>                     Local database file to check");
+    println!("    --lrs-endpoint <url>                Optional LRS endpoint to check");
+    println!("    --json                              Output diagnostic results as JSON");
+    println!();
+    println!(
+        "  s3a-harness diff <runA> <runB> [OPT]  Compare two agent runs and snapshot branches"
+    );
+    println!("    --root <dir>                        Sandbox root directory");
+    println!("    --json                              Output comparison diff report as JSON");
+    println!();
+    println!("  s3a-harness export-trajectories [OPT] Export consent-filtered trajectories for fine-tuning");
+    println!("    --format <chatml|sharegpt>          Output formatting (default: chatml)");
+    println!("    --root <dir>                        Sandbox root directory");
+    println!("    --out <file>                        Output destination path (default: trajectories.jsonl)");
+    println!("    --purpose <name>                    Required consent purpose (default: model_training)");
+    println!();
+    println!(
+        "  s3a-harness eval [OPTIONS]            Run action-asserted benchmark evaluation suite"
+    );
+    println!("    --agent <id>                        Agent ID or config path to evaluate");
+    println!("    --set <path>                        Path to evals/*.jsonl evaluation suite");
+    println!("    --root <dir>                        Sandbox root directory");
+    println!("    --mock                              Use internal mock model");
+    println!("    --model-url <url>                   Model backend URL");
+    println!("    --json                              Output evaluation results as JSON");
     println!();
     println!("  s3a-harness resume <run_id> [OPTIONS] Resume paused agent run after human review");
     println!("    --decision <text>                   Supervisor decision (default: Approved)");
@@ -427,6 +481,8 @@ fn run_agent_cli(args: &[String]) {
     let mut lrs_pass: Option<String> = None;
     let mut session_uuid = generate_random_uuid_pair();
     let mut project_uuid = generate_random_uuid_pair();
+    let mut base_snapshot_id: Option<String> = None;
+    let mut verbose = false;
 
     let mut shadow_model_name: Option<String> = None;
     let mut i = 0;
@@ -449,6 +505,15 @@ fn run_agent_cli(args: &[String]) {
                     task_goal = args[i + 1].clone();
                     i += 1;
                 }
+            }
+            "--base-snapshot" => {
+                if i + 1 < args.len() {
+                    base_snapshot_id = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--verbose" | "-v" => {
+                verbose = true;
             }
             "--mock" => {
                 use_mock = true;
@@ -510,11 +575,13 @@ fn run_agent_cli(args: &[String]) {
         i += 1;
     }
 
+    s3a_harness::init_logging(verbose);
+
     let config = match s3a_harness::AgentConfig::load_file(&config_path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
-                "[s3a-harness] Failed to load config '{}': {}",
+                "[s3a-harness] Configuration validation failed for '{}': {}",
                 config_path.display(),
                 e
             );
@@ -572,13 +639,21 @@ fn run_agent_cli(args: &[String]) {
         };
         runtime = runtime.with_shadow_model(sm);
     }
-    let state =
-        s3a_harness::RunState::new(&runtime.config.id, &task_goal, session_uuid, project_uuid);
+    let state = s3a_harness::RunState::with_base_snapshot(
+        &runtime.config.id,
+        &task_goal,
+        session_uuid,
+        project_uuid,
+        base_snapshot_id,
+    );
 
     println!("=========================================================================");
     println!("Starting Autonomous Agent Run: {}", state.run_id);
     println!("Agent ID: {} ({})", runtime.config.id, runtime.config.name);
     println!("Goal:     {}", task_goal);
+    if let Some(ref snap) = state.base_snapshot_id {
+        println!("Base Snap: {}", snap);
+    }
     if let Some(ref sm) = shadow_model_name {
         println!(
             "Shadow:   {} (Candidate model running alongside live model; logs only, never acts)",
@@ -793,5 +868,498 @@ fn run_shadow_report_cli(args: &[String]) {
             }
         }
         Err(e) => eprintln!("Failed to generate shadow report: {}", e),
+    }
+}
+
+fn run_doctor_cli(args: &[String]) {
+    let mut config_path: Option<PathBuf> = Some(PathBuf::from("agents/scholar_reviewer.toml"));
+    let mut root_dir = PathBuf::from(".");
+    let mut use_mock = false;
+    let mut model_url = "http://localhost:11434/v1".to_string();
+    let mut db_filename = "scholar_lab.s3a".to_string();
+    let mut lrs_endpoint: Option<String> = None;
+    let mut json_output = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                if i + 1 < args.len() {
+                    config_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 1;
+                }
+            }
+            "--no-config" => {
+                config_path = None;
+            }
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--mock" => {
+                use_mock = true;
+            }
+            "--model-url" => {
+                if i + 1 < args.len() {
+                    model_url = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_filename = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--lrs-endpoint" => {
+                if i + 1 < args.len() {
+                    lrs_endpoint = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--json" => {
+                json_output = true;
+            }
+            "--help" | "-h" => {
+                println!("Usage: s3a-harness doctor [OPTIONS]");
+                println!("Options:");
+                println!("  --config <path>       Path to agent TOML config (default: agents/scholar_reviewer.toml)");
+                println!("  --no-config           Skip config file validation");
+                println!("  --root <dir>          Sandbox root directory");
+                println!("  --model-url <url>     Model backend URL");
+                println!("  --mock                Test against mock model");
+                println!("  --db <filename>       Local S3A database filename");
+                println!("  --lrs-endpoint <url>  LRS endpoint URL");
+                println!("  --json                Emit output as JSON");
+                return;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let sandbox = match Sandbox::new(&root_dir, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness doctor] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    let store: Arc<dyn Store> = if let Some(ref ep) = lrs_endpoint {
+        Arc::new(LrsStore::with_options(ep, None, None, false, true))
+    } else {
+        let db_path = sandbox.root().join(&db_filename);
+        Arc::new(LocalStore::new(&db_path, false))
+    };
+
+    let model: Arc<dyn s3a_harness::Model> = if use_mock {
+        Arc::new(s3a_harness::MockModel::new("mock-model").with_default_response("pong"))
+    } else {
+        Arc::new(s3a_harness::OpenAiHttpAdapter::new(&model_url, "llama3"))
+    };
+
+    let report = s3a_harness::run_doctor(
+        config_path.as_deref(),
+        model.as_ref(),
+        store.as_ref(),
+        &sandbox,
+    );
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        return;
+    }
+
+    println!("=========================================================================");
+    println!("                     S3A HARNESS OPERABILITY DOCTOR                      ");
+    println!("=========================================================================");
+    for check in &report.checks {
+        let mark = if check.passed { "[PASS]" } else { "[FAIL]" };
+        println!("{} {}: {}", mark, check.name, check.message);
+        if let Some(ref rem) = check.remediation {
+            println!("       Remediation: {}", rem);
+        }
+    }
+    println!("-------------------------------------------------------------------------");
+    if report.all_healthy {
+        println!("OVERALL STATUS: [HEALTHY] All systems operational.");
+    } else {
+        println!("OVERALL STATUS: [UNHEALTHY] One or more diagnostic checks failed.");
+    }
+    println!("=========================================================================");
+}
+
+fn run_diff_cli(args: &[String]) {
+    let mut run_a_id: Option<String> = None;
+    let mut run_b_id: Option<String> = None;
+    let mut root_dir = PathBuf::from(".");
+    let mut json_output = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--json" => {
+                json_output = true;
+            }
+            "--help" | "-h" => {
+                println!("Usage: s3a-harness diff <runA> <runB> [OPTIONS]");
+                println!("Options:");
+                println!("  --root <dir>   Sandbox root directory");
+                println!("  --json         Emit diff report as JSON");
+                return;
+            }
+            _ => {
+                if !args[i].starts_with("--") {
+                    if run_a_id.is_none() {
+                        run_a_id = Some(args[i].clone());
+                    } else if run_b_id.is_none() {
+                        run_b_id = Some(args[i].clone());
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let (run_a, run_b) = match (run_a_id, run_b_id) {
+        (Some(a), Some(b)) => (a, b),
+        _ => {
+            println!("Usage: s3a-harness diff <runA> <runB> [--root <dir>] [--json]");
+            return;
+        }
+    };
+
+    let sandbox = match Sandbox::new(&root_dir, true) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness diff] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    match s3a_harness::AgentRuntime::diff_saved_runs(&sandbox, &run_a, &run_b) {
+        Ok(diff) => {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&diff).unwrap());
+                return;
+            }
+
+            println!("=========================================================================");
+            println!("                  S3A HARNESS RUN & SNAPSHOT BRANCH DIFF                 ");
+            println!("=========================================================================");
+            println!("Run A:                {}", diff.run_a_id);
+            println!("Run B:                {}", diff.run_b_id);
+            println!(
+                "Base Snapshot Match:  {}",
+                if diff.base_snapshot_match {
+                    "YES (Identical ancestor)"
+                } else {
+                    "NO (Divergent branches)"
+                }
+            );
+            println!(
+                "Base Snapshot A:      {}",
+                diff.base_snapshot_a.as_deref().unwrap_or("None")
+            );
+            println!(
+                "Base Snapshot B:      {}",
+                diff.base_snapshot_b.as_deref().unwrap_or("None")
+            );
+            println!(
+                "Branch Snapshot A:    {}",
+                diff.forked_snapshot_a.as_deref().unwrap_or("None")
+            );
+            println!(
+                "Branch Snapshot B:    {}",
+                diff.forked_snapshot_b.as_deref().unwrap_or("None")
+            );
+            println!("-------------------------------------------------------------------------");
+            println!(
+                "Status A vs B:        {:?} vs {:?}",
+                diff.status_a, diff.status_b
+            );
+            println!("Turns A vs B:         {} vs {}", diff.turns_a, diff.turns_b);
+            println!(
+                "Tool Calls A vs B:    {} vs {}",
+                diff.tool_calls_a, diff.tool_calls_b
+            );
+            println!(
+                "Tokens A vs B:        {} vs {}",
+                diff.tokens_a, diff.tokens_b
+            );
+            if let Some(turn) = diff.tool_sequence_divergence_turn {
+                println!("Tool Divergence Turn: Turn #{}", turn);
+            } else {
+                println!("Tool Divergence Turn: None (Identical execution paths)");
+            }
+            println!("Tools A Sequence:     {:?}", diff.tools_a);
+            println!("Tools B Sequence:     {:?}", diff.tools_b);
+            println!(
+                "Provenance Discrepancies: {}",
+                diff.tool_provenance_diff_count
+            );
+            println!("=========================================================================");
+        }
+        Err(e) => eprintln!("Failed to diff runs: {}", e),
+    }
+}
+
+fn run_export_trajectories_cli(args: &[String]) {
+    let mut format = s3a_harness::TrajectoryFormat::ChatMl;
+    let mut root_dir = PathBuf::from(".");
+    let mut out_file = PathBuf::from("trajectories.jsonl");
+    let mut required_purpose = "model_training".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                if i + 1 < args.len() {
+                    if let Some(fmt) = s3a_harness::TrajectoryFormat::parse(&args[i + 1]) {
+                        format = fmt;
+                    } else {
+                        eprintln!(
+                            "[s3a-harness] Unsupported trajectory format '{}'; choose chatml or sharegpt",
+                            args[i + 1]
+                        );
+                        return;
+                    }
+                    i += 1;
+                }
+            }
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--out" => {
+                if i + 1 < args.len() {
+                    out_file = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--purpose" => {
+                if i + 1 < args.len() {
+                    required_purpose = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: s3a-harness export-trajectories [OPTIONS]");
+                println!("Options:");
+                println!(
+                    "  --format <chatml|sharegpt>  Target trajectory schema (default: chatml)"
+                );
+                println!("  --root <dir>                Sandbox root directory");
+                println!("  --out <file>                Output path (default: trajectories.jsonl)");
+                println!(
+                    "  --purpose <purpose>         Required consent purpose (default: model_training)"
+                );
+                return;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let sandbox = match Sandbox::new(&root_dir, true) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    println!(
+        "Exporting trajectories from '{}'...",
+        sandbox.root().display()
+    );
+    match s3a_harness::export_trajectories(&sandbox, format, &out_file, &required_purpose) {
+        Ok(summary) => {
+            println!("=========================================================================");
+            println!("             S3A HARNESS TRAJECTORY EXPORT COMPLETE                      ");
+            println!("=========================================================================");
+            println!("Total Runs Scanned:        {}", summary.total_runs_found);
+            println!(
+                "Consent Accepted:          {} (Purpose: '{}')",
+                summary.consent_accepted, required_purpose
+            );
+            println!("Consent Filtered (Skipped): {}", summary.consent_filtered);
+            println!("Exported Trajectories:     {}", summary.exported_records);
+            println!("Format:                    {}", summary.format.as_str());
+            println!(
+                "Output File:               {}",
+                summary.output_file.display()
+            );
+            println!("=========================================================================");
+        }
+        Err(e) => eprintln!("Failed to export trajectories: {}", e),
+    }
+}
+
+fn run_eval_cli(args: &[String]) {
+    let mut agent_id = "scholar_reviewer".to_string();
+    let mut config_path: Option<PathBuf> = None;
+    let mut eval_set_path = PathBuf::from("evals/scholar_evals.jsonl");
+    let mut root_dir = PathBuf::from(".");
+    let mut use_mock = false;
+    let mut model_url = "http://localhost:11434/v1".to_string();
+    let mut db_filename = "scholar_lab.s3a".to_string();
+    let mut json_output = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--agent" => {
+                if i + 1 < args.len() {
+                    agent_id = args[i + 1].clone();
+                    if agent_id.ends_with(".toml") {
+                        config_path = Some(PathBuf::from(&agent_id));
+                    }
+                    i += 1;
+                }
+            }
+            "--set" => {
+                if i + 1 < args.len() {
+                    eval_set_path = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--mock" => {
+                use_mock = true;
+            }
+            "--model-url" => {
+                if i + 1 < args.len() {
+                    model_url = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_filename = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--json" => {
+                json_output = true;
+            }
+            "--help" | "-h" => {
+                println!("Usage: s3a-harness eval [OPTIONS]");
+                println!("Options:");
+                println!("  --agent <id|path>    Agent ID or config path to evaluate");
+                println!("  --set <path>         Path to evals/*.jsonl evaluation suite");
+                println!("  --root <dir>         Sandbox root directory");
+                println!("  --mock               Use internal mock model");
+                println!("  --model-url <url>    Model endpoint URL");
+                println!("  --json               Output results as JSON");
+                return;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let cfg_file = config_path.unwrap_or_else(|| {
+        if Path::new(&agent_id).exists() {
+            PathBuf::from(&agent_id)
+        } else {
+            PathBuf::from(format!("agents/{}.toml", agent_id))
+        }
+    });
+
+    let config = match s3a_harness::AgentConfig::load_file(&cfg_file) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[s3a-harness eval] Failed to load agent config '{}': {}",
+                cfg_file.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let sandbox = match Sandbox::new(&root_dir, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness eval] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    let db_path = sandbox.root().join(&db_filename);
+    let store: Arc<dyn Store> = Arc::new(LocalStore::new(&db_path, false));
+
+    let model: Arc<dyn s3a_harness::Model> = if use_mock {
+        Arc::new(s3a_harness::MockModel::new("mock-model").with_default_response(
+            "{\"answer\": \"preflight_check\", \"confidence\": 0.95, \"rationale\": \"Proceeding to preflight check\"}",
+        ))
+    } else {
+        Arc::new(s3a_harness::OpenAiHttpAdapter::new(
+            &model_url,
+            &config.model,
+        ))
+    };
+
+    let runtime = s3a_harness::AgentRuntime::new(config, model, None, store, sandbox);
+
+    println!(
+        "Running evaluation suite '{}' for agent '{}'...",
+        eval_set_path.display(),
+        runtime.config.id
+    );
+    match s3a_harness::run_eval_set(&runtime, &eval_set_path) {
+        Ok(results) => {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&results).unwrap());
+                return;
+            }
+
+            println!("=========================================================================");
+            println!("                S3A HARNESS AGENT EVALUATION BENCHMARK                   ");
+            println!("=========================================================================");
+            println!("Agent ID:                  {}", results.agent_id);
+            println!("Evaluation Set:            {}", results.eval_set_path);
+            println!("Total Test Cases:          {}", results.total_cases);
+            println!(
+                "Passed Cases:              {} (Success Rate: {:.2}%)",
+                results.passed_cases, results.success_rate
+            );
+            println!("Failed Cases:              {}", results.failed_cases);
+            println!("Supervisory Gate Hits:     {}", results.gate_hits);
+            println!("ask_human Invocations:     {}", results.ask_human_count);
+            println!("-------------------------------------------------------------------------");
+            println!("Detailed Case Breakdown:");
+            for case in &results.cases {
+                let status = if case.passed { "[PASS]" } else { "[FAIL]" };
+                println!("  {} Case '{}': {}", status, case.id, case.goal);
+                println!("     Tools Called:      {:?}", case.tools_called);
+                println!(
+                    "     Gate Hit:          {}, ask_human: {}",
+                    case.gate_hit, case.ask_human_raised
+                );
+                if let Some(ref reason) = case.failure_reason {
+                    println!("     Failure Reason:    {}", reason);
+                }
+            }
+            println!("=========================================================================");
+        }
+        Err(e) => eprintln!("Evaluation error: {}", e),
     }
 }
