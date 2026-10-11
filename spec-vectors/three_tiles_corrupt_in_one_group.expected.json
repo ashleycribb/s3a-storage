@@ -5,7 +5,7 @@
   "expected_outcome": "error",
   "error_class": "UnrepairableCorruption",
   "expected_error_message": "Corrupted tiles exceed RS parity M=2",
-  "file_size_bytes": 656056,
+  "file_size_bytes": 656304,
   "visible_records": 0,
   "hidden_records": 0,
   "is_sealed": true

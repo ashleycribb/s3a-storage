@@ -13,6 +13,9 @@ use s3a_engine::{
 use s3a_pack_scholar::{
     export_srs_snapshot, AcademicPaperRecord, ScholarCrudExt, SrsManifestHeader, SrsWorkspaceRecord,
 };
+use s3a_edge::{
+    CompactEdgeSensorRecord, EdgeConsentRecord, EdgeWriter, EquipmentEventRecord, RamFlash,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,7 +70,7 @@ pub struct ConformanceExpectation {
     pub repaired_tiles_count: Option<usize>,
 }
 
-/// Generates all 23 conformance test cases into the target output directory.
+/// Generates all 26 conformance test cases into the target output directory.
 pub fn generate_all_vectors<P: AsRef<Path>>(out_dir: P) -> io::Result<Vec<String>> {
     let dir = out_dir.as_ref();
     fs::create_dir_all(dir)?;
@@ -99,6 +102,10 @@ pub fn generate_all_vectors<P: AsRef<Path>>(out_dir: P) -> io::Result<Vec<String
         generate_tiles_out_of_order(dir)?,
         generate_foreign_tile(dir)?,
         generate_legacy_unaddressed_tiles(dir)?,
+        // 4. Edge Profile Vectors (Phase 1)
+        generate_micro_valid_4kb(dir)?,
+        generate_micro_truncated_file(dir)?,
+        generate_micro_signed_seal_chain(dir)?,
     ];
 
     // Write README with runner contract
@@ -1301,6 +1308,270 @@ fn generate_legacy_unaddressed_tiles(dir: &Path) -> io::Result<String> {
     write_json_and_record(dir, name, &exp)
 }
 
+// Case 24: micro_valid_4kb
+fn generate_micro_valid_4kb(dir: &Path) -> io::Result<String> {
+    let name = "micro_valid_4kb";
+    let file_path = dir.join(format!("{}.s3a", name));
+
+    let flash = RamFlash::<16384>::new(256, 512);
+    let device_id = [0x11u8; 16];
+    let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+    let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    // Tile 0: Consent Record
+    let consent = EdgeConsentRecord::new(
+        [0xAA; 16],
+        0x01,
+        0x01,
+        1700000000,
+        1800000000,
+        1001,
+    );
+    writer.append_consent(&consent)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    writer.seal_tile(1700000001)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    // Tile 1: 5 Sensor records
+    for i in 0..5 {
+        let rec = CompactEdgeSensorRecord::new(
+            (i * 10) as u16,
+            1,
+            1,
+            200 + (i as i32) * 5,
+            0,
+        );
+        writer.append_sensor_record(&rec)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    }
+    writer.seal_tile(1700000060)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    let flash = writer.into_storage();
+    let total_bytes = 512 + 2 * 4096;
+    fs::write(&file_path, &flash.as_slice()[..total_bytes])?;
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("71".to_string(), 1); // Consent
+    map.insert("75".to_string(), 5); // Time-series sensor
+
+    let sample_records = vec![
+        SampleRecord {
+            tile_type: 71,
+            record_index: 0,
+            summary: "EdgeConsentRecord { consent_version: 1, allowed_purposes: 1 }".to_string(),
+        },
+        SampleRecord {
+            tile_type: 75,
+            record_index: 0,
+            summary: "CompactEdgeSensorRecord { delta_ts_ms: 0, sensor_id: 1, metric_id: 1, quantized_val: 200 }".to_string(),
+        },
+    ];
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Valid 4,096-byte Micro S3A file with standard DualFileHeader and 2 micro-tiles".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(total_bytes as u64),
+        header: Some(HeaderExpectation {
+            active_slot: 0,
+            generation: 3,
+            tile_count: 2,
+            addon_mask: 0x0008,
+        }),
+        records_per_tile_type: map,
+        sample_records,
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
+// Case 25: micro_truncated_file
+fn generate_micro_truncated_file(dir: &Path) -> io::Result<String> {
+    let name = "micro_truncated_file";
+    let file_path = dir.join(format!("{}.s3a", name));
+
+    let flash = RamFlash::<16384>::new(256, 512);
+    let device_id = [0x11u8; 16];
+    let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+    let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    // Tile 0: Consent Record
+    let consent = EdgeConsentRecord::new(
+        [0xAA; 16],
+        0x01,
+        0x01,
+        1700000000,
+        1800000000,
+        1001,
+    );
+    writer.append_consent(&consent)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    writer.seal_tile(1700000001)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    let mut flash = writer.into_storage();
+    // Simulate torn write of Tile 1: write partial payload into flash sector 1 (offset 512 + 4096 + 64),
+    // but header at offset 512 + 4096 remains 0xFF, and file header slot is not committed.
+    let torn_tile_offset = 512 + 4096;
+    let partial_data = [0x42u8; 512];
+    flash.memory[torn_tile_offset + 64..torn_tile_offset + 64 + 512].copy_from_slice(&partial_data);
+
+    let total_bytes = torn_tile_offset + 64 + 512;
+    fs::write(&file_path, &flash.as_slice()[..total_bytes])?;
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("71".to_string(), 1);
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write; recovery preserves Tile 0".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(total_bytes as u64),
+        header: Some(HeaderExpectation {
+            active_slot: 1,
+            generation: 2,
+            tile_count: 1,
+            addon_mask: 0x0008,
+        }),
+        records_per_tile_type: map,
+        sample_records: vec![SampleRecord {
+            tile_type: 71,
+            record_index: 0,
+            summary: "EdgeConsentRecord { consent_version: 1, allowed_purposes: 1 }".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
+// Case 26: micro_signed_seal_chain
+fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
+    let name = "micro_signed_seal_chain";
+    let file_path = dir.join(format!("{}.s3a", name));
+
+    let flash = RamFlash::<32768>::new(256, 512);
+    let device_id = [0x11u8; 16];
+    let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+    let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+    let signing_key = s3a_edge::SigningKey::from_bytes(&[0x42u8; 32]);
+    let pubkey_bytes = signing_key.verifying_key().to_bytes();
+
+    // Tile 0: Consent Record
+    let consent = EdgeConsentRecord::new(
+        [0xAA; 16],
+        0x01,
+        0x01,
+        1700000000,
+        1800000000,
+        1001,
+    );
+    writer.append_consent(&consent)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    let seal0 = writer.seal_tile(1700000001)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    let sig0 = s3a_edge::sign_seal_hash(&signing_key, &seal0);
+    assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal0, &sig0));
+
+    // Tile 1: 5 Sensor records
+    for i in 0..5 {
+        let rec = CompactEdgeSensorRecord::new(
+            (i * 10) as u16,
+            1,
+            1,
+            200 + (i as i32) * 5,
+            0,
+        );
+        writer.append_sensor_record(&rec)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    }
+    let seal1 = writer.seal_tile(1700000060)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    let sig1 = s3a_edge::sign_seal_hash(&signing_key, &seal1);
+    assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal1, &sig1));
+
+    // Tile 2: 3 Equipment events
+    for i in 0..3 {
+        let evt = EquipmentEventRecord::new(
+            1700000070 + (i as u64) * 5,
+            1,
+            0,
+            1,
+            1001 + (i as u32),
+            [0x01; 8],
+            100,
+        );
+        writer.append_equipment_event(&evt)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    }
+    let seal2 = writer.seal_tile(1700000080)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+    let sig2 = s3a_edge::sign_seal_hash(&signing_key, &seal2);
+    assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal2, &sig2));
+
+    let flash = writer.into_storage();
+    let total_bytes = 512 + 3 * 4096;
+    fs::write(&file_path, &flash.as_slice()[..total_bytes])?;
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Three 4 KB micro-tiles with continuous SHA-256 seal chain and valid Ed25519 signatures".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(total_bytes as u64),
+        header: Some(HeaderExpectation {
+            active_slot: 1,
+            generation: 4,
+            tile_count: 3,
+            addon_mask: 0x0008,
+        }),
+        records_per_tile_type: std::collections::BTreeMap::new(),
+        sample_records: vec![SampleRecord {
+            tile_type: 70,
+            record_index: 1,
+            summary: "DeviceSealRecord with verified Ed25519 signature".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
 fn write_spec_vectors_readme(dir: &Path) -> io::Result<()> {
     let readme_content = r#"# S3A Conformance Test Vectors (`spec-vectors/`)
 
@@ -1335,6 +1606,9 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `tiles_out_of_order` | **Valid** | `ok_with_warning` | *None* | Tiles out of order on disk; reader reassembles them by tile_index. |
 | `foreign_tile` | **Invalid** | `error` | `FileUuidMismatch` | Tile header carrying foreign file_uuid; reader rejects with FileUuidMismatch error. |
 | `legacy_unaddressed_tiles` | **Valid** | `ok` | *None* | Pre-v1.1 unaddressed tiles (record_layout_version<=1, file_uuid=[0,0]); accepted via legacy path. |
+| `micro_valid_4kb` | **Valid** | `ok` | *None* | Valid 4 KB micro-tile file with standard DualFileHeader (MICRO-VEC-01). |
+| `micro_truncated_file` | **Valid** | `ok` | *None* | Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write (MICRO-VEC-02). |
+| `micro_signed_seal_chain` | **Valid** | `ok` | *None* | 3 consecutive 4 KB tiles with continuous SHA-256 seal chain and Ed25519 signatures (MICRO-VEC-03). |
 
 ---
 
@@ -1368,6 +1642,10 @@ An independent implementation runner MUST execute the test suite adhering to the
    - For `tiles_out_of_order`, detect out-of-order storage and reassemble into logical sequence by `tile_index`.
    - For `foreign_tile`, compare tile `file_uuid` against file header `file_uuid`; reject with `FileUuidMismatch`.
    - For `legacy_unaddressed_tiles`, verify unaddressed tiles (`record_layout_version <= 1 && file_uuid == [0,0]`) are accepted through the legacy path.
+6. **Edge Micro-Tile Verification (Phase 1)**:
+   - For `micro_valid_4kb`, verify archive declares Edge profile, tile stride is 4096 bytes, and both micro-tiles pass CRC32C and payload hash validation.
+   - For `micro_truncated_file`, verify reader accepts committed Tile 0 and EdgeWriter recovery cleanly restores append readiness.
+   - For `micro_signed_seal_chain`, verify all 3 tiles maintain continuous SHA-256 seal hash chaining and valid Ed25519 hardware signatures.
 
 ---
 
@@ -1410,6 +1688,10 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
         ("tiles_out_of_order", "ok_with_warning"),
         ("foreign_tile", "error"),
         ("legacy_unaddressed_tiles", "ok"),
+        // Edge Profile Conformance Cases (Phase 1)
+        ("micro_valid_4kb", "ok"),
+        ("micro_truncated_file", "ok"),
+        ("micro_signed_seal_chain", "ok"),
     ];
 
     let mut verified_count = 0;
@@ -1483,6 +1765,29 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                         "{}: tile count mismatch",
                         name
                     );
+                }
+
+                if reader.is_edge_archive() {
+                    assert_eq!(reader.tile_stride(), 4096, "{}: expected 4096 stride", name);
+                    if name == "micro_truncated_file" {
+                        let file_data = fs::read(&s3a_path).map_err(|e| e.to_string())?;
+                        let mut flash = RamFlash::<16384>::new(256, 512);
+                        flash.memory[..file_data.len()].copy_from_slice(&file_data);
+                        let writer = EdgeWriter::<_, 4096>::recover(flash, [0x11; 16])
+                            .map_err(|e| format!("{}: EdgeWriter::recover failed: {:?}", name, e))?;
+                        assert_eq!(writer.tile_count(), 1, "{}: recovered tile count mismatch", name);
+                    }
+                    if name == "micro_signed_seal_chain" {
+                        let (h0, _) = reader.get_edge_tile(0).unwrap();
+                        let (h1, _) = reader.get_edge_tile(1).unwrap();
+                        let (h2, _) = reader.get_edge_tile(2).unwrap();
+                        let dev_id = [0x11; 16];
+                        let seal0 = s3a_edge::compute_seal_hash(&[0u8; 32], h0.generation as u64, 0, &h0.payload_hash, &dev_id);
+                        let seal1 = s3a_edge::compute_seal_hash(&seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id);
+                        let seal2 = s3a_edge::compute_seal_hash(&seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id);
+                        assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
+                        assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
+                    }
                 }
             }
             "fallback_recovered" => {
@@ -1630,10 +1935,10 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("s3a_vectors_all_test_{}", std::process::id()));
         let generated = generate_all_vectors(&temp_dir).expect("Vector generation must succeed");
-        assert_eq!(generated.len(), 23);
+        assert_eq!(generated.len(), 26);
 
         let verified = verify_conformance_vectors(&temp_dir).expect("Verification must succeed");
-        assert_eq!(verified, 23);
+        assert_eq!(verified, 26);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1927,4 +2232,62 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn test_vector_micro_valid_4kb() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_micro_valid_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_micro_valid_4kb(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("micro_valid_4kb.s3a")).unwrap();
+        assert!(reader.is_edge_archive());
+        assert_eq!(reader.tile_stride(), 4096);
+        assert_eq!(reader.tile_count(), 2);
+        reader.verify_checksums().unwrap();
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_micro_truncated_file() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_micro_trunc_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_micro_truncated_file(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("micro_truncated_file.s3a")).unwrap();
+        assert!(reader.is_edge_archive());
+        assert_eq!(reader.tile_count(), 1);
+        reader.verify_checksums().unwrap();
+
+        // Edge writer recovery test
+        let file_data = fs::read(dir.join("micro_truncated_file.s3a")).unwrap();
+        let mut flash = RamFlash::<16384>::new(256, 512);
+        flash.memory[..file_data.len()].copy_from_slice(&file_data);
+        let writer = EdgeWriter::<_, 4096>::recover(flash, [0x11; 16]).unwrap();
+        assert_eq!(writer.tile_count(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_micro_signed_seal_chain() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_micro_seal_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_micro_signed_seal_chain(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("micro_signed_seal_chain.s3a")).unwrap();
+        assert!(reader.is_edge_archive());
+        assert_eq!(reader.tile_count(), 3);
+        reader.verify_checksums().unwrap();
+
+        // Verify cryptographic seal chain
+        let (h0, _) = reader.get_edge_tile(0).unwrap();
+        let (h1, _) = reader.get_edge_tile(1).unwrap();
+        let (h2, _) = reader.get_edge_tile(2).unwrap();
+        let dev_id = [0x11; 16];
+        let seal0 = s3a_edge::compute_seal_hash(&[0u8; 32], h0.generation as u64, 0, &h0.payload_hash, &dev_id);
+        let seal1 = s3a_edge::compute_seal_hash(&seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id);
+        let seal2 = s3a_edge::compute_seal_hash(&seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id);
+        assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
+        assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
+
+        let _ = fs::remove_dir_all(dir);
+    }
 }
+

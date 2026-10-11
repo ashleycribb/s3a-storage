@@ -1,0 +1,17 @@
+[package]
+name = "s3a-edge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "S3A Edge Profile: #![no_std] heapless flash writer with power-loss safety and trust chain"
+
+[dependencies]
+bytemuck = { workspace = true }
+sha2 = { version = "0.10", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false, optional = true }
+
+[features]
+default = ["std"]
+std = []
+sign = ["ed25519-dalek"]

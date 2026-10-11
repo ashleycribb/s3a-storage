@@ -11,6 +11,7 @@ description = "Conformance test vectors and vector generator for the S3A Hyper-T
 s3a-core = { path = "../s3a-core" }
 s3a-engine = { path = "../s3a-engine" }
 s3a-pack-scholar = { path = "../s3a-pack-scholar" }
+s3a-edge = { path = "../s3a-edge", features = ["sign"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 bytemuck = { workspace = true }

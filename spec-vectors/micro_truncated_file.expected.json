@@ -1,0 +1,26 @@
+{
+  "case_name": "micro_truncated_file",
+  "category": "valid",
+  "description": "Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write; recovery preserves Tile 0",
+  "expected_outcome": "ok",
+  "file_size_bytes": 5184,
+  "header": {
+    "active_slot": 1,
+    "generation": 2,
+    "tile_count": 1,
+    "addon_mask": 8
+  },
+  "records_per_tile_type": {
+    "71": 1
+  },
+  "sample_records": [
+    {
+      "tile_type": 71,
+      "record_index": 0,
+      "summary": "EdgeConsentRecord { consent_version: 1, allowed_purposes: 1 }"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": false
+}

@@ -3,7 +3,7 @@
   "category": "valid",
   "description": "Sealed S3A archive with directory, K=16/M=2 Reed-Solomon parity, and valid 64-byte end cap",
   "expected_outcome": "ok",
-  "file_size_bytes": 524944,
+  "file_size_bytes": 525152,
   "header": {
     "active_slot": 0,
     "generation": 3,

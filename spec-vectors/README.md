@@ -31,6 +31,9 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `tiles_out_of_order` | **Valid** | `ok_with_warning` | *None* | Tiles out of order on disk; reader reassembles them by tile_index. |
 | `foreign_tile` | **Invalid** | `error` | `FileUuidMismatch` | Tile header carrying foreign file_uuid; reader rejects with FileUuidMismatch error. |
 | `legacy_unaddressed_tiles` | **Valid** | `ok` | *None* | Pre-v1.1 unaddressed tiles (record_layout_version<=1, file_uuid=[0,0]); accepted via legacy path. |
+| `micro_valid_4kb` | **Valid** | `ok` | *None* | Valid 4 KB micro-tile file with standard DualFileHeader (MICRO-VEC-01). |
+| `micro_truncated_file` | **Valid** | `ok` | *None* | Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write (MICRO-VEC-02). |
+| `micro_signed_seal_chain` | **Valid** | `ok` | *None* | 3 consecutive 4 KB tiles with continuous SHA-256 seal chain and Ed25519 signatures (MICRO-VEC-03). |
 
 ---
 
@@ -64,6 +67,10 @@ An independent implementation runner MUST execute the test suite adhering to the
    - For `tiles_out_of_order`, detect out-of-order storage and reassemble into logical sequence by `tile_index`.
    - For `foreign_tile`, compare tile `file_uuid` against file header `file_uuid`; reject with `FileUuidMismatch`.
    - For `legacy_unaddressed_tiles`, verify unaddressed tiles (`record_layout_version <= 1 && file_uuid == [0,0]`) are accepted through the legacy path.
+6. **Edge Micro-Tile Verification (Phase 1)**:
+   - For `micro_valid_4kb`, verify archive declares Edge profile, tile stride is 4096 bytes, and both micro-tiles pass CRC32C and payload hash validation.
+   - For `micro_truncated_file`, verify reader accepts committed Tile 0 and EdgeWriter recovery cleanly restores append readiness.
+   - For `micro_signed_seal_chain`, verify all 3 tiles maintain continuous SHA-256 seal hash chaining and valid Ed25519 hardware signatures.
 
 ---
 

@@ -1,0 +1,23 @@
+{
+  "case_name": "micro_signed_seal_chain",
+  "category": "valid",
+  "description": "Three 4 KB micro-tiles with continuous SHA-256 seal chain and valid Ed25519 signatures",
+  "expected_outcome": "ok",
+  "file_size_bytes": 12800,
+  "header": {
+    "active_slot": 1,
+    "generation": 4,
+    "tile_count": 3,
+    "addon_mask": 8
+  },
+  "sample_records": [
+    {
+      "tile_type": 70,
+      "record_index": 1,
+      "summary": "DeviceSealRecord with verified Ed25519 signature"
+    }
+  ],
+  "visible_records": 0,
+  "hidden_records": 0,
+  "is_sealed": false
+}

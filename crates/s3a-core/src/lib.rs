@@ -83,6 +83,14 @@ pub const MICRO_HULL_DIMENSIONS: usize = 4;
 pub const FLAG_ACTIVE: u64 = 0;
 pub const FLAG_TOMBSTONE: u64 = 1 << 0;
 
+/// Archive Flags Bitmask for Edge Profile (FileHeader.flags, S3A-EDGE-PROFILE §2.2.2).
+pub const FLAG_PROFILE_EDGE: u16 = 1 << 0;       // 0x0001
+pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1;      // 0x0002
+pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2;      // 0x0004
+pub const FLAG_COMPACT_HEADER: u16 = 1 << 3;     // 0x0008
+pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4;  // 0x0010
+pub const FLAG_ED25519_SIGNED: u16 = 1 << 5;     // 0x0020
+
 /// Error types returned by S3A core functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3AError {
@@ -312,6 +320,18 @@ impl FileHeader {
         self.addon_mask |= mask;
     }
 
+    pub fn tile_stride(&self) -> usize {
+        if self._reserved1 != 0 {
+            self._reserved1 as usize
+        } else {
+            HYPER_TILE_SIZE
+        }
+    }
+
+    pub fn is_edge_profile(&self) -> bool {
+        (self.flags & FLAG_PROFILE_EDGE) != 0 || (self._reserved1 > 0 && (self._reserved1 as usize) < HYPER_TILE_SIZE)
+    }
+
     pub fn verify(&self) -> Result<(), S3AError> {
         if self.magic != S3A_MAGIC {
             return Err(S3AError::InvalidMagic);
@@ -420,14 +440,22 @@ impl TileType {
     pub const DOCUMENT_STORE: u32 = 23;
     /// Core xAPI 1.0.3 Attachment Blob tile (Tile 24)
     pub const ATTACHMENT_BLOB: u32 = 24;
+    /// Core Equipment Event Log Record Tile (Tile 64 / 0x0040)
+    pub const RECORD: u32 = 64;
     /// Core Columnar Partition Tile (Tile 65 / 0x0041)
     pub const COLUMNAR: u32 = 65;
     /// Core N-Dimensional Array Tile (Tile 66 / 0x0042)
     pub const ARRAY: u32 = 66;
+    /// Core Cryptographic Seal Tile (Tile 70 / 0x0046)
+    pub const SEAL: u32 = 70;
     /// Core Participant Consent Tile (Tile 71 / 0x0047)
     pub const CONSENT: u32 = 71;
+    /// Core Merge Provenance Tile (Tile 72 / 0x0048)
+    pub const PROVENANCE: u32 = 72;
     /// Core Right-to-be-Forgotten Erasure Tile (Tile 73 / 0x0049)
     pub const ERASURE: u32 = 73;
+    /// Core Edge Time-Series Tile (Tile 75 / 0x004B)
+    pub const TIME_SERIES: u32 = 75;
     /// Core Embedded Schema Registry Tile (Tile 77 / 0x004D)
     pub const SCHEMA: u32 = 77;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).

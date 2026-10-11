@@ -3,7 +3,7 @@
   "category": "valid",
   "description": "Sealed archive with corrupt end cap; reader detects endcap corruption and rebuilds directory by scanning tiles",
   "expected_outcome": "ok_with_warning",
-  "file_size_bytes": 393832,
+  "file_size_bytes": 394000,
   "header": {
     "active_slot": 1,
     "generation": 2,

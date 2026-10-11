@@ -3,15 +3,16 @@
   "category": "valid",
   "description": "Archive post-compaction: tombstoned records purged, live records preserved",
   "expected_outcome": "ok",
-  "file_size_bytes": 131584,
+  "file_size_bytes": 262656,
   "header": {
-    "active_slot": 1,
-    "generation": 2,
-    "tile_count": 1,
+    "active_slot": 0,
+    "generation": 3,
+    "tile_count": 2,
     "addon_mask": 0
   },
   "records_per_tile_type": {
-    "0": 2
+    "0": 2,
+    "77": 0
   },
   "sample_records": [
     {

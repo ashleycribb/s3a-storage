@@ -29,6 +29,7 @@ pub mod lrs_store;
 pub mod elr;
 pub mod sealed;
 pub mod anchor;
+pub mod edge_import;
 
 pub use fsutil::{atomic_replace, clean_orphan_temps, unique_compact_temp_path};
 pub use compactor_gates::*;
@@ -37,6 +38,7 @@ pub use lrs_store::*;
 pub use elr::*;
 pub use sealed::*;
 pub use anchor::*;
+pub use edge_import::*;
 
 pub use ql::{execute_query, S3AQLEngine, S3AStatement, QueryResult, Lexer, Parser, Token, QlError, register_pack_sift_handler, PackSiftHandler};
 pub use bvh::{HullBvh, BvhNode};
@@ -795,6 +797,66 @@ impl MmapReader {
         self.active_slot
     }
 
+    pub fn tile_stride(&self) -> usize {
+        self.active_header.tile_stride()
+    }
+
+    pub fn is_edge_archive(&self) -> bool {
+        self.active_header.is_edge_profile()
+    }
+
+    pub fn header_extent(&self) -> usize {
+        if (self.active_header.flags & s3a_edge::FLAG_COMPACT_HEADER) != 0 {
+            256.max(self.tile_stride())
+        } else {
+            FILE_HEADER_SIZE
+        }
+    }
+
+    pub fn get_edge_tile(&self, index: usize) -> Option<(&s3a_edge::CommonTileHeader, &[u8])> {
+        if index >= self.tile_count() as usize {
+            return None;
+        }
+
+        let stride = self.tile_stride();
+        let offset = self.header_extent() + index * stride;
+        if offset + stride > self.mmap.len() {
+            return None;
+        }
+
+        let header_slice = &self.mmap[offset..offset + s3a_edge::COMMON_TILE_HEADER_SIZE];
+        let tile_header: &s3a_edge::CommonTileHeader = from_bytes(header_slice);
+
+        let payload_start = offset + s3a_edge::COMMON_TILE_HEADER_SIZE;
+        let payload_end = payload_start + tile_header.payload_len as usize;
+        if payload_end > offset + stride {
+            return None;
+        }
+        let payload = &self.mmap[payload_start..payload_end];
+
+        Some((tile_header, payload))
+    }
+
+    pub fn get_promoted_tile(&self, index: usize) -> Option<(HyperTileHeader, &[u8])> {
+        if self.is_edge_archive() {
+            let (edge_hdr, payload) = self.get_edge_tile(index)?;
+            let mut promoted = HyperTileHeader::new((index + 1) as u64, edge_hdr.type_id as u32);
+            promoted.record_count = edge_hdr.record_count;
+            promoted.payload_bytes = edge_hdr.payload_len as u32;
+            promoted.record_layout_version = edge_hdr.type_version as u32;
+            promoted.data_crc32 = edge_hdr.data_crc32;
+            promoted.header_crc32 = edge_hdr.header_crc32;
+            promoted.generation = edge_hdr.generation as u64;
+            promoted.tile_index = index as u32;
+            promoted.file_uuid = self.active_header.file_uuid;
+            promoted.provenance.merkle_root = edge_hdr.payload_hash;
+            Some((promoted, payload))
+        } else {
+            let (hdr, payload) = self.get_tile(index)?;
+            Some((*hdr, payload))
+        }
+    }
+
     pub fn get_tile(&self, index: usize) -> Option<(&HyperTileHeader, &[u8])> {
         if index >= self.tile_count() as usize {
             return None;
@@ -870,6 +932,43 @@ impl MmapReader {
         }
 
         let count = self.tile_count() as usize;
+        if self.is_edge_archive() {
+            for i in 0..count {
+                if let Some((header, payload)) = self.get_edge_tile(i) {
+                    if header.header_crc32 != 0 {
+                        let expected_hdr_crc = s3a_edge::compute_common_tile_header_crc32(header);
+                        if header.header_crc32 != expected_hdr_crc {
+                            return Err(S3AError::ChecksumMismatch {
+                                expected: header.header_crc32,
+                                actual: expected_hdr_crc,
+                            });
+                        }
+                    }
+                    if header.data_crc32 != 0 {
+                        let actual_data_crc = crc32c::crc32c(payload);
+                        if actual_data_crc != header.data_crc32 {
+                            return Err(S3AError::ChecksumMismatch {
+                                expected: header.data_crc32,
+                                actual: actual_data_crc,
+                            });
+                        }
+                    }
+                    let mut hasher = sha2::Sha256::new();
+                    hasher.update(payload);
+                    let actual_hash: [u8; 32] = hasher.finalize().into();
+                    if actual_hash != header.payload_hash {
+                        return Err(S3AError::ChecksumMismatch {
+                            expected: u32::from_le_bytes(header.payload_hash[..4].try_into().unwrap()),
+                            actual: u32::from_le_bytes(actual_hash[..4].try_into().unwrap()),
+                        });
+                    }
+                } else {
+                    return Err(S3AError::OutOfBounds);
+                }
+            }
+            return Ok(());
+        }
+
         for i in 0..count {
             if let Some((header, payload)) = self.get_tile(i) {
                 if header.header_crc32 != 0 {

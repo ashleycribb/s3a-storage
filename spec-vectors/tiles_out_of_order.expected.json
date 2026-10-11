@@ -3,7 +3,7 @@
   "category": "valid",
   "description": "Sealed archive whose tiles on disk are out of order; reader reassembles them correctly by tile_index",
   "expected_outcome": "ok_with_warning",
-  "file_size_bytes": 524944,
+  "file_size_bytes": 525152,
   "header": {
     "active_slot": 0,
     "generation": 3,

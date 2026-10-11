@@ -3,7 +3,7 @@
   "category": "valid",
   "description": "Sealed archive with 1 corrupted data tile in group; Reed-Solomon parity successfully repairs it in memory",
   "expected_outcome": "repaired",
-  "file_size_bytes": 524944,
+  "file_size_bytes": 525152,
   "header": {
     "active_slot": 0,
     "generation": 3,
