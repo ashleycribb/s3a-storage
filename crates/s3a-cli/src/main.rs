@@ -37,6 +37,7 @@ use s3a_engine::{
 };
 
 mod mcp;
+mod tour;
 
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -349,6 +350,73 @@ fn main() {
             match file_opt {
                 Some(f) => inspect_file(f, json_mode),
                 None => println!("Usage: s3a-cli inspect [--json] <file_path>"),
+            }
+        }
+        "tour" => {
+            let json_mode = args.iter().any(|a| a == "--json");
+            let history_mode = args.iter().any(|a| a == "--history");
+            let mut floor_opt = None;
+            let mut slice_opt = None;
+            let mut cross_opt = None;
+            let mut file_opt = None;
+            let mut skip_next = false;
+            for i in 2..args.len() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if args[i] == "--floor" && i + 1 < args.len() {
+                    floor_opt = args[i + 1].parse::<u32>().ok();
+                    skip_next = true;
+                } else if args[i] == "--slice" && i + 1 < args.len() {
+                    slice_opt = Some(args[i + 1].clone());
+                    skip_next = true;
+                } else if args[i] == "--cross" && i + 1 < args.len() {
+                    cross_opt = Some(args[i + 1].clone());
+                    skip_next = true;
+                } else if !args[i].starts_with("--") {
+                    file_opt = Some(args[i].clone());
+                }
+            }
+            match file_opt {
+                Some(f) => {
+                    let opts = tour::TourOptions {
+                        json: json_mode,
+                        floor: floor_opt,
+                        slice: slice_opt,
+                        cross: cross_opt,
+                        history: history_mode,
+                    };
+                    match std::fs::File::open(&f) {
+                        Ok(mut file) => {
+                            let len = match file.metadata() {
+                                Ok(m) => m.len(),
+                                Err(e) => {
+                                    eprintln!("Error reading metadata: {}", e);
+                                    return;
+                                }
+                            };
+                            match tour::tour_file(&mut file, len, &f, &opts) {
+                                Ok(report) => tour::print_tour_report(&report, json_mode),
+                                Err(e) => {
+                                    if json_mode {
+                                        println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, f, e);
+                                    } else {
+                                        eprintln!("Tour error: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if json_mode {
+                                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, f, e);
+                            } else {
+                                eprintln!("Error opening file '{}': {}", f, e);
+                            }
+                        }
+                    }
+                }
+                None => println!("Usage: s3a-cli tour <file> [--json] [--floor <N>] [--slice <axis=range,...>] [--cross <key=val>] [--history]"),
             }
         }
         "seal" => {
@@ -911,6 +979,7 @@ fn print_usage() {
     println!();
     println!("STABLE CORE OPS & MAINTENANCE:");
     println!("  s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata");
+    println!("  s3a-cli tour [--json] [--floor N] <archive>        Tour archive: lobby, floors, array slice, cross-section, history");
     println!("  s3a-cli verify [--json] [--anchor] [--repair <out>] <archive> Verify sealed parity, self-addressing, or anchors");
     println!("  s3a-cli seal <in_file> <out_file>                 Seal cold archive with Reed-Solomon K+M parity & directory");
     println!("  s3a-cli anchor <sealed_file> [--tsa <url>]        Anchor archive fingerprint to OpenTimestamps / RFC 3161");

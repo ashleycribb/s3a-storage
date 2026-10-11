@@ -692,6 +692,46 @@ When verifying trust anchors via `s3a-cli verify --anchor <file>`:
 
 ---
 
+### 11.4 Read-Only Tour Architecture (`s3a-cli tour`) & Sealed Inspection
+
+The `s3a-cli tour <file>` command provides a high-level, interactive, read-only walkthrough of S3A container contents ("floors"), schemas, cryptographic trust chains, array tensors, and participant consent governance.
+
+#### 11.4.1 Fast Path vs Fallback Mechanics
+1. **Sealed Footer v2 Fast Path**:
+   - The reader inspects the terminal 64-byte `SealedEndCapV2` at `file_len - 64`.
+   - If `magic == SEALED_ENDCAP_MAGIC_V2` and `endcap_crc32` matches, the reader jumps directly to `index_offset`, reading ONLY `index_len` bytes.
+   - Directory entries (`SealedTileIndexEntry`) supply floor types, record counts, offsets, and min/max key ranges without reading tile payloads.
+   - If an embedded Schema Tile (`type_id = 77`) is indexed, the reader reads only that single tile to resolve human-readable type names and field definitions.
+2. **v1 & Unsealed Fallbacks**:
+   - If `SealedEndCap` (v1) magic is present, directory entries are resolved from the v1 directory table.
+   - If unsealed (live database), the reader falls back to reading dual-slot `FileHeader` metadata and scanning tile headers.
+
+#### 11.4.2 Core Interfaces & Navigation
+- **Lobby**: Emits file version, footer version, tile ("floor") count, seal status (hash chain and anchor status verified ✓/✗), consent summary, and registered schema names per type.
+- **Floor List**: Emits one summary line per floor: index, canonical type name, layout version, record count, size in bytes, min/max keys, and short payload hash. For Array tiles (Tile 66): shape dimensions, axis names, physical units, chunk offset coordinates, and min/max value bounds.
+- **`--floor N`**: Details floor $N$, presenting schema field definitions (ID, name, type, byte offset, byte length, nullability) and first $K$ records (or array statistical moments: count, min, max, mean, sum).
+- **`--slice axis=range,...`**: Queries multi-dimensional array slices across chunks. Bounding boxes are evaluated against chunk coordinates; **only overlapping chunks are read into memory**.
+- **`--cross key=<value>`**: Scans records across all floors in strictly monotonic index order matching a query key (e.g. `subject=<uuid>`, `sensor_id=<id>`, `actor=<id>`).
+- **`--history`**: Displays the historical seal generation chain in chronological order (generation, sealed timestamp, previous seal hash, seal hash, anchor attestation status).
+
+#### 11.4.3 Mathematical Read Bounds & Consent Policy
+1. **Strict Bytes-Read Bound**: On v2 archives, running lobby / floor listing reads strictly $\ge \text{index\_offset}$ bytes. Zero tile payload bytes are accessed. When querying floor $N$, only the footer index and the single $[\text{offset}_N .. \text{offset}_N + \text{len}_N]$ range are read.
+2. **Participant Research Consent Enforcement**: Under GDPR/HIPAA governance, all records associated with participants or devices lacking active consent for `purpose=research` (or explicitly masked by Tile 19 `MARK_CONSENT_WITHDRAWN`) are withheld from output and counted in `withheld_count`.
+
+#### 11.4.4 Verification Citations
+- **Implementation**: `crates/s3a-cli/src/tour.rs`
+- **CLI Dispatch**: `crates/s3a-cli/src/main.rs:355`
+- **Automated Tests**: `crates/s3a-cli/tests/tour_tests.rs`:
+  - `test_tour_lobby_v1_and_v2`
+  - `test_tour_floor_detail`
+  - `test_tour_array_slice_reads_only_covered_chunks`
+  - `test_tour_cross_section_ordering`
+  - `test_tour_consent_withheld_counts`
+  - `test_tour_bytes_read_bound`
+  - `test_tour_cli_binary_and_json`
+
+---
+
 ## 12. Versioning & Compatibility Rules
 
 1. **Wire Record Layout Versioning**:

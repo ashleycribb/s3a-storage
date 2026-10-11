@@ -11,6 +11,7 @@ The `s3a-cli` utility organizes commands into clean functional domains. Producti
 ```text
 STABLE CORE OPS & MAINTENANCE:
   s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata
+  s3a-cli tour [--json] [--floor N] <archive>        Tour archive: lobby, floors, array slice, cross-section, history
   s3a-cli verify [--json] <archive>                 Verify all CRC32/CRC32C checksums in archive
   s3a-cli status [--json] <archive>                 Quick archive state, generation, slot, and addon mask
   s3a-cli doctor [--json] <archive>                 Deep integrity diagnosis (A/B slots, torn bytes, orphan temps)
