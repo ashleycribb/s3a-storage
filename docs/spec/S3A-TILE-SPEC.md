@@ -220,6 +220,18 @@ In specification v1.1-draft, every Hyper-Tile is self-addressing:
    - A tile is evaluated as **Legacy Unaddressed** if and only if `record_layout_version <= 1` and `file_uuid == [0, 0]`.
    - Compliant readers MUST permit legacy unaddressed tiles to pass verification through the legacy path without failing closed.
 
+### 3.5 Edge & Micro-Tile Profile Pointer
+
+For resource-constrained microcontrollers (ESP32, nRF52, RP2040), embedded sensor nodes, and industrial telemetry loggers operating under strict memory limits ($\le 32\text{ KB}$ RAM, `no_std`, heapless execution), S3A defines the companion **Edge Profile Specification** in [`S3A-EDGE-PROFILE.md`](S3A-EDGE-PROFILE.md).
+
+The Edge Profile specifies 4 KB and 8 KB flash-sector aligned micro-tiles, power-loss crash safety rules, on-device Ed25519 hash-chain sealing, and transport-agnostic sharing protocols while guaranteeing that all edge files remain valid S3A files directly readable by the full engine.
+
+### 3.6 Digital Vault Profile Pointer
+
+For cryptographic identity custody, verifiable credentials (W3C VC / Open Badges 3.0), autonomous agent delegation grants, physical thing management, supervisory gates, and digital holdings stored natively within valid S3A archives (`.vault.s3a` / `.s3a`), S3A defines the companion **Digital Vault Specification** in [`S3A-VAULT.md`](S3A-VAULT.md).
+
+The Vault Profile establishes Ed25519 key storage boundaries, anti-privilege-escalation agent governance, physical asset binding, supervisory gate contracts, ownership transfer chains, and disaster recovery mechanisms while strictly excluding financial currencies and tokens.
+
 ---
 
 ## 4. Record Binary Layouts

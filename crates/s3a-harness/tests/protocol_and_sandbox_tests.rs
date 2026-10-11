@@ -498,3 +498,84 @@ fn test_learnmcp_tools_with_local_store() {
     assert_eq!(timeline.len(), 1);
     assert_eq!(timeline[0]["actor_type"], "human");
 }
+
+#[test]
+fn test_sandbox_intake_traversal_rejection() {
+    let guard = TempDirGuard::new("s3a_intake_traversal");
+    let sandbox = Sandbox::new(&guard.path, false).unwrap();
+
+    assert!(matches!(
+        sandbox.resolve_intake_snapshot_path("../evil.snapshot.s3a"),
+        Err(SandboxError::PathTraversalDetected(_))
+    ));
+
+    assert!(matches!(
+        sandbox.resolve_intake_snapshot_path("..\\evil.snapshot.s3a"),
+        Err(SandboxError::PathTraversalDetected(_))
+    ));
+
+    assert!(matches!(
+        sandbox.resolve_intake_snapshot_path("C:\\Windows\\system32\\calc.exe"),
+        Err(SandboxError::PathTraversalDetected(_))
+    ));
+
+    assert!(matches!(
+        sandbox.resolve_intake_snapshot_path("/etc/passwd"),
+        Err(SandboxError::PathTraversalDetected(_))
+    ));
+
+    assert!(matches!(
+        sandbox.resolve_intake_snapshot_path("sub/folder/file.s3a"),
+        Err(SandboxError::PathTraversalDetected(_))
+    ));
+}
+
+#[test]
+fn test_tools_intake_path_escape_rejected_via_mcp() {
+    let guard = TempDirGuard::new("s3a_mcp_path_escape");
+    let sandbox = Sandbox::new(&guard.path, false).unwrap();
+    let dispatcher = create_test_dispatcher(sandbox, false);
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 999,
+        "method": "tools/call",
+        "params": {
+            "name": "s3a_intake_srs",
+            "arguments": {
+                "snapshot_id": "../../etc/shadow"
+            }
+        }
+    })
+    .to_string();
+
+    let resp = dispatcher.dispatch(&req).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(parsed["id"], 999);
+    assert_eq!(parsed["result"]["isError"], true);
+    let text = parsed["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("path traversal detected"));
+}
+
+#[test]
+fn test_uuid_v7_generation_and_monotonicity() {
+    let u1 = s3a_harness::generate_uuid_v7();
+    let u2 = s3a_harness::generate_uuid_v7();
+
+    // RFC 9562 check: version 7
+    assert_eq!(u1.get_version_num(), 7);
+    assert_eq!(u2.get_version_num(), 7);
+
+    // Monotonic timestamp ordering
+    assert!(u2 >= u1);
+
+    // Pair and string roundtrip
+    let pair = s3a_harness::generate_uuid_v7_pair();
+    let s = s3a_harness::uuid_pair_to_string(pair);
+    let roundtripped = s3a_harness::string_to_uuid_pair(&s).expect("roundtrip parse");
+    assert_eq!(pair, roundtripped);
+
+    let s7 = s3a_harness::generate_uuid_v7_string();
+    assert_eq!(s7.len(), 36);
+    assert_eq!(&s7[14..15], "7"); // Version 7 nibble
+}

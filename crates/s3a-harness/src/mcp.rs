@@ -98,10 +98,10 @@ impl ToolSchema for GetVaultAuditTrailArgs {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExportSrsArgs {
-    #[serde(default)]
-    pub filename: Option<String>,
+    // Per-call file/snapshot_file path args removed for sandbox safety;
+    // snapshots are automatically created as UUIDv7 containers inside <root>/exports/
 }
 
 impl ToolSchema for ExportSrsArgs {
@@ -114,16 +114,15 @@ impl ToolSchema for ExportSrsArgs {
     fn input_schema() -> Value {
         json!({
             "type": "object",
-            "properties": {
-                "filename": { "type": "string", "description": "Target filename inside <root>/exports/ (e.g. 'project.snapshot.s3a')" }
-            }
+            "properties": {}
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntakeSrsArgs {
-    pub filename: String,
+    #[serde(alias = "filename")]
+    pub snapshot_id: String,
 }
 
 impl ToolSchema for IntakeSrsArgs {
@@ -137,9 +136,9 @@ impl ToolSchema for IntakeSrsArgs {
         json!({
             "type": "object",
             "properties": {
-                "filename": { "type": "string", "description": "Snapshot file name in <root>/exports/ or relative to sandbox root" }
+                "snapshot_id": { "type": "string", "description": "Snapshot identifier or filename located within exports/ or root" }
             },
-            "required": ["filename"]
+            "required": ["snapshot_id"]
         })
     }
 }
@@ -414,8 +413,8 @@ impl S3AMcpDispatcher {
             .unwrap_or_else(|_| Sandbox::new(std::env::temp_dir(), false).unwrap());
 
         let store: Arc<dyn Store> = Arc::new(LocalStore::new(default_db, false));
-        let p_uuid = [0x1122334455667788, 0x99AABBCCDDEEFF00];
-        let s_uuid = [0xCAFEBABE00001111, 0xDEADBEEF22223333];
+        let p_uuid = crate::generate_uuid_v7_pair();
+        let s_uuid = crate::generate_uuid_v7_pair();
 
         let dispatcher = S3AMcpDispatcher::new(sandbox, store, p_uuid, s_uuid, 42);
         dispatcher.dispatch(json_str)
@@ -497,13 +496,15 @@ impl S3AMcpDispatcher {
 
         match method {
             "initialize" => {
-                let _client_version = params
-                    .get("protocolVersion")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(MCP_PROTOCOL_VERSION);
+                let client_version = params.get("protocolVersion").and_then(|v| v.as_str());
 
-                // Negotiate version: adopt MCP_PROTOCOL_VERSION
-                let negotiated = MCP_PROTOCOL_VERSION;
+                // Support current spec (2024-11-05), 2024-10-07, and client-requested if compatible
+                let negotiated = match client_version {
+                    Some("2024-10-07") => "2024-10-07",
+                    Some("2024-11-05") | Some("latest") | Some("current") => MCP_PROTOCOL_VERSION,
+                    Some(other) if other.starts_with("2024-") => MCP_PROTOCOL_VERSION,
+                    _ => MCP_PROTOCOL_VERSION,
+                };
                 *self.negotiated_version.write().unwrap() = negotiated.to_string();
 
                 let resp = json!({
@@ -809,14 +810,11 @@ impl S3AMcpDispatcher {
                 }
             }
             "s3a_export_srs" => {
-                let parsed: ExportSrsArgs = serde_json::from_value(args.clone()).map_err(
+                let _parsed: ExportSrsArgs = serde_json::from_value(args.clone()).map_err(
                     |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
                 )?;
 
-                let target_path = match self
-                    .sandbox
-                    .resolve_export_snapshot_path(parsed.filename.as_deref())
-                {
+                let target_path = match self.sandbox.create_export_snapshot_path() {
                     Ok(p) => p,
                     Err(e) => return Ok((format!("Sandbox export error: {}", e), true)),
                 };
@@ -829,11 +827,12 @@ impl S3AMcpDispatcher {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
+                        let snapshot_uuid = crate::generate_uuid_v7_pair();
                         let manifest = SrsManifestHeader::new(
                             self.project_uuid,
+                            snapshot_uuid,
+                            [0, 0],
                             self.session_uuid,
-                            [0, 0],
-                            [0, 0],
                             ts,
                             0,
                             0,
@@ -847,8 +846,8 @@ impl S3AMcpDispatcher {
                             Ok(b) => {
                                 let elapsed = start.elapsed();
                                 Ok((format!(
-                                    "Successfully exported SRS snapshot to '{}' ({} total records, project UUID: {:016X}{:016X}) in {:.2?}",
-                                    target_path.display(), b.manifest.total_records, self.project_uuid[0], self.project_uuid[1], elapsed
+                                    "Successfully exported SRS snapshot to '{}' ({} total records, snapshot UUID: {:016X}{:016X}, project UUID: {:016X}{:016X}) in {:.2?}",
+                                    target_path.display(), b.manifest.total_records, snapshot_uuid[0], snapshot_uuid[1], self.project_uuid[0], self.project_uuid[1], elapsed
                                 ), false))
                             }
                             Err(e) => Ok((format!("Export error: {}", e), true)),
@@ -862,11 +861,13 @@ impl S3AMcpDispatcher {
                     |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
                 )?;
 
-                let snapshot_path =
-                    match self.sandbox.resolve_intake_snapshot_path(&parsed.filename) {
-                        Ok(p) => p,
-                        Err(e) => return Ok((format!("Sandbox intake error: {}", e), true)),
-                    };
+                let snapshot_path = match self
+                    .sandbox
+                    .resolve_intake_snapshot_path(&parsed.snapshot_id)
+                {
+                    Ok(p) => p,
+                    Err(e) => return Ok((format!("Sandbox intake error: {}", e), true)),
+                };
 
                 let start = Instant::now();
                 match intake_srs_snapshot(&snapshot_path) {

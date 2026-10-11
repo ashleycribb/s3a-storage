@@ -22,6 +22,15 @@ fn main() {
         "mcp" | "mcp-server" => {
             run_mcp_server(&args[2..]);
         }
+        "run" => {
+            run_agent_cli(&args[2..]);
+        }
+        "resume" => {
+            resume_agent_cli(&args[2..]);
+        }
+        "shadow-report" => {
+            run_shadow_report_cli(&args[2..]);
+        }
         "package" | "export" => {
             run_package(&args[2..]);
         }
@@ -38,6 +47,26 @@ fn main() {
 fn print_usage() {
     println!("S3A Standalone Research Agent Harness & MCP Server");
     println!("Usage:");
+    println!("  s3a-harness run [OPTIONS]             Run autonomous agent loop from config");
+    println!("    --config <path>                     Path to agent TOML config (default: agents/scholar_reviewer.toml)");
+    println!("    --root <dir>                        Sandbox root directory (default: current directory)");
+    println!("    --goal <text>                       Research goal / task description");
+    println!(
+        "    --mock                              Use internal MockModel for offline/test execution"
+    );
+    println!("    --shadow <model>                    Run candidate model in shadow mode concurrently (never acts)");
+    println!("    --model-url <url>                   Base URL for OpenAI-compatible endpoint (default: http://localhost:11434/v1)");
+    println!("    --db <filename>                     Local S3A database filename inside root");
+    println!("    --lrs-endpoint <url>                Optional remote LRS HTTP endpoint");
+    println!();
+    println!("  s3a-harness resume <run_id> [OPTIONS] Resume paused agent run after human review");
+    println!("    --decision <text>                   Supervisor decision (default: Approved)");
+    println!("    --root <dir>                        Sandbox root directory");
+    println!();
+    println!("  s3a-harness shadow-report [OPTIONS]   Compare shadow vs live model agreement, confidence, and outcomes");
+    println!("    --run <run_id>                      Specific run ID to evaluate (default: all runs in sandbox)");
+    println!("    --root <dir>                        Sandbox root directory");
+    println!();
     println!("  s3a-harness mcp [OPTIONS]             Start Model Context Protocol (MCP) server over stdin/stdout");
     println!("    --root <dir>                        Sandbox root directory (default: current directory)");
     println!("    --read-only                         Enforce read-only mode (rejects writes)");
@@ -70,8 +99,7 @@ fn parse_hex_uuid(s: &str) -> Option<[u64; 2]> {
 }
 
 fn generate_random_uuid_pair() -> [u64; 2] {
-    let s = s3a_engine::lrs_store::generate_uuid_v4();
-    s3a_engine::lrs_store::uuid_to_u64_pair(&s).unwrap_or([0x11223344, 0x55667788])
+    s3a_harness::generate_uuid_v7_pair()
 }
 
 fn run_mcp_server(args: &[String]) {
@@ -174,7 +202,13 @@ fn run_mcp_server(args: &[String]) {
 
     let store: Arc<dyn Store> = if let Some(ref ep) = lrs_endpoint {
         eprintln!("[s3a-harness] Configured LRS HTTP backend: {}", ep);
-        Arc::new(LrsStore::with_options(ep, lrs_user, lrs_pass, read_only, allow_insecure_http))
+        Arc::new(LrsStore::with_options(
+            ep,
+            lrs_user,
+            lrs_pass,
+            read_only,
+            allow_insecure_http,
+        ))
     } else {
         let db_path = sandbox.root().join(&db_filename);
         eprintln!(
@@ -379,4 +413,385 @@ fn run_autonomous_loop_demo() {
     println!("\n=========================================================================");
     println!("Loop Demo Passed: 100% Deterministic Dual-Actor Provenance Maintained!");
     println!("=========================================================================");
+}
+
+fn run_agent_cli(args: &[String]) {
+    let mut config_path = PathBuf::from("agents/scholar_reviewer.toml");
+    let mut root_dir = PathBuf::from(".");
+    let mut task_goal = "Synthesize literature and perform preflight checks".to_string();
+    let mut use_mock = false;
+    let mut model_url = "http://localhost:11434/v1".to_string();
+    let mut db_filename = "scholar_lab.s3a".to_string();
+    let mut lrs_endpoint: Option<String> = None;
+    let mut lrs_user: Option<String> = None;
+    let mut lrs_pass: Option<String> = None;
+    let mut session_uuid = generate_random_uuid_pair();
+    let mut project_uuid = generate_random_uuid_pair();
+
+    let mut shadow_model_name: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                if i + 1 < args.len() {
+                    config_path = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--goal" => {
+                if i + 1 < args.len() {
+                    task_goal = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--mock" => {
+                use_mock = true;
+            }
+            "--shadow" => {
+                if i + 1 < args.len() {
+                    shadow_model_name = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--model-url" => {
+                if i + 1 < args.len() {
+                    model_url = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_filename = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--lrs-endpoint" => {
+                if i + 1 < args.len() {
+                    lrs_endpoint = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--lrs-user" => {
+                if i + 1 < args.len() {
+                    lrs_user = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--lrs-pass" => {
+                if i + 1 < args.len() {
+                    lrs_pass = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--session-uuid" => {
+                if i + 1 < args.len() {
+                    if let Some(pair) = parse_hex_uuid(&args[i + 1]) {
+                        session_uuid = pair;
+                    }
+                    i += 1;
+                }
+            }
+            "--project-uuid" => {
+                if i + 1 < args.len() {
+                    if let Some(pair) = parse_hex_uuid(&args[i + 1]) {
+                        project_uuid = pair;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let config = match s3a_harness::AgentConfig::load_file(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[s3a-harness] Failed to load config '{}': {}",
+                config_path.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let sandbox = match Sandbox::new(&root_dir, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    let store: Arc<dyn Store> = if let Some(ref ep) = lrs_endpoint {
+        Arc::new(LrsStore::with_options(ep, lrs_user, lrs_pass, false, true))
+    } else {
+        let db_path = sandbox.root().join(&db_filename);
+        Arc::new(LocalStore::new(&db_path, false))
+    };
+
+    let (model, escalation_model): (
+        Arc<dyn s3a_harness::Model>,
+        Option<Arc<dyn s3a_harness::Model>>,
+    ) = if use_mock {
+        let m = Arc::new(
+            s3a_harness::MockModel::new("mock-model")
+                .with_default_response("{\"answer\": \"preflight_check\", \"confidence\": 0.95, \"rationale\": \"Proceeding to preflight check\"}")
+        );
+        (m, None)
+    } else {
+        let m = Arc::new(s3a_harness::OpenAiHttpAdapter::new(
+            &model_url,
+            &config.model,
+        ));
+        let esc = config.escalation_model.as_ref().map(|em| {
+            let adapter: Arc<dyn s3a_harness::Model> =
+                Arc::new(s3a_harness::OpenAiHttpAdapter::new(&model_url, em));
+            adapter
+        });
+        (m, esc)
+    };
+
+    let mut runtime =
+        s3a_harness::AgentRuntime::new(config, model, escalation_model, store, sandbox);
+    if let Some(ref sm_name) = shadow_model_name {
+        let sm: Arc<dyn s3a_harness::Model> = if use_mock {
+            Arc::new(
+                s3a_harness::MockModel::new(sm_name)
+                    .with_default_response("{\"answer\": \"preflight_check\", \"confidence\": 0.90, \"rationale\": \"Shadow model evaluation\"}")
+            )
+        } else {
+            Arc::new(s3a_harness::OpenAiHttpAdapter::new(&model_url, sm_name))
+        };
+        runtime = runtime.with_shadow_model(sm);
+    }
+    let state =
+        s3a_harness::RunState::new(&runtime.config.id, &task_goal, session_uuid, project_uuid);
+
+    println!("=========================================================================");
+    println!("Starting Autonomous Agent Run: {}", state.run_id);
+    println!("Agent ID: {} ({})", runtime.config.id, runtime.config.name);
+    println!("Goal:     {}", task_goal);
+    if let Some(ref sm) = shadow_model_name {
+        println!(
+            "Shadow:   {} (Candidate model running alongside live model; logs only, never acts)",
+            sm
+        );
+    }
+    println!("=========================================================================");
+
+    match runtime.run(state) {
+        Ok(final_state) => {
+            println!("\nRun completed with status: {:?}", final_state.status);
+            println!(
+                "Turns: {}, Tool Calls: {}, Tokens: {}",
+                final_state.turn_count, final_state.tool_call_count, final_state.tokens_used
+            );
+            if let s3a_harness::RunStatus::PausedWaitingHuman {
+                ref gate_id,
+                ref reason,
+            } = final_state.status
+            {
+                println!("\n[!] RUN PAUSED FOR HUMAN SUPERVISION");
+                println!("    Gate ID: {}", gate_id);
+                println!("    Reason:  {}", reason);
+                println!(
+                    "    Resume with: s3a-harness resume {} --decision \"<your response>\"",
+                    final_state.run_id
+                );
+            }
+        }
+        Err(e) => eprintln!("Agent execution error: {}", e),
+    }
+}
+
+fn resume_agent_cli(args: &[String]) {
+    if args.is_empty() {
+        println!("Usage: s3a-harness resume <run_id> [--decision <text>] [--root <dir>]");
+        return;
+    }
+
+    let run_id = &args[0];
+    let mut decision_text = "Approved by human supervisor".to_string();
+    let mut root_dir = PathBuf::from(".");
+    let mut config_path = PathBuf::from("agents/scholar_reviewer.toml");
+    let mut db_filename = "scholar_lab.s3a".to_string();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--decision" => {
+                if i + 1 < args.len() {
+                    decision_text = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--config" => {
+                if i + 1 < args.len() {
+                    config_path = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_filename = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let config = s3a_harness::AgentConfig::load_file(&config_path).unwrap_or_else(|_| {
+        s3a_harness::AgentConfig {
+            id: "default_agent".to_string(),
+            name: "Default Agent".to_string(),
+            system_prompt: "Default prompt".to_string(),
+            model: "mock".to_string(),
+            escalation_model: None,
+            limits: s3a_harness::RunLimits::default(),
+            thresholds: s3a_harness::DecisionThresholds::default(),
+            safe_defaults: s3a_harness::SafeDefaults::default(),
+            allowed_tools: vec!["preflight_check".to_string(), "ask_human".to_string()],
+        }
+    });
+
+    let sandbox = match Sandbox::new(&root_dir, false) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    let db_path = sandbox.root().join(&db_filename);
+    let store: Arc<dyn Store> = Arc::new(LocalStore::new(&db_path, false));
+    let model: Arc<dyn s3a_harness::Model> = Arc::new(
+        s3a_harness::MockModel::new("mock-model")
+            .with_default_response("{\"answer\": \"preflight_check\", \"confidence\": 0.95, \"rationale\": \"Resuming preflight check\"}")
+    );
+
+    let runtime = s3a_harness::AgentRuntime::new(config, model, None, store, sandbox);
+    println!(
+        "Resuming Run {} with supervisor decision: '{}'...",
+        run_id, decision_text
+    );
+
+    match runtime.resume(run_id, Some(decision_text)) {
+        Ok(resumed_state) => {
+            println!("Run resumed. New status: {:?}", resumed_state.status);
+            println!(
+                "Turns: {}, Tool Calls: {}",
+                resumed_state.turn_count, resumed_state.tool_call_count
+            );
+        }
+        Err(e) => eprintln!("Failed to resume run: {}", e),
+    }
+}
+
+fn run_shadow_report_cli(args: &[String]) {
+    let mut root_dir = PathBuf::from(".");
+    let mut run_id: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--root" => {
+                if i + 1 < args.len() {
+                    root_dir = PathBuf::from(&args[i + 1]);
+                    i += 1;
+                }
+            }
+            "--run" => {
+                if i + 1 < args.len() {
+                    run_id = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            _ => {
+                if !args[i].starts_with("--") && run_id.is_none() {
+                    run_id = Some(args[i].clone());
+                }
+            }
+        }
+        i += 1;
+    }
+
+    let sandbox = match Sandbox::new(&root_dir, true) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[s3a-harness] Sandbox error: {}", e);
+            return;
+        }
+    };
+
+    match s3a_harness::AgentRuntime::shadow_report(&sandbox, run_id.as_deref()) {
+        Ok(report) => {
+            println!("=========================================================================");
+            println!("                S3A HARNESS SHADOW MODEL EVALUATION REPORT               ");
+            println!("=========================================================================");
+            println!(
+                "Total Operational Decisions Evaluated: {}",
+                report.total_decisions
+            );
+            println!(
+                "Agreed Decisions:                      {} (Agreement: {:.2}%)",
+                report.agreements, report.agreement_rate
+            );
+            println!(
+                "Disagreed Decisions:                   {}",
+                report.disagreements
+            );
+            println!(
+                "Live Model Avg Confidence:             {:.4}",
+                report.avg_live_confidence
+            );
+            println!(
+                "Shadow Model Avg Confidence:           {:.4}",
+                report.avg_shadow_confidence
+            );
+            println!(
+                "Mean Confidence Delta (Shadow - Live): {:+.4}",
+                report.mean_confidence_delta
+            );
+            println!("-------------------------------------------------------------------------");
+            if report.promote_recommended {
+                println!("PROMOTION RECOMMENDATION:              [PASS] Model meets threshold (>= 80.0%)");
+            } else {
+                println!("PROMOTION RECOMMENDATION:              [REJECT] Model below promotion threshold (>= 80.0%)");
+            }
+            println!("=========================================================================");
+            if !report.details.is_empty() {
+                println!("\nDetailed Decision Breakdown:");
+                for (idx, d) in report.details.iter().enumerate() {
+                    let status = if d.agreement { "[AGREE]" } else { "[DIVERGE]" };
+                    println!(
+                        "  #{}: {} {} -> Live: '{}' (conf: {:.2}) vs Shadow: '{}' (conf: {:.2})",
+                        idx + 1,
+                        status,
+                        d.decision_type.as_str(),
+                        d.live_action,
+                        d.live_confidence,
+                        d.shadow_action,
+                        d.shadow_confidence
+                    );
+                }
+            }
+        }
+        Err(e) => eprintln!("Failed to generate shadow report: {}", e),
+    }
 }

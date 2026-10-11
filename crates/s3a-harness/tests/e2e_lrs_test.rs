@@ -98,11 +98,7 @@ fn test_e2e_harness_lrs_store_statements_and_timeline() {
         .unwrap()
         .as_nanos();
     let temp_dir = std::env::temp_dir();
-    let archive_name = format!(
-        "s3a_e2e_lrs_{}_{}.s3a",
-        std::process::id(),
-        temp_ts
-    );
+    let archive_name = format!("s3a_e2e_lrs_{}_{}.s3a", std::process::id(), temp_ts);
     let archive_path = temp_dir.join(&archive_name);
 
     let child = Command::new(&server_exe)

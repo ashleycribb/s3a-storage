@@ -1,0 +1,37 @@
+# S3A Production Research Agent Configuration
+# Agent ID: scholar_reviewer
+
+[agent]
+id = "scholar_reviewer"
+name = "Scholar Literature Reviewer"
+system_prompt = "You are an autonomous evidence synthesis agent. Perform existence checks only. Claim judgments must route to ask_human."
+model = "llama3.2:3b"
+escalation_model = "llama3.3:70b"
+
+[limits]
+max_turns = 12
+max_tool_calls = 25
+timeout_secs = 300
+token_budget = 32000
+
+[decision_thresholds]
+tool_selection = 0.70
+trimming = 0.65
+stuck_detection = 0.80
+escalation = 0.75
+
+[safe_defaults]
+tool_selection = "ask_human"
+trimming = "head_tail_trim"
+stuck_detection = false
+escalation = false
+
+[tools]
+allowed = [
+    "s3a_search_library",
+    "get_synthesis_matrix",
+    "preflight_check",
+    "s3a_export_srs",
+    "s3a_intake_srs",
+    "ask_human"
+]

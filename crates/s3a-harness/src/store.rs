@@ -302,9 +302,7 @@ impl LrsStore {
             (Some(u), Some(p)) => Some((u, p)),
             _ => None,
         };
-        let agent = ureq::builder()
-            .timeout(Duration::from_secs(10))
-            .build();
+        let agent = ureq::builder().timeout(Duration::from_secs(10)).build();
         Self {
             endpoint: endpoint.trim_end_matches('/').to_string(),
             credentials: creds,
@@ -356,7 +354,12 @@ impl LrsStore {
             "GET" => self.agent.get(&full_url),
             "POST" => self.agent.post(&full_url),
             "PUT" => self.agent.put(&full_url),
-            _ => return Err(StoreError::Network(format!("Unsupported HTTP method: {}", method))),
+            _ => {
+                return Err(StoreError::Network(format!(
+                    "Unsupported HTTP method: {}",
+                    method
+                )))
+            }
         };
 
         req = req.set("X-Experience-API-Version", "1.0.3");
@@ -576,11 +579,7 @@ pub fn extract_host_from_url(url_str: &str) -> String {
 
 pub fn is_loopback_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
-    h == "localhost"
-        || h == "127.0.0.1"
-        || h == "::1"
-        || h == "[::1]"
-        || h == "0.0.0.0"
+    h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]" || h == "0.0.0.0"
 }
 
 #[cfg(test)]
@@ -611,7 +610,13 @@ mod tests {
 
     #[test]
     fn test_lrs_store_allows_remote_http_with_flag() {
-        let store = LrsStore::with_options("http://remote-lrs.institution.edu:9999/xapi", None, None, false, true);
+        let store = LrsStore::with_options(
+            "http://remote-lrs.institution.edu:9999/xapi",
+            None,
+            None,
+            false,
+            true,
+        );
         assert!(store.allow_insecure_http());
         // Will fail on transport/connection since port is not listening, but MUST NOT be rejected by security policy
         let res = store.make_request("GET", "/about", None);

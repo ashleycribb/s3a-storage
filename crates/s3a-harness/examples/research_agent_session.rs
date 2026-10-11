@@ -33,8 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.enable_addon(ADDON_EDU)?;
 
     // 3. Initialize Research Loop Engine with dynamic session and project UUIDs
-    let session_uuid = [0x5555_6666_7777_8888, 0x1111_2222_3333_4444];
-    let project_uuid = [0xAAAA_BBBB_CCCC_DDDD, 0x0123_4567_89AB_CDEF];
+    let session_uuid = s3a_harness::generate_uuid_v7_pair();
+    let project_uuid = s3a_harness::generate_uuid_v7_pair();
     let agent_id = 9002;
     let loop_engine = ResearchLoopEngine::new(session_uuid, agent_id);
     let store = LocalStore::new(db_path, false);

@@ -82,8 +82,8 @@ impl Sandbox {
     }
 
     /// Validates and resolves an export snapshot file name.
-    /// Strictly guarantees that the file is written INSIDE <root>/exports/
-    /// Rejects any path traversal ("..") or absolute paths.
+    /// Strictly guarantees that all write targets reside INSIDE <root>/exports/
+    /// Rejects any path traversal (".."), directory separators, drive letters, or absolute paths.
     pub fn resolve_export_snapshot_path(
         &self,
         filename: Option<&str>,
@@ -92,42 +92,65 @@ impl Sandbox {
             return Err(SandboxError::ReadOnlyMode);
         }
 
+        let fname_owned;
         let fname = match filename {
-            Some(f) if !f.trim().is_empty() => f.trim(),
-            _ => "project.snapshot.s3a",
+            Some(f) if !f.trim().is_empty() => {
+                let s = f.trim();
+                // Strict rejection of path traversal, absolute paths, and directory separators
+                if s.contains("..")
+                    || s.contains('/')
+                    || s.contains('\\')
+                    || s.contains(':')
+                    || s.contains('\0')
+                {
+                    return Err(SandboxError::PathTraversalDetected(s.to_string()));
+                }
+                s
+            }
+            _ => {
+                fname_owned = format!("snapshot_{}.s3a", crate::generate_uuid_v7());
+                &fname_owned
+            }
         };
 
-        // Strict rejection of path traversal and directory separators
-        if fname.contains("..")
-            || fname.contains('/')
-            || fname.contains('\\')
-            || fname.contains(':')
-            || fname.contains('\0')
-        {
+        let target = self.exports_dir.join(fname);
+        if target.parent() != Some(&self.exports_dir) {
             return Err(SandboxError::PathTraversalDetected(fname.to_string()));
         }
 
-        let target = self.exports_dir.join(fname);
+        if target.exists() {
+            let canonical = target.canonicalize()?;
+            if !canonical.starts_with(&self.exports_dir) {
+                return Err(SandboxError::OutsideRoot(fname.to_string()));
+            }
+        }
+
         Ok(target)
     }
 
+    /// Generates a unique, sandbox-confined export snapshot path using a real UUIDv7.
+    pub fn create_export_snapshot_path(&self) -> Result<PathBuf, SandboxError> {
+        self.resolve_export_snapshot_path(None)
+    }
+
     /// Validates and resolves a snapshot path for intake.
-    /// Can refer to a snapshot in <root>/exports/ or directly inside <root>.
+    /// Strictly confined to snapshots located in <root>/exports/ or <root>.
     pub fn resolve_intake_snapshot_path(&self, path_str: &str) -> Result<PathBuf, SandboxError> {
         let trimmed = path_str.trim();
-        if trimmed.contains("..") || trimmed.contains('\0') {
+        if trimmed.contains("..")
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed.contains(':')
+            || trimmed.contains('\0')
+        {
             return Err(SandboxError::PathTraversalDetected(trimmed.to_string()));
         }
 
-        let candidate = if Path::new(trimmed).is_absolute() {
-            PathBuf::from(trimmed)
+        let in_exports = self.exports_dir.join(trimmed);
+        let candidate = if in_exports.exists() {
+            in_exports
         } else {
-            let in_exports = self.exports_dir.join(trimmed);
-            if in_exports.exists() {
-                in_exports
-            } else {
-                self.root_dir.join(trimmed)
-            }
+            self.root_dir.join(trimmed)
         };
 
         if !candidate.exists() {

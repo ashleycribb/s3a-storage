@@ -3,7 +3,11 @@
 //! zero-overhead Rust engine operating over S3A Hyper-Tiles and SRS Snapshots.
 
 pub mod agent;
+pub mod config;
+pub mod decision;
 pub mod mcp;
+pub mod model;
+pub mod runtime;
 pub mod sandbox;
 pub mod srs;
 pub mod store;
@@ -13,10 +17,58 @@ pub use agent::{
     ResearchAction, ResearchLoopEngine, TaGuidance, TA_VERB_APPROVED_DRAFT, TA_VERB_ESCALATED,
     TA_VERB_PROVIDED_ANALOGY, TA_VERB_REDIRECTED,
 };
+pub use config::{AgentConfig, DecisionThresholds, RunLimits, SafeDefaults};
+pub use decision::{
+    is_claim_judgment_call, DecisionEngine, DecisionKind, DecisionRequest, DecisionResult,
+    DecisionValue, OperationalDecisionType, ShadowEvaluation,
+};
 pub use mcp::S3AMcpDispatcher;
+pub use model::{
+    ChatMessage, CompletionRequest, CompletionResponse, MockModel, Model, ModelError,
+    OpenAiHttpAdapter,
+};
+pub use runtime::{AgentRuntime, RunState, RunStatus, ShadowReportSummary};
 pub use sandbox::{Sandbox, SandboxError};
 pub use srs::SrsContainerManager;
 pub use store::{LocalStore, LrsStore, Store, StoreError};
+
+use uuid::Uuid;
+
+/// Generates a real UUIDv7 conforming to RFC 9562.
+pub fn generate_uuid_v7() -> Uuid {
+    Uuid::now_v7()
+}
+
+/// Generates a real UUIDv7 formatted as a canonical hyphenated string.
+pub fn generate_uuid_v7_string() -> String {
+    Uuid::now_v7().to_string()
+}
+
+/// Generates a real UUIDv7 represented as a pair of big-endian u64 integers [high, low].
+pub fn generate_uuid_v7_pair() -> [u64; 2] {
+    let u = Uuid::now_v7();
+    let bytes = u.as_bytes();
+    let high = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+    let low = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+    [high, low]
+}
+
+/// Converts a 128-bit [u64; 2] pair back to a canonical hyphenated UUID string.
+pub fn uuid_pair_to_string(pair: [u64; 2]) -> String {
+    let mut bytes = [0u8; 16];
+    bytes[0..8].copy_from_slice(&pair[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&pair[1].to_be_bytes());
+    Uuid::from_bytes(bytes).to_string()
+}
+
+/// Parses a UUID string (hyphenated or 32-char hex) into a [u64; 2] pair.
+pub fn string_to_uuid_pair(s: &str) -> Option<[u64; 2]> {
+    let u = Uuid::parse_str(s).ok()?;
+    let bytes = u.as_bytes();
+    let high = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+    let low = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
+    Some([high, low])
+}
 
 #[cfg(test)]
 mod tests {
@@ -61,7 +113,7 @@ mod tests {
         let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
         engine.enable_addon(ADDON_EDU).unwrap();
 
-        let session_uuid = [0x11223344, 0x55667788];
+        let session_uuid = generate_uuid_v7_pair();
         let loop_engine = ResearchLoopEngine::new(session_uuid, 42);
 
         // 1. Ingest paper
@@ -116,13 +168,14 @@ mod tests {
 
         let engine = S3ACrudEngine::open_or_create(&live_db.path).unwrap();
         engine.enable_addon(ADDON_EDU).unwrap();
-        let loop_engine = ResearchLoopEngine::new([1, 2], 100);
+        let session_uuid = generate_uuid_v7_pair();
+        let loop_engine = ResearchLoopEngine::new(session_uuid, 100);
         let _ = loop_engine
             .register_paper(&engine, 0x12345, [0.1, 0.2, 0.3], 50, 2024, 1, true)
             .unwrap();
 
-        let p_uuid = [0xCAFE, 0xBABE];
-        let s_uuid = [0xDEAD, 0xBEEF];
+        let p_uuid = generate_uuid_v7_pair();
+        let s_uuid = generate_uuid_v7_pair();
         let ws = SrsWorkspaceRecord::new(p_uuid, 888, 1, [0.1, 0.2, 0.3], 1);
 
         // Package SRS snapshot
