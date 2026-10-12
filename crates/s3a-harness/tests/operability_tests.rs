@@ -54,6 +54,7 @@ fn valid_test_config() -> AgentConfig {
             "s3a_query".to_string(),
             "ask_human".to_string(),
         ],
+        require_grant: false,
     }
 }
 

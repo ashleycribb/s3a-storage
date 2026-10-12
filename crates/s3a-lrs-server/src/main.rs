@@ -21,6 +21,7 @@ use s3a_engine::{
 use s3a_engine::concurrent_writer::ConcurrentTileWriter;
 
 pub mod learner_api;
+pub mod gate_directory;
 
 /// Represents an authorized credential with granular xAPI scopes and optional archive mapping.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -203,6 +204,7 @@ pub struct ServerConfig {
     pub jwt_secret: String,
     pub enable_daily_anchoring: bool,
     pub anchoring_interval_secs: u64,
+    pub enable_gate_directory: bool,
 }
 
 impl Default for ServerConfig {
@@ -221,6 +223,7 @@ impl Default for ServerConfig {
             jwt_secret: "s3a-elrr-jwt-secret-key-32bytes!!".to_string(),
             enable_daily_anchoring: false,
             anchoring_interval_secs: 86400,
+            enable_gate_directory: false,
         }
     }
 }
@@ -234,6 +237,7 @@ pub struct AppState {
     pub audit_writer: Arc<ConcurrentTileWriter>,
     pub config: ServerConfig,
     pub agent_registry: Vec<s3a_pack_scholar::records::AgentRegistryRecord>,
+    pub gate_directory: Arc<std::sync::Mutex<gate_directory::GateDirectoryService>>,
 }
 
 impl AppState {
@@ -357,6 +361,7 @@ impl AppState {
             audit_writer,
             config,
             agent_registry,
+            gate_directory: Arc::new(std::sync::Mutex::new(gate_directory::GateDirectoryService::new())),
         }))
     }
 
@@ -498,6 +503,9 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--gate-directory" => {
+                config.enable_gate_directory = true;
+            }
             "--port" => {
                 if i + 1 < args.len() {
                     config.port = args[i + 1].parse().unwrap_or(8080);
@@ -932,6 +940,15 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // -------------------------------------------------------------------------
     if path.starts_with("/api/") || path == "/api" || path.starts_with("/admin/") || path == "/admin" {
         let resp = learner_api::handle_learner_api(&method, &path, &query_params, &headers_map, &body_bytes, &state);
+        let _ = req.respond(resp);
+        return;
+    }
+
+    // -------------------------------------------------------------------------
+    // GATE DIRECTORY & RELAY MAILBOX (§11)
+    // -------------------------------------------------------------------------
+    if state.config.enable_gate_directory && (path.starts_with("/gate/") || path == "/gate") {
+        let resp = gate_directory::handle_gate_directory(&method, &path, &body_bytes, &state.gate_directory);
         let _ = req.respond(resp);
         return;
     }
@@ -2607,6 +2624,7 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         let empty_params = HashMap::new();
@@ -2644,6 +2662,7 @@ mod tests {
             audit_writer,
             config: ServerConfig::default(),
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         let params = HashMap::new();
@@ -2743,6 +2762,7 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         // Seed statement for device-777
@@ -3005,6 +3025,7 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         // 1. Direct resolution check: explorer with ?archive=scholar.s3a ignores override and resolves to usage.s3a
@@ -3087,6 +3108,7 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         // 1. Direct resolve check
@@ -3155,6 +3177,7 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         // 1. Direct resolve check with absolute path
@@ -3226,6 +3249,7 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         let nonexistent_target = temp_dir.join("unknown_random_archive.s3a");
@@ -3305,6 +3329,7 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
+            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
         });
 
         // 1. With admin_api_override = true, admin successfully picks custom_allowed.s3a

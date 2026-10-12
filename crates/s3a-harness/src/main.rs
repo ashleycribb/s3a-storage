@@ -742,6 +742,7 @@ fn resume_agent_cli(args: &[String]) {
             thresholds: s3a_harness::DecisionThresholds::default(),
             safe_defaults: s3a_harness::SafeDefaults::default(),
             allowed_tools: vec!["preflight_check".to_string(), "ask_human".to_string()],
+            require_grant: false,
         }
     });
 

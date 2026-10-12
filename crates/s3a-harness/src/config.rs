@@ -16,6 +16,8 @@ pub struct AgentConfig {
     pub thresholds: DecisionThresholds,
     pub safe_defaults: SafeDefaults,
     pub allowed_tools: Vec<String>,
+    #[serde(default)]
+    pub require_grant: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -273,6 +275,7 @@ impl AgentConfig {
             thresholds,
             safe_defaults,
             allowed_tools,
+            require_grant: false,
         })
     }
 }

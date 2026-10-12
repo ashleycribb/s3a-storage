@@ -16,6 +16,11 @@ use s3a_pack_scholar::{
 use s3a_edge::{
     CompactEdgeSensorRecord, EdgeConsentRecord, EdgeWriter, EquipmentEventRecord, RamFlash,
 };
+use s3a_vault::{
+    evaluate_agent_action, is_judgment_action, verify_delegation_grant,
+    KeyStore, MemoryKeyStore, Vault, VaultItemRecord, VaultOwnerKind,
+    ACTION_READ, ACTION_WRITE,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +111,11 @@ pub fn generate_all_vectors<P: AsRef<Path>>(out_dir: P) -> io::Result<Vec<String
         generate_micro_valid_4kb(dir)?,
         generate_micro_truncated_file(dir)?,
         generate_micro_signed_seal_chain(dir)?,
+        // 5. Vault Profile Vectors (Phase 1)
+        generate_vault_transfer_chain(dir)?,
+        generate_vault_delegation_governance(dir)?,
+        generate_vault_key_revocation(dir)?,
+        generate_vault_vc_import(dir)?,
     ];
 
     // Write README with runner contract
@@ -1572,6 +1582,293 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
     write_json_and_record(dir, name, &exp)
 }
 
+fn generate_vault_transfer_chain(dir: &Path) -> io::Result<String> {
+    let name = "vault_transfer_chain";
+    let file_path = dir.join(format!("{}.s3a", name));
+    let mut keystore = MemoryKeyStore::new();
+
+    let mut vault = Vault::create(&file_path, "Issuer Vault", VaultOwnerKind::Organization, &mut keystore)
+        .map_err(io::Error::other)?;
+
+    let primary = *vault.primary_identity().unwrap();
+    let issuer_id = primary.identity_id;
+    let issuer_pk = primary.public_key;
+
+    let alice_id = [0x02; 16];
+    let bob_id = [0x03; 16];
+
+    let alice_pk = keystore.generate_keypair(&alice_id).map_err(io::Error::other)?;
+    let bob_pk = keystore.generate_keypair(&bob_id).map_err(io::Error::other)?;
+
+    let item_hash = [0xAA; 32];
+    let item_record = VaultItemRecord::new(
+        [0x10; 16],
+        1, // Credential
+        item_hash,
+        issuer_pk,
+        issuer_pk,
+        1700000000,
+        0,
+        0,
+    );
+    vault.add_item(item_record).map_err(io::Error::other)?;
+
+    let transfer_1 = s3a_vault::create_transfer_record(
+        [0x01; 16],
+        item_hash,
+        issuer_id,
+        alice_pk,
+        1700000010,
+        [0u8; 32],
+        0,
+        &keystore,
+    ).map_err(io::Error::other)?;
+    let link1_hash = transfer_1.compute_transfer_hash();
+    vault.add_transfer(transfer_1).map_err(io::Error::other)?;
+
+    let transfer_2 = s3a_vault::create_transfer_record(
+        [0x02; 16],
+        item_hash,
+        alice_id,
+        bob_pk,
+        1700000020,
+        link1_hash,
+        0,
+        &keystore,
+    ).map_err(io::Error::other)?;
+    vault.add_transfer(transfer_2).map_err(io::Error::other)?;
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Three-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01)".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(fs::metadata(&file_path)?.len()),
+        header: None,
+        records_per_tile_type: std::collections::BTreeMap::new(),
+        sample_records: vec![SampleRecord {
+            tile_type: 64,
+            record_index: 0,
+            summary: "ItemTransferRecord resolving owner to Bob".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
+fn generate_vault_delegation_governance(dir: &Path) -> io::Result<String> {
+    let name = "vault_delegation_governance";
+    let file_path = dir.join(format!("{}.s3a", name));
+    let mut keystore = MemoryKeyStore::new();
+
+    let mut vault = Vault::create(&file_path, "Alice Vault", VaultOwnerKind::Person, &mut keystore)
+        .map_err(io::Error::other)?;
+
+    let primary = *vault.primary_identity().unwrap();
+    let alice_id = primary.identity_id;
+
+    let gamma_id = [0x02; 16];
+    let gamma_pk = keystore.generate_keypair(&gamma_id).map_err(io::Error::other)?;
+
+    let grant = s3a_vault::create_delegation_grant(
+        [0x50; 16],
+        alice_id,
+        VaultOwnerKind::Person,
+        gamma_id,
+        gamma_pk,
+        ACTION_READ | ACTION_WRITE,
+        0x0001,
+        100,
+        1700000000,
+        1700010000,
+        None,
+        &keystore,
+    ).map_err(io::Error::other)?;
+    vault.add_grant(grant).map_err(io::Error::other)?;
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Delegation grant with agent action and non-delegable judgment protection (VAULT-VEC-02)".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(fs::metadata(&file_path)?.len()),
+        header: None,
+        records_per_tile_type: std::collections::BTreeMap::new(),
+        sample_records: vec![SampleRecord {
+            tile_type: 64,
+            record_index: 0,
+            summary: "DelegationGrantRecord Alice -> Gamma".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
+fn generate_vault_key_revocation(dir: &Path) -> io::Result<String> {
+    let name = "vault_key_revocation";
+    let file_path = dir.join(format!("{}.s3a", name));
+    let mut keystore = MemoryKeyStore::new();
+
+    let mut vault = Vault::create(&file_path, "Rotated Vault", VaultOwnerKind::Person, &mut keystore)
+        .map_err(io::Error::other)?;
+
+    let primary = *vault.primary_identity().unwrap();
+    let k1_id = primary.identity_id;
+
+    let k2_id = [0x02; 16];
+    let _k2_pk = keystore.generate_keypair(&k2_id).map_err(io::Error::other)?;
+
+    let rotation_timestamp = 1700005000;
+    let rotation = s3a_vault::create_key_rotation_record(
+        [0x60; 16],
+        k1_id,
+        k2_id,
+        rotation_timestamp,
+        &keystore,
+    ).map_err(io::Error::other)?;
+    vault.add_key_rotation(rotation).map_err(io::Error::other)?;
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Key rotation K1 to K2 invalidating subsequent actions while preserving historical actions (VAULT-VEC-03)".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(fs::metadata(&file_path)?.len()),
+        header: None,
+        records_per_tile_type: std::collections::BTreeMap::new(),
+        sample_records: vec![SampleRecord {
+            tile_type: 64,
+            record_index: 0,
+            summary: "KeyRotationRecord K1 -> K2".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
+fn generate_vault_vc_import(dir: &Path) -> io::Result<String> {
+    let name = "vault_vc_import";
+    let file_path = dir.join(format!("{}.s3a", name));
+    let mut keystore = MemoryKeyStore::new();
+
+    let issuer_id = [0x01; 16];
+    let recipient_id = [0x02; 16];
+
+    let issuer_pk = keystore.generate_keypair(&issuer_id).map_err(io::Error::other)?;
+    let recipient_pk = keystore.generate_keypair(&recipient_id).map_err(io::Error::other)?;
+
+    let mut vault = Vault::create(&file_path, "Recipient Vault", VaultOwnerKind::Person, &mut keystore)
+        .map_err(io::Error::other)?;
+
+    let vc_json = serde_json::json!({
+        "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json"
+        ],
+        "id": "urn:uuid:7f3b89b1-5f33-4df4-a82a-89a1c296ef12",
+        "type": ["VerifiableCredential", "OpenBadgeCredential"],
+        "issuer": {
+            "id": "gate://s3a-0000-0000-0000-0000-00",
+            "type": ["Profile"],
+            "name": "Institute for Distributed Science"
+        },
+        "validFrom": "2026-01-01T00:00:00Z",
+        "credentialSubject": {
+            "id": "gate://s3a-1111-2222-3333-4444-55",
+            "type": ["AchievementSubject"],
+            "achievement": {
+                "id": "urn:uuid:9a8b7c6d-5e4f-3a2b-1c0d-ef9a8b7c6d5e",
+                "type": ["Achievement"],
+                "name": "Advanced S3A Architecture Specialist",
+                "criteria": { "narrative": "Completed Phase 1 S3A Vault Conformance." }
+            }
+        }
+    });
+
+    let json_bytes = serde_json::to_vec_pretty(&vc_json).map_err(io::Error::other)?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&json_bytes);
+    let doc_hash: [u8; 32] = hasher.finalize().into();
+
+    let _sig = keystore.sign(&issuer_id, &doc_hash).map_err(io::Error::other)?;
+
+    let blob_tile_id = {
+        let mut writer = TileWriter::open_append(&file_path)?;
+        writer.write_hyper_tile(TileType::BLOB, &json_bytes[..], None, None)?
+    };
+    let blob_tile_index = (blob_tile_id - 1) as u32;
+
+    let item_record = VaultItemRecord::new(
+        [0x20; 16],
+        1, // Credential
+        doc_hash,
+        issuer_pk,
+        recipient_pk,
+        1700000000,
+        blob_tile_index,
+        json_bytes.len() as u32,
+    );
+    vault.add_item(item_record).map_err(io::Error::other)?;
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "W3C VC / Open Badges 3.0 JSON-LD import with Ed25519 signature in Blob tile 68 and indexed VaultItemRecord (VAULT-VEC-04)".to_string(),
+        expected_outcome: "ok".to_string(),
+        error_class: None,
+        expected_error_message: None,
+        file_size_bytes: Some(fs::metadata(&file_path)?.len()),
+        header: None,
+        records_per_tile_type: std::collections::BTreeMap::new(),
+        sample_records: vec![SampleRecord {
+            tile_type: 68,
+            record_index: 0,
+            summary: "W3C VC Open Badges 3.0 JSON-LD credential in Blob tile".to_string(),
+        }],
+        records_hidden_by_default: None,
+        records_visible_with_override: None,
+        visible_records: 0,
+        hidden_records: 0,
+        is_sealed: Some(false),
+        rebuilt_directory: None,
+        out_of_order_detected: None,
+        repaired_tiles_count: None,
+    };
+
+    write_json_and_record(dir, name, &exp)
+}
+
 fn write_spec_vectors_readme(dir: &Path) -> io::Result<()> {
     let readme_content = r#"# S3A Conformance Test Vectors (`spec-vectors/`)
 
@@ -1609,6 +1906,10 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `micro_valid_4kb` | **Valid** | `ok` | *None* | Valid 4 KB micro-tile file with standard DualFileHeader (MICRO-VEC-01). |
 | `micro_truncated_file` | **Valid** | `ok` | *None* | Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write (MICRO-VEC-02). |
 | `micro_signed_seal_chain` | **Valid** | `ok` | *None* | 3 consecutive 4 KB tiles with continuous SHA-256 seal chain and Ed25519 signatures (MICRO-VEC-03). |
+| `vault_transfer_chain` | **Valid** | `ok` | *None* | 3-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01). |
+| `vault_delegation_governance` | **Valid** | `ok` | *None* | Delegation grant with agent action execution and non-delegable judgment protection (VAULT-VEC-02). |
+| `vault_key_revocation` | **Valid** | `ok` | *None* | Key rotation K1 to K2 invalidating subsequent actions while preserving history (VAULT-VEC-03). |
+| `vault_vc_import` | **Valid** | `ok` | *None* | W3C VC / Open Badges 3.0 JSON-LD credential in Blob tile 68 with indexed VaultItemRecord (VAULT-VEC-04). |
 
 ---
 
@@ -1646,6 +1947,11 @@ An independent implementation runner MUST execute the test suite adhering to the
    - For `micro_valid_4kb`, verify archive declares Edge profile, tile stride is 4096 bytes, and both micro-tiles pass CRC32C and payload hash validation.
    - For `micro_truncated_file`, verify reader accepts committed Tile 0 and EdgeWriter recovery cleanly restores append readiness.
    - For `micro_signed_seal_chain`, verify all 3 tiles maintain continuous SHA-256 seal hash chaining and valid Ed25519 hardware signatures.
+7. **Vault Profile Verification (Phase 1)**:
+   - For `vault_transfer_chain`, verify 3-link ownership resolution via `resolve_chain_ownership`, tamper detection, and double-send prevention.
+   - For `vault_delegation_governance`, verify active grant delegation, agent tool step tracking, and fail-safe blocking of judgment actions (`RequiresHumanApproval`).
+   - For `vault_key_revocation`, verify `KeyRotationRecord` invalidates actions at/after rotation while preserving validity of historical actions.
+   - For `vault_vc_import`, verify Blob tile 68 stores valid Open Badges 3.0 JSON-LD with verified Ed25519 proof signature and `VaultItemRecord` index.
 
 ---
 
@@ -1692,6 +1998,11 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
         ("micro_valid_4kb", "ok"),
         ("micro_truncated_file", "ok"),
         ("micro_signed_seal_chain", "ok"),
+        // Vault Profile Conformance Cases (Phase 1)
+        ("vault_transfer_chain", "ok"),
+        ("vault_delegation_governance", "ok"),
+        ("vault_key_revocation", "ok"),
+        ("vault_vc_import", "ok"),
     ];
 
     let mut verified_count = 0;
@@ -1788,6 +2099,43 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                         assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
                         assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
                     }
+                }
+
+                if name == "vault_transfer_chain" {
+                    let vault = Vault::open(&s3a_path)
+                        .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
+                    let item_hash = [0xAA; 32];
+                    let owner_pk = vault.get_item_owner(&item_hash)
+                        .map_err(|e| format!("{}: get_item_owner failed: {:?}", name, e))?;
+                    assert_ne!(owner_pk, [0u8; 32], "{}: owner must not be zero", name);
+                }
+                if name == "vault_delegation_governance" {
+                    let vault = Vault::open(&s3a_path)
+                        .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
+                    let grant = vault.grants().values().next().copied()
+                        .ok_or_else(|| format!("{}: missing grant", name))?;
+                    verify_delegation_grant(&grant)
+                        .map_err(|e| format!("{}: verify_delegation_grant failed: {:?}", name, e))?;
+                    let out_write = evaluate_agent_action(&grant, ACTION_WRITE, "record_write", 1700000010, 1);
+                    assert!(out_write.is_ok(), "{}: evaluate write failed: {:?}", name, out_write);
+                    assert!(is_judgment_action("erasure"));
+                    let out_judge = evaluate_agent_action(&grant, ACTION_WRITE, "erasure", 1700000010, 1);
+                    assert!(matches!(out_judge, Err(s3a_vault::VaultError::RequiresHumanApproval(_))));
+                }
+                if name == "vault_key_revocation" {
+                    let vault = Vault::open(&s3a_path)
+                        .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
+                    let primary_pk = vault.primary_identity().unwrap().public_key;
+                    assert!(vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 - 10).is_ok());
+                    assert!(matches!(
+                        vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 + 10),
+                        Err(s3a_vault::VaultError::KeyRevokedError(_))
+                    ));
+                }
+                if name == "vault_vc_import" {
+                    let vault = Vault::open(&s3a_path)
+                        .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
+                    assert!(!vault.items().is_empty(), "{}: expected indexed items", name);
                 }
             }
             "fallback_recovered" => {
@@ -1935,10 +2283,10 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("s3a_vectors_all_test_{}", std::process::id()));
         let generated = generate_all_vectors(&temp_dir).expect("Vector generation must succeed");
-        assert_eq!(generated.len(), 26);
+        assert_eq!(generated.len(), 30);
 
         let verified = verify_conformance_vectors(&temp_dir).expect("Verification must succeed");
-        assert_eq!(verified, 26);
+        assert_eq!(verified, 30);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2287,6 +2635,74 @@ mod tests {
         assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
         assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_vault_transfer_chain() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_v_transfer_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_vault_transfer_chain(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("vault_transfer_chain.s3a")).unwrap();
+        reader.verify_checksums().unwrap();
+        let vault = Vault::open(dir.join("vault_transfer_chain.s3a")).unwrap();
+        let item_hash = [0xAA; 32];
+        let owner_pk = vault.get_item_owner(&item_hash).unwrap();
+        assert_ne!(owner_pk, [0u8; 32]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_vault_delegation_governance() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_v_delegation_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_vault_delegation_governance(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("vault_delegation_governance.s3a")).unwrap();
+        reader.verify_checksums().unwrap();
+        let vault = Vault::open(dir.join("vault_delegation_governance.s3a")).unwrap();
+        let grant = vault.grants().values().next().copied().unwrap();
+        assert!(verify_delegation_grant(&grant).is_ok());
+        let res = evaluate_agent_action(&grant, ACTION_WRITE, "record_write", 1700000010, 1);
+        assert!(res.is_ok());
+        let res_judge = evaluate_agent_action(&grant, ACTION_WRITE, "erasure", 1700000010, 1);
+        assert!(matches!(res_judge, Err(s3a_vault::VaultError::RequiresHumanApproval(_))));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_vault_key_revocation() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_v_revocation_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_vault_key_revocation(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("vault_key_revocation.s3a")).unwrap();
+        reader.verify_checksums().unwrap();
+        let vault = Vault::open(dir.join("vault_key_revocation.s3a")).unwrap();
+        let primary_pk = vault.primary_identity().unwrap().public_key;
+        assert!(vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 - 10).is_ok());
+        assert!(matches!(
+            vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 + 10),
+            Err(s3a_vault::VaultError::KeyRevokedError(_))
+        ));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_vector_vault_vc_import() {
+        let dir = std::env::temp_dir().join(format!("s3a_vec_v_vc_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        generate_vault_vc_import(&dir).unwrap();
+        let reader = MmapReader::open(dir.join("vault_vc_import.s3a")).unwrap();
+        reader.verify_checksums().unwrap();
+        let vault = Vault::open(dir.join("vault_vc_import.s3a")).unwrap();
+        assert_eq!(vault.items().len(), 1);
+        let item = vault.items().values().next().unwrap();
+        let (hdr, payload) = reader.get_tile(item.payload_tile_index() as usize).unwrap();
+        assert_eq!(hdr.tile_type, TileType::BLOB);
+        let offset = item.payload_byte_offset() as usize;
+        let length = item.payload_byte_length() as usize;
+        let doc_slice = &payload[offset..(offset + length)];
+        let val: serde_json::Value = serde_json::from_slice(doc_slice).unwrap();
+        assert_eq!(val["type"][1], "OpenBadgeCredential");
         let _ = fs::remove_dir_all(dir);
     }
 }

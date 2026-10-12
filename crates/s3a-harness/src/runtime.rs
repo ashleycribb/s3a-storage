@@ -329,6 +329,7 @@ impl AgentRuntime {
                 session_uuid: state.session_uuid,
                 sandbox: self.sandbox.clone(),
                 store: self.store.clone(),
+                grant_record: None,
             };
 
             let tool_args = json!({ "query": state.task_goal });

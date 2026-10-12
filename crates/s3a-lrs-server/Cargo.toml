@@ -22,6 +22,9 @@ humantime = { workspace = true }
 crc32c = { workspace = true }
 tiny_http = "0.12"
 urlencoding = "2.1"
+s3a-vault = { path = "../s3a-vault" }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
 
 [dev-dependencies]
 ureq = { workspace = true }

@@ -17,6 +17,7 @@ members = [
     "crates/s3a-lrs-server",
     "crates/s3a-spec-vectors",
     "crates/s3a-edge",
+    "crates/s3a-vault",
 ]
 
 [workspace.package]

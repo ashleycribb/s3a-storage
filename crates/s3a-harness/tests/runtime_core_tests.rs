@@ -68,6 +68,7 @@ fn create_test_config() -> AgentConfig {
             "preflight_check".to_string(),
             "ask_human".to_string(),
         ],
+        require_grant: false,
     }
 }
 

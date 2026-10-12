@@ -64,6 +64,7 @@ pub struct ToolExecutionContext {
     pub session_uuid: [u64; 2],
     pub sandbox: Sandbox,
     pub store: Arc<dyn Store>,
+    pub grant_record: Option<s3a_vault::records::DelegationGrantRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -789,7 +790,31 @@ impl ToolRegistry {
             });
         }
 
-        // 2. Lookup tool
+        // 2. Non-delegable judgment invariant check (§3.2, §12.5)
+        if s3a_vault::is_judgment_action(tool_name) {
+            return Err(ToolError::ExecutionFailed {
+                tool: tool_name.to_string(),
+                details: "Non-delegable judgment action requires interactive human approval".to_string(),
+            });
+        }
+
+        // 3. Delegation grant check if required
+        if agent_config.require_grant {
+            let grant = ctx.grant_record.as_ref().ok_or_else(|| ToolError::ExecutionFailed {
+                tool: tool_name.to_string(),
+                details: "Agent tool call denied: active delegation grant missing".to_string(),
+            })?;
+
+            let action_mask = s3a_vault::records::ACTION_READ | s3a_vault::records::ACTION_WRITE;
+            let now = chrono_timestamp();
+            s3a_vault::evaluate_agent_action(grant, action_mask, tool_name, now, 0)
+                .map_err(|e| ToolError::ExecutionFailed {
+                    tool: tool_name.to_string(),
+                    details: format!("Agent tool call denied: {}", e),
+                })?;
+        }
+
+        // 4. Lookup tool
         let tool = {
             let guard = self.tools.read().unwrap();
             guard
@@ -862,3 +887,70 @@ fn chrono_timestamp() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+    use crate::sandbox::Sandbox;
+    use crate::store::{Store, StoreError};
+
+    struct DummyStore;
+    impl Store for DummyStore {
+        fn record_xapi_statement(&self, _statement: &Value) -> Result<String, StoreError> {
+            Ok("dummy-id".into())
+        }
+        fn get_session_context(&self, _session_id: &str) -> Result<Value, StoreError> {
+            Ok(json!({}))
+        }
+        fn list_academic_verbs(&self) -> Result<Vec<Value>, StoreError> {
+            Ok(vec![])
+        }
+        fn get_researcher_timeline(
+            &self,
+            _agent_id: Option<&str>,
+            _session_id: Option<&str>,
+            _limit: Option<usize>,
+        ) -> Result<Vec<Value>, StoreError> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn test_harness_denies_tool_call_without_grant_and_blocks_judgment() {
+        let registry = ToolRegistry::new();
+        let store = Arc::new(DummyStore);
+        let sandbox = Sandbox::new(std::env::temp_dir(), false).unwrap();
+
+        let mut config = AgentConfig {
+            id: "agent-007".into(),
+            name: "Test Agent".into(),
+            system_prompt: "".into(),
+            model: "test".into(),
+            escalation_model: None,
+            limits: Default::default(),
+            thresholds: Default::default(),
+            safe_defaults: Default::default(),
+            allowed_tools: vec!["s3a_query".into()],
+            require_grant: true,
+        };
+
+        let ctx = ToolExecutionContext {
+            agent_id: config.id.clone(),
+            session_uuid: [1, 2],
+            sandbox,
+            store,
+            grant_record: None,
+        };
+
+        // 1. Without grant: tool call is denied
+        let err = registry.call_tool(&config, "s3a_query", &json!({ "query": "dna" }), &ctx);
+        assert!(matches!(err, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("grant missing")));
+
+        // 2. Judgment action is blocked regardless of grant
+        config.allowed_tools.push("erasure_purge".into());
+        let err_judgment = registry.call_tool(&config, "erasure_purge", &json!({}), &ctx);
+        assert!(matches!(err_judgment, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("judgment action")));
+    }
+}
+

@@ -440,12 +440,16 @@ impl TileType {
     pub const DOCUMENT_STORE: u32 = 23;
     /// Core xAPI 1.0.3 Attachment Blob tile (Tile 24)
     pub const ATTACHMENT_BLOB: u32 = 24;
+    /// Core ELR Credential Assertion tile (Tile 30 / 0x001E)
+    pub const ELR_CREDENTIAL_ASSERTION: u32 = 30;
     /// Core Equipment Event Log Record Tile (Tile 64 / 0x0040)
     pub const RECORD: u32 = 64;
     /// Core Columnar Partition Tile (Tile 65 / 0x0041)
     pub const COLUMNAR: u32 = 65;
     /// Core N-Dimensional Array Tile (Tile 66 / 0x0042)
     pub const ARRAY: u32 = 66;
+    /// Core Raw Blob Tile (Tile 68 / 0x0044)
+    pub const BLOB: u32 = 68;
     /// Core Cryptographic Seal Tile (Tile 70 / 0x0046)
     pub const SEAL: u32 = 70;
     /// Core Participant Consent Tile (Tile 71 / 0x0047)

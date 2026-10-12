@@ -12,8 +12,11 @@ s3a-core = { path = "../s3a-core" }
 s3a-engine = { path = "../s3a-engine" }
 s3a-pack-scholar = { path = "../s3a-pack-scholar" }
 s3a-edge = { path = "../s3a-edge", features = ["sign"] }
+s3a-vault = { path = "../s3a-vault" }
+ed25519-dalek = { version = "2.1", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 bytemuck = { workspace = true }
 crc32c = { workspace = true }
 memmap2 = { workspace = true }
+sha2 = { workspace = true }

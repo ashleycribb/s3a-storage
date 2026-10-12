@@ -1,0 +1,29 @@
+[package]
+name = "s3a-vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "S3A Digital Vault: cryptographic identity, physical asset custody, delegation grants, and gate network addressing"
+
+[[bin]]
+name = "s3a-vault"
+path = "src/main.rs"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = "1.8"
+
+[dev-dependencies]
+tempfile = "3.10"

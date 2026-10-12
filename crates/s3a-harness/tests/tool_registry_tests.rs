@@ -72,6 +72,7 @@ fn create_test_config() -> AgentConfig {
             "retraction_watch_check".to_string(),
             "preflight_check".to_string(),
         ],
+        require_grant: false,
     }
 }
 
@@ -84,6 +85,7 @@ fn create_test_context() -> (ToolExecutionContext, TempDirGuard) {
         session_uuid: [0x1111_2222_3333_4444, 0x5555_6666_7777_8888],
         sandbox,
         store,
+        grant_record: None,
     };
     (ctx, tmp)
 }

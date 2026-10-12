@@ -21,6 +21,7 @@ s3a-engine = { path = "../s3a-engine" }
 s3a-simd = { path = "../s3a-simd" }
 s3a-pack-scholar = { path = "../s3a-pack-scholar" }
 s3a-pack-ontology = { path = "../s3a-pack-ontology" }
+s3a-vault = { path = "../s3a-vault" }
 memmap2 = { workspace = true }
 crc32c = { workspace = true }
 bytemuck = { workspace = true }
