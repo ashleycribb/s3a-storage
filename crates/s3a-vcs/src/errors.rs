@@ -21,6 +21,10 @@ pub enum VcsError {
         conflicting_record_ids: Vec<String>,
         requires_human_judgment: bool,
     },
+    ConflictNeedsHuman {
+        conflicts: Vec<crate::records::ConflictRecordDetail>,
+        message: String,
+    },
     ConsentRestricted(String),
     Generic(String),
 }
@@ -44,6 +48,11 @@ impl fmt::Display for VcsError {
                 f,
                 "Merge conflict (human_judgment={}): {}. Conflicting IDs: {:?}",
                 requires_human_judgment, reason, conflicting_record_ids
+            ),
+            VcsError::ConflictNeedsHuman { conflicts, message } => write!(
+                f,
+                "Merge conflict requires human judgment: {}. Conflicts: {:?}",
+                message, conflicts
             ),
             VcsError::ConsentRestricted(msg) => write!(f, "Action blocked by participant consent policy: {}", msg),
             VcsError::Generic(msg) => write!(f, "{}", msg),

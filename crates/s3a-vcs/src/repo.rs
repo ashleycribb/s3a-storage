@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 use bytemuck::from_bytes;
 use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 
 use s3a_core::consent::ConsentRecord;
 use s3a_core::{
-    FileHeader, MarkRecord, SealedEndCapV2, SealedIndexHeaderV2,
+    FileHeader, HyperTileHeader, MarkRecord, SealedEndCapV2, SealedIndexHeaderV2,
     TileType, FILE_HEADER_SIZE, HYPER_TILE_SIZE,
     MARK_CONSENT_WITHDRAWN, SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE,
     SEALED_INDEX_HEADER_SIZE_V2,
@@ -18,12 +19,13 @@ use s3a_engine::sealed::{
     seal_buffer_v2, SealOptionsV2,
 };
 use s3a_engine::{MmapReader, TileWriter};
+use s3a_pack_scholar::ScholarTileType;
 use s3a_vault::address::GateAddress;
 
 use crate::errors::VcsError;
 use crate::records::{
-    VcsCommitRecord, VcsRefRecord, REF_KIND_BRANCH, REF_KIND_TAG, VCS_COMMIT_MESSAGE_MAX,
-    VCS_REF_NAME_MAX,
+    ConflictRecordDetail, VcsCommitRecord, VcsMergeResult, VcsRefRecord, VcsResolutionRecord,
+    REF_KIND_BRANCH, REF_KIND_TAG, VCS_COMMIT_MESSAGE_MAX, VCS_REF_NAME_MAX,
 };
 
 /// Diff summary between two commits or states.
@@ -127,6 +129,38 @@ impl VcsRepo {
         Ok(refs.into_iter().rev().find(|r| r.ref_name() == name))
     }
 
+    /// Returns all signed human resolution records stored in VCS_RESOLUTION tiles.
+    pub fn list_resolutions(&self) -> Result<Vec<VcsResolutionRecord>, VcsError> {
+        let reader = MmapReader::open(&self.path)?;
+        let mut resolutions = Vec::new();
+        let res_size = std::mem::size_of::<VcsResolutionRecord>();
+
+        for i in 0..reader.tile_count() as usize {
+            if let Some((hdr, payload)) = reader.get_tile(i) {
+                if hdr.tile_type == TileType::VCS_RESOLUTION {
+                    let count = (hdr.payload_bytes as usize) / res_size;
+                    for c in 0..count {
+                        if (c + 1) * res_size <= payload.len() {
+                            let rec: &VcsResolutionRecord =
+                                from_bytes(&payload[c * res_size..(c + 1) * res_size]);
+                            resolutions.push(*rec);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(resolutions)
+    }
+
+    /// Appends a signed human resolution record to the archive.
+    pub fn write_resolution(&self, resolution: &VcsResolutionRecord) -> Result<(), VcsError> {
+        if !resolution.verify_signature() {
+            return Err(VcsError::InvalidSignature("Invalid human resolution signature".to_string()));
+        }
+        self.append_records(TileType::VCS_RESOLUTION, &[*resolution])?;
+        Ok(())
+    }
+
     /// Creates or updates a branch reference.
     pub fn set_branch(
         &self,
@@ -170,7 +204,6 @@ impl VcsRepo {
             name: name_bytes,
         };
 
-        // Append to archive via TileWriter
         self.append_records(TileType::VCS_REF, &[ref_record])?;
         Ok(ref_record)
     }
@@ -441,6 +474,7 @@ impl VcsRepo {
                     || hdr.tile_type == TileType::SPECIFICATION
                     || hdr.tile_type == TileType::VCS_COMMIT
                     || hdr.tile_type == TileType::VCS_REF
+                    || hdr.tile_type == TileType::VCS_RESOLUTION
                 {
                     continue;
                 }
@@ -535,15 +569,19 @@ impl VcsRepo {
     }
 
     /// Merges `source_branch` into active `target_branch`.
-    /// Performs append-only union merge. Conflicts on identical logical keys with differing contents
-    /// are detected and reported; empirical claims/evidence trigger `requires_human_judgment: true`.
+    ///
+    /// Mandatory Safety Invariant:
+    /// When a merge conflict involves claim, evidence, citation_fingerprint, or ai_trace records,
+    /// this function MUST NOT auto-resolve or pick a side. It returns `ConflictNeedsHuman` listing
+    /// the conflicting records. Merge completes only after a signed human resolution record
+    /// is written to the archive.
     pub fn merge(
         &self,
         source_branch: &str,
         target_branch: &str,
         signing_key: &SigningKey,
         _is_human_judgment_approved: bool,
-    ) -> Result<VcsCommitRecord, VcsError> {
+    ) -> Result<VcsMergeResult, VcsError> {
         let src_ref = self
             .get_ref(source_branch)?
             .ok_or_else(|| VcsError::RefNotFound(source_branch.to_string()))?;
@@ -551,18 +589,168 @@ impl VcsRepo {
             .get_ref(target_branch)?
             .ok_or_else(|| VcsError::RefNotFound(target_branch.to_string()))?;
 
-        // 1. Fast-forward check: if target is ancestor of source, simply advance
-        let history = self.log(Some(source_branch))?;
-        if history.iter().any(|c| c.seal_hash == tgt_ref.target_seal_hash) {
-            // Can fast-forward
-            self.set_branch(target_branch, src_ref.target_seal_hash, signing_key)?;
-            let last_commit = history.first().copied().unwrap();
-            return Ok(last_commit);
+        // 0. Identical branches
+        if src_ref.target_seal_hash == tgt_ref.target_seal_hash {
+            let history = self.log(Some(target_branch))?;
+            let last = history.first().copied().unwrap();
+            return Ok(VcsMergeResult::Merged(last));
         }
 
-        // 2. Multi-parent merge commit
+        // 1. Fast-forward check: if target is ancestor of source, simply advance
+        let src_log = self.log(Some(source_branch))?;
+        if src_log.iter().any(|c| c.seal_hash == tgt_ref.target_seal_hash) {
+            self.set_branch(target_branch, src_ref.target_seal_hash, signing_key)?;
+            let last_commit = src_log.first().copied().unwrap();
+            return Ok(VcsMergeResult::Merged(last_commit));
+        }
+
+        // 2. Multi-parent divergence check
+        let tgt_log = self.log(Some(target_branch))?;
+        let src_seals: HashSet<[u8; 32]> = src_log.iter().map(|c| c.seal_hash).collect();
+        let merge_base = tgt_log
+            .iter()
+            .find(|c| src_seals.contains(&c.seal_hash))
+            .map(|c| c.seal_hash)
+            .unwrap_or([0u8; 32]);
+
+        // Map commits to their respective tile indexes
+        let reader = MmapReader::open(&self.path)?;
+        let tile_count = reader.tile_count() as usize;
+        let commit_size = std::mem::size_of::<VcsCommitRecord>();
+        let mut commit_tile_indices: HashMap<[u8; 32], usize> = HashMap::new();
+        let mut sorted_commit_indices: Vec<usize> = Vec::new();
+
+        for i in 0..tile_count {
+            if let Some((hdr, payload)) = reader.get_tile(i) {
+                if hdr.tile_type == TileType::VCS_COMMIT {
+                    let count = (hdr.payload_bytes as usize) / commit_size;
+                    for c in 0..count {
+                        if (c + 1) * commit_size <= payload.len() {
+                            let rec: &VcsCommitRecord =
+                                from_bytes(&payload[c * commit_size..(c + 1) * commit_size]);
+                            commit_tile_indices.insert(rec.seal_hash, i);
+                            sorted_commit_indices.push(i);
+                        }
+                    }
+                }
+            }
+        }
+        sorted_commit_indices.sort_unstable();
+        sorted_commit_indices.dedup();
+
+        let tiles_for_commit = |commit_seal: &[u8; 32]| -> Vec<usize> {
+            if let Some(&c_idx) = commit_tile_indices.get(commit_seal) {
+                let prev_idx = sorted_commit_indices
+                    .iter()
+                    .rev()
+                    .find(|&&idx| idx < c_idx)
+                    .copied()
+                    .unwrap_or(0);
+                let start = if prev_idx == 0 { 0 } else { prev_idx + 1 };
+                (start..c_idx).collect()
+            } else {
+                Vec::new()
+            }
+        };
+
+        // Identify tiles on each branch since merge_base
+        let mut tgt_branch_tiles = HashSet::new();
+        for c in tgt_log.iter().take_while(|c| c.seal_hash != merge_base) {
+            for t in tiles_for_commit(&c.seal_hash) {
+                tgt_branch_tiles.insert(t);
+            }
+        }
+
+        let mut src_branch_tiles = HashSet::new();
+        for c in src_log.iter().take_while(|c| c.seal_hash != merge_base) {
+            for t in tiles_for_commit(&c.seal_hash) {
+                src_branch_tiles.insert(t);
+            }
+        }
+
+        // Extract records from each branch's diverged tiles
+        let mut tgt_records: HashMap<String, (u32, String, [u8; 32], String)> = HashMap::new();
+        for &t in &tgt_branch_tiles {
+            if let Some((hdr, payload)) = reader.get_tile(t) {
+                let type_name = reader.resolve_tile_type_name(hdr.tile_type);
+                for (id, tt, tn, ch, sum) in extract_records_from_tile(hdr, payload, &type_name) {
+                    tgt_records.insert(id, (tt, tn, ch, sum));
+                }
+            }
+        }
+
+        let mut src_records: HashMap<String, (u32, String, [u8; 32], String)> = HashMap::new();
+        for &t in &src_branch_tiles {
+            if let Some((hdr, payload)) = reader.get_tile(t) {
+                let type_name = reader.resolve_tile_type_name(hdr.tile_type);
+                for (id, tt, tn, ch, sum) in extract_records_from_tile(hdr, payload, &type_name) {
+                    src_records.insert(id, (tt, tn, ch, sum));
+                }
+            }
+        }
+
+        drop(reader); // release mmap before possible writes
+
+        // Load existing signed resolutions
+        let existing_resolutions = self.list_resolutions()?;
+
+        let mut needs_human_conflicts = Vec::new();
+        let mut non_claim_conflicts = Vec::new();
+
+        for (rec_id, (tgt_type, tgt_name, tgt_hash, tgt_summary)) in &tgt_records {
+            if let Some((src_type, _src_name, src_hash, src_summary)) = src_records.get(rec_id) {
+                if tgt_hash != src_hash {
+                    // Check if a signed human resolution exists for this record ID
+                    let resolved = existing_resolutions
+                        .iter()
+                        .rev()
+                        .find(|r| r.conflict_record_id() == *rec_id && r.verify_signature());
+
+                    if resolved.is_none() {
+                        let is_claim_related = is_human_judgment_required(*tgt_type, tgt_name)
+                            || is_human_judgment_required(*src_type, tgt_name);
+
+                        if is_claim_related {
+                            needs_human_conflicts.push(ConflictRecordDetail {
+                                record_id: rec_id.clone(),
+                                tile_type: *tgt_type,
+                                type_name: tgt_name.clone(),
+                                target_version: tgt_summary.clone(),
+                                source_version: src_summary.clone(),
+                                requires_human_judgment: true,
+                            });
+                        } else {
+                            non_claim_conflicts.push(rec_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Conflict evaluation
+        if !needs_human_conflicts.is_empty() {
+            // DO NOT auto-resolve. DO NOT create a merge commit.
+            return Ok(VcsMergeResult::ConflictNeedsHuman {
+                message: format!(
+                    "Merge blocked: {} epistemic/empirical record(s) in conflict require signed human judgment",
+                    needs_human_conflicts.len()
+                ),
+                conflicting_records: needs_human_conflicts,
+            });
+        }
+
+        if !non_claim_conflicts.is_empty() {
+            return Err(VcsError::MergeConflict {
+                reason: "Merge conflict on non-claim records".to_string(),
+                conflicting_record_ids: non_claim_conflicts,
+                requires_human_judgment: false,
+            });
+        }
+
+        // 4. All conflicts resolved or clean union -> seal merge commit
         let msg = format!("Merge branch '{}' into '{}'", source_branch, target_branch);
-        self.commit(&msg, target_branch, signing_key, Some(src_ref.target_seal_hash))
+        let commit_record = self.commit(&msg, target_branch, signing_key, Some(src_ref.target_seal_hash))?;
+        Ok(VcsMergeResult::Merged(commit_record))
     }
 
     /// Appends arbitrary records to archive via TileWriter.
@@ -576,6 +764,94 @@ impl VcsRepo {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Checks whether a tile type or type name represents epistemic claims, research evidence,
+/// citation fingerprints, or AI trace records requiring mandatory human supervisor judgment.
+pub fn is_human_judgment_required(tile_type: u32, type_name: &str) -> bool {
+    tile_type == ScholarTileType::NOTE_CLAIMS // 20
+        || tile_type == ScholarTileType::RESEARCH_GRAPH // 13
+        || tile_type == ScholarTileType::AI_TRACE_LOG // 11
+        || tile_type == ScholarTileType::CITATION_FINGERPRINT // 32
+        || type_name.contains("claim")
+        || type_name.contains("evidence")
+        || type_name.contains("citation_fingerprint")
+        || type_name.contains("ai_trace")
+}
+
+fn extract_records_from_tile(
+    hdr: &HyperTileHeader,
+    payload: &[u8],
+    type_name: &str,
+) -> Vec<(String, u32, String, [u8; 32], String)> {
+    let mut out = Vec::new();
+    if hdr.tile_type == TileType::MANIFEST
+        || hdr.tile_type == TileType::SPECIFICATION
+        || hdr.tile_type == TileType::VCS_COMMIT
+        || hdr.tile_type == TileType::VCS_REF
+        || hdr.tile_type == TileType::VCS_RESOLUTION
+    {
+        return out;
+    }
+
+    if hdr.tile_type == ScholarTileType::NOTE_CLAIMS {
+        let claim_size = std::mem::size_of::<s3a_pack_scholar::records::ScholarNoteClaimRecord>();
+        let count = (hdr.payload_bytes as usize) / claim_size;
+        for r in 0..count {
+            if (r + 1) * claim_size <= payload.len() {
+                let rec: &s3a_pack_scholar::records::ScholarNoteClaimRecord =
+                    from_bytes(&payload[r * claim_size..(r + 1) * claim_size]);
+                let rec_id = if rec.session_uuid[0] == 0 && rec.session_uuid[1] > 0 {
+                    format!("claim_{}", rec.session_uuid[1])
+                } else if rec.session_uuid != [0, 0] {
+                    format!("claim_{:016x}{:016x}", rec.session_uuid[0], rec.session_uuid[1])
+                } else if rec.author_hash > 0 {
+                    format!("claim_{}_{}", rec.author_hash, rec.kind)
+                } else {
+                    format!("claim_rec_{}", r)
+                };
+                let content_hash = rec.quote_sha256;
+                let summary = format!(
+                    "Claim(kind={}, conf={:.2}, text_hash={:08x})",
+                    rec.kind,
+                    rec.confidence,
+                    rec.text_hash
+                );
+                out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+            }
+        }
+    } else if hdr.tile_type == TileType::TELEMETRY {
+        let tel_size = std::mem::size_of::<s3a_core::TelemetryRecord>();
+        let count = (hdr.payload_bytes as usize) / tel_size;
+        for r in 0..count {
+            if (r + 1) * tel_size <= payload.len() {
+                let rec: &s3a_core::TelemetryRecord =
+                    from_bytes(&payload[r * tel_size..(r + 1) * tel_size]);
+                let rec_id = format!("telemetry_{}_{}_{}", rec.sensor_id, rec.metric_id, rec.timestamp);
+                let mut hasher = Sha256::new();
+                hasher.update(&rec.value.to_le_bytes());
+                let content_hash: [u8; 32] = hasher.finalize().into();
+                let summary = format!("Telemetry(val={})", rec.value);
+                out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+            }
+        }
+    } else {
+        let rec_count = hdr.record_count as usize;
+        if rec_count > 0 && hdr.payload_bytes > 0 {
+            let rec_size = (hdr.payload_bytes as usize) / rec_count;
+            for r in 0..rec_count {
+                if (r + 1) * rec_size <= payload.len() {
+                    let slice = &payload[r * rec_size..(r + 1) * rec_size];
+                    let rec_id = format!("{}_rec_{}", type_name, r);
+                    let content_hash: [u8; 32] = Sha256::digest(slice).into();
+                    let summary = format!("{}(hash={})", type_name, hex::encode(&content_hash[..8]));
+                    out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+                }
+            }
+        }
+    }
+
+    out
+}
 
 fn get_active_data_len(buf: &[u8]) -> Result<usize, VcsError> {
     if buf.len() < FILE_HEADER_SIZE {

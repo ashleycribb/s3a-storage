@@ -144,6 +144,9 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         79 => "specification",
         80 => "vcs_commit",
         81 => "vcs_ref",
+        82 => "vcs_resolution",
+        85 => "gate_directory",
+        86 => "gate_mailbox",
         _ => "custom",
     }
 }

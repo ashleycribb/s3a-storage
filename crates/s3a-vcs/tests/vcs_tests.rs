@@ -23,7 +23,12 @@ use rand_core::{OsRng, RngCore};
 use s3a_core::consent::{ConsentPurpose, ConsentRecord};
 use s3a_core::{TelemetryRecord, TileType};
 use s3a_engine::{MmapReader, TileWriter};
-use s3a_vcs::{export_git, sync_push, VcsRepo};
+use s3a_pack_scholar::records::{ScholarNoteClaimRecord, CLAIM_KIND_EMPIRICAL};
+use s3a_pack_scholar::ScholarTileType;
+use s3a_vcs::{
+    export_git, sync_push, VcsError, VcsMergeResult, VcsRepo, VcsResolutionRecord,
+    RESOLUTION_CHOICE_TARGET,
+};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(5000);
 
@@ -324,3 +329,186 @@ fn test_manifest_created_timestamp_populated() {
     assert!(!manifest.contains("Genesis (Unset)"), "Created timestamp must never be 'Genesis (Unset)'");
     assert!(manifest.contains("Created:          202"), "Created timestamp must display valid year (202x)");
 }
+
+#[test]
+fn test_vcs_claim_conflict_requires_human_no_merge_commit() {
+    let archive = TempArchiveFile::new("claim_conflict");
+    let mut writer = TileWriter::create(archive.path()).unwrap();
+    writer.enable_addon(s3a_core::ADDON_EDU).unwrap();
+    let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
+    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    drop(writer);
+
+    let key = generate_test_key();
+    let repo = VcsRepo::open(archive.path()).unwrap();
+    let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
+
+    // Branch feature from base
+    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+
+    // Commit claim version A on main
+    let mut w_main = TileWriter::open_append(archive.path()).unwrap();
+    let claim_a = vec![ScholarNoteClaimRecord::new(
+        1001,
+        1700000000,
+        [0, 42],
+        1,
+        0.95,
+        CLAIM_KIND_EMPIRICAL,
+        "Trial result: Drug efficacy 85% in target cohort",
+    )];
+    w_main.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None).unwrap();
+    drop(w_main);
+    let main_commit = repo.commit("Main claim A", "main", &key, None).unwrap();
+
+    // Commit claim version B on feature (same session_uuid [0, 42], divergent finding)
+    let mut w_feat = TileWriter::open_append(archive.path()).unwrap();
+    let claim_b = vec![ScholarNoteClaimRecord::new(
+        1002,
+        1700000001,
+        [0, 42],
+        1,
+        0.80,
+        CLAIM_KIND_EMPIRICAL,
+        "Trial result: Drug efficacy 42% in target cohort",
+    )];
+    w_feat.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None).unwrap();
+    drop(w_feat);
+    let _feat_commit = repo.commit("Feature claim B", "feature", &key, None).unwrap();
+
+    // Merge feature into main: must NOT auto-resolve or pick a side!
+    let merge_res = repo.merge("feature", "main", &key, false).unwrap();
+    match merge_res {
+        VcsMergeResult::ConflictNeedsHuman { conflicting_records, message } => {
+            assert_eq!(conflicting_records.len(), 1);
+            assert_eq!(conflicting_records[0].record_id, "claim_42");
+            assert!(conflicting_records[0].requires_human_judgment);
+            assert!(message.contains("epistemic/empirical record(s) in conflict"));
+        }
+        _ => panic!("Expected ConflictNeedsHuman, got {:?}", merge_res),
+    }
+
+    // Verify main branch ref did NOT advance to a merge commit
+    let main_ref = repo.get_ref("main").unwrap().unwrap();
+    assert_eq!(
+        main_ref.target_seal_hash, main_commit.seal_hash,
+        "Main branch ref must remain untouched when human judgment is needed"
+    );
+}
+
+#[test]
+fn test_vcs_signed_human_resolution_allows_merge_to_complete() {
+    let archive = TempArchiveFile::new("signed_resolution");
+    let mut writer = TileWriter::create(archive.path()).unwrap();
+    writer.enable_addon(s3a_core::ADDON_EDU).unwrap();
+    let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
+    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    drop(writer);
+
+    let key = generate_test_key();
+    let repo = VcsRepo::open(archive.path()).unwrap();
+    let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
+
+    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+
+    // Main claim A
+    let mut w_main = TileWriter::open_append(archive.path()).unwrap();
+    let claim_a = vec![ScholarNoteClaimRecord::new(
+        1001,
+        1700000000,
+        [0, 42],
+        1,
+        0.95,
+        CLAIM_KIND_EMPIRICAL,
+        "Efficacy 85%",
+    )];
+    w_main.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None).unwrap();
+    drop(w_main);
+    let main_commit = repo.commit("Main claim A", "main", &key, None).unwrap();
+
+    // Feature claim B
+    let mut w_feat = TileWriter::open_append(archive.path()).unwrap();
+    let claim_b = vec![ScholarNoteClaimRecord::new(
+        1002,
+        1700000001,
+        [0, 42],
+        1,
+        0.80,
+        CLAIM_KIND_EMPIRICAL,
+        "Efficacy 42%",
+    )];
+    w_feat.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None).unwrap();
+    drop(w_feat);
+    let feat_commit = repo.commit("Feature claim B", "feature", &key, None).unwrap();
+
+    // Merge initially blocked
+    let first_merge = repo.merge("feature", "main", &key, false).unwrap();
+    assert!(matches!(first_merge, VcsMergeResult::ConflictNeedsHuman { .. }));
+
+    // Human supervisor signs resolution selecting target (Main claim A)
+    let supervisor_key = generate_test_key();
+    let res = VcsResolutionRecord::new_signed(
+        "claim_42",
+        RESOLUTION_CHOICE_TARGET,
+        "Human PI verified cohort inclusion criteria favor Trial A",
+        &supervisor_key,
+    );
+
+    // Append resolution record to archive
+    repo.write_resolution(&res).unwrap();
+
+    // Merge now completes!
+    let second_merge = repo.merge("feature", "main", &key, false).unwrap();
+    match second_merge {
+        VcsMergeResult::Merged(c) => {
+            assert_eq!(c.parent_count, 2);
+            assert_eq!(c.parent_seal_hashes[0], main_commit.seal_hash);
+            assert_eq!(c.parent_seal_hashes[1], feat_commit.seal_hash);
+        }
+        _ => panic!("Expected Merged after signed resolution, got {:?}", second_merge),
+    }
+
+    // Verify main branch now points to merge commit
+    let main_ref = repo.get_ref("main").unwrap().unwrap();
+    assert_ne!(main_ref.target_seal_hash, main_commit.seal_hash);
+}
+
+#[test]
+fn test_vcs_non_claim_conflicts_unchanged() {
+    let archive = TempArchiveFile::new("non_claim_conflict");
+    let mut writer = TileWriter::create(archive.path()).unwrap();
+    let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
+    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    drop(writer);
+
+    let key = generate_test_key();
+    let repo = VcsRepo::open(archive.path()).unwrap();
+    let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
+
+    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+
+    // Divergent TelemetryRecord on main (sensor 9, metric 9, timestamp 500, value 10.0)
+    let mut w_main = TileWriter::open_append(archive.path()).unwrap();
+    let tel_a = vec![TelemetryRecord::new(500, 9, 9, 10.0)];
+    w_main.write_hyper_tile(TileType::TELEMETRY, &tel_a, None, None).unwrap();
+    drop(w_main);
+    repo.commit("Main telemetry", "main", &key, None).unwrap();
+
+    // Divergent TelemetryRecord on feature (same sensor 9, metric 9, timestamp 500, value 99.0)
+    let mut w_feat = TileWriter::open_append(archive.path()).unwrap();
+    let tel_b = vec![TelemetryRecord::new(500, 9, 9, 99.0)];
+    w_feat.write_hyper_tile(TileType::TELEMETRY, &tel_b, None, None).unwrap();
+    drop(w_feat);
+    repo.commit("Feature telemetry", "feature", &key, None).unwrap();
+
+    // Merge produces standard MergeConflict error without human judgment gating
+    let merge_err = repo.merge("feature", "main", &key, false).unwrap_err();
+    match merge_err {
+        VcsError::MergeConflict { requires_human_judgment, conflicting_record_ids, .. } => {
+            assert!(!requires_human_judgment, "Non-claim conflict must not require human judgment");
+            assert!(conflicting_record_ids.contains(&"telemetry_9_9_500".to_string()));
+        }
+        _ => panic!("Expected standard MergeConflict, got {:?}", merge_err),
+    }
+}
+

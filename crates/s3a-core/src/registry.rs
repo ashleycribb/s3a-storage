@@ -668,6 +668,45 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 82: Version Control Conflict Resolution Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::VCS_RESOLUTION,
+        name: "vcs_resolution",
+        owner_pack: "vcs",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 85: Gate Network Directory Registration Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::GATE_DIRECTORY,
+        name: "gate_directory",
+        owner_pack: "vault",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 86: Gate Network Relay Mailbox Item Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::GATE_MAILBOX,
+        name: "gate_mailbox",
+        owner_pack: "vault",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     Ok(())
 }
 

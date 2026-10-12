@@ -205,6 +205,11 @@ pub struct ServerConfig {
     pub enable_daily_anchoring: bool,
     pub anchoring_interval_secs: u64,
     pub enable_gate_directory: bool,
+    pub max_mailbox_items_per_address: usize,
+    pub max_mailbox_item_size: usize,
+    pub max_mailbox_total_bytes: usize,
+    pub mailbox_item_expiry_secs: u64,
+    pub registrations_per_client_per_minute: u32,
 }
 
 impl Default for ServerConfig {
@@ -224,6 +229,11 @@ impl Default for ServerConfig {
             enable_daily_anchoring: false,
             anchoring_interval_secs: 86400,
             enable_gate_directory: false,
+            max_mailbox_items_per_address: 100,
+            max_mailbox_item_size: 1024 * 1024,
+            max_mailbox_total_bytes: 100 * 1024 * 1024,
+            mailbox_item_expiry_secs: 30 * 86400,
+            registrations_per_client_per_minute: 10,
         }
     }
 }
@@ -354,6 +364,21 @@ impl AppState {
 
         let agent_registry = s3a_pack_scholar::records::seed_default_agents();
 
+        let gate_limits = gate_directory::GateDirectoryLimits {
+            max_mailbox_items_per_address: config.max_mailbox_items_per_address,
+            max_item_size: config.max_mailbox_item_size,
+            max_total_mailbox_bytes: config.max_mailbox_total_bytes,
+            mailbox_item_expiry_secs: config.mailbox_item_expiry_secs,
+            registrations_per_client_per_minute: config.registrations_per_client_per_minute,
+        };
+        let gate_dir_path = if config.enable_gate_directory {
+            Some(config.data_dir.join("gate_directory.s3a"))
+        } else {
+            None
+        };
+        let gate_directory_svc = gate_directory::GateDirectoryService::open_or_create(gate_dir_path, gate_limits)
+            .map_err(|e| format!("Failed to initialize Gate Directory: {}", e))?;
+
         Ok(Arc::new(AppState {
             default_store: default_store.clone(),
             store: default_store,
@@ -361,7 +386,7 @@ impl AppState {
             audit_writer,
             config,
             agent_registry,
-            gate_directory: Arc::new(std::sync::Mutex::new(gate_directory::GateDirectoryService::new())),
+            gate_directory: Arc::new(std::sync::Mutex::new(gate_directory_svc)),
         }))
     }
 
@@ -505,6 +530,37 @@ fn main() {
         match args[i].as_str() {
             "--gate-directory" => {
                 config.enable_gate_directory = true;
+            }
+            "--max-mailbox-items" => {
+                if i + 1 < args.len() {
+                    config.max_mailbox_items_per_address = args[i + 1].parse().unwrap_or(100);
+                    i += 1;
+                }
+            }
+            "--max-mailbox-item-size" => {
+                if i + 1 < args.len() {
+                    config.max_mailbox_item_size = args[i + 1].parse().unwrap_or(1024 * 1024);
+                    i += 1;
+                }
+            }
+            "--max-mailbox-total-bytes" => {
+                if i + 1 < args.len() {
+                    config.max_mailbox_total_bytes = args[i + 1].parse().unwrap_or(100 * 1024 * 1024);
+                    i += 1;
+                }
+            }
+            "--mailbox-expiry-days" => {
+                if i + 1 < args.len() {
+                    let days: u64 = args[i + 1].parse().unwrap_or(30);
+                    config.mailbox_item_expiry_secs = days * 86400;
+                    i += 1;
+                }
+            }
+            "--max-registrations-per-minute" => {
+                if i + 1 < args.len() {
+                    config.registrations_per_client_per_minute = args[i + 1].parse().unwrap_or(10);
+                    i += 1;
+                }
             }
             "--port" => {
                 if i + 1 < args.len() {
@@ -771,6 +827,22 @@ fn main() {
         });
     }
 
+    if state.config.enable_gate_directory {
+        let gate_dir = state.gate_directory.clone();
+        thread::spawn(move || {
+            loop {
+                thread::sleep(std::time::Duration::from_secs(3600));
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                if let Ok(mut dir) = gate_dir.lock() {
+                    let _ = dir.purge_expired_items(now);
+                }
+            }
+        });
+    }
+
     for request in server.incoming_requests() {
         let state_clone = state.clone();
         thread::spawn(move || {
@@ -948,7 +1020,11 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // GATE DIRECTORY & RELAY MAILBOX (§11)
     // -------------------------------------------------------------------------
     if state.config.enable_gate_directory && (path.starts_with("/gate/") || path == "/gate") {
-        let resp = gate_directory::handle_gate_directory(&method, &path, &body_bytes, &state.gate_directory);
+        let client_id = req
+            .remote_addr()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let resp = gate_directory::handle_gate_directory(&method, &path, &body_bytes, &client_id, &state.gate_directory);
         let _ = req.respond(resp);
         return;
     }

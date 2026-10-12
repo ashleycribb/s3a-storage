@@ -25,6 +25,7 @@ urlencoding = "2.1"
 s3a-vault = { path = "../s3a-vault" }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["std"] }
+bytemuck = { workspace = true }
 
 [dev-dependencies]
 ureq = { workspace = true }

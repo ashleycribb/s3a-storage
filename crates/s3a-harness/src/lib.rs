@@ -15,6 +15,9 @@ pub mod srs;
 pub mod store;
 pub mod tools;
 pub mod trajectory;
+pub mod vcs;
+
+pub use vcs::harness_merge;
 
 pub use agent::{
     EpistemicConfidenceTier, GateRejectionLog, GateStatus, HallucinationRisk, HumanGateRequest,

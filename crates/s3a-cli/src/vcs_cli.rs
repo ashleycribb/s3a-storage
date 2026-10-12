@@ -274,10 +274,21 @@ pub fn handle_vcs_command(args: &[String]) {
 
             match VcsRepo::open(file) {
                 Ok(repo) => match repo.merge(source_branch, target_branch, &signing_key, true) {
-                    Ok(commit) => {
+                    Ok(s3a_vcs::VcsMergeResult::Merged(commit)) => {
                         println!("Merged branch '{}' into '{}':", source_branch, target_branch);
                         println!("  Merge Commit: {}", hex::encode(commit.commit_id));
                         println!("  Seal Hash:    {}", hex::encode(commit.seal_hash));
+                    }
+                    Ok(s3a_vcs::VcsMergeResult::ConflictNeedsHuman { conflicting_records, message }) => {
+                        println!("MERGE BLOCKED (Human Supervisor Judgment Required): {}", message);
+                        for c in conflicting_records {
+                            println!("  Conflict Record: {} ({})", c.record_id, c.type_name);
+                            println!("    Version A ({}): {}", target_branch, c.target_version);
+                            println!("    Version B ({}): {}", source_branch, c.source_version);
+                        }
+                    }
+                    Ok(s3a_vcs::VcsMergeResult::Conflict { conflicting_record_ids, message }) => {
+                        eprintln!("Merge conflict: {}. Conflicting IDs: {:?}", message, conflicting_record_ids);
                     }
                     Err(e) => eprintln!("Merge failed: {}", e),
                 },

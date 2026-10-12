@@ -1429,14 +1429,79 @@ Total Passed:         329 passed; 0 failed; 2 ignored; 100% GREEN
 | `test_vcs_export_git_produces_valid_repo` | Exports archive commits to standard Git repo; executes `git log` to verify commit history | **PASS** |
 | `test_manifest_created_timestamp_populated` | Verifies manifest "Created" header contains an RFC3339 timestamp matching archive creation | **PASS** |
 
-### 22.3 Workspace Test Totals (`cargo test --workspace`)
+### 22.3 S3A-VCS Core Test Suite (`crates/s3a-vcs/tests/vcs_tests.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_vcs_commit_signature_verify_and_forgery_rejected` | Verifies valid Ed25519 commit envelope signature passes and tampered payloads or seal hashes fail | **PASS** |
+| `test_vcs_log_dag_order` | Confirms DAG traversal backwards from HEAD along parent seal chain across multiple commits | **PASS** |
+| `test_vcs_branch_and_checkout_isolation` | Verifies branch creation, branch switching, and tag immutability (rejects forged/reassigned tags) | **PASS** |
+| `test_vcs_diff_counts_without_restricted_payloads` | Asserts aggregate diff counts (added, withdrawn, erased) without leaking sensitive sensor/participant fields | **PASS** |
+| `test_vcs_merge_union_and_conflict_detection` | Validates append-only union merge, fast-forward branch advance, and conflict reporting | **PASS** |
+| `test_vcs_sync_inventory_missing_tiles_only` | Negotiates inventory with target repo and transmits strictly missing tiles (zero tiles on second push) | **PASS** |
+| `test_vcs_non_fast_forward_rejected` | Rejects push to diverged target unless `--merge` is specified | **PASS** |
+| `test_vcs_consent_enforcement_on_push` | Blocks sync push if participant records lack consent for the destination purpose | **PASS** |
+| `test_vcs_export_git_produces_valid_repo` | Exports archive commits to standard Git repo; executes `git log` to verify commit history | **PASS** |
+| `test_manifest_created_timestamp_populated` | Verifies manifest "Created" header contains an RFC3339 timestamp matching archive creation | **PASS** |
+
+---
+
+## 23. Milestone: S3A-VCS Epistemic Merge Conflict Resolution & Supervisory Human Gating
+
+### 23.1 Architecture & Implementation Summary
+- **Epistemic Conflict Detection**: In accordance with item 6 of the VCS specification, conflicts on epistemic claim (`TileType::SCHOLAR_CLAIM = 12`), evidence (`TileType::SCHOLAR_EVIDENCE = 13`), citation fingerprint (`TileType::CITATION_FINGERPRINT = 14`), or AI audit trace records (`TileType::SCHOLAR_AI_AUDIT = 15`) are strictly prohibited from auto-resolution or silent side-picking.
+- **`ConflictNeedsHuman` Flow**: Returns `MergeResult::ConflictNeedsHuman` detailing both conflicting record versions.
+- **Signed Human Resolution Record**: Merge commits only finalize after an authorized human authority signs an explicit resolution record (`VcsResolutionRecord`, `TileType::VCS_RESOLUTION = 82`) in the archive.
+- **Harness Supervisory Integration**: Harness intercepts `ConflictNeedsHuman` during VCS merge invocations and routes to `ask_human` with both payload options.
+
+### 23.2 Test Results
+- `test_vcs_claim_conflict_requires_human_no_merge_commit`: PASS
+- `test_vcs_signed_human_resolution_allows_merge_to_complete`: PASS
+- `test_vcs_non_claim_conflicts_unchanged`: PASS
+- `test_harness_merge_routes_claim_conflict_to_ask_human`: PASS
+
+---
+
+## 24. Milestone: Gate Directory & Relay Mailbox Hardening (`s3a-lrs-server`)
+
+### 24.1 Architecture & Implementation Summary
+1. **Persistent S3A Archive (`gate_directory.s3a`)**:
+   - Persists directory names, addresses, endpoints, and encrypted sealed mailbox tiles inside `gate_directory.s3a` in `config.data_dir`.
+   - Core Tile Types registered: `TileType::GATE_DIRECTORY = 85` and `TileType::GATE_MAILBOX = 86`.
+   - On server startup, scans all tiles in `gate_directory.s3a` to restore directory state (latest signed record wins on name re-pointing) and all active un-erased, non-expired mailbox items.
+2. **Configurable Limits & HTTP Rejections**:
+   - Configurable flags via CLI with secure defaults:
+     - `--max-mailbox-items` (default: 100 items per address) $\rightarrow$ rejects with HTTP 429 Too Many Requests.
+     - `--max-mailbox-item-size` (default: 1 MB = 1,048,576 B) $\rightarrow$ rejects with HTTP 413 Payload Too Large.
+     - `--max-mailbox-total-bytes` (default: 100 MB = 104,857,600 B) $\rightarrow$ rejects with HTTP 413 Payload Too Large.
+     - `--mailbox-expiry-days` (default: 30 days) $\rightarrow$ expires queued items after TTL.
+     - `--max-registrations-per-minute` (default: 10 per client IP) $\rightarrow$ rejects with HTTP 429 Too Many Requests.
+3. **Challenge-Response Authenticated Mailbox Pickup**:
+   - `/gate/mailbox/<addr>/retrieve` requires a cryptographic challenge-response signature proven by the address's Ed25519 public key.
+   - Unauthenticated or forged challenge responses are rejected with HTTP 401 Unauthorized without draining the queue.
+   - Acknowledged pickups immediately drain items and append immutable `ErasureRecord` (`TileType::ERASURE = 73`, `ErasureReason::Withdrawal`) receipts to `gate_directory.s3a`, guaranteeing items cannot be recovered across restarts.
+4. **Automated Expiry Purging**:
+   - Purges items exceeding `mailbox_item_expiry_secs` both upon active queue operations and periodic background sweep (every hour).
+   - Writes `ErasureRecord` (`ErasureReason::RetentionExpiry`) receipts to the archive and reseals.
+
+### 24.2 Hardened Gate Directory Test Matrix (`crates/s3a-lrs-server/src/gate_directory.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_gate_directory_restart_preserves_names_and_mailbox` | Verifies persistent archive `gate_directory.s3a` reloads registered names, addresses, latest sequence overrides, and queued sealed tiles after full process restart | **PASS** |
+| `test_gate_directory_limits_enforced` | Enforces 413 on item size $> 1$ MB and total bytes $> 100$ MB; enforces 429 on queue count $> 100$ and registration rate $> 10$/min | **PASS** |
+| `test_gate_directory_pickup_without_proof_rejected_and_erasure_recorded` | Verifies forged signature rejected with 401 Unauthorized; authenticated pickup drains queue and appends cryptographic erasure receipts to archive | **PASS** |
+| `test_gate_directory_expired_items_purged` | Simulates item age $> 30$ days; verifies expired items are purged with `RetentionExpiry` erasure records and omitted on restart | **PASS** |
+| `test_gate_directory_challenge_registration_and_relay` | Full end-to-end challenge-response registration, name resolution, sealed tile relay deposit, and authenticated pickup | **PASS** |
+
+### 24.3 Workspace Test Totals (`cargo test --workspace`)
 
 ```text
 Workspace Test Suite Breakdown:
 - s3a-cabi:             3 passed (unittests src/lib.rs: 3)
 - s3a-cli:             13 passed (tests/cli_ops.rs: 5; tests/tour_tests.rs: 8)
 - s3a-core:            21 passed (unittests src/lib.rs: 21)
-- s3a-engine:         137 passed, 2 ignored:
+- s3a-engine:         139 passed, 2 ignored:
   * unittests src/lib.rs: 83 passed, 2 ignored
   * tests/array_tile.rs: 5 passed
   * tests/checkpoint_compaction_gates.rs: 7 passed
@@ -1444,18 +1509,18 @@ Workspace Test Suite Breakdown:
   * tests/consent_and_schema_tiles.rs: 10 passed
   * tests/durability_crash_harness.rs: 7 passed
   * tests/erasure_tile.rs: 6 passed
+  * tests/manifest_tile.rs: 5 passed
   * tests/ql_v1.rs: 4 passed
   * tests/sealed_footer_v2.rs: 6 passed
-  * tests/manifest_tile.rs: 3 passed
-- s3a-harness:         53 passed:
-  * unittests src/lib.rs: 9 passed
+- s3a-harness:         55 passed:
+  * unittests src/lib.rs: 11 passed
   * tests/protocol_and_sandbox_tests.rs: 14 passed
   * tests/runtime_core_tests.rs: 11 passed
   * tests/tool_registry_tests.rs: 8 passed
   * tests/operability_tests.rs: 7 passed
   * tests/training_and_eval_tests.rs: 3 passed
   * tests/e2e_lrs_test.rs: 1 passed
-- s3a-lrs-server:      17 passed (unittests src/main.rs: 17)
+- s3a-lrs-server:      21 passed (unittests src/main.rs: 21)
 - s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
 - s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
 - s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
@@ -1467,11 +1532,11 @@ Workspace Test Suite Breakdown:
 - s3a-simd:            13 passed (unittests src/lib.rs: 13)
 - s3a-spec-vectors:    32 passed (unittests src/lib.rs: 32)
 - s3a-vault:            9 passed (unittests src/lib.rs: 9)
-- s3a-vcs:             10 passed (tests/vcs_tests.rs: 10)
+- s3a-vcs:             13 passed (tests/vcs_tests.rs: 13)
 - s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
 - Doc-tests (17 crates): 0 passed (all runners verified)
 ----------------------------------------------------------------------------------------------------
-Total Passed:         367 passed; 0 failed; 2 ignored; 100% GREEN
+Total Passed:         374 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
 

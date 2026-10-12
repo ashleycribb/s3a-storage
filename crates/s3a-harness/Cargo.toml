@@ -22,6 +22,7 @@ s3a-simd = { path = "../s3a-simd" }
 s3a-pack-scholar = { path = "../s3a-pack-scholar" }
 s3a-pack-ontology = { path = "../s3a-pack-ontology" }
 s3a-vault = { path = "../s3a-vault" }
+s3a-vcs = { path = "../s3a-vcs" }
 memmap2 = { workspace = true }
 crc32c = { workspace = true }
 bytemuck = { workspace = true }
@@ -31,5 +32,6 @@ hex = { workspace = true }
 ureq = { workspace = true }
 uuid = { version = "1.27", features = ["v7"] }
 sha2 = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "env-filter"] }

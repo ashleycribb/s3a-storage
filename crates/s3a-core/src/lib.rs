@@ -470,6 +470,12 @@ impl TileType {
     pub const VCS_COMMIT: u32 = 80;
     /// Version Control Reference & Branch Tile (Tile 81 / 0x0051)
     pub const VCS_REF: u32 = 81;
+    /// Version Control Conflict Resolution Tile (Tile 82 / 0x0052)
+    pub const VCS_RESOLUTION: u32 = 82;
+    /// Gate Network Directory Name/Address Record Tile (Tile 85 / 0x0055)
+    pub const GATE_DIRECTORY: u32 = 85;
+    /// Gate Network Relay Mailbox Item Tile (Tile 86 / 0x0056)
+    pub const GATE_MAILBOX: u32 = 86;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
     #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]

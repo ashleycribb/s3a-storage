@@ -12,8 +12,9 @@ pub mod sync;
 pub use errors::VcsError;
 pub use git_export::export_git;
 pub use records::{
-    VcsCommitRecord, VcsRefRecord, REF_KIND_BRANCH, REF_KIND_TAG, VCS_COMMIT_MESSAGE_MAX,
-    VCS_REF_NAME_MAX,
+    ConflictRecordDetail, VcsCommitRecord, VcsMergeResult, VcsRefRecord, VcsResolutionRecord,
+    REF_KIND_BRANCH, REF_KIND_TAG, RESOLUTION_CHOICE_SOURCE, RESOLUTION_CHOICE_SYNTHESIS,
+    RESOLUTION_CHOICE_TARGET, VCS_COMMIT_MESSAGE_MAX, VCS_RECORD_ID_MAX, VCS_REF_NAME_MAX,
 };
 pub use repo::{TileTypeDiff, VcsDiffReport, VcsRepo};
 pub use sync::{sync_push, VcsSyncInventory};

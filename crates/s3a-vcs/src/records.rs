@@ -153,3 +153,164 @@ impl VcsRefRecord {
         std::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
 }
+
+pub const RESOLUTION_CHOICE_TARGET: u8 = 1;
+pub const RESOLUTION_CHOICE_SOURCE: u8 = 2;
+pub const RESOLUTION_CHOICE_SYNTHESIS: u8 = 3;
+
+pub const VCS_RECORD_ID_MAX: usize = 64;
+pub const VCS_RATIONALE_MAX: usize = 128;
+
+/// Signed Human Resolution Record for VCS Merge Conflicts (352 bytes, 8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct VcsResolutionRecord {
+    pub resolution_id: [u8; 32],                    // SHA-256 digest of resolution envelope
+    pub resolver_pubkey: [u8; 32],                  // Human supervisor Ed25519 public key
+    pub chosen_side: u8,                            // 1 = Target, 2 = Source, 3 = Synthesis
+    pub _pad: [u8; 7],
+    pub resolved_timestamp: u64,                    // Unix epoch timestamp (seconds)
+    pub signature: [u8; 64],                        // Ed25519 signature over envelope
+    pub record_id: [u8; VCS_RECORD_ID_MAX],         // UTF-8 conflict record ID (null-padded)
+    pub rationale: [u8; VCS_RATIONALE_MAX],         // UTF-8 supervisor rationale (null-padded)
+    pub _reserved: [u8; 16],
+}
+
+impl VcsResolutionRecord {
+    pub fn compute_envelope_bytes(
+        record_id: &str,
+        chosen_side: u8,
+        resolved_timestamp: u64,
+        rationale: &str,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(256);
+        bytes.extend_from_slice(b"S3AVCS_RES1");
+        bytes.push(chosen_side);
+        bytes.extend_from_slice(&resolved_timestamp.to_le_bytes());
+        bytes.extend_from_slice(record_id.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(rationale.as_bytes());
+        bytes
+    }
+
+    pub fn new_signed(
+        record_id: &str,
+        chosen_side: u8,
+        rationale: &str,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Self {
+        use ed25519_dalek::Signer;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let env = Self::compute_envelope_bytes(record_id, chosen_side, now, rationale);
+        let mut hasher = Sha256::new();
+        hasher.update(&env);
+        let res_id: [u8; 32] = hasher.finalize().into();
+
+        let sig: Signature = signing_key.sign(&env);
+        let pubkey = signing_key.verifying_key().to_bytes();
+
+        let mut rec_id_bytes = [0u8; VCS_RECORD_ID_MAX];
+        let rb = record_id.as_bytes();
+        let r_len = rb.len().min(VCS_RECORD_ID_MAX);
+        rec_id_bytes[..r_len].copy_from_slice(&rb[..r_len]);
+
+        let mut rat_bytes = [0u8; VCS_RATIONALE_MAX];
+        let rat = rationale.as_bytes();
+        let rat_len = rat.len().min(VCS_RATIONALE_MAX);
+        rat_bytes[..rat_len].copy_from_slice(&rat[..rat_len]);
+
+        Self {
+            resolution_id: res_id,
+            resolver_pubkey: pubkey,
+            chosen_side,
+            _pad: [0u8; 7],
+            resolved_timestamp: now,
+            signature: sig.to_bytes(),
+            record_id: rec_id_bytes,
+            rationale: rat_bytes,
+            _reserved: [0u8; 16],
+        }
+    }
+
+    pub fn conflict_record_id(&self) -> String {
+        let end = self.record_id.iter().position(|&b| b == 0).unwrap_or(VCS_RECORD_ID_MAX);
+        String::from_utf8_lossy(&self.record_id[..end]).to_string()
+    }
+
+    pub fn rationale_text(&self) -> String {
+        let end = self.rationale.iter().position(|&b| b == 0).unwrap_or(VCS_RATIONALE_MAX);
+        String::from_utf8_lossy(&self.rationale[..end]).to_string()
+    }
+
+    pub fn verify_signature(&self) -> bool {
+        let Ok(vk) = VerifyingKey::from_bytes(&self.resolver_pubkey) else {
+            return false;
+        };
+        let Ok(sig) = Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        let rec_id = self.conflict_record_id();
+        let rat = self.rationale_text();
+        let env = Self::compute_envelope_bytes(&rec_id, self.chosen_side, self.resolved_timestamp, &rat);
+        vk.verify(&env, &sig).is_ok()
+    }
+}
+
+/// Detailed information regarding a conflicting record during merge.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConflictRecordDetail {
+    pub record_id: String,
+    pub tile_type: u32,
+    pub type_name: String,
+    pub target_version: String,
+    pub source_version: String,
+    pub requires_human_judgment: bool,
+}
+
+/// Result of an S3A VCS merge operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VcsMergeResult {
+    Merged(VcsCommitRecord),
+    ConflictNeedsHuman {
+        conflicting_records: Vec<ConflictRecordDetail>,
+        message: String,
+    },
+    Conflict {
+        conflicting_record_ids: Vec<String>,
+        message: String,
+    },
+}
+
+impl VcsMergeResult {
+    pub fn is_merged(&self) -> bool {
+        matches!(self, VcsMergeResult::Merged(_))
+    }
+
+    pub fn commit(&self) -> Option<&VcsCommitRecord> {
+        match self {
+            VcsMergeResult::Merged(c) => Some(c),
+            _ => None,
+        }
+    }
+}
+
+impl std::ops::Deref for VcsMergeResult {
+    type Target = VcsCommitRecord;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            VcsMergeResult::Merged(c) => c,
+            VcsMergeResult::ConflictNeedsHuman { message, .. } => {
+                panic!("Merge did not produce a commit (requires human judgment): {}", message)
+            }
+            VcsMergeResult::Conflict { message, .. } => {
+                panic!("Merge did not produce a commit (conflict): {}", message)
+            }
+        }
+    }
+}
+
+
