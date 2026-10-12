@@ -16,6 +16,8 @@ s3a-pack-robotics = { path = "../s3a-pack-robotics" }
 s3a-pack-gis = { path = "../s3a-pack-gis" }
 s3a-pack-da = { path = "../s3a-pack-da" }
 s3a-pack-ontology = { path = "../s3a-pack-ontology" }
+s3a-vault = { path = "../s3a-vault" }
+s3a-vcs = { path = "../s3a-vcs" }
 bytemuck = { workspace = true }
 crc32c = { workspace = true }
 serde = { workspace = true }
@@ -23,6 +25,8 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 humantime = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
 
 [lib]
 name = "s3a_cli"

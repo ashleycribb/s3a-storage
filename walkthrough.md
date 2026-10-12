@@ -1398,7 +1398,80 @@ Workspace Test Suite Breakdown:
 Total Passed:         329 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
+## 22. Milestone: S3A Git-Style Version Control (`crates/s3a-vcs`, `docs/spec/S3A-VCS.md`, CLI `s3a-cli vcs ...`)
 
+### 22.1 Architecture & Implementation Summary
+- **Commit Structure**: Implemented `VcsCommitRecord` Pod struct (480 B) binding the authoritative `seal_hash`, author Gate Address, timestamp, Ed25519 signature, commit message, and up to 2 parent seal hashes.
+- **Reference Records**: Implemented `VcsRefRecord` Pod struct (184 B) supporting mutable branches (`REF_KIND_BRANCH = 1`) and immutable tags (`REF_KIND_TAG = 2`) stored natively within archive hyper-tiles (`TileType::VCS_COMMIT = 80`, `TileType::VCS_REF = 81`).
+- **Repository Operations (`VcsRepo`)**:
+  - `init`: Dual file header genesis initialization.
+  - `commit`: Prospective seal calculation via `seal_buffer_v2`, commit envelope signing, ref advancing, and sealed archive finalization.
+  - `log`: Topological DAG traversal along `parent_seal_hashes` from HEAD back to genesis.
+  - `branch` / `tag`: Branch creation and immutable tag snapshot gating.
+  - `diff`: Non-leaking diff calculation reporting aggregate records added, withdrawn, and erased per tile type.
+  - `merge`: Append-only union merge with fast-forward support and non-silent conflict detection. Epistemic claims and empirical research note conflicts invoke `ask_human` judgment checkpoints.
+  - `sync_push`: Tile-hash inventory protocol over `gate://` transmitting only missing sealed tiles, preventing non-fast-forward push divergence, and enforcing participant consent scopes.
+  - `export_git`: Synthesizes a valid read-only Git repository with CSV/JSON snapshots, verifiable with standard `git log`.
+- **Manifest Timestamp Fix**: Populated manifest `"Created"` timestamp with the archive's genesis seal or creation timestamp instead of `"Genesis (Unset)"`.
 
+### 22.2 S3A-VCS Test Matrix (`crates/s3a-vcs/tests/vcs_tests.rs`)
+
+| Test Name | Verifications | Result |
+|---|---|---|
+| `test_vcs_commit_signature_verify_and_forgery_rejected` | Verifies valid Ed25519 commit envelope signature passes and tampered payloads or seal hashes fail | **PASS** |
+| `test_vcs_log_dag_order` | Confirms DAG traversal backwards from HEAD along parent seal chain across multiple commits | **PASS** |
+| `test_vcs_branch_and_checkout_isolation` | Verifies branch creation, branch switching, and tag immutability (rejects forged/reassigned tags) | **PASS** |
+| `test_vcs_diff_counts_without_restricted_payloads` | Asserts aggregate diff counts (added, withdrawn, erased) without leaking sensitive sensor/participant fields | **PASS** |
+| `test_vcs_merge_union_and_conflict_detection` | Validates append-only union merge, fast-forward branch advance, and conflict reporting | **PASS** |
+| `test_vcs_sync_inventory_missing_tiles_only` | Negotiates inventory with target repo and transmits strictly missing tiles (zero tiles on second push) | **PASS** |
+| `test_vcs_non_fast_forward_rejected` | Rejects push to diverged target unless `--merge` is specified | **PASS** |
+| `test_vcs_consent_enforcement_on_push` | Blocks sync push if participant records lack consent for the destination purpose | **PASS** |
+| `test_vcs_export_git_produces_valid_repo` | Exports archive commits to standard Git repo; executes `git log` to verify commit history | **PASS** |
+| `test_manifest_created_timestamp_populated` | Verifies manifest "Created" header contains an RFC3339 timestamp matching archive creation | **PASS** |
+
+### 22.3 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:             13 passed (tests/cli_ops.rs: 5; tests/tour_tests.rs: 8)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         137 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+  * tests/manifest_tile.rs: 3 passed
+- s3a-harness:         53 passed:
+  * unittests src/lib.rs: 9 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/operability_tests.rs: 7 passed
+  * tests/training_and_eval_tests.rs: 3 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      17 passed (unittests src/main.rs: 17)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    36 passed:
+  * unittests src/lib.rs: 35 passed
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    32 passed (unittests src/lib.rs: 32)
+- s3a-vault:            9 passed (unittests src/lib.rs: 9)
+- s3a-vcs:             10 passed (tests/vcs_tests.rs: 10)
+- s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
+- Doc-tests (17 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+Total Passed:         367 passed; 0 failed; 2 ignored; 100% GREEN
+```
 
 

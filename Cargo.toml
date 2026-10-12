@@ -18,6 +18,7 @@ members = [
     "crates/s3a-spec-vectors",
     "crates/s3a-edge",
     "crates/s3a-vault",
+    "crates/s3a-vcs",
 ]
 
 [workspace.package]

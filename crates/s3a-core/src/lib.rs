@@ -466,6 +466,10 @@ impl TileType {
     pub const MANIFEST: u32 = 78;
     /// Core Compressed Specification Tile (Tile 79 / 0x004F)
     pub const SPECIFICATION: u32 = 79;
+    /// Version Control Commit Metadata Tile (Tile 80 / 0x0050)
+    pub const VCS_COMMIT: u32 = 80;
+    /// Version Control Reference & Branch Tile (Tile 81 / 0x0051)
+    pub const VCS_REF: u32 = 81;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
     #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]

@@ -38,6 +38,7 @@ use s3a_engine::{
 
 mod mcp;
 mod tour;
+mod vcs_cli;
 
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -994,6 +995,9 @@ fn main() {
             }
             run_snapshot_inspect(&args[2]);
         }
+        "vcs" => {
+            vcs_cli::handle_vcs_command(&args);
+        }
         _ => {
             print_usage();
         }
@@ -1002,6 +1006,18 @@ fn main() {
 
 fn print_usage() {
     println!("S3A Storage CLI Tool (v{})", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("GIT-STYLE VERSION CONTROL (S3A-VCS):");
+    println!("  s3a-cli vcs init <archive>                        Initialize Git-style VCS on S3A archive");
+    println!("  s3a-cli vcs commit <archive> -m \"<msg>\"           Seal archive with signed commit record");
+    println!("  s3a-cli vcs log <archive> [--json] [ref]          Display commit DAG log history");
+    println!("  s3a-cli vcs branch <archive> [branch]             List or create branch pointer");
+    println!("  s3a-cli vcs tag <archive> [tag] [seal]            List or create immutable snapshot tag");
+    println!("  s3a-cli vcs checkout <archive> <ref_or_commit>    Checkout read-only view at ref/commit");
+    println!("  s3a-cli vcs diff <archive> [commit_a] [commit_b]  Aggregate record diffs without privacy leaks");
+    println!("  s3a-cli vcs merge <archive> <src> <target>        Append-only union merge branches");
+    println!("  s3a-cli vcs push <src> <target> [--merge]         Inventory sync push transmitting missing tiles");
+    println!("  s3a-cli vcs export-git <archive> <out_dir>        Export commit DAG to real Git repository");
     println!();
     println!("STABLE CORE OPS & MAINTENANCE:");
     println!("  s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata");

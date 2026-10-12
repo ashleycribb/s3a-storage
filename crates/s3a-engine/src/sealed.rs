@@ -142,6 +142,8 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         77 => "schema",
         78 => "manifest",
         79 => "specification",
+        80 => "vcs_commit",
+        81 => "vcs_ref",
         _ => "custom",
     }
 }
@@ -691,7 +693,16 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
 
         if created_ts == u64::MAX {
-            created_ts = 0;
+            if active_header.created_timestamp > 0 {
+                created_ts = active_header.created_timestamp;
+            } else {
+                created_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+            }
+        } else if active_header.created_timestamp > 0 && active_header.created_timestamp < created_ts {
+            created_ts = active_header.created_timestamp;
         }
 
         let sealed_ts = std::time::SystemTime::now()

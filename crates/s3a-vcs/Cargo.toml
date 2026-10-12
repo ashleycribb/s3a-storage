@@ -1,0 +1,24 @@
+[package]
+name = "s3a-vcs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Git-style version control for S3A archives: commits, refs, log, diff, merge, vault sync, and git export"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-vault = { path = "../s3a-vault" }
+bytemuck = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
+hex = { workspace = true }
+humantime = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3.10"

@@ -642,6 +642,32 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 80: Version Control Commit Metadata Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::VCS_COMMIT,
+        name: "vcs_commit",
+        owner_pack: "vcs",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 81: Version Control Reference & Branch Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::VCS_REF,
+        name: "vcs_ref",
+        owner_pack: "vcs",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     Ok(())
 }
 
