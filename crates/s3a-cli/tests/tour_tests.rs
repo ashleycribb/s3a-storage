@@ -123,6 +123,7 @@ fn test_tour_lobby_v1_and_v2() {
         m: 2,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        ..SealOptionsV2::default()
     };
     seal_archive_v2(raw.path(), sealed_v2.path(), &opts_v2).unwrap();
 
@@ -443,4 +444,65 @@ fn test_tour_cli_binary_and_json() {
     assert!(out_hist.status.success());
     let v_hist: serde_json::Value = serde_json::from_slice(&out_hist.stdout).expect("valid json output");
     assert_eq!(v_hist["history"][0]["generation"], 1);
+}
+
+#[test]
+fn test_tour_displays_manifest_in_lobby_and_floor() {
+    let raw = TempArchiveGuard::new("manifest_tour_raw");
+    let sealed = TempArchiveGuard::new("manifest_tour_sealed");
+
+    let mut writer = TileWriter::create(raw.path()).unwrap();
+    let recs = vec![TelemetryRecord::new(500, 1, 1, 99.0)];
+    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    drop(writer);
+
+    let opts = SealOptionsV2 {
+        enable_parity: false,
+        k: 16,
+        m: 2,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+        write_manifest: true,
+        embed_spec: false,
+        title: Some("Tour Manifest Test Suite".to_string()),
+        creator: Some("gate://vault-test-manifest".to_string()),
+    };
+    seal_archive_v2(raw.path(), sealed.path(), &opts).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_s3a-cli");
+
+    // 1. Plain text lobby includes the manifest
+    let out_plain = Command::new(bin)
+        .args(["tour", sealed.path().to_str().unwrap()])
+        .output()
+        .expect("tour execution failed");
+    assert!(out_plain.status.success());
+    let str_plain = String::from_utf8_lossy(&out_plain.stdout);
+    assert!(str_plain.contains("--- PLAIN-TEXT MANIFEST ---"));
+    assert!(str_plain.contains("THIS IS AN S3A FILE"));
+    assert!(str_plain.contains("Tour Manifest Test Suite"));
+    assert!(str_plain.contains("gate://vault-test-manifest"));
+    assert!(str_plain.contains("how to read: s3a-cli tour <file> or the S3A reader app"));
+
+    // 2. JSON lobby contains manifest string
+    let out_json = Command::new(bin)
+        .args(["tour", "--json", sealed.path().to_str().unwrap()])
+        .output()
+        .expect("tour json failed");
+    assert!(out_json.status.success());
+    let v_json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
+    assert_eq!(v_json["ok"], true);
+    let manifest_field = v_json["lobby"]["manifest"].as_str().expect("lobby.manifest must be present");
+    assert!(manifest_field.contains("THIS IS AN S3A FILE"));
+
+    // 3. Inspect floor 0 (Manifest floor)
+    let out_floor0 = Command::new(bin)
+        .args(["tour", "--floor", "0", sealed.path().to_str().unwrap()])
+        .output()
+        .expect("tour floor 0 failed");
+    assert!(out_floor0.status.success());
+    let str_floor0 = String::from_utf8_lossy(&out_floor0.stdout);
+    assert!(str_floor0.contains("S3A FLOOR DETAIL: Floor 0"));
+    assert!(str_floor0.contains("manifest"));
+    assert!(str_floor0.contains("THIS IS AN S3A FILE"));
 }

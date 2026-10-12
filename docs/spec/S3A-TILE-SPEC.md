@@ -1230,6 +1230,41 @@ The table below maps the historical wire assignments into the Catalog ID scheme 
 
 ---
 
+#### 14.5.5 Manifest Tile (`manifest` / `78` / `0x004E`)
+
+- **Purpose**: Provides a human-readable, plain-text UTF-8 manifest placed at the beginning of sealed S3A archives (Tile 0, byte offset 512, payload starting at byte 1024) to ensure immediate decipherability in any standard text editor (`head`, `less`, VS Code, Notepad) without requiring specialized tooling.
+- **Placement & Layout**:
+  - Located at Tile 0 (byte offset 512) directly following the 512-byte Dual File Header.
+  - Payload starts at byte offset 1024 (`FILE_HEADER_SIZE + HYPER_TILE_HEADER_SIZE`).
+  - Standard `HyperTileHeader`: `tile_type = 78`, `record_count = 0`, `record_layout_version = 1`, `payload_bytes = len(manifest_utf8)`.
+  - CRC32C covers the UTF-8 payload bytes in `data_crc32`.
+- **Contents**:
+  - `"THIS IS AN S3A FILE"` banner with official specification URL.
+  - Archive metadata: File title/purpose, creator (vault gate address/name if present), file UUID, created and sealed timestamps.
+  - Tile directory table listing floor index, type ID, type name, record count, and tile size.
+  - Consent governance summary: aggregate participant consent counts (total, active research, withdrawn), privacy status notice, with zero payload or personal identifier leaks.
+  - Seal integrity status, generation, previous seal hash, and parity configuration.
+  - Plain-text instruction banner: `"how to read: s3a-cli tour <file> or the S3A reader app"`.
+- **Integrity & Reader Rules**:
+  - Compliant readers handle the manifest via the unknown-type skip rule (§7.2); existing v1/v2 readers open archives containing Tile 78 without modification.
+  - `s3a-cli tour <file>` renders the manifest in both text lobby output and floor detail inspection (`--floor 0`), as well as JSON output (`lobby.manifest`).
+
+---
+
+#### 14.5.6 Embedded Specification Tile (`specification` / `79` / `0x004F`)
+
+- **Purpose**: Self-documenting storage container holding the complete S3A Storage Format Specification (`S3A-TILE-SPEC.md`) directly within the sealed file when the `--embed-spec` flag is provided during sealing.
+- **Placement & Compression**:
+  - Located at Tile 1 (offset 73,728 / 72 KiB) immediately following the Tile 0 Manifest tile.
+  - Compressed via standard Deflate (zlib-compatible, RFC 1950/1951) into the hyper-tile payload buffer.
+  - `HyperTileHeader`: `tile_type = 79`, `record_count = 0`, `record_layout_version = 1`, `payload_bytes = len(compressed_bytes)`.
+  - CRC32C covers the compressed payload bytes in `data_crc32`.
+- **Integrity & Reader Rules**:
+  - Transparently decompressed on demand via `MmapReader::get_embedded_spec()`.
+  - Archived files remain 100% self-describing and self-documenting across decades of technological shifts.
+
+---
+
 ### 14.6 Adoption Examples Matrix
 
 The table below illustrates how diverse academic disciplines and research workflows compose multiple tile types within a single unified S3A archive container:
@@ -1245,7 +1280,7 @@ The table below illustrates how diverse academic disciplines and research workfl
 
 ### 14.7 Implementation Status Summary
 
-The table below catalogs all 14 tile abstractions defined in this section and summarizes their implementation status within the current reference codebase (`crates/s3a-core`, `crates/s3a-engine`, `crates/s3a-simd`, `crates/s3a-pack-*`, `crates/s3a-cli`).
+The table below catalogs all 16 tile abstractions defined in this section and summarizes their implementation status within the current reference codebase (`crates/s3a-core`, `crates/s3a-engine`, `crates/s3a-simd`, `crates/s3a-pack-*`, `crates/s3a-cli`).
 
 Per specification audit policy, a tile type is classified as **IMPLEMENTED** only if an on-disk writer AND reader exist in `crates/` alongside a dedicated automated test verifying round-trip operation. Any type lacking an on-disk writer, reader, or test in `crates/` is classified as **SPECIFIED-ONLY**.
 
@@ -1265,5 +1300,8 @@ Per specification audit policy, a tile type is classified as **IMPLEMENTED** onl
 | `time-series` | 75 | `0x004B` | Structure | **IMPLEMENTED** | **Writer**: `TileWriter::write_hyper_tile` (`crates/s3a-engine/src/lib.rs:621`)<br>**Reader**: `MmapReader::get_tile` (`crates/s3a-engine/src/lib.rs:798`)<br>**Test**: `test_tile_writer_and_mmap_reader_roundtrip` (`crates/s3a-engine/src/lib.rs:3348`) |
 | `spatial` | 76 | `0x004C` | Structure | **IMPLEMENTED** | **Writer**: `GisCrudExt::create_gis_points` (`crates/s3a-pack-gis/src/ext.rs:14`)<br>**Reader**: `GisMmapExt::query_gis_mesh_3d` (`crates/s3a-pack-gis/src/ext.rs:70`)<br>**Test**: `test_gis_write_and_query_mesh_3d` (`crates/s3a-pack-gis/src/lib.rs:91`) |
 | `schema` | 77 | `0x004D` | Structure | **IMPLEMENTED** | **Writer**: `append_schema_tile_if_missing` (`crates/s3a-engine/src/lib.rs:1292`) / `Compactor::compact_pass` (`crates/s3a-engine/src/lib.rs:2703`)<br>**Reader**: `MmapReader::get_schema_definitions` (`crates/s3a-engine/src/lib.rs:908`) / `MmapReader::resolve_tile_type_name` (`crates/s3a-engine/src/lib.rs:924`)<br>**Test**: `test_schema_tile_roundtrip` (`crates/s3a-engine/tests/consent_and_schema_tiles.rs:395`) / `test_inspect_shows_schema_names` (`crates/s3a-engine/tests/consent_and_schema_tiles.rs:512`) |
+| `manifest` | 78 | `0x004E` | Structure | **IMPLEMENTED** | **Writer**: `seal_buffer_v2` / `generate_plain_text_manifest` (`crates/s3a-engine/src/sealed.rs:154`)<br>**Reader**: `MmapReader::get_manifest` (`crates/s3a-engine/src/lib.rs:945`) / `s3a-cli tour` (`crates/s3a-cli/src/tour.rs:315`)<br>**Test**: `test_manifest_present_and_plain_text_readable_after_seal` (`crates/s3a-engine/tests/manifest_tile.rs:59`) / `test_tour_displays_manifest_in_lobby_and_floor` (`crates/s3a-cli/tests/tour_tests.rs:449`) |
+| `specification` | 79 | `0x004F` | Structure | **IMPLEMENTED** | **Writer**: `seal_buffer_v2` (`crates/s3a-engine/src/sealed.rs:743`)<br>**Reader**: `MmapReader::get_embedded_spec` (`crates/s3a-engine/src/lib.rs:962`)<br>**Test**: `test_embedded_spec_tile_roundtrip` (`crates/s3a-engine/tests/manifest_tile.rs:245`) |
+
 
 

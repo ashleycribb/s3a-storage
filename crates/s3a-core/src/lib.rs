@@ -462,6 +462,10 @@ impl TileType {
     pub const TIME_SERIES: u32 = 75;
     /// Core Embedded Schema Registry Tile (Tile 77 / 0x004D)
     pub const SCHEMA: u32 = 77;
+    /// Core Plain-Text UTF-8 Manifest Tile (Tile 78 / 0x004E)
+    pub const MANIFEST: u32 = 78;
+    /// Core Compressed Specification Tile (Tile 79 / 0x004F)
+    pub const SPECIFICATION: u32 = 79;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
     #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]

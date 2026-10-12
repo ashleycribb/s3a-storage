@@ -77,6 +77,8 @@ pub struct TourLobby {
     pub seal_status: TourSealStatus,
     pub consent_summary: TourConsentSummary,
     pub schema_names: BTreeMap<u32, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
 }
 
 /// Cryptographic seal and anchor verification state.
@@ -310,6 +312,23 @@ pub fn tour_file<R: Read + Seek>(
     // Evaluate consent state across the archive
     let consent_summary = evaluate_consent_summary(reader, &ctx.floors)?;
 
+    let mut manifest = None;
+    if let Some(m_floor) = ctx.floors.iter().find(|f| f.type_id == TileType::MANIFEST) {
+        let mut hdr_buf = [0u8; HYPER_TILE_HEADER_SIZE];
+        reader.seek(SeekFrom::Start(m_floor.offset))?;
+        if reader.read_exact(&mut hdr_buf).is_ok() {
+            let hdr: HyperTileHeader = pod_read_unaligned(&hdr_buf);
+            let payload_len = (hdr.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
+            if payload_len > 0 {
+                let mut payload = vec![0u8; payload_len];
+                reader.seek(SeekFrom::Start(m_floor.offset + HYPER_TILE_HEADER_SIZE as u64))?;
+                if reader.read_exact(&mut payload).is_ok() {
+                    manifest = String::from_utf8(payload).ok();
+                }
+            }
+        }
+    }
+
     let lobby = TourLobby {
         file: path.to_string(),
         file_version: ctx.file_version,
@@ -318,6 +337,7 @@ pub fn tour_file<R: Read + Seek>(
         seal_status: ctx.seal_status.clone(),
         consent_summary,
         schema_names,
+        manifest,
     };
 
     let mut report = TourReport {
@@ -1158,6 +1178,19 @@ fn unpack_fallback_records(
                 records.push(obj);
             }
         }
+    } else if floor.type_id == TileType::MANIFEST {
+        if let Ok(text) = String::from_utf8(payload.to_vec()) {
+            let obj = serde_json::json!({
+                "manifest": text.trim(),
+            });
+            records.push(obj);
+        }
+    } else if floor.type_id == TileType::SPECIFICATION {
+        let obj = serde_json::json!({
+            "specification": "Embedded compressed S3A Specification (Markdown)",
+            "size_bytes": payload.len(),
+        });
+        records.push(obj);
     }
 }
 
@@ -1769,6 +1802,11 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
     println!(" Schema Registry: {} registered types", report.lobby.schema_names.len());
     for (t_id, name) in &report.lobby.schema_names {
         println!("   - Type {}: {}", t_id, name);
+    }
+    if let Some(manifest) = &report.lobby.manifest {
+        println!();
+        println!("--- PLAIN-TEXT MANIFEST ---");
+        println!("{}", manifest.trim());
     }
     println!();
 

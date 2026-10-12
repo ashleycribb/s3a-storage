@@ -616,6 +616,32 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 78: Plain-Text UTF-8 Manifest Tile (self-describing, variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::MANIFEST,
+        name: "manifest",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 79: Compressed S3A Specification Tile (variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::SPECIFICATION,
+        name: "specification",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     Ok(())
 }
 

@@ -1032,6 +1032,36 @@ impl MmapReader {
         }
         "UNKNOWN".to_string()
     }
+
+    /// Reads and decodes the UTF-8 plain-text manifest from TileType::MANIFEST if present.
+    pub fn get_manifest(&self) -> Option<String> {
+        let count = self.tile_count() as usize;
+        for i in 0..count {
+            if let Some((header, payload)) = self.get_tile(i) {
+                if header.tile_type == TileType::MANIFEST {
+                    let len = (header.payload_bytes as usize).min(payload.len());
+                    return String::from_utf8(payload[..len].to_vec()).ok();
+                }
+            }
+        }
+        None
+    }
+
+    /// Reads and decompresses the embedded S3A specification Markdown from TileType::SPECIFICATION if present.
+    pub fn get_embedded_spec(&self) -> Option<String> {
+        let count = self.tile_count() as usize;
+        for i in 0..count {
+            if let Some((header, payload)) = self.get_tile(i) {
+                if header.tile_type == TileType::SPECIFICATION {
+                    let len = (header.payload_bytes as usize).min(payload.len());
+                    if let Ok(decompressed) = miniz_oxide::inflate::decompress_to_vec_zlib(&payload[..len]) {
+                        return String::from_utf8(decompressed).ok();
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Recovers and hardens an S3A archive:

@@ -421,12 +421,38 @@ fn main() {
         }
         "seal" => {
             let parity = args.iter().any(|a| a == "--parity");
-            let positional: Vec<&str> = args[2..].iter().filter(|a| !a.starts_with("--")).map(|s| s.as_str()).collect();
+            let embed_spec = args.iter().any(|a| a == "--embed-spec");
+            let mut title = None;
+            let mut creator = None;
+            let mut positional: Vec<&str> = Vec::new();
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--parity" || args[i] == "--embed-spec" {
+                    i += 1;
+                } else if args[i] == "--title" && i + 1 < args.len() {
+                    title = Some(args[i + 1].clone());
+                    i += 2;
+                } else if args[i].starts_with("--title=") {
+                    title = Some(args[i]["--title=".len()..].to_string());
+                    i += 1;
+                } else if args[i] == "--creator" && i + 1 < args.len() {
+                    creator = Some(args[i + 1].clone());
+                    i += 2;
+                } else if args[i].starts_with("--creator=") {
+                    creator = Some(args[i]["--creator=".len()..].to_string());
+                    i += 1;
+                } else if !args[i].starts_with("--") {
+                    positional.push(args[i].as_str());
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
             if positional.len() < 2 {
-                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity]");
+                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--title <title>] [--creator <creator>]");
                 return;
             }
-            seal_file(positional[0], positional[1], parity);
+            seal_file(positional[0], positional[1], parity, embed_spec, title, creator);
         }
         "repair" => {
             let positional: Vec<&str> = args[2..].iter().filter(|a| !a.starts_with("--")).map(|s| s.as_str()).collect();
@@ -1679,7 +1705,14 @@ fn escape_cli_json(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn seal_file(in_path: &str, out_path: &str, enable_parity: bool) {
+fn seal_file(
+    in_path: &str,
+    out_path: &str,
+    enable_parity: bool,
+    embed_spec: bool,
+    title: Option<String>,
+    creator: Option<String>,
+) {
     let _ = s3a_engine::append_schema_tile_if_missing(in_path);
     let options = s3a_engine::SealOptionsV2 {
         enable_parity,
@@ -1687,15 +1720,26 @@ fn seal_file(in_path: &str, out_path: &str, enable_parity: bool) {
         m: s3a_engine::DEFAULT_SEAL_M,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        write_manifest: true,
+        embed_spec,
+        title,
+        creator,
     };
     match s3a_engine::seal_archive_v2(in_path, out_path, &options) {
         Ok(_) => {
-            let parity_desc = if enable_parity {
-                " (Reed-Solomon 16+2 parity)"
-            } else {
-                ""
-            };
-            println!("Sealed S3A archive created successfully at '{}'{}", out_path, parity_desc);
+            let mut features = Vec::new();
+            if enable_parity {
+                features.push("Reed-Solomon 16+2 parity");
+            }
+            features.push("UTF-8 Plain-Text Manifest");
+            if embed_spec {
+                features.push("Embedded S3A Specification");
+            }
+            println!(
+                "Sealed S3A archive created successfully at '{}' ({})",
+                out_path,
+                features.join(", ")
+            );
         }
         Err(e) => {
             eprintln!("Error sealing archive: {}", e);

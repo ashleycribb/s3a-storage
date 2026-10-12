@@ -60,6 +60,8 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **30** | `elr_credential_assertion` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
+| **78** | `manifest` | Core Engine (`s3a-core`) | None | Variable | Plain UTF-8 Text | Active |
+| **79** | `specification` | Core Engine (`s3a-core`) | None | Variable | Compressed Markdown (Deflate) | Active |
 
 ---
 

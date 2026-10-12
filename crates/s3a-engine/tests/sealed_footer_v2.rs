@@ -85,6 +85,7 @@ fn test_index_lookup_reads_only_footer_bytes() {
         m: 2,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        ..SealOptionsV2::default()
     };
     seal_archive_v2(&raw.path, &sealed.path, &opts).unwrap();
 
@@ -299,6 +300,7 @@ fn test_optional_parity_repairs_up_to_m_and_fails_beyond() {
         m: 2,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        ..SealOptionsV2::default()
     };
     seal_archive_v2(&raw.path, &sealed.path, &opts).unwrap();
     let pristine_bytes = std::fs::read(&sealed.path).unwrap();
@@ -352,6 +354,7 @@ fn test_optional_parity_repairs_up_to_m_and_fails_beyond() {
         m: 2,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        ..SealOptionsV2::default()
     };
     seal_archive_v2(&raw.path, &unparity_sealed.path, &unparity_opts).unwrap();
     let mut unparity_bytes = std::fs::read(&unparity_sealed.path).unwrap();

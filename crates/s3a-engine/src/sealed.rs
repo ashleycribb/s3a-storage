@@ -7,10 +7,11 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 
 use s3a_core::{
-    FileHeader, HyperTileHeader, S3AError, SealedDirectoryEntry, SealedEndCap,
-    SealedEndCapV2, SealedIndexHeaderV2, SealedTileIndexEntry,
+    ConsentRecord, FileHeader, HyperTileHeader, MarkRecord, S3AError, SealedDirectoryEntry, SealedEndCap,
+    SealedEndCapV2, SealedIndexHeaderV2, SealedTileIndexEntry, TileType,
     FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET,
     FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    MARK_CONSENT_WITHDRAWN,
     SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC_V1,
     SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE, SEALED_FLAG_PARITY_ENABLED,
     SEALED_INDEX_ENTRY_SIZE_V2, SEALED_INDEX_HEADER_SIZE_V2, SEALED_INDEX_MAGIC_V2,
@@ -18,6 +19,9 @@ use s3a_core::{
 
 use crate::erasure::{invert_matrix, ReedSolomonCodec, GF};
 use crate::{compute_header_crc32, compute_tile_header_crc32, generate_file_uuid, resolve_active_header};
+
+/// Canonical Markdown specification embedded in sealed archives on request (`--embed-spec`).
+pub const SPEC_MARKDOWN: &str = include_str!("../../../docs/spec/S3A-TILE-SPEC.md");
 
 pub const DEFAULT_SEAL_K: u16 = 16;
 pub const DEFAULT_SEAL_M: u16 = 2;
@@ -45,13 +49,17 @@ pub struct SealedVerifyReport {
 }
 
 /// Configuration options for sealing an archive in v2 format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealOptionsV2 {
     pub enable_parity: bool,
     pub k: u16,
     pub m: u16,
     pub prev_seal_hash: [u8; 32],
     pub seal_generation: u64,
+    pub write_manifest: bool,
+    pub embed_spec: bool,
+    pub title: Option<String>,
+    pub creator: Option<String>,
 }
 
 impl Default for SealOptionsV2 {
@@ -62,8 +70,162 @@ impl Default for SealOptionsV2 {
             m: DEFAULT_SEAL_M,
             prev_seal_hash: [0u8; 32],
             seal_generation: 1,
+            write_manifest: false,
+            embed_spec: false,
+            title: None,
+            creator: None,
         }
     }
+}
+
+impl SealOptionsV2 {
+    pub fn with_manifest(mut self) -> Self {
+        self.write_manifest = true;
+        self
+    }
+
+    pub fn with_embed_spec(mut self) -> Self {
+        self.embed_spec = true;
+        self
+    }
+}
+
+/// Resolves standard human-readable canonical name for an S3A tile type.
+pub fn resolve_type_name(type_id: u32) -> &'static str {
+    match type_id {
+        0 => "telemetry",
+        1 => "embedding_128",
+        2 => "hybrid_index",
+        3 => "wearable_micro",
+        4 => "robotics_kinematic",
+        5 => "gis_survey_mesh",
+        6 => "data_availability",
+        7 => "quantized_embedding_int8",
+        8 => "quantized_embedding_4bit",
+        9 => "reserved_boundary",
+        10 => "human_lrs",
+        11 => "ai_trace_log",
+        12 => "academic_papers",
+        13 => "research_graph",
+        14 => "srs_workspace",
+        15 => "srs_manifest",
+        16 => "ontology_concept",
+        17 => "ontology_axiom",
+        18 => "agent_registry",
+        19 => "marks",
+        20 => "note_claims",
+        21 => "statement_body",
+        22 => "statement_index",
+        23 => "document_store",
+        24 => "attachment_blob",
+        25 => "elr_person",
+        26 => "elr_organization",
+        27 => "elr_learning_resource",
+        28 => "elr_learning_event",
+        29 => "elr_competency_assertion",
+        30 => "elr_credential_assertion",
+        31 => "elr_goal",
+        32 => "citation_fingerprint",
+        64 => "record",
+        65 => "columnar",
+        66 => "array",
+        67 => "vector",
+        68 => "blob",
+        69 => "index",
+        70 => "seal",
+        71 => "consent",
+        72 => "provenance",
+        73 => "erasure",
+        74 => "graph",
+        75 => "time_series",
+        76 => "spatial",
+        77 => "schema",
+        78 => "manifest",
+        79 => "specification",
+        _ => "custom",
+    }
+}
+
+/// Generates the plain-text UTF-8 manifest text for a sealed S3A archive.
+///
+/// Guaranteed Privacy Invariant:
+/// Contains aggregate counts only. Never includes consent-restricted payload data,
+/// personal identifiers, or secret subject UUIDs.
+pub fn generate_plain_text_manifest(
+    title: Option<&str>,
+    creator: Option<&str>,
+    file_uuid: [u64; 2],
+    created_ts: u64,
+    sealed_ts: u64,
+    tile_summaries: &[(u32, u32, &str, u32, usize)],
+    consent_summary: (usize, usize, usize),
+    seal_generation: u64,
+    prev_seal_hash: &[u8; 32],
+    enable_parity: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str("================================================================================\n");
+    out.push_str("                           THIS IS AN S3A FILE\n");
+    out.push_str("      S3A Hyper-Tile Storage Archive (Immutable Cryptographic Container)\n");
+    out.push_str(" Specification: https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md\n");
+    out.push_str("================================================================================\n\n");
+
+    out.push_str("ARCHIVE METADATA:\n");
+    out.push_str(&format!("  Title / Purpose:  {}\n", title.unwrap_or("S3A Storage Archive")));
+    out.push_str(&format!("  Creator:          {}\n", creator.unwrap_or("None (Unassigned)")));
+    out.push_str(&format!("  File UUID:        {:016x}{:016x}\n", file_uuid[0], file_uuid[1]));
+    let created_str = if created_ts > 0 {
+        humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + std::time::Duration::from_secs(created_ts)).to_string()
+    } else {
+        "Genesis (Unset)".to_string()
+    };
+    out.push_str(&format!("  Created:          {}\n", created_str));
+    let sealed_str = humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + std::time::Duration::from_secs(sealed_ts)).to_string();
+    out.push_str(&format!("  Sealed:           {}\n\n", sealed_str));
+
+    out.push_str("TILE DIRECTORY:\n");
+    out.push_str("  Floor  Type ID  Type Name             Records    Tile Size\n");
+    out.push_str("  -------------------------------------------------------------\n");
+    for &(floor, type_id, name, rec_count, sz) in tile_summaries {
+        out.push_str(&format!(
+            "  {:<6} {:<8} {:<21} {:<10} {} B\n",
+            floor, type_id, name, rec_count, sz
+        ));
+    }
+    out.push_str(&format!("  Total Floors: {}\n\n", tile_summaries.len()));
+
+    out.push_str("CONSENT GOVERNANCE:\n");
+    out.push_str(&format!("  Total Consents:   {}\n", consent_summary.0));
+    out.push_str(&format!("  Active Research:  {}\n", consent_summary.1));
+    out.push_str(&format!("  Withdrawn:        {}\n", consent_summary.2));
+    let status_str = if consent_summary.0 == 0 {
+        "No participant consent records in archive"
+    } else if consent_summary.2 > 0 {
+        "Active with recorded withdrawals"
+    } else {
+        "All participant consents active"
+    };
+    out.push_str(&format!("  Status:           {}\n", status_str));
+    out.push_str("  Policy Notice:    Protected under S3A consent governance (aggregate counts only; zero payload leaks).\n\n");
+
+    out.push_str("SEAL INTEGRITY:\n");
+    out.push_str("  Seal Status:      SEALED (v2 cryptographic hash chain active)\n");
+    out.push_str(&format!("  Seal Generation:  {}\n", seal_generation));
+    out.push_str(&format!("  Prev Seal Hash:   {}\n", hex::encode(prev_seal_hash)));
+    let parity_str = if enable_parity {
+        "Enabled (Reed-Solomon 16+2 erasure parity)"
+    } else {
+        "Disabled"
+    };
+    out.push_str(&format!("  Parity:           {}\n\n", parity_str));
+
+    out.push_str("HOW TO READ:\n");
+    out.push_str("  how to read: s3a-cli tour <file> or the S3A reader app\n");
+    out.push_str("  Terminal: Run `s3a-cli tour <file>` to inspect and query this archive.\n");
+    out.push_str("  GUI:      Open in the S3A reader app or compatible viewer.\n");
+    out.push_str("================================================================================\n");
+
+    out
 }
 
 /// Computes the CRC32C of the SealedEndCap (v1) excluding the endcap_crc32 field itself (first 52 bytes).
@@ -436,7 +598,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     let (active_header, _) = resolve_active_header(slot_a, slot_b)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
-    let tile_count = active_header.tile_count;
+    let mut tile_count = active_header.tile_count;
     let expected_data_len = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
     if in_bytes.len() < expected_data_len {
         return Err(io::Error::new(
@@ -460,6 +622,178 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     if slot_a_mut.file_uuid == [0, 0] {
         slot_a_mut.file_uuid = file_uuid;
         slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
+    }
+
+    if options.write_manifest {
+        // 1. Gather consent counts and existing tile summaries
+        let mut created_ts = u64::MAX;
+
+        let consent_size = std::mem::size_of::<ConsentRecord>();
+        let mark_size = std::mem::size_of::<MarkRecord>();
+
+        let mut existing_data_tiles: Vec<Vec<u8>> = Vec::new();
+
+        let mut subject_map: std::collections::HashMap<[u8; 16], bool> = std::collections::HashMap::new();
+        let mut mark_withdrawn_count = 0usize;
+
+        for i in 0..tile_count as usize {
+            let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            let tile_slice = &out_data[offset..offset + HYPER_TILE_SIZE];
+            let hdr: &HyperTileHeader = from_bytes(&tile_slice[..HYPER_TILE_HEADER_SIZE]);
+
+            if hdr.min_timestamp > 0 && hdr.min_timestamp < created_ts {
+                created_ts = hdr.min_timestamp;
+            }
+
+            // Exclude prior manifest or specification tiles if re-sealing
+            if hdr.tile_type == TileType::MANIFEST || hdr.tile_type == TileType::SPECIFICATION {
+                continue;
+            }
+
+            if hdr.tile_type == TileType::CONSENT {
+                let rec_count = hdr.record_count as usize;
+                let payload = &tile_slice[HYPER_TILE_HEADER_SIZE..];
+                for c in 0..rec_count {
+                    if (c + 1) * consent_size <= payload.len() {
+                        let rec: &ConsentRecord = from_bytes(&payload[c * consent_size..(c + 1) * consent_size]);
+                        let is_active = rec.withdrawn_at == 0;
+                        subject_map.insert(rec.subject_id, is_active);
+                    }
+                }
+            } else if hdr.tile_type == TileType::MARKS {
+                let rec_count = hdr.record_count as usize;
+                let payload = &tile_slice[HYPER_TILE_HEADER_SIZE..];
+                for m in 0..rec_count {
+                    if (m + 1) * mark_size <= payload.len() {
+                        let rec: &MarkRecord = from_bytes(&payload[m * mark_size..(m + 1) * mark_size]);
+                        if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
+                            mark_withdrawn_count += 1;
+                        }
+                    }
+                }
+            }
+
+            existing_data_tiles.push(tile_slice.to_vec());
+        }
+
+        let mut total_consents = subject_map.len();
+        let mut active_research = 0usize;
+        let mut withdrawn_consents = mark_withdrawn_count;
+        for &is_act in subject_map.values() {
+            if is_act {
+                active_research += 1;
+            } else {
+                withdrawn_consents += 1;
+            }
+        }
+        if total_consents == 0 && withdrawn_consents > 0 {
+            total_consents = withdrawn_consents;
+        }
+
+        if created_ts == u64::MAX {
+            created_ts = 0;
+        }
+
+        let sealed_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Build list of tile summaries for manifest
+        let mut tile_summaries = Vec::new();
+        // Floor 0: Manifest
+        tile_summaries.push((0u32, TileType::MANIFEST, "manifest", 0u32, HYPER_TILE_SIZE));
+
+        let mut next_floor = 1u32;
+        if options.embed_spec {
+            tile_summaries.push((next_floor, TileType::SPECIFICATION, "specification", 0u32, HYPER_TILE_SIZE));
+            next_floor += 1;
+        }
+
+        for (idx, tile_bytes) in existing_data_tiles.iter().enumerate() {
+            let hdr: &HyperTileHeader = from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+            let floor_idx = next_floor + idx as u32;
+            let type_name = resolve_type_name(hdr.tile_type);
+            tile_summaries.push((floor_idx, hdr.tile_type, type_name, hdr.record_count, HYPER_TILE_SIZE));
+        }
+
+        let manifest_text = generate_plain_text_manifest(
+            options.title.as_deref(),
+            options.creator.as_deref(),
+            file_uuid,
+            created_ts,
+            sealed_ts,
+            &tile_summaries,
+            (total_consents, active_research, withdrawn_consents),
+            options.seal_generation,
+            &options.prev_seal_hash,
+            options.enable_parity,
+        );
+
+        let manifest_bytes = manifest_text.as_bytes();
+        let mut manifest_tile = vec![0u8; HYPER_TILE_SIZE];
+        let mut manifest_hdr = HyperTileHeader::new(0, TileType::MANIFEST);
+        manifest_hdr.record_count = 0;
+        manifest_hdr.record_layout_version = 1;
+        manifest_hdr.payload_bytes = manifest_bytes.len() as u32;
+        manifest_hdr.data_crc32 = crc32c::crc32c(manifest_bytes);
+        manifest_hdr.generation = active_header.generation;
+        manifest_hdr.tile_index = 0;
+        manifest_hdr.file_uuid = file_uuid;
+        manifest_hdr.header_crc32 = compute_tile_header_crc32(&manifest_hdr);
+        manifest_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&manifest_hdr));
+        manifest_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + manifest_bytes.len()]
+            .copy_from_slice(manifest_bytes);
+
+        let mut spec_tile_opt = None;
+        if options.embed_spec {
+            let compressed_spec = miniz_oxide::deflate::compress_to_vec_zlib(SPEC_MARKDOWN.as_bytes(), 6);
+            let mut spec_tile = vec![0u8; HYPER_TILE_SIZE];
+            let mut spec_hdr = HyperTileHeader::new(1, TileType::SPECIFICATION);
+            spec_hdr.record_count = 0;
+            spec_hdr.record_layout_version = 1;
+            spec_hdr.payload_bytes = compressed_spec.len() as u32;
+            spec_hdr.data_crc32 = crc32c::crc32c(&compressed_spec);
+            spec_hdr.generation = active_header.generation;
+            spec_hdr.tile_index = 1;
+            spec_hdr.file_uuid = file_uuid;
+            spec_hdr.header_crc32 = compute_tile_header_crc32(&spec_hdr);
+            spec_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&spec_hdr));
+            spec_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + compressed_spec.len()]
+                .copy_from_slice(&compressed_spec);
+            spec_tile_opt = Some(spec_tile);
+        }
+
+        // Reassemble out_data: header + manifest + [spec] + existing_data_tiles
+        let mut new_tiles = Vec::new();
+        new_tiles.push(manifest_tile);
+        if let Some(spec) = spec_tile_opt {
+            new_tiles.push(spec);
+        }
+        new_tiles.extend(existing_data_tiles);
+
+        tile_count = new_tiles.len() as u32;
+        out_data.truncate(FILE_HEADER_SIZE);
+        for t in &new_tiles {
+            out_data.extend_from_slice(t);
+        }
+
+        // Update tile_count in header slot A and slot B in out_data
+        let slot_a_mut: &mut FileHeader = bytemuck::from_bytes_mut(
+            &mut out_data[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+        );
+        slot_a_mut.tile_count = tile_count;
+        slot_a_mut.file_uuid = file_uuid;
+        slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
+
+        let slot_b_mut: &mut FileHeader = bytemuck::from_bytes_mut(
+            &mut out_data[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+        );
+        if slot_b_mut.magic == s3a_core::S3A_MAGIC {
+            slot_b_mut.tile_count = tile_count;
+            slot_b_mut.file_uuid = file_uuid;
+            slot_b_mut.header_crc32 = compute_header_crc32(slot_b_mut);
+        }
     }
 
     // Stamp self-addressing metadata (file_uuid, tile_index, generation) into all tiles
@@ -638,6 +972,10 @@ pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
         m,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        write_manifest: false,
+        embed_spec: false,
+        title: None,
+        creator: None,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -655,6 +993,48 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         m,
         prev_seal_hash: [0u8; 32],
         seal_generation: 1,
+        write_manifest: false,
+        embed_spec: false,
+        title: None,
+        creator: None,
+    };
+    seal_archive_v2(in_path, out_path, &options)
+}
+
+/// Seals an archive buffer writing a UTF-8 manifest tile placed at Tile 0.
+pub fn seal_buffer_with_manifest(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
+    let options = SealOptionsV2 {
+        enable_parity: true,
+        k,
+        m,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+        write_manifest: true,
+        embed_spec: false,
+        title: None,
+        creator: None,
+    };
+    seal_buffer_v2(in_bytes, &options)
+}
+
+/// Seals an archive file writing a UTF-8 manifest tile placed at Tile 0.
+pub fn seal_archive_with_manifest<P: AsRef<Path>, Q: AsRef<Path>>(
+    in_path: P,
+    out_path: Q,
+    k: u16,
+    m: u16,
+    embed_spec: bool,
+) -> io::Result<()> {
+    let options = SealOptionsV2 {
+        enable_parity: true,
+        k,
+        m,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+        write_manifest: true,
+        embed_spec,
+        title: None,
+        creator: None,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
