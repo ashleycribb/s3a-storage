@@ -46,6 +46,14 @@ impl MemoryKeyStore {
             keys: HashMap::new(),
         }
     }
+
+    pub fn list_identities(&self) -> Vec<[u8; 16]> {
+        self.keys.keys().cloned().collect()
+    }
+
+    pub fn first_identity(&self) -> Option<[u8; 16]> {
+        self.keys.keys().next().cloned()
+    }
 }
 
 impl KeyStore for MemoryKeyStore {
@@ -215,6 +223,14 @@ impl FileKeyStore {
         }
         fs::write(&self.path, file_bytes)?;
         Ok(())
+    }
+
+    pub fn list_identities(&self) -> Vec<[u8; 16]> {
+        self.inner.list_identities()
+    }
+
+    pub fn first_identity(&self) -> Option<[u8; 16]> {
+        self.inner.first_identity()
     }
 }
 

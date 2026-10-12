@@ -39,6 +39,7 @@ use s3a_engine::{
 mod mcp;
 mod tour;
 mod vcs_cli;
+mod gate_cli;
 
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -998,6 +999,9 @@ fn main() {
         "vcs" => {
             vcs_cli::handle_vcs_command(&args);
         }
+        "gate" => {
+            gate_cli::handle_gate_command(&args);
+        }
         _ => {
             print_usage();
         }
@@ -1006,6 +1010,10 @@ fn main() {
 
 fn print_usage() {
     println!("S3A Storage CLI Tool (v{})", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("GATE DIRECTORY & SOVEREIGN IDENTITIES:");
+    println!("  s3a-cli gate register <name> --directory <url>   Register sovereign gate name with challenge-response signature");
+    println!("  s3a-cli gate resolve <name> --directory <url>    Resolve sovereign gate name to permanent gate:// address");
     println!();
     println!("GIT-STYLE VERSION CONTROL (S3A-VCS):");
     println!("  s3a-cli vcs init <archive>                        Initialize Git-style VCS on S3A archive");

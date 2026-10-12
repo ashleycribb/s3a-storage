@@ -7,3 +7,7 @@ openharness_s3a_db/
 scratch/
 .DS_Store
 tests/adl-conformance/
+.s3a/
+*.keystore
+*.vault.s3a
+*.vault

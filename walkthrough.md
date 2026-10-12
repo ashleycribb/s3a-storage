@@ -1501,6 +1501,57 @@ Workspace Test Suite Breakdown:
 - s3a-cabi:             3 passed (unittests src/lib.rs: 3)
 - s3a-cli:             13 passed (tests/cli_ops.rs: 5; tests/tour_tests.rs: 8)
 - s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         139 passed, 2 ignored
+- s3a-harness:         55 passed
+- s3a-lrs-server:      21 passed
+- s3a-pack-da:          3 passed
+- s3a-pack-gis:         4 passed
+- s3a-pack-ontology:    4 passed
+- s3a-pack-robotics:    4 passed
+- s3a-pack-scholar:    36 passed
+- s3a-pack-wearable:    3 passed
+- s3a-simd:            13 passed
+- s3a-spec-vectors:    32 passed
+- s3a-vault:            9 passed
+- s3a-vcs:             13 passed
+- s3a-wasm-snapshot:    5 passed
+- Doc-tests (17 crates): 0 passed
+----------------------------------------------------------------------------------------------------
+Total Passed:         374 passed; 0 failed; 2 ignored; 100% GREEN
+```
+
+---
+
+## 25. Milestone: Sovereign Gate Registration & Remote Directory Client (`s3a-cli gate register|resolve`)
+
+### 25.1 Architecture & Implementation Summary
+1. **Remote Directory Operations**:
+   - Added `crates/s3a-cli/src/gate_cli.rs` implementing `s3a-cli gate register <name> --directory <url>` and `s3a-cli gate resolve <name> --directory <url>`.
+   - Executes two-step challenge-response authentication: queries `/gate/challenge`, signs challenge nonce with sovereign Ed25519 identity key held in custody, and posts signed proof to `/gate/register`.
+   - Queries `/gate/resolve/<name>` to retrieve permanent `gate://` URI, checksummed address, public key, and active endpoints.
+2. **Encrypted Key Custody Outside Workspace**:
+   - Default key custody stored in `%USERPROFILE%\.s3a\vault\person.keystore` with companion vault `%USERPROFILE%\.s3a\vault\person.vault.s3a`.
+   - Passphrase protected at rest via Argon2id key derivation and ChaCha20-Poly1305 AEAD.
+   - Private key seeds are zeroized on drop and never logged or leaked.
+3. **In-Process Integration Testing**:
+   - Implemented `crates/s3a-cli/tests/gate_cli_tests.rs` verifying challenge issuance, signature verification, address validation, registration persistence, and resolution against a local ephemeral mock directory server.
+
+### 25.2 Live Directory Conformance Verification
+- **Target**: `https://34.74.163.88.sslip.io/gate/`
+- **Registered Name**: `gate://ashley`
+- **Permanent Gate Address**: `s3a-2a58-12b2-d5a0-e59e-e8`
+- **Public Key**: `c628a0eb30fadfbfdb4736a71d8d4f6d61606477fadf0d15d5b54bb39fc93b4d`
+- **Keystore**: `C:\Users\Ashley\.s3a\vault\person.keystore`
+- **Vault Archive**: `C:\Users\Ashley\.s3a\vault\person.vault.s3a`
+- **Verification**: `GET /gate/resolve/ashley` returned `s3a-2a58-12b2-d5a0-e59e-e8`, exactly matching local key derivation from `s3a-vault address`.
+
+### 25.3 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:             14 passed (tests/cli_ops.rs: 5; tests/gate_cli_tests.rs: 1; tests/tour_tests.rs: 8)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
 - s3a-engine:         139 passed, 2 ignored:
   * unittests src/lib.rs: 83 passed, 2 ignored
   * tests/array_tile.rs: 5 passed
@@ -1536,7 +1587,8 @@ Workspace Test Suite Breakdown:
 - s3a-wasm-snapshot:    5 passed (unittests src/lib.rs: 5)
 - Doc-tests (17 crates): 0 passed (all runners verified)
 ----------------------------------------------------------------------------------------------------
-Total Passed:         374 passed; 0 failed; 2 ignored; 100% GREEN
+Total Passed:         375 passed; 0 failed; 2 ignored; 100% GREEN
 ```
+
 
 

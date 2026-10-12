@@ -27,6 +27,7 @@ sha2 = { workspace = true }
 humantime = { workspace = true }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["std"] }
+ureq = { workspace = true }
 
 [lib]
 name = "s3a_cli"
@@ -35,3 +36,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "s3a-cli"
 path = "src/main.rs"
+
+[dev-dependencies]
+tiny_http = "0.12"
