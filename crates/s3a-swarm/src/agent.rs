@@ -95,12 +95,16 @@ impl SimulatedAgent {
         let is_overlapping_edit = !is_claim_conflict && !is_grant_violation && (slot >= 50 && slot < 55); // ~5%
 
         let (tile_type, raw_payload, records, paths, msg) = if is_claim_conflict {
-            // Claim / Evidence Conflict on a shared claim ID
-            let claim_id = "claim_empirical_efficacy_target";
-            let confidence = if self.index % 2 == 0 { 0.95 } else { 0.42 };
+            // Claim / Evidence Conflict on Brakets match result in fixtures
+            let claim_id = "fixture_match_result_claim_open_a";
+            let (winner_team, confidence) = if self.index % 2 == 0 {
+                ("Solar Flare", 0.98)
+            } else {
+                ("Vortex Gaming", 0.95)
+            };
             let finding = format!(
-                "Finding from Agent {}: model confidence {:.2} on consensus protocol",
-                self.index, confidence
+                "Agent {} empirical report: {} wins Opening Cashout A (confidence {:.2})",
+                self.index, winner_team, confidence
             );
             let claim = ScholarNoteClaimRecord::new(
                 1,
@@ -127,13 +131,13 @@ impl SimulatedAgent {
                 author_gate_address: self.gate_address.to_uri(),
             };
 
-            let path = format!("{}claim", self.allowed_prefix);
+            let path = format!("{}match_result_claim", self.allowed_prefix);
             (
                 ScholarTileType::NOTE_CLAIMS,
                 payload,
                 vec![rec_entry],
                 vec![path],
-                format!("Agent {} asserts: {}", self.index, finding),
+                format!("Agent {} asserts match result in fixtures: {}", self.index, finding),
             )
         } else if is_grant_violation {
             // Commit touching forbidden path outside grant
@@ -163,8 +167,20 @@ impl SimulatedAgent {
                 format!("Agent {} illegal commit outside grant", self.index),
             )
         } else if is_overlapping_edit {
-            // Same-record data edit targeting a shared record key
-            let shared_key = format!("shared_record_slot_{}", (self.index % 3));
+            // Deliberately colliding edits on Brakets bracket colors or seeding fixtures
+            let (shared_key, summary_text, msg_text) = if (self.index % 2) == 0 {
+                (
+                    "brakets_design_tokens_color_teal".to_string(),
+                    format!("Agent {} adjusts bracket primary teal in design-tokens.json (seq {})", self.index, seq),
+                    format!("Agent {} adjusts bracket colors in design tokens", self.index),
+                )
+            } else {
+                (
+                    "brakets_fixtures_seeding_order".to_string(),
+                    format!("Agent {} adjusts seeding fixtures in bracket-fixtures.ts (seq {})", self.index, seq),
+                    format!("Agent {} adjusts seeding fixtures", self.index),
+                )
+            };
             let val = (self.index * 1000 + seq) as f64;
             let rec = TelemetryRecord::new(now, (self.index as u32) + 1, 42, val);
             let payload = bytemuck::bytes_of(&rec).to_vec();
@@ -177,23 +193,23 @@ impl SimulatedAgent {
                 tile_type: TileType::TELEMETRY,
                 type_name: "TELEMETRY".to_string(),
                 payload_hash,
-                summary: format!("Value {} by agent {} seq {}", val, self.index, seq),
+                summary: summary_text,
                 committed_timestamp: now,
                 commit_signature: [0u8; 64],
                 author_gate_address: self.gate_address.to_uri(),
             };
 
-            let path = format!("{}metric_{}", self.allowed_prefix, seq);
+            let path = format!("{}bracket_edit_{}", self.allowed_prefix, seq);
             (
                 TileType::TELEMETRY,
                 payload,
                 vec![rec_entry],
                 vec![path],
-                format!("Agent {} updates shared record {}", self.index, shared_key),
+                msg_text,
             )
         } else {
-            // Disjoint record unique to this agent
-            let rec_id = format!("rec_{}_{}", self.index, seq);
+            // Disjoint edit unique to this agent: match-card copy, local team notes, styling
+            let rec_id = format!("rec_match_card_{}_{}", self.index, seq);
             let rec = TelemetryRecord::new(now, (self.index as u32) + 1, seq as u32, (seq * 10) as f64);
             let payload = bytemuck::bytes_of(&rec).to_vec();
             let mut h = Sha256::default();
@@ -205,7 +221,7 @@ impl SimulatedAgent {
                 tile_type: TileType::TELEMETRY,
                 type_name: "TELEMETRY".to_string(),
                 payload_hash,
-                summary: format!("Agent {} seq {} metric", self.index, seq),
+                summary: format!("Agent {} adjusts match-card copy seq {}", self.index, seq),
                 committed_timestamp: now,
                 commit_signature: [0u8; 64],
                 author_gate_address: self.gate_address.to_uri(),
@@ -217,7 +233,7 @@ impl SimulatedAgent {
                 payload,
                 vec![rec_entry],
                 vec![path],
-                format!("Agent {} commit {}", self.index, seq),
+                format!("Agent {} adjusts match-card copy (seq {})", self.index, seq),
             )
         };
 

@@ -1,0 +1,34 @@
+/*
+ * Brakets brand theme — CSS custom properties.
+ * Generated from brand/design-tokens.json.
+ */
+
+:root {
+  /* Brand palette */
+  --brakets-teal: #3ab6a1;
+  --brakets-blue: #4599ca;
+  --brakets-gray: #5f6264;
+  --brakets-white: #ffffff;
+  --brakets-black: #060606;
+
+  /* Semantic tokens */
+  --color-primary: var(--brakets-teal);
+  --color-secondary: var(--brakets-blue);
+  --color-text: var(--brakets-black);
+  --color-text-muted: var(--brakets-gray);
+  --color-background: var(--brakets-white);
+  --color-background-dark: var(--brakets-black);
+  --color-border: var(--brakets-gray);
+
+  /* Brand gradient */
+  --gradient-brand: linear-gradient(135deg, #3ab6a1 0%, #4599ca 100%);
+}
+
+/* Optional dark surface */
+[data-theme="dark"] {
+  --color-text: var(--brakets-white);
+  --color-text-muted: #9a9da0;
+  --color-background: var(--brakets-black);
+  --color-background-dark: #000000;
+  --color-border: var(--brakets-gray);
+}

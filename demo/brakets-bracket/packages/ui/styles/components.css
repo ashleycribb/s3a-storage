@@ -1,0 +1,155 @@
+/* ============================================================
+   @brakets/ui — component classes
+   ============================================================ */
+
+/* ---- Button ------------------------------------------------------------- */
+.bk-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.bk-btn:disabled {
+  background: var(--surface-3);
+  color: var(--fg-disabled);
+  border-color: transparent;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* sizes */
+.bk-btn--sm {
+  font-size: 12px;
+  padding: 7px 12px;
+}
+.bk-btn--md {
+  font-size: 13px;
+  padding: 10px 18px;
+}
+.bk-btn--lg {
+  font-size: 15px;
+  padding: 13px 24px;
+}
+
+/* variants */
+.bk-btn--primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.bk-btn--primary:not(:disabled):hover {
+  background: var(--accent-hover);
+  box-shadow: var(--glow-green);
+}
+.bk-btn--secondary {
+  background: transparent;
+  color: var(--fg-1);
+  border-color: var(--border-2);
+}
+.bk-btn--secondary:not(:disabled):hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.bk-btn--ghost {
+  background: transparent;
+  color: var(--fg-2);
+}
+.bk-btn--ghost:not(:disabled):hover {
+  background: var(--surface-3);
+  color: var(--fg-1);
+}
+.bk-btn--danger {
+  background: transparent;
+  color: var(--status-loss);
+  border-color: rgba(255, 91, 110, 0.33);
+}
+.bk-btn--danger:not(:disabled):hover {
+  background: rgba(255, 91, 110, 0.12);
+}
+
+/* ---- Card --------------------------------------------------------------- */
+.bk-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border-1);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+  transition: all 0.15s ease;
+}
+.bk-card:hover {
+  border-color: var(--border-2);
+  box-shadow: var(--shadow-2);
+}
+.bk-card--accent {
+  border-color: var(--accent);
+}
+.bk-card--accent:hover {
+  border-color: var(--accent);
+}
+
+/* ---- Status chip -------------------------------------------------------- */
+.bk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  color: var(--fg-2);
+  background: var(--surface-3);
+}
+.bk-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.bk-chip__dot--pulse {
+  box-shadow: 0 0 8px currentColor;
+  animation: bk-pulse 1.2s infinite;
+}
+.bk-chip--live {
+  color: #ff6a6a;
+  background: rgba(255, 77, 77, 0.14);
+}
+.bk-chip--checkin,
+.bk-chip--ready {
+  color: var(--green-400);
+  background: rgba(58, 182, 161, 0.14);
+}
+.bk-chip--upcoming {
+  color: var(--status-pending);
+  background: rgba(245, 165, 36, 0.14);
+}
+.bk-chip--final {
+  color: var(--fg-2);
+  background: var(--surface-3);
+}
+
+/* ---- Tag ---------------------------------------------------------------- */
+.bk-tag {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--fg-2);
+  border: 1px solid var(--border-1);
+}
