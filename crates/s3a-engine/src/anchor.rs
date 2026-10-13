@@ -466,23 +466,25 @@ pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result
             })
         }
         BlockHeaderSource::Esplora(base_url) => {
-            let height_url = format!("{}/block-height/{}", base_url.trim_end_matches('/'), height);
-            let resp = ureq::get(&height_url)
-                .timeout(std::time::Duration::from_secs(10))
-                .call()
-                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-            let block_hash = resp
-                .into_string()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let header_url = format!("{}/block/{}/header", base_url.trim_end_matches('/'), block_hash.trim());
-            let header_resp = ureq::get(&header_url)
-                .timeout(std::time::Duration::from_secs(10))
-                .call()
-                .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-            let header_hex = header_resp
-                .into_string()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let header_bytes = hex::decode(header_hex.trim())
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let height_url = format!("{}/block-height/{}", base_url.trim_end_matches('/'), height);
+                let resp = ureq::get(&height_url)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .call()
+                    .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+                let block_hash = resp
+                    .into_string()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let header_url = format!("{}/block/{}/header", base_url.trim_end_matches('/'), block_hash.trim());
+                let header_resp = ureq::get(&header_url)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .call()
+                    .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+                let header_hex = header_resp
+                    .into_string()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let header_bytes = hex::decode(header_hex.trim())
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             if header_bytes.len() != 80 {
                 return Err(io::Error::new(
@@ -524,6 +526,15 @@ pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result
             }
 
             Ok(out)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (base_url, height);
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "Esplora HTTP network queries are unsupported on wasm32 targets",
+                ))
+            }
         }
     }
 }

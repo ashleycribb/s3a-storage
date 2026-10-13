@@ -19,6 +19,7 @@ pub mod ext;
 pub mod ingest;
 pub mod xapi;
 pub mod sync;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod recheck;
 pub mod evidence;
 
@@ -44,6 +45,7 @@ pub use snapshot::{
 };
 pub use ext::{ScholarCrudExt, ScholarQueryExt};
 pub use ingest::{ingest_scholar_intermediate_dir, ScholarIngestStats};
+#[cfg(not(target_arch = "wasm32"))]
 pub use recheck::{
     recheck_archive, MockScholarServer, RecheckItem, RecheckOptions, RecheckReport, RecheckStatus,
 };

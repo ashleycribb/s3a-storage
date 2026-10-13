@@ -43,8 +43,20 @@ pub const VERB_ID_FLAGGED_HALLUCINATION: u32 = 0x0006;
 pub const VERB_ID_CITED: u32 = 0x0007;
 pub const VERB_ID_IMPORTED: u32 = 0x0008;
 pub const VERB_ID_EXPORTED_SNAPSHOT: u32 = 0x0009;
-pub const VERB_ID_FLAGGED_DISCREPANCY: u32 = 0x000A;
-pub const VERB_ID_VERIFIED_CLAIM: u32 = 0x000B;
+pub const VERB_ID_SEARCHED: u32 = 10;
+pub const VERB_ID_OPENED: u32 = 11;
+pub const VERB_ID_VIEWED: u32 = 12;
+pub const VERB_ID_SAVED: u32 = 13;
+pub const VERB_ID_REMOVED: u32 = 14;
+pub const VERB_ID_CREATED: u32 = 15;
+pub const VERB_ID_EDITED: u32 = 16;
+pub const VERB_ID_ASKED: u32 = 17;
+pub const VERB_ID_AI_ANSWERED: u32 = 18;
+pub const VERB_ID_ACCEPTED: u32 = 19;
+pub const VERB_ID_LOGGED_OUT: u32 = 20;
+pub const VERB_ID_CONSENT_DECLINED: u32 = 21;
+pub const VERB_ID_FLAGGED_DISCREPANCY: u32 = 22;
+pub const VERB_ID_VERIFIED_CLAIM: u32 = 23;
 
 /// Authoritative xAPI Extension IRIs for Verified Research Trust & Citation Fingerprints.
 pub const EXT_CONTENT_SHA256: &str = "https://ashecribb.dev/xapi/ext/content-sha256";
@@ -136,18 +148,108 @@ pub static SCHOLAR_VERBS: &[VerbSpec] = &[
         label: "exported-snapshot",
         verb_bit: 1 << 12,
     },
+    // Extended Interactive / WASM Registry Verbs (Bits 13..24)
+    VerbSpec {
+        verb_id: VERB_ID_SEARCHED,
+        iri: "https://ashecribb.dev/xapi/verbs/searched",
+        label: "searched",
+        verb_bit: 1 << 13,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_OPENED,
+        iri: "https://ashecribb.dev/xapi/verbs/opened",
+        label: "opened",
+        verb_bit: 1 << 14,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_VIEWED,
+        iri: "https://ashecribb.dev/xapi/verbs/viewed",
+        label: "viewed",
+        verb_bit: 1 << 15,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_SAVED,
+        iri: "https://ashecribb.dev/xapi/verbs/saved",
+        label: "saved",
+        verb_bit: 1 << 16,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_REMOVED,
+        iri: "https://ashecribb.dev/xapi/verbs/removed",
+        label: "removed",
+        verb_bit: 1 << 17,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_CREATED,
+        iri: "http://activitystrea.ms/schema/1.0/create",
+        label: "created",
+        verb_bit: 1 << 18,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_EDITED,
+        iri: "https://ashecribb.dev/xapi/verbs/edited",
+        label: "edited",
+        verb_bit: 1 << 19,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_ASKED,
+        iri: "http://adlnet.gov/expapi/verbs/asked",
+        label: "asked",
+        verb_bit: 1 << 20,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_AI_ANSWERED,
+        iri: "https://ashecribb.dev/xapi/verbs/ai-answered",
+        label: "ai-answered",
+        verb_bit: 1 << 21,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_ACCEPTED,
+        iri: "https://ashecribb.dev/xapi/verbs/accepted",
+        label: "accepted",
+        verb_bit: 1 << 22,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_LOGGED_OUT,
+        iri: "http://adlnet.gov/expapi/verbs/logged-out",
+        label: "logged-out",
+        verb_bit: 1 << 23,
+    },
+    VerbSpec {
+        verb_id: VERB_ID_CONSENT_DECLINED,
+        iri: "https://ashecribb.dev/xapi/verbs/consent-declined",
+        label: "consent-declined",
+        verb_bit: 1 << 24,
+    },
+    // Provenance Verification Verbs (Bits 25..26)
     VerbSpec {
         verb_id: VERB_ID_FLAGGED_DISCREPANCY,
         iri: "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
         label: "flagged-discrepancy",
-        verb_bit: 1 << 13,
+        verb_bit: 1 << 25,
     },
     VerbSpec {
         verb_id: VERB_ID_VERIFIED_CLAIM,
         iri: "https://ashecribb.dev/xapi/verbs/verified-claim",
         label: "verified-claim",
-        verb_bit: 1 << 14,
+        verb_bit: 1 << 26,
     },
+];
+
+/// Known external IRI aliases mapping to canonical verb specs.
+static VERB_ALIASES: &[(&str, u32)] = &[
+    ("https://ashecribb.dev/xapi/verbs/created", VERB_ID_CREATED),
+    ("http://activitystrea.ms/schema/1.0/create", VERB_ID_CREATED),
+    ("https://ashecribb.dev/xapi/verbs/asked", VERB_ID_ASKED),
+    ("http://adlnet.gov/expapi/verbs/asked", VERB_ID_ASKED),
+    ("https://ashecribb.dev/xapi/verbs/logged-out", VERB_ID_LOGGED_OUT),
+    ("http://adlnet.gov/expapi/verbs/logged-out", VERB_ID_LOGGED_OUT),
+    ("http://activitystrea.ms/schema/1.0/search", VERB_ID_SEARCHED),
+    ("http://activitystrea.ms/schema/1.0/open", VERB_ID_OPENED),
+    ("http://id.tincanapi.com/verb/viewed", VERB_ID_VIEWED),
+    ("http://activitystrea.ms/schema/1.0/save", VERB_ID_SAVED),
+    ("http://activitystrea.ms/schema/1.0/remove", VERB_ID_REMOVED),
+    ("http://activitystrea.ms/schema/1.0/accept", VERB_ID_ACCEPTED),
 ];
 
 /// Resolves a VerbSpec by its 32-bit wire integer identifier.
@@ -155,9 +257,17 @@ pub fn resolve_verb_by_id(verb_id: u32) -> Option<&'static VerbSpec> {
     SCHOLAR_VERBS.iter().find(|v| v.verb_id == verb_id)
 }
 
-/// Resolves a VerbSpec by its canonical IRI string.
+/// Resolves a VerbSpec by its canonical IRI string or recognized standard alias.
 pub fn resolve_verb_by_iri(iri: &str) -> Option<&'static VerbSpec> {
-    SCHOLAR_VERBS.iter().find(|v| v.iri == iri)
+    if let Some(spec) = SCHOLAR_VERBS.iter().find(|v| v.iri == iri) {
+        return Some(spec);
+    }
+    for (alias_iri, id) in VERB_ALIASES {
+        if *alias_iri == iri {
+            return resolve_verb_by_id(*id);
+        }
+    }
+    None
 }
 
 /// Resolves a VerbSpec by its human-readable label slug.

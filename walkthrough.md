@@ -1590,5 +1590,89 @@ Workspace Test Suite Breakdown:
 Total Passed:         375 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
+---
+
+## 26. Milestone: WASM Verb Registry Extension & Judgment Verb Enforcement
+
+### 26.1 Verb Registry Extension (IDs 10..21)
+1. **Preserved Existing IDs (1..9)**:
+   - `experienced` (1), `reviewed` (2), `approved` (3), `rejected` (4), `requested-human-review` (5), `flagged-hallucination` (6), `cited` (7), `imported` (8), `exported-snapshot` (9).
+2. **Appended 12 New Verbs**:
+   - `searched` (10): `https://ashecribb.dev/xapi/verbs/searched` (alias: `http://activitystrea.ms/schema/1.0/search`, bit 13)
+   - `opened` (11): `https://ashecribb.dev/xapi/verbs/opened` (alias: `http://activitystrea.ms/schema/1.0/open`, bit 14)
+   - `viewed` (12): `https://ashecribb.dev/xapi/verbs/viewed` (alias: `http://id.tincanapi.com/verb/viewed`, bit 15)
+   - `saved` (13): `https://ashecribb.dev/xapi/verbs/saved` (alias: `http://activitystrea.ms/schema/1.0/save`, bit 16)
+   - `removed` (14): `https://ashecribb.dev/xapi/verbs/removed` (alias: `http://activitystrea.ms/schema/1.0/remove`, bit 17)
+   - `created` (15): `http://activitystrea.ms/schema/1.0/create` (alias: `https://ashecribb.dev/xapi/verbs/created`, bit 18)
+   - `edited` (16): `https://ashecribb.dev/xapi/verbs/edited` (bit 19)
+   - `asked` (17): `http://adlnet.gov/expapi/verbs/asked` (ADL Core, alias: `https://ashecribb.dev/xapi/verbs/asked`, bit 20)
+   - `ai-answered` (18): `https://ashecribb.dev/xapi/verbs/ai-answered` (bit 21, AI-only)
+   - `accepted` (19): `https://ashecribb.dev/xapi/verbs/accepted` (alias: `http://activitystrea.ms/schema/1.0/accept`, bit 22)
+   - `logged-out` (20): `http://adlnet.gov/expapi/verbs/logged-out` (ADL Core, alias: `https://ashecribb.dev/xapi/verbs/logged-out`, bit 23)
+   - `consent-declined` (21): `https://ashecribb.dev/xapi/verbs/consent-declined` (bit 24)
+   - Maintained provenance verification verbs at IDs 22 (`flagged-discrepancy`, bit 25) and 23 (`verified-claim`, bit 26).
+
+### 26.2 Epistemic Governance & Enforcement Rules
+1. **AI-Only Restriction**:
+   - `ai-answered` (ID 18) is enforced AI-only. Calling `record_human` with `verb_id == 18` fails closed and returns an error.
+2. **Judgment Verb Exclusion for AI**:
+   - AI steps cannot use judgment verbs: `approved` (3), `rejected` (4), `reviewed` (2).
+   - Calling `record_ai` with any judgment verb fails closed and returns an error: `"AI steps can never use judgment verbs (approved, rejected, reviewed)"`.
+   - Calling `assert_agent_allows` with any judgment verb fails closed and returns the denial error.
+
+### 26.3 WebAssembly Build (`wasm-pack build --target web`)
+Rebuilt `s3a-wasm-snapshot` cleanly using `wasm-pack build --target web`:
+- `pkg/s3a_wasm_snapshot_bg.wasm` (392,556 bytes)
+- `pkg/s3a_wasm_snapshot.js` (25,807 bytes)
+- `pkg/s3a_wasm_snapshot.d.ts` (8,596 bytes)
+- `pkg/s3a_wasm_snapshot_bg.wasm.d.ts` (3,142 bytes)
+- `pkg/package.json` (605 bytes)
+
+### 26.4 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:             14 passed (tests/cli_ops.rs: 5; tests/gate_cli_tests.rs: 1; tests/tour_tests.rs: 8)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         139 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/manifest_tile.rs: 5 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+- s3a-harness:         55 passed:
+  * unittests src/lib.rs: 11 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/operability_tests.rs: 7 passed
+  * tests/training_and_eval_tests.rs: 3 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      21 passed (unittests src/main.rs: 21)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    36 passed:
+  * unittests src/lib.rs: 35 passed
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    32 passed (unittests src/lib.rs: 32)
+- s3a-vault:            9 passed (unittests src/lib.rs: 9)
+- s3a-vcs:             13 passed (tests/vcs_tests.rs: 13)
+- s3a-wasm-snapshot:    7 passed (unittests src/lib.rs: 7)
+- Doc-tests (17 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+Total Passed:         377 passed; 0 failed; 2 ignored; 100% GREEN
+```
+
+
 
 

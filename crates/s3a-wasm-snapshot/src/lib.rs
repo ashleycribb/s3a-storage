@@ -413,5 +413,85 @@ mod tests {
         assert!(gap_res.is_err());
         assert!(gap_res.unwrap_err().contains("SequenceGap"));
     }
+
+    #[test]
+    fn test_wasm_verb_registry_roundtrip() {
+        // Round-trip tests for IDs 1..=21
+        for id in 1..=21 {
+            let iri = iri_for_verb_id(id).expect(&format!("IRI must exist for verb id {}", id));
+            let resolved_id = verb_id_for_iri(&iri).expect(&format!("Verb ID must resolve for IRI {}", iri));
+            assert_eq!(resolved_id, id, "Round-trip mismatch for verb id {}", id);
+        }
+
+        // Test alias mappings resolve correctly
+        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/created"), Some(15));
+        assert_eq!(verb_id_for_iri("http://activitystrea.ms/schema/1.0/create"), Some(15));
+        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/asked"), Some(17));
+        assert_eq!(verb_id_for_iri("http://adlnet.gov/expapi/verbs/asked"), Some(17));
+        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/logged-out"), Some(20));
+        assert_eq!(verb_id_for_iri("http://adlnet.gov/expapi/verbs/logged-out"), Some(20));
+
+        // Test label resolution
+        assert_eq!(verb_id_for_iri("searched"), Some(10));
+        assert_eq!(verb_id_for_iri("opened"), Some(11));
+        assert_eq!(verb_id_for_iri("viewed"), Some(12));
+        assert_eq!(verb_id_for_iri("saved"), Some(13));
+        assert_eq!(verb_id_for_iri("removed"), Some(14));
+        assert_eq!(verb_id_for_iri("created"), Some(15));
+        assert_eq!(verb_id_for_iri("edited"), Some(16));
+        assert_eq!(verb_id_for_iri("asked"), Some(17));
+        assert_eq!(verb_id_for_iri("ai-answered"), Some(18));
+        assert_eq!(verb_id_for_iri("accepted"), Some(19));
+        assert_eq!(verb_id_for_iri("logged-out"), Some(20));
+        assert_eq!(verb_id_for_iri("consent-declined"), Some(21));
+    }
+
+    #[test]
+    fn test_record_ai_rejects_judgment_verbs() {
+        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+
+        // 1. record_ai must reject judgment verbs: approved (3), rejected (4), reviewed (2)
+        let judgment_verbs = [
+            s3a_pack_scholar::xapi::VERB_ID_APPROVED,
+            s3a_pack_scholar::xapi::VERB_ID_REJECTED,
+            s3a_pack_scholar::xapi::VERB_ID_REVIEWED,
+        ];
+
+        for &verb in &judgment_verbs {
+            let res = session.record_ai("lab-assistant", verb, 0.95, None);
+            assert!(res.is_err(), "record_ai should reject judgment verb {}", verb);
+        }
+
+        // 2. assert_agent_allows must reject judgment verbs for AI agents
+        for &verb in &judgment_verbs {
+            let res = session.assert_agent_allows("lab-assistant", Some(verb), None);
+            assert!(res.is_err(), "assert_agent_allows should reject judgment verb {}", verb);
+        }
+
+        // 3. record_ai accepts valid non-judgment verbs (e.g. ai-answered: 18, experienced: 1)
+        let ok_res = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.9, None);
+        assert!(ok_res.is_ok(), "record_ai should accept ai-answered");
+
+        // 4. record_human rejects ai-answered (18) because it is AI-only
+        let human_res = session.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+            wasm_bindgen::JsValue::NULL,
+            0,
+            None,
+        );
+        assert!(human_res.is_err(), "record_human should reject ai-answered");
+
+        // 5. record_human accepts judgment verbs (e.g. approved: 3, reviewed: 2, rejected: 4)
+        for &verb in &judgment_verbs {
+            let res = session.record_human(
+                verb,
+                wasm_bindgen::JsValue::NULL,
+                0,
+                None,
+            );
+            assert!(res.is_ok(), "record_human should accept judgment verb {}", verb);
+        }
+    }
 }
+
 

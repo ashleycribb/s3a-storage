@@ -54,43 +54,73 @@ pub fn tool_openalex_query() -> u32 {
     CORE_TOOL_OPENALEX_QUERY
 }
 
+fn js_error(msg: &str) -> JsValue {
+    #[cfg(target_arch = "wasm32")]
+    {
+        JsValue::from_str(msg)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = msg;
+        JsValue::NULL
+    }
+}
+
 fn parse_uuid_hex(hex_str: &str) -> Result<[u64; 2], JsValue> {
     let clean: String = hex_str.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if clean.len() != 32 {
-        return Err(JsValue::from_str(&format!(
+        return Err(js_error(&format!(
             "Invalid session UUID hex length: expected 32 hex characters, got {}",
             clean.len()
         )));
     }
     let high = u64::from_str_radix(&clean[0..16], 16)
-        .map_err(|e| JsValue::from_str(&format!("Invalid UUID high 64 bits: {}", e)))?;
+        .map_err(|e| js_error(&format!("Invalid UUID high 64 bits: {}", e)))?;
     let low = u64::from_str_radix(&clean[16..32], 16)
-        .map_err(|e| JsValue::from_str(&format!("Invalid UUID low 64 bits: {}", e)))?;
+        .map_err(|e| js_error(&format!("Invalid UUID low 64 bits: {}", e)))?;
     Ok([high, low])
 }
 
 fn js_value_to_u64(val: &JsValue) -> Result<u64, JsValue> {
-    if let Some(n) = val.as_f64() {
-        Ok(n as u64)
-    } else if let Some(s) = val.as_string() {
-        s.parse::<u64>()
-            .map_err(|e| JsValue::from_str(&format!("Invalid u64 string: {}", e)))
-    } else if let Some(b) = js_sys::BigInt::new(val).ok() {
-        if let Ok(s) = b.to_string(10) {
-            if let Some(st) = s.as_string() {
-                if let Ok(n) = st.parse::<u64>() {
-                    return Ok(n);
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(n) = val.as_f64() {
+            Ok(n as u64)
+        } else if let Some(s) = val.as_string() {
+            s.parse::<u64>()
+                .map_err(|e| js_error(&format!("Invalid u64 string: {}", e)))
+        } else if let Some(b) = js_sys::BigInt::new(val).ok() {
+            if let Ok(s) = b.to_string(10) {
+                if let Some(st) = s.as_string() {
+                    if let Ok(n) = st.parse::<u64>() {
+                        return Ok(n);
+                    }
                 }
             }
+            Err(js_error("Invalid BigInt for u64"))
+        } else {
+            Err(js_error("Expected number, string, or BigInt for u64"))
         }
-        Err(JsValue::from_str("Invalid BigInt for u64"))
-    } else {
-        Err(JsValue::from_str("Expected number, string, or BigInt for u64"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = val;
+        Ok(0)
     }
 }
 
 fn current_timestamp_sec() -> u64 {
-    (js_sys::Date::now() / 1000.0) as u64
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0) as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 }
 
 /// Browser-side WebAssembly wrapper around `WasmAgentSnapshot`.
@@ -168,6 +198,12 @@ impl WasmAgentSnapshot {
         object_hash: u32,
         ai_trace_index: Option<u32>,
     ) -> Result<u32, JsValue> {
+        if verb_id == s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED {
+            return Err(js_error(
+                "Verb 'ai-answered' is AI-only and cannot be used in record_human",
+            ));
+        }
+
         let actor = js_value_to_u64(&actor_hash)?;
         let ai_trace_coord = match ai_trace_index {
             Some(idx) => S3ACoordinate::new(0, 0, idx),
@@ -201,6 +237,15 @@ impl WasmAgentSnapshot {
         confidence: f32,
         human_index: Option<u32>,
     ) -> Result<u32, JsValue> {
+        if step_type == s3a_pack_scholar::xapi::VERB_ID_APPROVED
+            || step_type == s3a_pack_scholar::xapi::VERB_ID_REJECTED
+            || step_type == s3a_pack_scholar::xapi::VERB_ID_REVIEWED
+        {
+            return Err(js_error(
+                "AI steps can never use judgment verbs (approved, rejected, reviewed)",
+            ));
+        }
+
         let agent_id = s3a_pack_scholar::xapi::hash_iri(agent_slug);
         let human_coord = match human_index {
             Some(idx) => S3ACoordinate::new(0, 0, idx),
@@ -276,6 +321,17 @@ impl WasmAgentSnapshot {
         verb_id: Option<u32>,
         tool_bit: Option<u32>,
     ) -> Result<(), JsValue> {
+        if let Some(vid) = verb_id {
+            if vid == s3a_pack_scholar::xapi::VERB_ID_APPROVED
+                || vid == s3a_pack_scholar::xapi::VERB_ID_REJECTED
+                || vid == s3a_pack_scholar::xapi::VERB_ID_REVIEWED
+            {
+                return Err(js_error(
+                    "AI steps can never use judgment verbs (approved, rejected, reviewed)",
+                ));
+            }
+        }
+
         let agent_id = s3a_pack_scholar::xapi::hash_iri(agent_slug);
         let agent = self
             .inner
@@ -283,7 +339,7 @@ impl WasmAgentSnapshot {
             .iter()
             .find(|a| a.agent_id == agent_id)
             .ok_or_else(|| {
-                JsValue::from_str(&format!(
+                js_error(&format!(
                     "Agent '{}' (id 0x{:016X}) not found in snapshot registry",
                     agent_slug, agent_id
                 ))
