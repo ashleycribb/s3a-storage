@@ -1729,7 +1729,7 @@ To prevent ad-hoc naming and semantic drift across the WASM runtime, the CLI, th
 | `ta-redirected` | `https://ashecribb.dev/xapi/verbs/ta-redirected` | **Minted** (TA Excerpt) | `broadMatch: as:move`, `closeMatch: tincan:redirected` |
 | `ta-escalated` | `https://ashecribb.dev/xapi/verbs/ta-escalated` | **Minted** (TA Office Hours) | `broadMatch: adl:asked`, `closeMatch: tincan:escalated` |
 
-### 27.4 Workspace Test Totals (`cargo test --workspace`)
+#### 27.4 Workspace Test Totals (`cargo test --workspace`)
 
 ```text
 Workspace Test Suite Breakdown:
@@ -1757,7 +1757,8 @@ Workspace Test Suite Breakdown:
   * tests/operability_tests.rs: 7 passed
   * tests/training_and_eval_tests.rs: 3 passed
   * tests/e2e_lrs_test.rs: 1 passed
-- s3a-lrs-server:      21 passed (unittests src/main.rs: 21)
+- s3a-lrs-server:      25 passed:
+  * unittests src/main.rs: 25 passed (including 4 batched sync tests)
 - s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
 - s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
 - s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
@@ -1768,14 +1769,37 @@ Workspace Test Suite Breakdown:
 - s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
 - s3a-simd:            13 passed (unittests src/lib.rs: 13)
 - s3a-spec-vectors:    32 passed (unittests src/lib.rs: 32)
+- s3a-swarm:            5 passed (tests/swarm_tests.rs: 5)
 - s3a-vault:            9 passed (unittests src/lib.rs: 9)
 - s3a-vcs:             13 passed (tests/vcs_tests.rs: 13)
-- s3a-wasm-snapshot:    7 passed (unittests src/lib.rs: 7)
+- s3a-wasm-snapshot:   10 passed:
+  * unittests src/lib.rs: 10 passed (including 100-iteration roundtrip and export_since deltas)
 - Doc-tests (17 crates): 0 passed (all runners verified)
 ----------------------------------------------------------------------------------------------------
-Total Passed:         395 passed; 0 failed; 2 ignored; 100% GREEN
+Total Passed:         407 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
+---
 
+## 28. WASM Snapshot Export Panic Fix & Explorer-to-LRS Batched Sync
 
+### 28.1 WASM Snapshot Export Panic Resolution
+- **Root Cause**: `s3a_engine::seal_buffer` and `FileHeader::new` invoked `std::time::SystemTime::now().duration_since(UNIX_EPOCH)`. In the `wasm32-unknown-unknown` web target, the standard library time API unconditionally traps with `"RuntimeError: unreachable"` (time not implemented on this platform). Additionally, `FileHeader::new` left `file_uuid` unpopulated.
+- **Resolution**:
+  1. Replaced `std::time::SystemTime` in `s3a-engine` with platform-safe timestamp helpers: using `js_sys::Date::now()` on `wasm32`, falling back to `SystemTime` natively.
+  2. Integrated `console_error_panic_hook` feature-gated on `wasm32` to forward any unhandled panic directly to browser developer console.
+  3. Ensured every method in `s3a-wasm-snapshot` returns `Result<_, JsValue>` to prevent poisoning the WASM state machine.
+  4. Added native and WebAssembly roundtrip tests including `test_export_from_bytes_100_iterations_roundtrip` (100 successive export-restore-record-export cycles verified).
 
+### 28.2 Batched Synchronization API (`s3a-wasm-snapshot` & `s3a-lrs-server`)
+- **`export_since(cursor)`**: Added to `s3a-wasm-snapshot`, returning a `WasmSyncBatch` containing the delta packet bytes (`S3ASYNC1`), new cursor, and statement count.
+- **`POST /xapi/s3a/batch`**:
+  * Authenticated via existing LRS Basic Auth credentials with `statements/write` or `all` scope.
+  * Limits: 5 MB payload limit (`HTTP 413`) and 60 requests/min per session (`HTTP 429`).
+  * Cryptographic Verification: Hardware CRC32C checksum match and Ed25519 signature check against public key.
+  * Strict Cursor Tracking: Gaps and out-of-order batches rejected with `HTTP 409 Conflict`.
+  * Idempotent Deduplication: Exact same cursor range re-sent returns `HTTP 200 OK` no-op with `duplicate: true`.
+  * Ingestion: Appends validated delta records directly to `scholar.s3a` as native hyper-tiles.
+- **Client Contract (`docs/sync.md`)**:
+  * Scheduled sync every 6 hours, on logout/window close, or when `pending_delta_count >= 500`.
+  * Enforces strict affirmative consent gating: when consent is declined or withdrawn, client transmits 0 requests.
