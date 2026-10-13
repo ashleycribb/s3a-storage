@@ -19,6 +19,13 @@ pub use bindgen::{
     TOOL_PUBLISH, TOOL_CREDENTIAL_EXPORT,
 };
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
+pub fn init_panic_hook() {
+    #[cfg(feature = "console_error_panic_hook")]
+    console_error_panic_hook::set_once();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +96,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
 
         // 2. Export to byte buffer (simulates web app packaging)
@@ -162,6 +170,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         }.export_bytes()).unwrap();
 
         // Mutate snap1: add a claim and an AI trace
@@ -190,6 +199,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
         assert_eq!(snap2.ai_traces.len(), 0);
 
@@ -220,6 +230,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
 
         // Claim 1: Quantum physics with vector [1.0, 0.0, 0.0, 0.0]
@@ -297,6 +308,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
 
         snap.add_claim(
@@ -358,6 +370,7 @@ mod tests {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
 
         // 1. Delta with AGENT_REGISTRY is rejected fail-closed
@@ -491,6 +504,129 @@ mod tests {
             );
             assert!(res.is_ok(), "record_human should accept judgment verb {}", verb);
         }
+    }
+
+    #[test]
+    fn test_reproduce_export_from_bytes_roundtrip() {
+        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+
+        // Record a few human + AI steps (including new verbs 10..=21 and ai_trace_index links)
+        let ai_idx1 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
+        let human_idx1 = session.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_SEARCHED, // 10
+            wasm_bindgen::JsValue::NULL,
+            12345,
+            Some(ai_idx1),
+        ).unwrap();
+
+        let ai_idx2 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_CREATED, 0.88, Some(human_idx1)).unwrap();
+        let _human_idx2 = session.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_ACCEPTED, // 19
+            wasm_bindgen::JsValue::NULL,
+            67890,
+            Some(ai_idx2),
+        ).unwrap();
+
+        // Export bytes
+        let bytes1 = session.export_bytes().unwrap();
+        println!("Export 1 bytes len: {}", bytes1.len());
+
+        // Test exporting twice in a row with no changes
+        let bytes1_again = session.export_bytes().unwrap();
+        assert_eq!(bytes1.len(), bytes1_again.len());
+
+        // from_bytes
+        let mut restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes1).expect("from_bytes should succeed");
+
+        // Export immediately from restored (test that exports twice in a row with no changes / before new calls)
+        let bytes_restored_1 = restored.export_bytes().unwrap();
+        println!("Export restored immediately len: {}", bytes_restored_1.len());
+
+        // Record more steps
+        let ai_idx3 = restored.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.92, None).unwrap();
+        let _human_idx3 = restored.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_EDITED, // 16
+            wasm_bindgen::JsValue::NULL,
+            11111,
+            Some(ai_idx3),
+        ).unwrap();
+
+        // Export bytes again
+        let bytes2 = restored.export_bytes().unwrap();
+        println!("Export 2 bytes len: {}", bytes2.len());
+        assert!(bytes2.len() >= bytes1.len());
+    }
+
+    #[test]
+    fn test_export_since_deltas() {
+        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+
+        // Record 5 statements: 3 AI traces, 2 Human decisions
+        let a0 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
+        let h0 = session.record_human(s3a_pack_scholar::xapi::VERB_ID_SEARCHED, wasm_bindgen::JsValue::NULL, 100, Some(a0)).unwrap();
+        let a1 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_CREATED, 0.90, Some(h0)).unwrap();
+        let h1 = session.record_human(s3a_pack_scholar::xapi::VERB_ID_ACCEPTED, wasm_bindgen::JsValue::NULL, 200, Some(a1)).unwrap();
+        let _a2 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.88, Some(h1)).unwrap();
+
+        // Full delta (cursor = 0): should contain all 5 statements
+        let full = session.export_since(0).expect("full delta should succeed");
+        assert_eq!(full.record_count(), 5);
+        assert_eq!(full.new_cursor(), 5);
+        assert!(!full.bytes().is_empty());
+
+        let full_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&full.bytes()).expect("packet deserialization");
+        assert_eq!(full_packet.entries.len(), 5);
+
+        // Partial delta (cursor = 2): should contain only the remaining 3 statements
+        let partial = session.export_since(2).expect("partial delta should succeed");
+        assert_eq!(partial.record_count(), 3);
+        assert_eq!(partial.new_cursor(), 5);
+        assert!(!partial.bytes().is_empty());
+
+        let partial_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&partial.bytes()).expect("packet deserialization");
+        assert_eq!(partial_packet.entries.len(), 3);
+
+        // Empty delta (cursor = 5): should contain 0 statements, cursor remains 5
+        let empty = session.export_since(5).expect("empty delta should succeed");
+        assert_eq!(empty.record_count(), 0);
+        assert_eq!(empty.new_cursor(), 5);
+
+        let empty_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&empty.bytes()).expect("packet deserialization");
+        assert_eq!(empty_packet.entries.len(), 0);
+
+        // Cursor out-of-bounds (cursor > 5): should return an error
+        let invalid = session.export_since(6);
+        assert!(invalid.is_err(), "cursor ahead of statement log should fail");
+    }
+
+    #[test]
+    fn test_export_from_bytes_100_iterations_roundtrip() {
+        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+        let mut last_size = 0;
+
+        for i in 0..100 {
+            let ai_idx = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
+            let _human_idx = session.record_human(
+                s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+                wasm_bindgen::JsValue::NULL,
+                (1000 + i) as u32,
+                Some(ai_idx),
+            ).unwrap();
+
+            let bytes = session.export_bytes().unwrap();
+            assert!(bytes.len() >= last_size, "Size must grow or stay valid at iteration {}", i);
+            last_size = bytes.len();
+
+            let restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes).expect("from_bytes should succeed");
+            assert_eq!(restored.inner.ai_traces.len(), (i + 1) as usize);
+            assert_eq!(restored.inner.human_decisions.len(), (i + 1) as usize);
+            assert_eq!(restored.inner.statement_log.len(), ((i + 1) * 2) as usize);
+
+            session = restored;
+        }
+
+        let final_bytes = session.export_bytes().unwrap();
+        assert!(!final_bytes.is_empty());
     }
 }
 

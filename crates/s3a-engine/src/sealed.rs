@@ -18,7 +18,7 @@ use s3a_core::{
 };
 
 use crate::erasure::{invert_matrix, ReedSolomonCodec, GF};
-use crate::{compute_header_crc32, compute_tile_header_crc32, generate_file_uuid, resolve_active_header};
+use crate::{compute_header_crc32, compute_tile_header_crc32, current_time_secs, generate_file_uuid, resolve_active_header};
 
 /// Canonical Markdown specification embedded in sealed archives on request (`--embed-spec`).
 pub const SPEC_MARKDOWN: &str = include_str!("../../../docs/spec/S3A-TILE-SPEC.md");
@@ -699,19 +699,13 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             if active_header.created_timestamp > 0 {
                 created_ts = active_header.created_timestamp;
             } else {
-                created_ts = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+                created_ts = current_time_secs();
             }
         } else if active_header.created_timestamp > 0 && active_header.created_timestamp < created_ts {
             created_ts = active_header.created_timestamp;
         }
 
-        let sealed_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let sealed_ts = current_time_secs();
 
         // Build list of tile summaries for manifest
         let mut tile_summaries = Vec::new();
@@ -904,10 +898,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         &entries,
     );
 
-    let sealed_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let sealed_timestamp = current_time_secs();
 
     let flags = if options.enable_parity {
         SEALED_FLAG_PARITY_ENABLED

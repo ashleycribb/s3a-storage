@@ -1,0 +1,14 @@
+{
+  "agents": 100,
+  "commits": 500,
+  "commits_per_sec": 7896.124897745183,
+  "p50_latency_ms": 0.117,
+  "p99_latency_ms": 0.201,
+  "auto_merged": 486,
+  "rejected_by_grant": 10,
+  "sent_to_human": 4,
+  "final_seal_hash": "d8d70df9d9dd120bedc0b8b5629d6622f7d7a3d47012036af556a41d7374945b",
+  "verified_signatures": 486,
+  "shadow_mode": true,
+  "total_duration_secs": 0.0633222
+}

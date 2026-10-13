@@ -22,6 +22,7 @@ use s3a_engine::concurrent_writer::ConcurrentTileWriter;
 
 pub mod learner_api;
 pub mod gate_directory;
+pub mod batch_sync;
 
 /// Represents an authorized credential with granular xAPI scopes and optional archive mapping.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -210,6 +211,8 @@ pub struct ServerConfig {
     pub max_mailbox_total_bytes: usize,
     pub mailbox_item_expiry_secs: u64,
     pub registrations_per_client_per_minute: u32,
+    pub max_batch_body_bytes: usize,
+    pub max_batch_rate_per_minute: u32,
 }
 
 impl Default for ServerConfig {
@@ -234,6 +237,8 @@ impl Default for ServerConfig {
             max_mailbox_total_bytes: 100 * 1024 * 1024,
             mailbox_item_expiry_secs: 30 * 86400,
             registrations_per_client_per_minute: 10,
+            max_batch_body_bytes: 5 * 1024 * 1024,
+            max_batch_rate_per_minute: 60,
         }
     }
 }
@@ -248,6 +253,7 @@ pub struct AppState {
     pub config: ServerConfig,
     pub agent_registry: Vec<s3a_pack_scholar::records::AgentRegistryRecord>,
     pub gate_directory: Arc<std::sync::Mutex<gate_directory::GateDirectoryService>>,
+    pub batch_sync: Arc<std::sync::Mutex<batch_sync::BatchSyncService>>,
 }
 
 impl AppState {

@@ -37,6 +37,9 @@ miniz_oxide = { workspace = true }
 fs2 = "0.4"
 ureq = { workspace = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
 [features]
 default = []
 fault-injection = []

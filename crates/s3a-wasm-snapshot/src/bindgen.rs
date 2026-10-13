@@ -126,7 +126,7 @@ fn current_timestamp_sec() -> u64 {
 /// Browser-side WebAssembly wrapper around `WasmAgentSnapshot`.
 #[wasm_bindgen]
 pub struct WasmAgentSnapshot {
-    inner: InnerSnapshot,
+    pub(crate) inner: InnerSnapshot,
     session_uuid: [u64; 2],
 }
 
@@ -181,6 +181,7 @@ impl WasmAgentSnapshot {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log: Vec::new(),
         };
 
         Ok(Self {
@@ -224,6 +225,7 @@ impl WasmAgentSnapshot {
         self.inner.human_decisions.push(rec);
         if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::HUMAN_LRS, &rec) {
             self.inner.pending_delta.push(entry);
+            self.inner.statement_log.push(entry);
         }
         Ok((self.inner.human_decisions.len() - 1) as u32)
     }
@@ -266,6 +268,7 @@ impl WasmAgentSnapshot {
         self.inner.ai_traces.push(rec);
         if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::AI_TRACE_LOG, &rec) {
             self.inner.pending_delta.push(entry);
+            self.inner.statement_log.push(entry);
         }
         Ok((self.inner.ai_traces.len() - 1) as u32)
     }
@@ -308,9 +311,11 @@ impl WasmAgentSnapshot {
         self.inner.papers.push(rec);
         if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::ACADEMIC_PAPERS, &rec) {
             self.inner.pending_delta.push(entry);
+            self.inner.statement_log.push(entry);
         }
         Ok((self.inner.papers.len() - 1) as u32)
     }
+
 
     /// Asserts that the specified agent slug is authorized for the given verb_id and tool_bit.
     /// Returns an error on denial.
@@ -404,7 +409,7 @@ impl WasmAgentSnapshot {
 
     /// Exports the snapshot as an immutable .snapshot.s3a Uint8Array buffer.
     #[wasm_bindgen]
-    pub fn export_bytes(&mut self) -> Vec<u8> {
+    pub fn export_bytes(&mut self) -> Result<Vec<u8>, JsValue> {
         self.inner.manifest.total_records = (if self.inner.workspace.is_some() { 1 } else { 0 })
             + self.inner.papers.len() as u64
             + self.inner.edges.len() as u64
@@ -416,7 +421,7 @@ impl WasmAgentSnapshot {
             + (self.inner.claims.len() * 2) as u64
             + self.inner.policy_marks.len() as u64;
 
-        self.inner.export_bytes()
+        Ok(self.inner.export_bytes())
     }
 
     /// Loads a snapshot from a Uint8Array byte slice.
@@ -439,9 +444,25 @@ impl WasmAgentSnapshot {
 
     /// Exports pending delta records since the last sync as a compact byte buffer.
     #[wasm_bindgen]
-    pub fn export_delta(&mut self) -> Vec<u8> {
-        self.inner.export_delta_bytes()
+    pub fn export_delta(&mut self) -> Result<Vec<u8>, JsValue> {
+        Ok(self.inner.export_delta_bytes())
     }
+
+    /// Exports only statements and delta records recorded after `cursor`.
+    /// Returns a `WasmSyncBatch` containing the binary delta packet, new cursor, and record count.
+    #[wasm_bindgen]
+    pub fn export_since(&self, cursor: u64) -> Result<WasmSyncBatch, JsValue> {
+        let (bytes, new_cursor, record_count) = self
+            .inner
+            .export_since(cursor)
+            .map_err(|e| js_error(&e))?;
+        Ok(WasmSyncBatch {
+            bytes,
+            new_cursor,
+            record_count,
+        })
+    }
+
 
     /// Applies an incoming sync delta buffer into the local session.
     #[wasm_bindgen]
@@ -579,3 +600,37 @@ fn format_claim_results(results: &[crate::agent_api::ClaimSearchResult]) -> Resu
     }
     Ok(arr.into())
 }
+
+/// Batched sync delta payload for Scholar Explorer.
+#[wasm_bindgen]
+#[derive(Clone, Debug)]
+pub struct WasmSyncBatch {
+    bytes: Vec<u8>,
+    new_cursor: u64,
+    record_count: u32,
+}
+
+#[wasm_bindgen]
+impl WasmSyncBatch {
+    #[wasm_bindgen(getter)]
+    pub fn bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn new_cursor(&self) -> u64 {
+        self.new_cursor
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn record_count(&self) -> u32 {
+        self.record_count
+    }
+}
+
+/// Standalone function exporting statements recorded after `cursor`.
+#[wasm_bindgen]
+pub fn export_since(snapshot: &WasmAgentSnapshot, cursor: u64) -> Result<WasmSyncBatch, JsValue> {
+    snapshot.export_since(cursor)
+}
+

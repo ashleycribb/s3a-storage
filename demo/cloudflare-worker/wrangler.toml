@@ -1,0 +1,19 @@
+name = "s3a-cloudflare-vcs"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object for single-writer repo serialization & deterministic merge
+[durable_objects]
+bindings = [
+  { name = "REPO_COORDINATOR", class_name = "RepoCoordinatorDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RepoCoordinatorDO"]
+
+# Cloudflare R2 bucket binding for 128 KB S3A Hyper-Tile storage (Free Tier)
+[[r2_buckets]]
+binding = "TILES_BUCKET"
+bucket_name = "s3a-tiles-bucket"

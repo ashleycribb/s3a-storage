@@ -136,6 +136,7 @@ pub struct WasmAgentSnapshot {
     pub pending_delta: Vec<SrsDeltaEntry>,
     pub delta_seq: u64,
     pub last_applied_delta_seq: u64,
+    pub statement_log: Vec<SrsDeltaEntry>,
 }
 
 impl WasmAgentSnapshot {
@@ -161,6 +162,35 @@ impl WasmAgentSnapshot {
 
         let policy_marks: Vec<MarkRecord> = view.policy_marks.into_iter().copied().collect();
 
+        let agents = if view.agents.is_empty() {
+            s3a_pack_scholar::seed_default_agents()
+        } else {
+            view.agents.into_iter().copied().collect()
+        };
+
+        // Reconstruct chronological statement log from constituent tiles
+        let mut statement_log = Vec::new();
+        for p in &view.papers {
+            if let Ok(e) = SrsDeltaEntry::from_record(ScholarTileType::ACADEMIC_PAPERS, *p) {
+                statement_log.push(e);
+            }
+        }
+        for h in &view.human_decisions {
+            if let Ok(e) = SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, *h) {
+                statement_log.push(e);
+            }
+        }
+        for a in &view.ai_traces {
+            if let Ok(e) = SrsDeltaEntry::from_record(ScholarTileType::AI_TRACE_LOG, *a) {
+                statement_log.push(e);
+            }
+        }
+        for c in &claims {
+            if let Ok(e) = SrsDeltaEntry::from_record(ScholarTileType::NOTE_CLAIMS, &c.record) {
+                statement_log.push(e);
+            }
+        }
+
         Ok(Self {
             manifest,
             workspace: view.workspace,
@@ -168,7 +198,7 @@ impl WasmAgentSnapshot {
             edges: view.edges.into_iter().copied().collect(),
             human_decisions: view.human_decisions.into_iter().copied().collect(),
             ai_traces: view.ai_traces.into_iter().copied().collect(),
-            agents: view.agents.into_iter().copied().collect(),
+            agents,
             concepts: view.concepts.into_iter().copied().collect(),
             axioms: view.axioms.into_iter().copied().collect(),
             claims,
@@ -177,8 +207,37 @@ impl WasmAgentSnapshot {
             pending_delta: Vec::new(),
             delta_seq: 1,
             last_applied_delta_seq: 0,
+            statement_log,
         })
     }
+
+    /// Exports only statements and delta records recorded after `cursor`.
+    /// Returns (serialized_bytes, new_cursor, record_count).
+    pub fn export_since(&self, cursor: u64) -> Result<(Vec<u8>, u64, u32), String> {
+        let total = self.statement_log.len() as u64;
+        if cursor > total {
+            return Err(format!(
+                "Cursor {} is ahead of current statement count {}",
+                cursor, total
+            ));
+        }
+
+        let slice = &self.statement_log[cursor as usize..];
+        let record_count = slice.len() as u32;
+        let new_cursor = total;
+
+        let mut packet = SrsSyncDeltaPacket::with_timestamp(
+            self.manifest.origin_session_uuid,
+            self.manifest.snapshot_uuid,
+            cursor + 1,
+            self.manifest.created_at_sec,
+        );
+        packet.entries = slice.to_vec();
+        let bytes = packet.export_bytes();
+
+        Ok((bytes, new_cursor, record_count))
+    }
+
 
     /// Evaluates if an agent's proposed generation requires raising its hand to the Teacher Assistant.
     pub fn preflight_agent_check(
@@ -317,9 +376,10 @@ impl WasmAgentSnapshot {
         let mut out = vec![0u8; total_size];
 
         // 1. Populate FileHeader Slot A
-        let now = 1600000000;
-        let mut file_header = FileHeader::new(total_tile_count, now);
+        let created_ts = if self.manifest.created_at_sec > 0 { self.manifest.created_at_sec } else { 1600000000 };
+        let mut file_header = FileHeader::new(total_tile_count, created_ts);
         file_header.addon_mask = ADDON_EDU | ADDON_ONTOLOGY;
+        file_header.file_uuid = self.manifest.snapshot_uuid;
         file_header.header_crc32 = compute_file_header_crc32(&file_header);
 
         let header_bytes = bytes_of(&file_header);
@@ -444,7 +504,7 @@ impl WasmAgentSnapshot {
 
         // 4. Phase 2: Commit all entries
         let mut count = 0;
-        for entry in packet.entries {
+        for entry in &packet.entries {
             match entry.tile_type {
                 ScholarTileType::HUMAN_LRS => {
                     let r: HumanLrsRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
@@ -507,6 +567,7 @@ impl WasmAgentSnapshot {
             }
         }
 
+        self.statement_log.extend(packet.entries.iter().cloned());
         self.last_applied_delta_seq = packet.header.delta_seq;
         self.manifest.total_records += count as u64;
         Ok(count)
@@ -546,11 +607,13 @@ impl WasmAgentSnapshot {
         self.ai_traces.push(trace);
         if let Ok(entry) = SrsDeltaEntry::from_record(ScholarTileType::AI_TRACE_LOG, &trace) {
             self.pending_delta.push(entry);
+            self.statement_log.push(entry);
         }
 
         // Push claim record to delta
         if let Ok(entry) = SrsDeltaEntry::from_record(ScholarTileType::NOTE_CLAIMS, &record) {
             self.pending_delta.push(entry);
+            self.statement_log.push(entry);
         }
 
         self.claims.push(ClaimItem {
@@ -558,6 +621,7 @@ impl WasmAgentSnapshot {
             text: text.to_string(),
             embedding: embedding.map(|e| e.to_vec()),
         });
+
 
         claim_id
     }

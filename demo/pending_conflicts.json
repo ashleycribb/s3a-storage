@@ -1,0 +1,58 @@
+[
+  {
+    "conflict_id": "conflict_6e921558ad32f47f",
+    "record_id": "claim_empirical_efficacy_target",
+    "tile_type": 20,
+    "type_name": "SCHOLAR_NOTE_CLAIMS",
+    "target_version": "Finding from Agent 26: model confidence 0.95 on consensus protocol",
+    "source_version": "Finding from Agent 7: model confidence 0.42 on consensus protocol",
+    "target_author": "gate://s3a-5d5a-c39d-2b60-7de7-9a",
+    "source_author": "gate://s3a-92d0-adf9-fdba-c964-c4",
+    "created_timestamp": 1791923657,
+    "resolved": false,
+    "choice": null,
+    "rationale": null
+  },
+  {
+    "conflict_id": "conflict_0cd363664002d91f",
+    "record_id": "claim_empirical_efficacy_target",
+    "tile_type": 20,
+    "type_name": "SCHOLAR_NOTE_CLAIMS",
+    "target_version": "Finding from Agent 26: model confidence 0.95 on consensus protocol",
+    "source_version": "Finding from Agent 88: model confidence 0.95 on consensus protocol",
+    "target_author": "gate://s3a-5d5a-c39d-2b60-7de7-9a",
+    "source_author": "gate://s3a-f4f8-5e7c-af53-7fce-0e",
+    "created_timestamp": 1791923657,
+    "resolved": false,
+    "choice": null,
+    "rationale": null
+  },
+  {
+    "conflict_id": "conflict_755c29c432f68c1d",
+    "record_id": "claim_empirical_efficacy_target",
+    "tile_type": 20,
+    "type_name": "SCHOLAR_NOTE_CLAIMS",
+    "target_version": "Finding from Agent 26: model confidence 0.95 on consensus protocol",
+    "source_version": "Finding from Agent 69: model confidence 0.42 on consensus protocol",
+    "target_author": "gate://s3a-5d5a-c39d-2b60-7de7-9a",
+    "source_author": "gate://s3a-4556-33f8-3c45-f031-33",
+    "created_timestamp": 1791923657,
+    "resolved": false,
+    "choice": null,
+    "rationale": null
+  },
+  {
+    "conflict_id": "conflict_8673756d851829e4",
+    "record_id": "claim_empirical_efficacy_target",
+    "tile_type": 20,
+    "type_name": "SCHOLAR_NOTE_CLAIMS",
+    "target_version": "Finding from Agent 26: model confidence 0.95 on consensus protocol",
+    "source_version": "Finding from Agent 50: model confidence 0.95 on consensus protocol",
+    "target_author": "gate://s3a-5d5a-c39d-2b60-7de7-9a",
+    "source_author": "gate://s3a-8322-efbf-f8fb-91df-1f",
+    "created_timestamp": 1791923657,
+    "resolved": false,
+    "choice": null,
+    "rationale": null
+  }
+]

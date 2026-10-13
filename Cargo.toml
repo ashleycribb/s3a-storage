@@ -19,6 +19,7 @@ members = [
     "crates/s3a-edge",
     "crates/s3a-vault",
     "crates/s3a-vcs",
+    "crates/s3a-swarm",
 ]
 
 [workspace.package]

@@ -270,19 +270,59 @@ pub fn resolve_active_header(slot_a: &FileHeader, slot_b: &FileHeader) -> Result
     }
 }
 
+/// Returns the current Unix timestamp in seconds across native and WebAssembly platforms without trapping.
+#[inline]
+pub fn current_time_secs() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0) as u64
+    }
+}
+
+/// Returns the current Unix timestamp in nanoseconds across native and WebAssembly platforms without trapping.
+#[inline]
+pub fn current_time_nanos() -> u128 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() * 1_000_000.0) as u128
+    }
+}
+
 /// Generates a non-zero 128-bit pseudo-random UUID for an S3A archive file.
 pub fn generate_file_uuid() -> [u64; 2] {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let nanos = now.as_nanos();
-    let pid = std::process::id() as u64;
+    #[cfg(not(target_arch = "wasm32"))]
+    let (nanos, pid) = {
+        let nanos = current_time_nanos();
+        let pid = std::process::id() as u64;
+        (nanos, pid)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let (nanos, pid) = {
+        let mut random_bytes = [0u8; 16];
+        let _ = getrandom::getrandom(&mut random_bytes);
+        (u128::from_le_bytes(random_bytes), current_time_nanos() as u64)
+    };
     let h1 = xxhash_rust::xxh3::xxh3_64(&nanos.to_le_bytes());
     let h2 = xxhash_rust::xxh3::xxh3_64(&(nanos ^ (pid as u128)).to_be_bytes());
     let u1 = if h1 == 0 { 1 } else { h1 };
     let u2 = if h2 == 0 { 2 } else { h2 };
     [u1, u2]
 }
+
 
 /// Writer for generating page-aligned 128 KB S3A Hyper-Tile storage files with crash-safe atomic commits.
 pub struct TileWriter {

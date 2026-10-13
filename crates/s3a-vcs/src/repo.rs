@@ -865,7 +865,7 @@ fn get_active_data_len(buf: &[u8]) -> Result<usize, VcsError> {
     Ok(len.min(buf.len()))
 }
 
-fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
+pub fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
     if buf.len() < FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE {
         return Err(VcsError::Generic("Buffer too small for sealed end cap".into()));
     }
