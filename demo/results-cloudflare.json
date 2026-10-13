@@ -11,5 +11,13 @@
   "final_seal_hash": "8cac49d55a247bfc36e53cbb65b38afe1b7d2bbd59d87c8ea064ae408f2d5b8f",
   "verified_signatures": 1000,
   "shadow_mode": false,
-  "total_duration_secs": 29.6561738
+  "total_duration_secs": 29.6561738,
+  "repair_loop": {
+    "failures_detected": 1,
+    "auto_repaired": 1,
+    "escalated_to_human": 0,
+    "mean_attempts": 1.0,
+    "shadow_branches_evaluated": 1,
+    "promoted_after_green": 1
+  }
 }

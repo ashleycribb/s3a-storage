@@ -4,6 +4,17 @@ use std::fs;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
+/// Repair loop metrics tracking autonomous self-healing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RepairLoopMetrics {
+    pub failures_detected: usize,
+    pub auto_repaired: usize,
+    pub escalated_to_human: usize,
+    pub mean_attempts: f64,
+    pub shadow_branches_evaluated: usize,
+    pub promoted_after_green: usize,
+}
+
 /// High-throughput benchmark metrics for the swarm run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmMetrics {
@@ -21,6 +32,8 @@ pub struct SwarmMetrics {
     pub verified_signatures: usize,
     pub shadow_mode: bool,
     pub total_duration_secs: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repair_loop: Option<RepairLoopMetrics>,
 }
 
 impl SwarmMetrics {
@@ -101,6 +114,7 @@ impl SwarmMetrics {
             verified_signatures,
             shadow_mode,
             total_duration_secs,
+            repair_loop: None,
         }
     }
 

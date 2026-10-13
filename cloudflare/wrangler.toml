@@ -3,17 +3,28 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# Durable Object for Single-Writer push ordering per project
+# Durable Object for Single-Writer push ordering per project & Cloudflare Sandbox
 [durable_objects]
 bindings = [
-  { name = "REPO_COORDINATOR", class_name = "RepoCoordinator" }
+  { name = "REPO_COORDINATOR", class_name = "RepoCoordinator" },
+  { name = "Sandbox", class_name = "Sandbox" }
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RepoCoordinator"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Sandbox"]
+
 # Cloudflare Artifacts binding for Git repositories & tokens
 [[artifacts]]
 binding = "ARTIFACTS"
 namespace = "default"
+
+# Cloudflare Containers configuration for Sandbox
+[[containers]]
+class_name = "Sandbox"
+image = "docker.io/cloudflare/sandbox:0.12.10"
+max_instances = 5

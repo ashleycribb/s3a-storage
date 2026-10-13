@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod eval;
 pub mod mcp;
 pub mod model;
+pub mod repair;
 pub mod runtime;
 pub mod sandbox;
 pub mod srs;
@@ -18,6 +19,10 @@ pub mod trajectory;
 pub mod vcs;
 
 pub use vcs::harness_merge;
+pub use repair::{
+    parse_structured_failures, run_repair_loop, RepairAttemptResult, RepairLoopReport,
+    RepairOutcome,
+};
 
 pub use agent::{
     EpistemicConfidenceTier, GateRejectionLog, GateStatus, HallucinationRisk, HumanGateRequest,
@@ -42,8 +47,8 @@ pub use srs::SrsContainerManager;
 pub use store::{LocalStore, LrsStore, Store, StoreError};
 pub use tools::{
     compute_sha256, CrossrefLookupTool, McpExternalTool, OpenAlexLookupTool,
-    RetractionWatchCheckTool, S3aQueryTool, S3aWriteTool, Tool, ToolCallResult, ToolError,
-    ToolExecutionContext, ToolInfo, ToolRegistry,
+    RetractionWatchCheckTool, S3aQueryTool, S3aWriteTool, SandboxBuildTool, StructuredFailure,
+    Tool, ToolCallResult, ToolError, ToolExecutionContext, ToolInfo, ToolRegistry,
 };
 pub use trajectory::{
     export_trajectories, is_consent_permitted, run_to_chatml, run_to_sharegpt,

@@ -26,6 +26,8 @@ pub struct AgentCommitBundle {
     pub is_claim_conflict: bool,
     pub is_grant_violation: bool,
     pub is_overlapping_edit: bool,
+    pub is_intentional_bug: bool,
+    pub is_repair_fix: bool,
 }
 
 /// Simulated concurrent agent with Ed25519 vault identity and scoped delegation grant.
@@ -90,11 +92,68 @@ impl SimulatedAgent {
         // Distinct distribution modulo 100
         let slot = (self.index * 17 + seq * 23) % 100;
 
-        let is_claim_conflict = slot == 42; // ~1%
-        let is_grant_violation = slot == 13 || slot == 88; // ~2%
-        let is_overlapping_edit = !is_claim_conflict && !is_grant_violation && (slot >= 50 && slot < 55); // ~5%
+        let is_intentional_bug = self.index == 7 && seq == 0;
+        let is_repair_fix = self.index == 7 && seq == 1;
 
-        let (tile_type, raw_payload, records, paths, msg) = if is_claim_conflict {
+        let is_claim_conflict = !is_intentional_bug && !is_repair_fix && slot == 42; // ~1%
+        let is_grant_violation = !is_intentional_bug && !is_repair_fix && (slot == 13 || slot == 88); // ~2%
+        let is_overlapping_edit = !is_intentional_bug && !is_repair_fix && !is_claim_conflict && !is_grant_violation && (slot >= 50 && slot < 55); // ~5%
+
+        let (tile_type, raw_payload, records, paths, msg) = if is_intentional_bug {
+            // Intentional bug: Agent 7 injects a TypeScript error into components/MatchCard.tsx
+            let rec_id = "match_card_score_type_bug";
+            let rec = TelemetryRecord::new(now, (self.index as u32) + 1, 700, 42.0);
+            let payload = bytemuck::bytes_of(&rec).to_vec();
+            let mut h = Sha256::default();
+            h.update(&payload);
+            let payload_hash: [u8; 32] = h.finalize().into();
+
+            let rec_entry = RepoRecordEntry {
+                record_id: rec_id.to_string(),
+                tile_type: TileType::TELEMETRY,
+                type_name: "TELEMETRY".to_string(),
+                payload_hash,
+                summary: "Agent 7 modifies MatchCard with intentional type error: score property string instead of number (repair demo)".to_string(),
+                committed_timestamp: now,
+                commit_signature: [0u8; 64],
+                author_gate_address: self.gate_address.to_uri(),
+            };
+
+            (
+                TileType::TELEMETRY,
+                payload,
+                vec![rec_entry],
+                vec![format!("{}components/MatchCard.tsx", self.allowed_prefix)],
+                "Agent 7 modifies MatchCard with intentional type error: score property string instead of number (repair demo)".to_string(),
+            )
+        } else if is_repair_fix {
+            // Repair fix: Agent 7 resolves the type error on its shadow branch
+            let rec_id = "match_card_score_type_fix";
+            let rec = TelemetryRecord::new(now, (self.index as u32) + 1, 701, 42.0);
+            let payload = bytemuck::bytes_of(&rec).to_vec();
+            let mut h = Sha256::default();
+            h.update(&payload);
+            let payload_hash: [u8; 32] = h.finalize().into();
+
+            let rec_entry = RepoRecordEntry {
+                record_id: rec_id.to_string(),
+                tile_type: TileType::TELEMETRY,
+                type_name: "TELEMETRY".to_string(),
+                payload_hash,
+                summary: "fix(MatchCard): Agent 7 resolves type error in score property (repairs shadow branch)".to_string(),
+                committed_timestamp: now,
+                commit_signature: [0u8; 64],
+                author_gate_address: self.gate_address.to_uri(),
+            };
+
+            (
+                TileType::TELEMETRY,
+                payload,
+                vec![rec_entry],
+                vec![format!("{}components/MatchCard.tsx", self.allowed_prefix)],
+                "fix(MatchCard): Agent 7 resolves type error in score property (repairs shadow branch)".to_string(),
+            )
+        } else if is_claim_conflict {
             // Claim / Evidence Conflict on Brakets match result in fixtures
             let claim_id = "fixture_match_result_claim_open_a";
             let (winner_team, confidence) = if self.index % 2 == 0 {
@@ -292,6 +351,8 @@ impl SimulatedAgent {
             is_claim_conflict,
             is_grant_violation,
             is_overlapping_edit,
+            is_intentional_bug,
+            is_repair_fix,
         }
     }
 }

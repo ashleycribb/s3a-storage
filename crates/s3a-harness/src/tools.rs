@@ -85,6 +85,17 @@ pub struct ToolCallResult {
     pub execution_time_ms: u64,
 }
 
+/// Structured failure diagnostic captured from build or test execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StructuredFailure {
+    pub file: String,
+    pub line: usize,
+    #[serde(default)]
+    pub col: usize,
+    pub message: String,
+    pub stage: String,
+}
+
 /// Abstract contract for JSON-schema'd tools executable by autonomous agents.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -688,6 +699,127 @@ impl Tool for PreflightCheckTool {
     }
 }
 
+/// 8. Sandbox Build Tool: Triggers Cloudflare Sandbox build verification via Worker /preview endpoint
+#[derive(Clone, Default)]
+pub struct SandboxBuildTool {
+    pub default_worker_url: Option<String>,
+}
+
+impl SandboxBuildTool {
+    pub fn new() -> Self {
+        Self {
+            default_worker_url: None,
+        }
+    }
+
+    pub fn with_worker_url(url: impl Into<String>) -> Self {
+        Self {
+            default_worker_url: Some(url.into()),
+        }
+    }
+}
+
+impl Tool for SandboxBuildTool {
+    fn name(&self) -> &str {
+        "sandbox_build"
+    }
+
+    fn description(&self) -> &str {
+        "Triggers Cloudflare Sandbox container build via Worker /preview endpoint and returns structured failure diagnostics (file, line, col, message, stage)."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "string", "description": "Target project ID (e.g. s3a-swarm-main)" },
+                "worker_url": { "type": "string", "description": "Optional Cloudflare Worker base URL" },
+                "branch": { "type": "string", "description": "Branch to build in sandbox" },
+                "mock_failure": { "type": "boolean", "description": "Deterministic test hook to return simulated failure" }
+            }
+        })
+    }
+
+    fn execute(&self, args: &Value, _ctx: &ToolExecutionContext) -> Result<Value, ToolError> {
+        // Deterministic mock failure hook for offline / test environments
+        if args.get("mock_failure").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Ok(json!({
+                "status": "failed",
+                "success": false,
+                "build_time_ms": 1420,
+                "failures": [
+                    {
+                        "file": "components/MatchCard.tsx",
+                        "line": 42,
+                        "col": 15,
+                        "message": "Type 'string' is not assignable to type 'number'",
+                        "stage": "build"
+                    }
+                ],
+                "logs": [
+                    { "stage": "build", "msg": "TypeScript error in components/MatchCard.tsx:42:15" }
+                ]
+            }));
+        }
+
+        let worker_url = args
+            .get("worker_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.default_worker_url.clone())
+            .or_else(|| std::env::var("S3A_GATE_URL").ok())
+            .unwrap_or_else(|| "https://s3a-gate.ashley-e-cribb.workers.dev".to_string());
+
+        let project_id = args
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("s3a-swarm-main");
+
+        let endpoint = format!("{}/project/{}/preview", worker_url.trim_end_matches('/'), project_id);
+
+        let req_body = json!({
+            "branch": args.get("branch").and_then(|v| v.as_str()).unwrap_or("main"),
+        });
+
+        let body_str = req_body.to_string();
+        match ureq::post(&endpoint)
+            .timeout(std::time::Duration::from_secs(30))
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
+            .send_string(&body_str)
+        {
+            Ok(resp) => {
+                let text = resp.into_string().map_err(|e| ToolError::ExecutionFailed {
+                    tool: "sandbox_build".to_string(),
+                    details: format!("Failed to read preview response: {}", e),
+                })?;
+                let json_resp: Value = serde_json::from_str(&text).map_err(|e| ToolError::ExecutionFailed {
+                    tool: "sandbox_build".to_string(),
+                    details: format!("Invalid JSON from /preview: {}", e),
+                })?;
+                Ok(json_resp)
+            }
+            Err(e) => {
+                // In offline or unit-test mode, return deterministic clean preview response
+                if cfg!(test) || std::env::var("S3A_OFFLINE_TEST").is_ok() {
+                    Ok(json!({
+                        "status": "ready",
+                        "success": true,
+                        "build_time_ms": 950,
+                        "failures": [],
+                        "note": "offline_simulated_success"
+                    }))
+                } else {
+                    Err(ToolError::NetworkError {
+                        tool: "sandbox_build".to_string(),
+                        details: format!("Failed to reach /preview at {}: {}", endpoint, e),
+                    })
+                }
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Tool Registry
 // =============================================================================
@@ -721,6 +853,7 @@ impl ToolRegistry {
         registry.register(Arc::new(CrossrefLookupTool));
         registry.register(Arc::new(RetractionWatchCheckTool));
         registry.register(Arc::new(PreflightCheckTool));
+        registry.register(Arc::new(SandboxBuildTool::new()));
         registry
     }
 

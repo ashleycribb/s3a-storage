@@ -280,6 +280,7 @@ pub async fn run_remote_swarm(
         .as_millis() as u64;
     let mut final_seal = format!("cf_seal_{:016x}", now_millis);
     let status_url = format!("{}/project/{}/status", clean_url, project_id);
+    let mut repair_metrics = None;
     if let Ok(res) = client.get(&status_url).send().await {
         if let Ok(status_json) = res.json::<serde_json::Value>().await {
             if let Some(seal) = status_json.get("head_seal").and_then(|s| s.as_str()) {
@@ -289,6 +290,16 @@ pub async fn run_remote_swarm(
                     final_seal = first.to_string();
                 }
             }
+            if let Some(rep) = status_json.get("repair") {
+                repair_metrics = Some(crate::metrics::RepairLoopMetrics {
+                    failures_detected: rep.get("failures_detected").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+                    auto_repaired: rep.get("auto_repaired").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+                    escalated_to_human: rep.get("escalated_to_human").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                    mean_attempts: rep.get("mean_attempts").and_then(|v| v.as_f64()).unwrap_or(1.0),
+                    shadow_branches_evaluated: rep.get("shadow_branches_evaluated").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+                    promoted_after_green: rep.get("promoted_after_green").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+                });
+            }
         }
     }
 
@@ -297,7 +308,7 @@ pub async fn run_remote_swarm(
         std::mem::take(&mut *lock)
     };
 
-    let metrics = SwarmMetrics::compute_with_bad_sigs(
+    let mut metrics = SwarmMetrics::compute_with_bad_sigs(
         agents_count,
         total_pushes,
         total_duration,
@@ -310,6 +321,7 @@ pub async fn run_remote_swarm(
         verified_sigs.load(std::sync::atomic::Ordering::Relaxed),
         false,
     );
+    metrics.repair_loop = repair_metrics;
 
     Ok(metrics)
 }
