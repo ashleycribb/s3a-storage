@@ -1736,13 +1736,15 @@ Workspace Test Suite Breakdown:
 - s3a-cabi:             3 passed (unittests src/lib.rs: 3)
 - s3a-cli:             14 passed (tests/cli_ops.rs: 5; tests/gate_cli_tests.rs: 1; tests/tour_tests.rs: 8)
 - s3a-core:            21 passed (unittests src/lib.rs: 21)
-- s3a-engine:         139 passed, 2 ignored:
+- s3a-edge:            12 passed (unittests src/lib.rs: 6; tests/writer_tests.rs: 6)
+- s3a-engine:         140 passed, 2 ignored:
   * unittests src/lib.rs: 83 passed, 2 ignored
   * tests/array_tile.rs: 5 passed
   * tests/checkpoint_compaction_gates.rs: 7 passed
   * tests/columnar_tile.rs: 6 passed
   * tests/consent_and_schema_tiles.rs: 10 passed
   * tests/durability_crash_harness.rs: 7 passed
+  * tests/edge_engine_interop.rs: 1 passed
   * tests/erasure_tile.rs: 6 passed
   * tests/manifest_tile.rs: 5 passed
   * tests/ql_v1.rs: 4 passed
@@ -1771,7 +1773,7 @@ Workspace Test Suite Breakdown:
 - s3a-wasm-snapshot:    7 passed (unittests src/lib.rs: 7)
 - Doc-tests (17 crates): 0 passed (all runners verified)
 ----------------------------------------------------------------------------------------------------
-Total Passed:         378 passed; 0 failed; 2 ignored; 100% GREEN
+Total Passed:         395 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
 
