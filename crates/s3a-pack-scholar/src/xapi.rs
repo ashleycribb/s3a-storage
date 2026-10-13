@@ -654,6 +654,41 @@ mod tests {
     }
 
     #[test]
+    fn test_verb_registry_matches_xapi_profile() {
+        // Enforce that the Rust verb registry in xapi.rs matches the formal xAPI Profile JSON-LD
+        let profile_str = include_str!("../../../docs/vocab/scholar-xapi-profile.jsonld");
+        let profile_json: serde_json::Value = serde_json::from_str(profile_str)
+            .expect("scholar-xapi-profile.jsonld must be valid JSON");
+
+        let concepts = profile_json.get("concepts")
+            .and_then(|c| c.as_array())
+            .expect("profile must contain concepts array");
+
+        let profile_verbs: Vec<&serde_json::Value> = concepts.iter()
+            .filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("Verb"))
+            .collect();
+
+        // 1. Every verb in the formal profile must exist in SCHOLAR_VERBS
+        for pv in &profile_verbs {
+            let iri = pv.get("id").and_then(|i| i.as_str()).unwrap();
+            let label = pv.get("prefLabel").and_then(|p| p.get("en")).and_then(|l| l.as_str()).unwrap();
+
+            let spec = resolve_verb_by_iri(iri)
+                .or_else(|| resolve_verb_by_label(label))
+                .unwrap_or_else(|| panic!("Verb in profile '{}' ({}) missing from SCHOLAR_VERBS", label, iri));
+
+            assert_eq!(spec.label, label, "Label mismatch for verb {}", iri);
+        }
+
+        // 2. Count of verbs in SCHOLAR_VERBS must match profile count
+        assert_eq!(
+            SCHOLAR_VERBS.len(),
+            profile_verbs.len(),
+            "Mismatch between SCHOLAR_VERBS count and profile verbs count"
+        );
+    }
+
+    #[test]
     fn test_hash_iri_deterministic() {
         let hash1 = hash_iri(SCHOLAR_XAPI_PROFILE_IRI);
         let hash2 = hash_iri(SCHOLAR_XAPI_PROFILE_IRI);

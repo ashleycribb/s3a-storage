@@ -1673,6 +1673,107 @@ Workspace Test Suite Breakdown:
 Total Passed:         377 passed; 0 failed; 2 ignored; 100% GREEN
 ```
 
+---
+
+## Milestone 27: Formal Vocabulary (xAPI Profile & OWL 2 DL Ontology) for S3A / Scholar
+
+### 27.1 Architecture & Standards Alignment
+To prevent ad-hoc naming and semantic drift across the WASM runtime, the CLI, the LRS, and external tools, a formal semantic vocabulary was established:
+1. **xAPI Profile (JSON-LD)** at `docs/vocab/scholar-xapi-profile.jsonld` conforming to **ADL xAPI Profile Specification 1.0**:
+   - **Standards-First IRI Reuse**: Prioritizes ADL xAPI Core verbs (`experienced`, `answered`, `asked`, `logged-out`), ActivityStreams 2.0 (`create`, `update`, `accept`, `reject`, `leave`, `view`), CiTO (`cites`), and W3C PROV-O (`prov:wasAssociatedWith`, `prov:Agent`, `prov:Activity`).
+   - **Minted IRIs**: Minted under `https://ashecribb.dev/xapi/verbs/` and `https://ashecribb.dev/xapi/activities/` with `prefLabel`, `definition`, and SKOS mappings (`exactMatch`, `closeMatch`, `broadMatch`) linking each to standard terms.
+   - **Activity Types**: 6 formal activity types (`paper`, `search`, `note`, `claim`, `research-log`, `agent-session`).
+   - **Statement Templates & Patterns**: Formal statement templates and the `scholar-ai-assisted-research-cycle` pattern (`AI Suggestion → Human Edit → Human Accept`).
+2. **OWL 2 DL Ontology (Turtle)** at `docs/vocab/scholar.ttl`:
+   - Aligns with PROV-O, FaBiO, CiTO, FOAF, and SKOS.
+   - Models classes: `HumanActor`, `AIAgent` (subclass of `prov:SoftwareAgent`), `Judgment`, `AIActivity`, `Claim`, `Evidence`, `ResearchSession`, `Consent`.
+   - **Formal Axiom**: Epistemic governance that "AI cannot make judgments" is formalized as:
+     $$\text{Judgment} \sqsubseteq \forall\text{prov:wasAssociatedWith}.\text{HumanActor}$$
+     alongside disjointness between `Judgment` and `AIActivity` ($\text{Judgment} \sqcap \text{AIActivity} = \emptyset$).
+3. **Drift Prevention in Rust**:
+   - `crates/s3a-pack-scholar/src/xapi.rs` includes a unit test `test_verb_registry_matches_xapi_profile` that directly parses `docs/vocab/scholar-xapi-profile.jsonld` at compile/test time and asserts that all 27 verbs and their canonical labels precisely match between the code and the formal profile.
+
+### 27.2 Reasoner & Syntax Validation
+- **JSON-LD Validation**: `docs/vocab/scholar-xapi-profile.jsonld` parsed with Python `rdflib` into 248 RDF triples with 0 syntax errors.
+- **OWL 2 RL Reasoner Verification**: `docs/vocab/scholar.ttl` parsed into 107 Turtle triples. Deductive closure computed via `owlrl.OWLRL_Semantics` expanding to 406 triples with 0 inconsistencies or unsatisfiable classes.
+
+### 27.3 Reused vs. Minted Vocabulary Mapping Table
+
+| Verb / Term | IRI | Status | Standard Alignment |
+|---|---|---|---|
+| `experienced` | `http://adlnet.gov/expapi/verbs/experienced` | **Reused** (ADL Core) | `exactMatch: adl:experienced` |
+| `cited` | `http://purl.org/spar/cito/cites` | **Reused** (CiTO) | `exactMatch: cito:cites` |
+| `created` | `http://activitystrea.ms/schema/1.0/create` | **Reused** (ActivityStreams 2.0) | `exactMatch: as:create` |
+| `asked` | `http://adlnet.gov/expapi/verbs/asked` | **Reused** (ADL Core) | `exactMatch: adl:asked` |
+| `logged-out` | `http://adlnet.gov/expapi/verbs/logged-out` | **Reused** (ADL Core) | `exactMatch: adl:logged-out`, `closeMatch: as:leave` |
+| `searched` | `https://ashecribb.dev/xapi/verbs/searched` | **Minted** | `exactMatch: as:search`, `closeMatch: acrossx:searched` |
+| `opened` | `https://ashecribb.dev/xapi/verbs/opened` | **Minted** | `exactMatch: as:open` |
+| `viewed` | `https://ashecribb.dev/xapi/verbs/viewed` | **Minted** | `exactMatch: tincan:viewed`, `closeMatch: as:view` |
+| `saved` | `https://ashecribb.dev/xapi/verbs/saved` | **Minted** | `exactMatch: as:save` |
+| `removed` | `https://ashecribb.dev/xapi/verbs/removed` | **Minted** | `exactMatch: as:remove`, `closeMatch: as:delete` |
+| `accepted` | `https://ashecribb.dev/xapi/verbs/accepted` | **Minted** | `exactMatch: as:accept` |
+| `reviewed` | `https://ashecribb.dev/xapi/verbs/reviewed` | **Minted** | `broadMatch: as:review`, `closeMatch: tincan:reviewed` |
+| `approved` | `https://ashecribb.dev/xapi/verbs/approved` | **Minted** (Human Judgment) | `broadMatch: as:accept`, `closeMatch: tincan:approved` |
+| `rejected` | `https://ashecribb.dev/xapi/verbs/rejected` | **Minted** (Human Judgment) | `broadMatch: as:reject`, `closeMatch: tincan:rejected` |
+| `edited` | `https://ashecribb.dev/xapi/verbs/edited` | **Minted** | `broadMatch: as:update`, `closeMatch: tincan:edited` |
+| `requested-human-review` | `https://ashecribb.dev/xapi/verbs/requested-human-review` | **Minted** (Scholar Governance) | `broadMatch: adl:asked`, `closeMatch: tincan:requested` |
+| `flagged-hallucination` | `https://ashecribb.dev/xapi/verbs/flagged-hallucination` | **Minted** (Scholar Epistemic) | `broadMatch: as:flag-as-inappropriate`, `closeMatch: tincan:flagged` |
+| `imported` | `https://ashecribb.dev/xapi/verbs/imported` | **Minted** | `broadMatch: as:create`, `closeMatch: tincan:imported` |
+| `exported-snapshot` | `https://ashecribb.dev/xapi/verbs/exported-snapshot` | **Minted** | `broadMatch: as:save`, `closeMatch: tincan:exported` |
+| `ai-answered` | `https://ashecribb.dev/xapi/verbs/ai-answered` | **Minted** (AI-Only) | `broadMatch: adl:answered`, `closeMatch: as:respond` |
+| `consent-declined` | `https://ashecribb.dev/xapi/verbs/consent-declined` | **Minted** | `broadMatch: as:reject`, `closeMatch: privacy:consent-withdrawn` |
+| `flagged-discrepancy` | `https://ashecribb.dev/xapi/verbs/flagged-discrepancy` | **Minted** | `broadMatch: as:flag-as-inappropriate`, `closeMatch: tincan:flagged` |
+| `verified-claim` | `https://ashecribb.dev/xapi/verbs/verified-claim` | **Minted** | `broadMatch: as:confirm`, `closeMatch: tincan:confirmed` |
+| `ta-approved-draft` | `https://ashecribb.dev/xapi/verbs/ta-approved-draft` | **Minted** (TA Supervisor) | `broadMatch: as:accept`, `closeMatch: scholar:approved` |
+| `ta-provided-analogy` | `https://ashecribb.dev/xapi/verbs/ta-provided-analogy` | **Minted** (TA Pedagogy) | `broadMatch: as:provide`, `closeMatch: tincan:suggested` |
+| `ta-redirected` | `https://ashecribb.dev/xapi/verbs/ta-redirected` | **Minted** (TA Excerpt) | `broadMatch: as:move`, `closeMatch: tincan:redirected` |
+| `ta-escalated` | `https://ashecribb.dev/xapi/verbs/ta-escalated` | **Minted** (TA Office Hours) | `broadMatch: adl:asked`, `closeMatch: tincan:escalated` |
+
+### 27.4 Workspace Test Totals (`cargo test --workspace`)
+
+```text
+Workspace Test Suite Breakdown:
+- s3a-cabi:             3 passed (unittests src/lib.rs: 3)
+- s3a-cli:             14 passed (tests/cli_ops.rs: 5; tests/gate_cli_tests.rs: 1; tests/tour_tests.rs: 8)
+- s3a-core:            21 passed (unittests src/lib.rs: 21)
+- s3a-engine:         139 passed, 2 ignored:
+  * unittests src/lib.rs: 83 passed, 2 ignored
+  * tests/array_tile.rs: 5 passed
+  * tests/checkpoint_compaction_gates.rs: 7 passed
+  * tests/columnar_tile.rs: 6 passed
+  * tests/consent_and_schema_tiles.rs: 10 passed
+  * tests/durability_crash_harness.rs: 7 passed
+  * tests/erasure_tile.rs: 6 passed
+  * tests/manifest_tile.rs: 5 passed
+  * tests/ql_v1.rs: 4 passed
+  * tests/sealed_footer_v2.rs: 6 passed
+- s3a-harness:         55 passed:
+  * unittests src/lib.rs: 11 passed
+  * tests/protocol_and_sandbox_tests.rs: 14 passed
+  * tests/runtime_core_tests.rs: 11 passed
+  * tests/tool_registry_tests.rs: 8 passed
+  * tests/operability_tests.rs: 7 passed
+  * tests/training_and_eval_tests.rs: 3 passed
+  * tests/e2e_lrs_test.rs: 1 passed
+- s3a-lrs-server:      21 passed (unittests src/main.rs: 21)
+- s3a-pack-da:          3 passed (unittests src/lib.rs: 3)
+- s3a-pack-gis:         4 passed (unittests src/lib.rs: 4)
+- s3a-pack-ontology:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-robotics:    4 passed (unittests src/lib.rs: 4)
+- s3a-pack-scholar:    37 passed:
+  * unittests src/lib.rs: 36 passed (including test_verb_registry_matches_xapi_profile)
+  * tests/scholar_session_join_compaction.rs: 1 passed
+- s3a-pack-wearable:    3 passed (unittests src/lib.rs: 3)
+- s3a-simd:            13 passed (unittests src/lib.rs: 13)
+- s3a-spec-vectors:    32 passed (unittests src/lib.rs: 32)
+- s3a-vault:            9 passed (unittests src/lib.rs: 9)
+- s3a-vcs:             13 passed (tests/vcs_tests.rs: 13)
+- s3a-wasm-snapshot:    7 passed (unittests src/lib.rs: 7)
+- Doc-tests (17 crates): 0 passed (all runners verified)
+----------------------------------------------------------------------------------------------------
+Total Passed:         378 passed; 0 failed; 2 ignored; 100% GREEN
+```
+
 
 
 

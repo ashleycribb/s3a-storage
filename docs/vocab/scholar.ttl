@@ -1,0 +1,162 @@
+@prefix : <https://ashecribb.dev/ontologies/scholar/v1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix fabio: <http://purl.org/spar/fabio/> .
+@prefix cito: <http://purl.org/spar/cito/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix schema: <http://schema.org/> .
+
+<https://ashecribb.dev/ontologies/scholar/v1> a owl:Ontology ;
+    rdfs:label "Scholar Explorer & S3A Formal Research Ontology"@en ;
+    rdfs:comment "Formal OWL 2 DL domain ontology aligning S3A research traces, agents, claims, evidence, and human governance with PROV-O, FaBiO, CiTO, and FOAF."@en ;
+    owl:versionInfo "1.0.0" .
+
+#################################################################
+#    Object Properties
+#################################################################
+
+prov:wasAssociatedWith a owl:ObjectProperty ;
+    rdfs:label "wasAssociatedWith"@en ;
+    rdfs:comment "An Activity was associated with an Agent."@en ;
+    rdfs:domain prov:Activity ;
+    rdfs:range prov:Agent .
+
+cito:cites a owl:ObjectProperty ;
+    rdfs:label "cites"@en ;
+    rdfs:domain :AcademicPaper ;
+    rdfs:range :AcademicPaper .
+
+:hasEvidence a owl:ObjectProperty ;
+    rdfs:label "hasEvidence"@en ;
+    rdfs:domain :Claim ;
+    rdfs:range :Evidence .
+
+:concernsPaper a owl:ObjectProperty ;
+    rdfs:label "concernsPaper"@en ;
+    rdfs:domain :Evidence ;
+    rdfs:range :AcademicPaper .
+
+:recordedInSession a owl:ObjectProperty ;
+    rdfs:label "recordedInSession"@en ;
+    rdfs:domain prov:Activity ;
+    rdfs:range :ResearchSession .
+
+:hasConsent a owl:ObjectProperty ;
+    rdfs:label "hasConsent"@en ;
+    rdfs:domain :HumanActor ;
+    rdfs:range :Consent .
+
+#################################################################
+#    Data Properties
+#################################################################
+
+:confidenceScore a owl:DatatypeProperty ;
+    rdfs:label "confidenceScore"@en ;
+    rdfs:domain :Claim ;
+    rdfs:range xsd:float .
+
+:sha256Fingerprint a owl:DatatypeProperty ;
+    rdfs:label "sha256Fingerprint"@en ;
+    rdfs:domain :Evidence ;
+    rdfs:range xsd:hexBinary .
+
+:passageQuote a owl:DatatypeProperty ;
+    rdfs:label "passageQuote"@en ;
+    rdfs:domain :Evidence ;
+    rdfs:range xsd:string .
+
+:doi a owl:DatatypeProperty ;
+    rdfs:label "doi"@en ;
+    rdfs:domain :AcademicPaper ;
+    rdfs:range xsd:string .
+
+#################################################################
+#    Classes & Agent Taxonomy
+#################################################################
+
+prov:Agent a owl:Class ;
+    rdfs:label "Agent"@en .
+
+prov:Activity a owl:Class ;
+    rdfs:label "Activity"@en .
+
+prov:SoftwareAgent a owl:Class ;
+    rdfs:subClassOf prov:Agent ;
+    rdfs:label "SoftwareAgent"@en .
+
+foaf:Person a owl:Class ;
+    rdfs:subClassOf prov:Agent ;
+    rdfs:label "Person"@en .
+
+foaf:Organization a owl:Class ;
+    rdfs:subClassOf prov:Agent ;
+    rdfs:label "Organization"@en .
+
+:HumanActor a owl:Class ;
+    rdfs:subClassOf foaf:Person ;
+    owl:disjointWith :AIAgent ;
+    rdfs:label "HumanActor"@en ;
+    rdfs:comment "A verified human researcher, supervisor, or teacher assistant."@en .
+
+:AIAgent a owl:Class ;
+    rdfs:subClassOf prov:SoftwareAgent ;
+    owl:disjointWith :HumanActor ;
+    rdfs:label "AIAgent"@en ;
+    rdfs:comment "An artificial intelligence agent, orchestrator, or tool caller."@en .
+
+:ResearchSession a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "ResearchSession"@en ;
+    rdfs:comment "A bounded research session or workspace execution context."@en .
+
+:AcademicPaper a owl:Class ;
+    rdfs:subClassOf fabio:ResearchPaper ;
+    rdfs:label "AcademicPaper"@en ;
+    rdfs:comment "A scholarly article, pre-print, or publication."@en .
+
+:Claim a owl:Class ;
+    rdfs:subClassOf skos:Concept ;
+    rdfs:label "Claim"@en ;
+    rdfs:comment "An atomic scientific assertion with calibrated epistemic confidence."@en .
+
+:Evidence a owl:Class ;
+    rdfs:label "Evidence"@en ;
+    rdfs:comment "Verifiable citation passage quote and cryptographic hash."@en .
+
+:Consent a owl:Class ;
+    rdfs:label "Consent"@en ;
+    rdfs:comment "Data subject privacy authorization, scope, and expiry record."@en .
+
+#################################################################
+#    Judgment & Human-Only Governance Axioms
+#################################################################
+
+:Judgment a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty prov:wasAssociatedWith ;
+        owl:allValuesFrom :HumanActor
+    ] ;
+    rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty prov:wasAssociatedWith ;
+        owl:someValuesFrom :HumanActor
+    ] ;
+    rdfs:label "Judgment"@en ;
+    rdfs:comment "An authoritative evaluative decision (e.g. approved, rejected, reviewed) requiring human moral agency and supervisory authority."@en .
+
+:AIActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty prov:wasAssociatedWith ;
+        owl:allValuesFrom :AIAgent
+    ] ;
+    owl:disjointWith :Judgment ;
+    rdfs:label "AIActivity"@en ;
+    rdfs:comment "An automated reasoning, generation, tool call, or candidate proposition produced by an AI agent. Disjoint with Judgment."@en .
