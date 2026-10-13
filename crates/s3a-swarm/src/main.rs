@@ -18,16 +18,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     match args[1].as_str() {
         "run" => {
-            let mut agents = 1000;
+            let mut agents: Option<usize> = None;
             let mut commits = 5;
             let mut shadow = false;
             let mut out_path = Some(PathBuf::from("demo/swarm_repo.s3a"));
-            let mut results_path = PathBuf::from("demo/results.json");
+            let mut results_path: Option<PathBuf> = None;
+            let mut remote_url: Option<String> = None;
 
             let mut i = 2;
             while i < args.len() {
-                if args[i] == "--agents" && i + 1 < args.len() {
-                    agents = args[i + 1].parse().unwrap_or(1000);
+                if args[i] == "--remote" && i + 1 < args.len() {
+                    remote_url = Some(args[i + 1].clone());
+                    i += 2;
+                } else if args[i] == "--agents" && i + 1 < args.len() {
+                    agents = Some(args[i + 1].parse().unwrap_or(1000));
                     i += 2;
                 } else if args[i] == "--commits" && i + 1 < args.len() {
                     commits = args[i + 1].parse().unwrap_or(5);
@@ -39,30 +43,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     out_path = Some(PathBuf::from(&args[i + 1]));
                     i += 2;
                 } else if args[i] == "--results" && i + 1 < args.len() {
-                    results_path = PathBuf::from(&args[i + 1]);
+                    results_path = Some(PathBuf::from(&args[i + 1]));
                     i += 2;
                 } else {
                     i += 1;
                 }
             }
 
-            let (metrics, coordinator) = run_swarm(agents, commits, shadow, out_path).await?;
-            metrics.print_summary();
-            metrics.save_to_file(&results_path)?;
-            println!(">>> Metrics saved to: {}", results_path.display());
+            if let Some(remote) = remote_url {
+                let actual_agents = agents.unwrap_or(200);
+                let actual_results = results_path.unwrap_or_else(|| PathBuf::from("demo/results-cloudflare.json"));
+                println!(">>> Running remote swarm benchmark against Cloudflare Worker: {}", remote);
+                println!(">>> Agents: {}, Commits/agent: {}, Target results: {}", actual_agents, commits, actual_results.display());
 
-            // Save any pending human conflicts to demo/pending_conflicts.json for CLI interaction
-            let pending = coordinator.human_queue.list_pending();
-            if !pending.is_empty() {
-                let conflicts_path = PathBuf::from("demo/pending_conflicts.json");
-                if let Some(parent) = conflicts_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                let metrics = s3a_swarm::run_remote_swarm(&remote, "s3a-swarm-main", actual_agents, commits, 50).await?;
+                println!("\n=== CLOUDFLARE WORKER REMOTE BENCHMARK RESULTS ===");
+                metrics.print_summary();
+                metrics.save_to_file(&actual_results)?;
+                println!(">>> Remote metrics saved to: {}", actual_results.display());
+            } else {
+                let actual_agents = agents.unwrap_or(1000);
+                let actual_results = results_path.unwrap_or_else(|| PathBuf::from("demo/results.json"));
+
+                let (metrics, coordinator) = run_swarm(actual_agents, commits, shadow, out_path).await?;
+                println!("\n=== LOCAL IN-PROCESS BENCHMARK RESULTS ===");
+                metrics.print_summary();
+                metrics.save_to_file(&actual_results)?;
+                println!(">>> Local metrics saved to: {}", actual_results.display());
+
+                // Save any pending human conflicts to demo/pending_conflicts.json for CLI interaction
+                let pending = coordinator.human_queue.list_pending();
+                if !pending.is_empty() {
+                    let conflicts_path = PathBuf::from("demo/pending_conflicts.json");
+                    if let Some(parent) = conflicts_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let json = serde_json::to_string_pretty(&pending)?;
+                    std::fs::write(&conflicts_path, json)?;
+                    println!(">>> {} claim conflicts pending in human queue. Saved to: {}",
+                        pending.len(), conflicts_path.display());
+                    println!(">>> Inspect with: `s3a-swarm human list`");
                 }
-                let json = serde_json::to_string_pretty(&pending)?;
-                std::fs::write(&conflicts_path, json)?;
-                println!(">>> {} claim conflicts pending in human queue. Saved to: {}",
-                    pending.len(), conflicts_path.display());
-                println!(">>> Inspect with: `s3a-swarm human list`");
             }
         }
         "human" => {
@@ -195,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 fn print_usage() {
     println!("S3A Swarm - Concurrency Benchmark & Human Supervisor CLI");
     println!("Usage:");
-    println!("  s3a-swarm run [--agents N] [--commits M] [--shadow] [--out <PATH>] [--results <PATH>]");
+    println!("  s3a-swarm run [--remote <URL>] [--agents N] [--commits M] [--shadow] [--out <PATH>] [--results <PATH>]");
     println!("  s3a-swarm human list");
     println!("  s3a-swarm human resolve <conflict_id> --choice <target|source> [--rationale \"...\"]");
     println!("  s3a-swarm verify <archive_path>");

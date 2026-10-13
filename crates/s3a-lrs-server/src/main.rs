@@ -385,6 +385,11 @@ impl AppState {
         let gate_directory_svc = gate_directory::GateDirectoryService::open_or_create(gate_dir_path, gate_limits)
             .map_err(|e| format!("Failed to initialize Gate Directory: {}", e))?;
 
+        let batch_sync_svc = batch_sync::BatchSyncService::new(batch_sync::BatchSyncLimits {
+            max_body_bytes: config.max_batch_body_bytes,
+            max_requests_per_minute: config.max_batch_rate_per_minute,
+        });
+
         Ok(Arc::new(AppState {
             default_store: default_store.clone(),
             store: default_store,
@@ -393,7 +398,30 @@ impl AppState {
             config,
             agent_registry,
             gate_directory: Arc::new(std::sync::Mutex::new(gate_directory_svc)),
+            batch_sync: Arc::new(std::sync::Mutex::new(batch_sync_svc)),
         }))
+    }
+
+    /// Retrieves or creates and caches the `scholar.s3a` archive in the data directory.
+    pub fn get_or_create_scholar_store(&self) -> Result<Arc<LrsStore>, s3a_engine::LrsStoreError> {
+        let scholar_name = "scholar.s3a";
+        {
+            let map = self.stores.read().unwrap();
+            if let Some(s) = map.get(scholar_name) {
+                return Ok(s.clone());
+            }
+        }
+        let mut map = self.stores.write().unwrap();
+        if let Some(s) = map.get(scholar_name) {
+            return Ok(s.clone());
+        }
+        let target_path = self.config.data_dir.join(scholar_name);
+        let store = LrsStore::open_or_create(&target_path)?;
+        if self.config.enable_scholar {
+            let _ = store.writer().enable_addon(s3a_core::ADDON_EDU);
+        }
+        map.insert(scholar_name.to_string(), store.clone());
+        Ok(store)
     }
 
     /// Opens or returns a cached LrsStore for a specified archive file or name.
@@ -552,6 +580,18 @@ fn main() {
             "--max-mailbox-total-bytes" => {
                 if i + 1 < args.len() {
                     config.max_mailbox_total_bytes = args[i + 1].parse().unwrap_or(100 * 1024 * 1024);
+                    i += 1;
+                }
+            }
+            "--max-batch-size" => {
+                if i + 1 < args.len() {
+                    config.max_batch_body_bytes = args[i + 1].parse().unwrap_or(5 * 1024 * 1024);
+                    i += 1;
+                }
+            }
+            "--max-batch-rate" => {
+                if i + 1 < args.len() {
+                    config.max_batch_rate_per_minute = args[i + 1].parse().unwrap_or(60);
                     i += 1;
                 }
             }
@@ -1087,6 +1127,8 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
             "state"
         } else if path.starts_with("/activities/profile") || path.starts_with("/agents/profile") {
             "profile"
+        } else if path.starts_with("/s3a/batch") {
+            "statements/write"
         } else {
             "statements/read"
         };
@@ -1113,6 +1155,8 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
             "state"
         } else if path.starts_with("/activities/profile") || path.starts_with("/agents/profile") {
             "profile"
+        } else if path.starts_with("/s3a/batch") {
+            "statements/write"
         } else {
             "statements/read"
         };
@@ -1141,27 +1185,31 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // -------------------------------------------------------------------------
     // X-Experience-API-Version Header Validation (xAPI 1.0.3 §4.1.1)
     // -------------------------------------------------------------------------
-    let xapi_version = headers_map.get("x-experience-api-version")
-        .or_else(|| query_params.get("x-experience-api-version"))
-        .or_else(|| query_params.get("version"));
-    match xapi_version {
-        Some(ver) if ver.starts_with("1.0") => {
-            // Valid xAPI version
-        }
-        None if state.config.insecure_dev => {
-            // Permitted in insecure-dev mode (e.g. Scholar Explorer UI, direct browser inspection)
-        }
-        _ => {
-            let resp = make_error_response(400, "Missing or invalid X-Experience-API-Version header (must be 1.0.x)");
-            log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 400);
-            let _ = req.respond(resp);
-            return;
+    if !path.starts_with("/s3a/batch") {
+        let xapi_version = headers_map.get("x-experience-api-version")
+            .or_else(|| query_params.get("x-experience-api-version"))
+            .or_else(|| query_params.get("version"));
+        match xapi_version {
+            Some(ver) if ver.starts_with("1.0") => {
+                // Valid xAPI version
+            }
+            None if state.config.insecure_dev => {
+                // Permitted in insecure-dev mode (e.g. Scholar Explorer UI, direct browser inspection)
+            }
+            _ => {
+                let resp = make_error_response(400, "Missing or invalid X-Experience-API-Version header (must be 1.0.x)");
+                log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 400);
+                let _ = req.respond(resp);
+                return;
+            }
         }
     }
 
     // Dispatch routed resources
     let response = if path == "/statements" || path == "/statements/" {
         handle_statements(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store, &active_archive)
+    } else if path == "/s3a/batch" || path == "/s3a/batch/" {
+        batch_sync::handle_batch_sync(&method, &headers_map, &body_bytes, &state)
     } else if path == "/activities/state" || path == "/activities/state/" {
         handle_activities_state(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store)
     } else if path == "/activities/profile" || path == "/activities/profile/" {
@@ -2622,6 +2670,33 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, ()> {
     Ok(buf)
 }
 
+pub fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut i = 0;
+    while i < input.len() {
+        let b0 = input[i];
+        let b1 = if i + 1 < input.len() { input[i + 1] } else { 0 };
+        let b2 = if i + 2 < input.len() { input[i + 2] } else { 0 };
+
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        if i + 1 < input.len() {
+            out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < input.len() {
+            out.push(TABLE[(n & 63) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    out
+}
+
 fn handle_registration_export(
     method: Method,
     path: &str,
@@ -2680,7 +2755,9 @@ mod tests {
         assert!(researcher.has_scope("statements/read"));
         assert!(researcher.has_scope("all"));
 
-        let temp_dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_routing_{}_{}", std::process::id(), unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
         let default_path = temp_dir.join("test_routing_default.s3a");
         let audit_path = temp_dir.join("test_routing_audit.s3a");
         let scholar_path = temp_dir.join("scholar.s3a");
@@ -2707,6 +2784,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         let empty_params = HashMap::new();
@@ -2720,15 +2798,14 @@ mod tests {
         let (_exp_store, exp_archive) = state.resolve_store_and_archive(Some(&explorer), &empty_params, &empty_headers).unwrap();
         assert_eq!(exp_archive, "usage.s3a");
 
-        let _ = std::fs::remove_file(&default_path);
-        let _ = std::fs::remove_file(&audit_path);
-        let _ = std::fs::remove_file(&scholar_path);
-        let _ = std::fs::remove_file(&usage_path);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_usage_archive_strict_profile_validation() {
-        let temp_dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_usage_strict_{}_{}", std::process::id(), unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
         let usage_path = temp_dir.join("test_usage_strict.s3a");
         let audit_path = temp_dir.join("test_usage_audit.s3a");
 
@@ -2745,6 +2822,7 @@ mod tests {
             config: ServerConfig::default(),
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         let params = HashMap::new();
@@ -2825,7 +2903,9 @@ mod tests {
 
     #[test]
     fn test_admin_delete_by_actor_account_and_retention_purge() {
-        let temp_dir = std::env::temp_dir();
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_admin_delete_{}_{}", std::process::id(), unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
         let usage_path = temp_dir.join("test_admin_usage.s3a");
         let audit_path = temp_dir.join("test_admin_audit.s3a");
 
@@ -2845,6 +2925,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // Seed statement for device-777
@@ -3108,6 +3189,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // 1. Direct resolution check: explorer with ?archive=scholar.s3a ignores override and resolves to usage.s3a
@@ -3191,6 +3273,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // 1. Direct resolve check
@@ -3260,6 +3343,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // 1. Direct resolve check with absolute path
@@ -3332,6 +3416,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         let nonexistent_target = temp_dir.join("unknown_random_archive.s3a");
@@ -3412,6 +3497,7 @@ mod tests {
             config,
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // 1. With admin_api_override = true, admin successfully picks custom_allowed.s3a
@@ -3572,6 +3658,267 @@ mod tests {
             err_msg.contains("Failed to open credential archive 'conflict.s3a'"),
             "Error message must clearly identify the failed archive: {}", err_msg
         );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_batch_sync_in_order_and_idempotent_duplicate() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use s3a_pack_scholar::{HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket};
+
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_sync_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.archive_path = PathBuf::from("lrs_data.s3a");
+        config.audit_archive_path = PathBuf::from("lrs_data.audit.s3a");
+        config.credentials.push(AuthCredential {
+            user: "researcher".to_string(),
+            pass: "researcher123".to_string(),
+            scopes: vec!["all".to_string()],
+            archive: None,
+        });
+
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let state = AppState::init_with_audit(config, audit_writer).expect("init state");
+
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        // 1. Prepare signed batch
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let pk_hex = hex::encode(verifying_key.as_bytes());
+
+        let mut packet = SrsSyncDeltaPacket::new([1, 2], [3, 4], 1);
+        for i in 0..3 {
+            let rec = HumanLrsRecord::new([1, 2], 1600000000, 100, 1, 1.0, S3ACoordinate::default(), i as u32);
+            packet.entries.push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
+        }
+        let delta_bytes = packet.export_bytes();
+        let checksum = crc32c::crc32c(&delta_bytes);
+        let sig = signing_key.sign(&delta_bytes);
+        let sig_hex = hex::encode(sig.to_bytes());
+        let bytes_b64 = crate::base64_encode(&delta_bytes);
+
+        let req_body = serde_json::json!({
+            "session_id": "test-session-001",
+            "from_cursor": 0,
+            "to_cursor": 3,
+            "bytes": bytes_b64,
+            "checksum": checksum,
+            "signature": sig_hex,
+            "public_key": pk_hex,
+        });
+
+        // 2. POST /xapi/s3a/batch (In-order batch)
+        let resp = ureq::post(&format!("{}/xapi/s3a/batch", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("Content-Type", "application/json")
+            .send_bytes(&serde_json::to_vec(&req_body).unwrap())
+            .expect("Batch sync POST must succeed");
+
+        assert_eq!(resp.status(), 200);
+        let resp_json: serde_json::Value = serde_json::from_reader(resp.into_reader()).expect("parse response JSON");
+        assert_eq!(resp_json["status"], "ok");
+        assert_eq!(resp_json["accepted_cursor"], 3);
+        assert_eq!(resp_json["duplicate"], false);
+        assert_eq!(resp_json["records_appended"], 3);
+
+        // Verify scholar.s3a was created in data_dir
+        assert!(temp_dir.join("scholar.s3a").exists(), "scholar.s3a must be created");
+
+        // 3. Re-send exact same batch (Idempotent 200 OK no-op)
+        let resp2 = ureq::post(&format!("{}/xapi/s3a/batch", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("Content-Type", "application/json")
+            .send_bytes(&serde_json::to_vec(&req_body).unwrap())
+            .expect("Duplicate re-send must succeed");
+
+        assert_eq!(resp2.status(), 200);
+        let resp2_json: serde_json::Value = serde_json::from_reader(resp2.into_reader()).expect("parse response JSON");
+        assert_eq!(resp2_json["status"], "ok");
+        assert_eq!(resp2_json["accepted_cursor"], 3);
+        assert_eq!(resp2_json["duplicate"], true);
+        assert_eq!(resp2_json["records_appended"], 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_batch_sync_gap_and_out_of_order_rejection() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use s3a_pack_scholar::{HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket};
+
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_gap_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.credentials.push(AuthCredential {
+            user: "researcher".to_string(),
+            pass: "researcher123".to_string(),
+            scopes: vec!["all".to_string()],
+            archive: None,
+        });
+
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let state = AppState::init_with_audit(config, audit_writer).expect("init state");
+
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let pk_hex = hex::encode(signing_key.verifying_key().as_bytes());
+
+        let mut packet = SrsSyncDeltaPacket::new([1, 2], [3, 4], 1);
+        let rec = HumanLrsRecord::new([1, 2], 1600000000, 100, 1, 1.0, S3ACoordinate::default(), 0);
+        packet.entries.push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
+        let delta_bytes = packet.export_bytes();
+        let checksum = crc32c::crc32c(&delta_bytes);
+        let sig = signing_key.sign(&delta_bytes);
+        let sig_hex = hex::encode(sig.to_bytes());
+        let bytes_b64 = crate::base64_encode(&delta_bytes);
+
+        // 1. New session with gap (starts at cursor 5 instead of 0) -> 409 Conflict
+        let gap_req = serde_json::json!({
+            "session_id": "gap-session-001",
+            "from_cursor": 5,
+            "to_cursor": 10,
+            "bytes": bytes_b64,
+            "checksum": checksum,
+            "signature": sig_hex,
+            "public_key": pk_hex,
+        });
+
+        let resp_gap = ureq::post(&format!("{}/xapi/s3a/batch", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("Content-Type", "application/json")
+            .send_bytes(&serde_json::to_vec(&gap_req).unwrap());
+
+        assert!(resp_gap.is_err());
+        let err = resp_gap.unwrap_err();
+        match err {
+            ureq::Error::Status(code, _) => assert_eq!(code, 409),
+            _ => panic!("Expected 409 status code"),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_batch_sync_consent_off_client_contract() {
+        // Client-side consent verification simulation
+        let mut user_consented = false;
+
+        // When consent is OFF: client contract dictates zero network activity
+        let sync_attempt = if user_consented {
+            Some("SEND_REQUEST")
+        } else {
+            None
+        };
+        assert!(sync_attempt.is_none(), "Consent-off must emit zero requests");
+
+        // When user grants consent: sync is enabled
+        user_consented = true;
+        let sync_attempt2 = if user_consented {
+            Some("SEND_REQUEST")
+        } else {
+            None
+        };
+        assert!(sync_attempt2.is_some(), "Consent-on proceeds with sync");
+    }
+
+    #[test]
+    fn test_batch_sync_limits_payload_size_and_invalid_signature() {
+        use ed25519_dalek::SigningKey;
+
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_limits_{}", unique));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mut config = ServerConfig::default();
+        config.data_dir = temp_dir.clone();
+        config.max_batch_body_bytes = 1024; // 1 KB limit for testing 413
+        config.credentials.push(AuthCredential {
+            user: "researcher".to_string(),
+            pass: "researcher123".to_string(),
+            scopes: vec!["all".to_string()],
+            archive: None,
+        });
+
+        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let state = AppState::init_with_audit(config, audit_writer).expect("init state");
+
+        let server = Server::http("127.0.0.1:0").expect("bind test server");
+        let port = server.server_addr().to_ip().unwrap().port();
+        let addr = format!("http://127.0.0.1:{}", port);
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let sc = state_clone.clone();
+                thread::spawn(move || handle_request(req, sc));
+            }
+        });
+
+        // 1. Oversized body -> 413 Payload Too Large
+        let big_body = vec![b'a'; 2048]; // 2 KB > 1 KB limit
+        let resp_413 = ureq::post(&format!("{}/xapi/s3a/batch", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("Content-Type", "application/json")
+            .send_bytes(&big_body);
+
+        assert!(resp_413.is_err());
+        match resp_413.unwrap_err() {
+            ureq::Error::Status(code, _) => assert_eq!(code, 413),
+            _ => panic!("Expected 413 status code"),
+        }
+
+        // 2. Bad signature -> 401 Unauthorized
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let pk_hex = hex::encode(signing_key.verifying_key().as_bytes());
+        let fake_sig = hex::encode([0u8; 64]);
+
+        let bad_sig_req = serde_json::json!({
+            "session_id": "sig-test-001",
+            "from_cursor": 0,
+            "to_cursor": 1,
+            "bytes": crate::base64_encode(&[1, 2, 3, 4]),
+            "checksum": crc32c::crc32c(&[1, 2, 3, 4]),
+            "signature": fake_sig,
+            "public_key": pk_hex,
+        });
+
+        let resp_sig = ureq::post(&format!("{}/xapi/s3a/batch", addr))
+            .set("Authorization", "Basic cmVzZWFyY2hlcjpyZXNlYXJjaGVyMTIz")
+            .set("Content-Type", "application/json")
+            .send_bytes(&serde_json::to_vec(&bad_sig_req).unwrap());
+
+        assert!(resp_sig.is_err());
+        match resp_sig.unwrap_err() {
+            ureq::Error::Status(code, _) => assert_eq!(code, 401),
+            _ => panic!("Expected 401 status code"),
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

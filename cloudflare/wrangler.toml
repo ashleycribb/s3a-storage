@@ -1,0 +1,19 @@
+name = "s3a-gate"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Durable Object for Single-Writer push ordering per project
+[durable_objects]
+bindings = [
+  { name = "REPO_COORDINATOR", class_name = "RepoCoordinator" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RepoCoordinator"]
+
+# Cloudflare Artifacts binding for Git repositories & tokens
+[[artifacts]]
+binding = "ARTIFACTS"
+namespace = "default"

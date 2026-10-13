@@ -11,3 +11,4 @@ tests/adl-conformance/
 *.keystore
 *.vault.s3a
 *.vault
+node_modules/

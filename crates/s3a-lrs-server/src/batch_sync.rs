@@ -12,15 +12,13 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use bytemuck::bytes_of;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Response, StatusCode};
 
-use s3a_core::{HyperTileHeader, TileType};
-use s3a_engine::concurrent_writer::ConcurrentTileWriter;
+use s3a_core::HyperTileHeader;
 use s3a_pack_scholar::{ScholarTileType, SrsSyncDeltaPacket};
 
 use crate::AppState;
@@ -344,7 +342,7 @@ pub fn handle_batch_sync(
     // 9. Append records to scholar.s3a
     let records_to_append = packet.entries.len();
     if records_to_append > 0 {
-        let store = match state.get_or_open_store("scholar.s3a") {
+        let store = match state.get_or_create_scholar_store() {
             Ok(s) => s,
             Err(e) => return error_response(500, &format!("Failed to open scholar.s3a archive: {:?}", e)),
         };

@@ -1199,6 +1199,7 @@ mod tests {
             config: config.clone(),
             agent_registry: Vec::new(),
             gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
+            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
         });
 
         // 1. Unauthenticated request without admin override fails with 403 (or 401)

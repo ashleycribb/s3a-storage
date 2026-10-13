@@ -127,3 +127,170 @@ pub async fn run_swarm(
 
     Ok((metrics, coord_final))
 }
+
+/// Remote runner that executes concurrent agent pushes against a deployed Cloudflare Worker gateway.
+pub async fn run_remote_swarm(
+    remote_url: &str,
+    project_id: &str,
+    agents_count: usize,
+    commits_per_agent: usize,
+    max_concurrency: usize,
+) -> Result<SwarmMetrics, Box<dyn std::error::Error + Send + Sync>> {
+    println!(">>> Initializing Remote S3A Swarm against Cloudflare Worker: {}", remote_url);
+    println!(">>> Project ID: {}", project_id);
+    println!(">>> Agents: {}, Commits/Agent: {} (Total: {}), Max Concurrency: {}",
+        agents_count, commits_per_agent, agents_count * commits_per_agent, max_concurrency);
+
+    let clean_url = remote_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let mut root_seed = [0u8; 32];
+    OsRng.fill_bytes(&mut root_seed);
+    let root_key = SigningKey::from_bytes(&root_seed);
+
+    let mut agents = Vec::with_capacity(agents_count);
+    for i in 0..agents_count {
+        agents.push(Arc::new(SimulatedAgent::new(i, &root_key)));
+    }
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
+    let auto_merged = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rejected_by_grant = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sent_to_human = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let latencies_us = Arc::new(Mutex::new(Vec::new()));
+    let verified_sigs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let start_time = Instant::now();
+    let mut handles = Vec::with_capacity(agents_count);
+
+    for agent in agents {
+        let sem = Arc::clone(&semaphore);
+        let cli = client.clone();
+        let target_url = format!("{}/project/{}/push", clean_url, project_id);
+        let auto_m = Arc::clone(&auto_merged);
+        let rej_g = Arc::clone(&rejected_by_grant);
+        let sent_h = Arc::clone(&sent_to_human);
+        let lats = Arc::clone(&latencies_us);
+        let v_sigs = Arc::clone(&verified_sigs);
+        let commits_n = commits_per_agent;
+
+        let handle = tokio::spawn(async move {
+            let mut parent_seal = [0u8; 32];
+            for seq in 0..commits_n {
+                let bundle = agent.prepare_commit(seq, parent_seal);
+                if bundle.commit.verify_signature() {
+                    v_sigs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                let payload = serde_json::json!({
+                    "commit": {
+                        "commit_id": hex::encode(bundle.commit.commit_id),
+                        "seal_hash": hex::encode(bundle.commit.seal_hash),
+                        "author_pubkey": hex::encode(bundle.commit.author_pubkey),
+                        "signature": hex::encode(bundle.commit.signature),
+                        "timestamp": bundle.commit.committed_timestamp,
+                        "message": bundle.commit.message(),
+                    },
+                    "grant": {
+                        "agent_id": hex::encode(bundle.grant.agent_id),
+                        "allowed_prefix": agent.allowed_prefix,
+                        "expires_at": bundle.grant.get_expires_at(),
+                    },
+                    "records": bundle.records.iter().map(|r| serde_json::json!({
+                        "record_id": r.record_id,
+                        "tile_type": r.tile_type,
+                        "payload_hash": hex::encode(r.payload_hash),
+                        "summary": r.summary,
+                        "committed_timestamp": r.committed_timestamp,
+                        "commit_sig_hex": hex::encode(r.commit_signature),
+                        "author_gate": r.author_gate_address,
+                    })).collect::<Vec<_>>(),
+                    "paths": bundle.paths,
+                    "agent_addr": agent.gate_address.to_uri(),
+                    "agent_pubkey": hex::encode(agent.pubkey),
+                });
+
+                let _permit = sem.acquire().await.unwrap();
+                let push_start = Instant::now();
+
+                let resp = cli.post(&target_url).json(&payload).send().await;
+                let elapsed = push_start.elapsed().as_micros() as u64;
+
+                {
+                    let mut lock = lats.lock().await;
+                    lock.push(elapsed);
+                }
+
+                if let Ok(r) = resp {
+                    let status = r.status().as_u16();
+                    if status == 200 {
+                        auto_m.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if let Ok(json_body) = r.json::<serde_json::Value>().await {
+                            if let Some(seal_str) = json_body.get("seal_hash").and_then(|s| s.as_str()) {
+                                if let Ok(bytes) = hex::decode(seal_str) {
+                                    if bytes.len() == 32 {
+                                        parent_seal.copy_from_slice(&bytes);
+                                    }
+                                }
+                            }
+                        }
+                    } else if status == 403 {
+                        rej_g.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    } else if status == 202 {
+                        sent_h.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        h.await?;
+    }
+
+    let total_duration = start_time.elapsed().as_secs_f64();
+    let total_pushes = agents_count * commits_per_agent;
+
+    // Fetch final status from remote Worker to retrieve the actual root seal hash
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut final_seal = format!("cf_seal_{:016x}", now_millis);
+    let status_url = format!("{}/project/{}/status", clean_url, project_id);
+    if let Ok(res) = client.get(&status_url).send().await {
+        if let Ok(status_json) = res.json::<serde_json::Value>().await {
+            if let Some(seal) = status_json.get("head_seal").and_then(|s| s.as_str()) {
+                final_seal = seal.to_string();
+            } else if let Some(recent) = status_json.get("recent_merges").and_then(|m| m.as_array()) {
+                if let Some(first) = recent.first().and_then(|r| r.get("seal_hash")).and_then(|s| s.as_str()) {
+                    final_seal = first.to_string();
+                }
+            }
+        }
+    }
+
+    let latencies = {
+        let mut lock = latencies_us.lock().await;
+        std::mem::take(&mut *lock)
+    };
+
+    let metrics = SwarmMetrics::compute(
+        agents_count,
+        total_pushes,
+        total_duration,
+        latencies,
+        auto_merged.load(std::sync::atomic::Ordering::Relaxed),
+        rejected_by_grant.load(std::sync::atomic::Ordering::Relaxed),
+        sent_to_human.load(std::sync::atomic::Ordering::Relaxed),
+        &final_seal,
+        verified_sigs.load(std::sync::atomic::Ordering::Relaxed),
+        false,
+    );
+
+    Ok(metrics)
+}
