@@ -1,5 +1,6 @@
 # S3A: Autonomous Agent Version Control for the Next GitHub
-**Cloudflare Challenge Submission — "Build the Next GitHub"**
+**Cloudflare Challenge Submission — "Build the Next GitHub"**  
+**Live Gateway & Dashboard:** `https://s3a-gate.ashley-e-cribb.workers.dev`
 
 ---
 
@@ -12,36 +13,37 @@ Git was architected for human developers collaborating asynchronously through br
 S3A replaces single-tip branch trees with an append-only, signed, tile-based data format paired with Git-style versioning (`s3a-vcs`):
 - **Set Union Merging**: Changes package into immutable, sealed tiles. Disjoint tiles merge unconditionally as a set union with zero locks and zero rebase storms.
 - **Deterministic Record Resolution**: Concurrent edits to the same data record resolve deterministically via Lamport timestamps (Last-Write-Wins), broken in case of identical timestamps by lexicographical comparison of the commit author's 64-byte Ed25519 signature. Every replica independently converges on the exact same state without central leader consensus.
-- **Cryptographic Identity & Grants**: Every agent holds an Ed25519 keypair and a canonical `gate://` address derived from its public key. Scoped delegation grants signed by the repository owner strictly limit which paths or partitions each agent may modify.
+- **Cryptographic Identity & Grants**: Every agent holds an Ed25519 keypair and a canonical `gate://` address. Scoped delegation grants signed by the repository owner strictly limit which paths each agent may modify.
 
 ### 3. What Makes It Different: Epistemic Invariants
 Unlike conventional merge tools that attempt heuristic text reconciliation, S3A enforces a strict boundary between automated computation and human judgment: **AI checks facts; humans judge.**
 - AI agents perform objective tasks: schema conformance, citation checks, and hash verification.
 - Empirical claims, scientific findings, research evidence, and policy decisions are non-delegable.
-- When concurrent commits assert conflicting claims or evidence, S3A never auto-merges. Disagreements route to an `ask_human` supervisory queue. The merge finalizes only after an authorized human reviews both versions and signs a `VcsResolutionRecord`.
+- When concurrent commits assert conflicting claims or evidence, S3A never auto-merges. Disagreements route to an `ask_human` supervisory queue. The merge finalizes only after an authorized human supervisor reviews both versions and commits a signed `VcsResolutionRecord` (generated in the dashboard using WebCrypto Ed25519 keys).
 
 ### 4. Safety Architecture
-- **Fail-Safe Defaults**: Pushes outside an agent's delegation grant are refused immediately and logged to an audit trail.
-- **Confidence-Gated Decisions**: Model decisions enforce calibrated confidence thresholds; low-confidence operations fall back to safe defaults or escalate to human review.
+- **Cryptographic Signature Verification**: The Durable Object verifies every commit's Ed25519 signature using `crypto.subtle` over canonical envelope bytes before intake; tampered signatures are rejected with HTTP 401.
+- **Fail-Safe Defaults**: Pushes outside an agent's delegation grant are refused with HTTP 403 and logged to an audit trail.
+- **Confidence-Gated Decisions**: Low-confidence operations fall back to safe defaults or escalate to human review.
 - **Shadow Branches**: Under `--shadow` mode, agent commits land on isolated shadow branches and promote to `main` only after passing automated integrity and schema evaluation.
 
-### 5. Demo Results
-A 1,000-agent concurrency benchmark (`s3a-swarm`) executed locally on Windows produced the following verified metrics (`demo/results.json`):
-- **Simulated Agents**: 1,000 concurrent tokio tasks
-- **Total Commits**: 5,000 signed commits in 0.46 seconds
-- **Throughput**: 10,933.11 commits / second
-- **Push Latency**: p50: 0.084 ms (84 µs) | p99: 0.140 ms (140 µs)
-- **Auto-Merged**: 4,851 commits (disjoint set union + deterministic LWW)
-- **Rejected by Grant**: 100 commits (fail-safe boundary enforcement)
-- **Sent to Human Queue**: 49 claim conflicts (epistemic disagreements held for review)
-- **Signatures Verified**: 4,851 / 4,851 (100% valid Ed25519 signatures)
-- **Final Seal Hash**: `170964ecfd26acee5f8e48e0dec5f78a9414f7796875368c1f13071199e88d21`
+### 5. Verified Demo Results
+**A. Local 1,000-Agent In-Process Run (`demo/results.json`):**
+- 1,000 agents | 5,000 commits | **10,933.11 commits/sec** (0.46 s total)
+- p50: 0.084 ms | p99: 0.140 ms
+- Auto-merged: 4,851 | Rejected by grant: 100 | Sent to human queue: 49
+- Signatures verified: 4,851 / 4,851 (100%) | Seal: `170964ecfd26acee5f8e48e0dec5f78a9414f7796875368c1f13071199e88d21`
+
+**B. Live Cloudflare Remote Benchmark (`demo/results-cloudflare.json`):**
+- 200 agents pushing over HTTP to `https://s3a-gate.ashley-e-cribb.workers.dev` (50 concurrency)
+- 1,000 commits | **33.72 commits/sec** (29.66 s) | p50 latency: 210.6 ms
+- Auto-merged: 969 | Rejected by grant: 20 | Rejected (Bad Sig): 1 | Sent to human queue: 9
+- Seal: `8cac49d55a247bfc36e53cbb65b38afe1b7d2bbd59d87c8ea064ae408f2d5b8f`
 
 ### 6. Implementation on Cloudflare
-S3A maps natively to Cloudflare's serverless platform:
-- **Cloudflare Workers (`s3a-gate`)**: Serves the edge router and a clean live dashboard (`/`) displaying real-time metrics, active agents, recent merges, and the human dispute queue with one-click resolution.
-- **Durable Objects (`RepoCoordinator`)**: Provides a single-writer coordinator per project to serialize push intake, verify Ed25519 signatures and delegation grants, and execute deterministic S3A-VCS merges.
-- **Cloudflare Artifacts**: Each agent session receives an isolated Artifacts Git repository (or branch) forked from the baseline. Pushes are committed into the agent's Artifacts repository using `isomorphic-git` with an in-memory filesystem (`MemoryFS`), then merged into the baseline repository (`s3a-baseline-<project>`). The baseline repository is standard Git—clonable by any developer with `git clone` using an Artifacts bearer token.
+- **Cloudflare Workers (`s3a-gate`)**: Serves edge routing and the live reactive dashboard at `/` showing real-time counters, agent links, merge streams, and one-click dispute resolution.
+- **Durable Objects (`RepoCoordinator`)**: SQLite-backed single-writer coordinator per project for push intake, signature verification, grant checking, and deterministic merges.
+- **Cloudflare Artifacts**: Each agent forks the baseline repository into an isolated Artifacts Git repository (`s3a-agent-<hash>`). Commits are recorded using `isomorphic-git` and an in-memory virtual filesystem (`MemoryFS`), then merged into `s3a-baseline-<project>`. The baseline repository is standard Git—clonable via `git clone` with an Artifacts bearer token.
 
 ### 7. Origin
 S3A was designed for **Scholar Explorer**, an open academic research tool where provenance, data integrity, and human judgment matter. We brought those guarantees to agentic version control: machines propose changes at massive scale, storage merges them without locks, and humans retain sovereign judgment over truth.

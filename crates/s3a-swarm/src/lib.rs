@@ -158,6 +158,7 @@ pub async fn run_remote_swarm(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
     let auto_merged = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let rejected_by_grant = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rejected_bad_sig = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sent_to_human = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let latencies_us = Arc::new(Mutex::new(Vec::new()));
     let verified_sigs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -171,10 +172,12 @@ pub async fn run_remote_swarm(
         let target_url = format!("{}/project/{}/push", clean_url, project_id);
         let auto_m = Arc::clone(&auto_merged);
         let rej_g = Arc::clone(&rejected_by_grant);
+        let rej_bs = Arc::clone(&rejected_bad_sig);
         let sent_h = Arc::clone(&sent_to_human);
         let lats = Arc::clone(&latencies_us);
         let v_sigs = Arc::clone(&verified_sigs);
         let commits_n = commits_per_agent;
+        let is_bad_sig_agent = agent.index == (agents_count - 1);
 
         let handle = tokio::spawn(async move {
             let mut parent_seal = [0u8; 32];
@@ -184,12 +187,25 @@ pub async fn run_remote_swarm(
                     v_sigs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
 
+                // Exactly one swarm test agent sends a corrupted signature on its first push
+                let send_corrupt_sig = is_bad_sig_agent && seq == 0;
+                let sig_hex = if send_corrupt_sig {
+                    hex::encode([0xba, 0xd0, 0x51, 0x90].repeat(16))
+                } else {
+                    hex::encode(bundle.commit.signature)
+                };
+
                 let payload = serde_json::json!({
                     "commit": {
                         "commit_id": hex::encode(bundle.commit.commit_id),
                         "seal_hash": hex::encode(bundle.commit.seal_hash),
+                        "parent_count": bundle.commit.parent_count,
+                        "parent_seal_hashes": [
+                            hex::encode(bundle.commit.parent_seal_hashes[0]),
+                            hex::encode(bundle.commit.parent_seal_hashes[1]),
+                        ],
                         "author_pubkey": hex::encode(bundle.commit.author_pubkey),
-                        "signature": hex::encode(bundle.commit.signature),
+                        "signature": sig_hex,
                         "timestamp": bundle.commit.committed_timestamp,
                         "message": bundle.commit.message(),
                     },
@@ -236,6 +252,8 @@ pub async fn run_remote_swarm(
                                 }
                             }
                         }
+                    } else if status == 401 {
+                        rej_bs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     } else if status == 403 {
                         rej_g.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     } else if status == 202 {
@@ -279,13 +297,14 @@ pub async fn run_remote_swarm(
         std::mem::take(&mut *lock)
     };
 
-    let metrics = SwarmMetrics::compute(
+    let metrics = SwarmMetrics::compute_with_bad_sigs(
         agents_count,
         total_pushes,
         total_duration,
         latencies,
         auto_merged.load(std::sync::atomic::Ordering::Relaxed),
         rejected_by_grant.load(std::sync::atomic::Ordering::Relaxed),
+        rejected_bad_sig.load(std::sync::atomic::Ordering::Relaxed),
         sent_to_human.load(std::sync::atomic::Ordering::Relaxed),
         &final_seal,
         verified_sigs.load(std::sync::atomic::Ordering::Relaxed),

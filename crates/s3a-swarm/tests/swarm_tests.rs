@@ -211,3 +211,21 @@ fn test_grant_scope_enforcement_and_rejection() {
         other => panic!("Expected UnauthorizedPath rejection, got {:?}", other),
     }
 }
+
+#[test]
+fn test_bad_signature_rejection() {
+    let mut seed = [0u8; 32];
+    OsRng.fill_bytes(&mut seed);
+    let root_key = SigningKey::from_bytes(&seed);
+
+    let agent = SimulatedAgent::new(99, &root_key);
+    let mut bundle = agent.prepare_commit(0, [0u8; 32]);
+
+    // Initial signature is valid
+    assert!(bundle.commit.verify_signature(), "Original commit signature must be valid");
+
+    // Corrupt signature
+    bundle.commit.signature[0] ^= 0xff;
+    bundle.commit.signature[63] ^= 0xaa;
+    assert!(!bundle.commit.verify_signature(), "Tampered signature must fail verification");
+}

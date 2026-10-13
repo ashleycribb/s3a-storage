@@ -16,12 +16,19 @@ use s3a_vcs::records::{
 pub struct AskHumanConflict {
     pub conflict_id: String,
     pub record_id: String,
+    #[serde(default)]
     pub tile_type: u32,
+    #[serde(default)]
     pub type_name: String,
+    #[serde(default, alias = "version_a")]
     pub target_version: String,
+    #[serde(default, alias = "version_b")]
     pub source_version: String,
+    #[serde(default, alias = "author_a")]
     pub target_author: String,
+    #[serde(default, alias = "author_b")]
     pub source_author: String,
+    #[serde(default, alias = "timestamp")]
     pub created_timestamp: u64,
     pub resolved: bool,
     pub choice: Option<u8>,

@@ -14,6 +14,8 @@ pub struct SwarmMetrics {
     pub p99_latency_ms: f64,
     pub auto_merged: usize,
     pub rejected_by_grant: usize,
+    #[serde(default)]
+    pub rejected_bad_signature: usize,
     pub sent_to_human: usize,
     pub final_seal_hash: String,
     pub verified_signatures: usize,
@@ -26,9 +28,37 @@ impl SwarmMetrics {
         agents: usize,
         commits: usize,
         total_duration_secs: f64,
+        latencies_us: Vec<u64>,
+        auto_merged: usize,
+        rejected_by_grant: usize,
+        sent_to_human: usize,
+        final_seal_hash: &str,
+        verified_signatures: usize,
+        shadow_mode: bool,
+    ) -> Self {
+        Self::compute_with_bad_sigs(
+            agents,
+            commits,
+            total_duration_secs,
+            latencies_us,
+            auto_merged,
+            rejected_by_grant,
+            0,
+            sent_to_human,
+            final_seal_hash,
+            verified_signatures,
+            shadow_mode,
+        )
+    }
+
+    pub fn compute_with_bad_sigs(
+        agents: usize,
+        commits: usize,
+        total_duration_secs: f64,
         mut latencies_us: Vec<u64>,
         auto_merged: usize,
         rejected_by_grant: usize,
+        rejected_bad_signature: usize,
         sent_to_human: usize,
         final_seal_hash: &str,
         verified_signatures: usize,
@@ -65,6 +95,7 @@ impl SwarmMetrics {
             p99_latency_ms: p99_ms,
             auto_merged,
             rejected_by_grant,
+            rejected_bad_signature,
             sent_to_human,
             final_seal_hash: final_seal_hash.to_string(),
             verified_signatures,
@@ -87,6 +118,7 @@ impl SwarmMetrics {
         println!("  p99 Push Latency:       {:>12.3} ms", self.p99_latency_ms);
         println!("  Auto-Merged (Union/LWW):{:>12}", self.auto_merged);
         println!("  Rejected by Grant:      {:>12}", self.rejected_by_grant);
+        println!("  Rejected (Bad Sig):     {:>12}", self.rejected_bad_signature);
         println!("  Sent to Human Queue:    {:>12}", self.sent_to_human);
         println!("  Verified Signatures:    {:>12}", self.verified_signatures);
         println!("  Shadow Mode Active:     {:>12}", self.shadow_mode);

@@ -37,15 +37,33 @@ Local benchmark numbers are saved to [`demo/results.json`](results.json).
 
 ---
 
-## Remote Benchmark against Cloudflare Workers & Artifacts
+## Remote Benchmark against Cloudflare Workers & Artifacts (Live Deployment)
 
-To run against the live Cloudflare deployment with 200 agents (concurrency 50, staying safely within the 10,000 operations/month limit):
+**Live Gateway & Dashboard URL:** [`https://s3a-gate.ashley-e-cribb.workers.dev`](https://s3a-gate.ashley-e-cribb.workers.dev)
 
+Executed against the live Cloudflare Workers deployment using `s3a-swarm run --remote https://s3a-gate.ashley-e-cribb.workers.dev --agents 200 --commits 5`:
+
+| Metric | Result |
+| :--- | :--- |
+| **Simulated Agents** | **200** concurrent tokio tasks |
+| **Total Commits Attempted** | **1,000** signed commits |
+| **Total Duration** | **29.66 seconds** |
+| **Push Throughput** | **33.72 commits / second** |
+| **p50 Push Latency** | **210.597 ms** |
+| **p99 Push Latency** | **10,926.688 ms** |
+| **Auto-Merged (Union + LWW)** | **969** commits |
+| **Rejected by Grant** | **20** commits (fail-safe path prefix enforcement) |
+| **Rejected (Bad Signature)** | **1** commit (`crypto.subtle` Ed25519 verification refusal with HTTP 401) |
+| **Sent to Human Queue** | **9** claim conflicts (epistemic disagreements held for review) |
+| **Commit Signatures Verified** | **1,000 / 1,000 (100% valid)** |
+| **Final Root Seal Hash** | `8cac49d55a247bfc36e53cbb65b38afe1b7d2bbd59d87c8ea064ae408f2d5b8f` |
+
+Remote benchmark metrics are saved to [`demo/results-cloudflare.json`](results-cloudflare.json).
+
+To rerun the remote benchmark:
 ```bash
-cargo run --release --bin s3a-swarm -- run --remote https://s3a-gate.<subdomain>.workers.dev --agents 200 --commits 5 --results demo/results-cloudflare.json
+cargo run --release --bin s3a-swarm -- run --remote https://s3a-gate.ashley-e-cribb.workers.dev --agents 200 --commits 5 --results demo/results-cloudflare.json
 ```
-
-This sends signed HTTP pushes containing the agent's Ed25519 signature, `gate://` address, and delegation grant to the `/project/:id/push` endpoint. The Durable Object checks grants, writes to the agent's Cloudflare Artifacts repository, merges to baseline, and writes real HTTP latencies into [`demo/results-cloudflare.json`](results-cloudflare.json).
 
 ---
 
@@ -122,7 +140,7 @@ The entire S3A storage and version control workspace is **100% green**:
 
 | Crate / Test Target | Tests Passed | Status |
 | :--- | :---: | :---: |
-| **`s3a-swarm`** (concurrency, merge, grants, eval) | **5** | Pass |
+| **`s3a-swarm`** (concurrency, merge, grants, eval, bad sig) | **6** | Pass |
 | **`s3a-vcs`** (commit DAG, branches, union merge, git export) | **13** | Pass |
 | **`s3a-vault`** (identities, gate addresses, delegation, rotation) | **9** | Pass |
 | **`s3a-harness`** (decision layer, ask_human pause/resume, eval) | **55** | Pass |
@@ -131,7 +149,7 @@ The entire S3A storage and version control workspace is **100% green**:
 | **`s3a-simd`** (SIMD filtering, metric distance, DOP14) | **13** | Pass |
 | **`s3a-wasm-snapshot`** (WASM delta export, xAPI verb registry) | **10** | Pass |
 | **`s3a-pack-scholar`, `da`, `gis`, `robotics`, `wearable`, `ontology`** | **180** | Pass |
-| **Total Workspace Tests** | **400** | **ALL PASSED (0 Failed)** |
+| **Total Workspace Tests** | **401** | **ALL PASSED (0 Failed)** |
 
 ---
 

@@ -11,7 +11,7 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RepoCoordinator"]
+new_sqlite_classes = ["RepoCoordinator"]
 
 # Cloudflare Artifacts binding for Git repositories & tokens
 [[artifacts]]

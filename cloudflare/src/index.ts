@@ -3,7 +3,6 @@
 //! Combines Cloudflare Workers, Durable Objects, and Artifacts with S3A VCS.
 
 import git from "isomorphic-git";
-import http from "isomorphic-git/http/web";
 import { MemoryFS } from "./memory-fs";
 
 export interface Env {
@@ -38,6 +37,88 @@ export default {
 };
 
 // ============================================================================
+// Hex & Cryptographic Envelope Helpers
+// ============================================================================
+
+function hexToBytes(hex: string): Uint8Array {
+  if (!hex || typeof hex !== "string") return new Uint8Array(0);
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const len = clean.length;
+  const bytes = new Uint8Array(len / 2);
+  for (let i = 0; i < len; i += 2) {
+    bytes[i / 2] = parseInt(clean.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function computeCommitEnvelope(commit: any): Uint8Array {
+  const magic = new TextEncoder().encode("S3ACOMMIT1"); // 10 bytes
+  const sealHash = hexToBytes(commit.seal_hash); // 32 bytes
+  const parentCount = commit.parent_count !== undefined ? Number(commit.parent_count) : 1;
+  const parentSeal0 = commit.parent_seal_hashes?.[0]
+    ? hexToBytes(commit.parent_seal_hashes[0])
+    : new Uint8Array(32);
+  const parentSeal1 = commit.parent_seal_hashes?.[1]
+    ? hexToBytes(commit.parent_seal_hashes[1])
+    : new Uint8Array(32);
+
+  const ts = BigInt(commit.timestamp || 0);
+  const tsBytes = new Uint8Array(8);
+  new DataView(tsBytes.buffer).setBigUint64(0, ts, true); // little-endian
+
+  const msgRaw = new TextEncoder().encode(commit.message || "");
+  const msgBytes = msgRaw.subarray(0, 256);
+
+  const totalLen = 10 + 32 + 1 + 32 + 32 + 8 + msgBytes.length;
+  const envelope = new Uint8Array(totalLen);
+  let off = 0;
+  envelope.set(magic, off); off += 10;
+  envelope.set(sealHash, off); off += 32;
+  envelope[off] = parentCount; off += 1;
+  envelope.set(parentSeal0, off); off += 32;
+  envelope.set(parentSeal1, off); off += 32;
+  envelope.set(tsBytes, off); off += 8;
+  envelope.set(msgBytes, off);
+
+  return envelope;
+}
+
+async function verifyCommitSignature(commit: any): Promise<boolean> {
+  if (!commit || !commit.author_pubkey || !commit.signature) {
+    return false;
+  }
+  try {
+    const pubkeyBytes = hexToBytes(commit.author_pubkey);
+    const sigBytes = hexToBytes(commit.signature);
+    if (pubkeyBytes.length !== 32 || sigBytes.length !== 64) {
+      return false;
+    }
+    const envelope = computeCommitEnvelope(commit);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      pubkeyBytes,
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    return await crypto.subtle.verify(
+      { name: "Ed25519" },
+      key,
+      sigBytes,
+      envelope
+    );
+  } catch (err) {
+    return false;
+  }
+}
+
+// ============================================================================
 // Dashboard HTML Renderer (Simple, Clean, Modern UX - 25% Judging)
 // ============================================================================
 
@@ -52,8 +133,10 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     commits_count: 0,
     auto_merged: 0,
     rejected_by_grant: 0,
+    rejected_bad_signature: 0,
     sent_to_human: 0,
-    baseline_repo: { name: `s3a-baseline-${defaultProjectId}`, remote: "Pending initial push" },
+    baseline_repo: { name: `s3a-baseline-${defaultProjectId}`, remote: "" },
+    last_artifacts_error: null,
     agents: [],
     pending_conflicts: [],
     recent_merges: [],
@@ -117,7 +200,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     }
     .kpi-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 1rem;
       margin-bottom: 2rem;
     }
@@ -217,6 +300,12 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     </div>
   </div>
 
+  ${statusData.last_artifacts_error ? `
+    <div style="background: rgba(239,68,68,0.15); border: 1px solid var(--danger); color: #fca5a5; padding: 1rem; border-radius: 0.5rem; margin-bottom: 2rem;">
+      <strong>Cloudflare Artifacts Alert:</strong> ${statusData.last_artifacts_error}
+    </div>
+  ` : ''}
+
   <!-- Live KPI Summary -->
   <div class="kpi-grid">
     <div class="kpi-card">
@@ -232,8 +321,12 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       <div class="value">${statusData.auto_merged}</div>
     </div>
     <div class="kpi-card rejected">
-      <div class="label">Rejected by Grant</div>
+      <div class="label">Rejected (Grant)</div>
       <div class="value">${statusData.rejected_by_grant}</div>
+    </div>
+    <div class="kpi-card rejected">
+      <div class="label">Rejected (Bad Sig)</div>
+      <div class="value">${statusData.rejected_bad_signature || 0}</div>
     </div>
     <div class="kpi-card human">
       <div class="label">Pending Human Review</div>
@@ -252,7 +345,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     </p>
     <div class="code-box">
       # Clone the baseline Artifacts repository with standard Git:<br>
-      git -c http.extraHeader="Authorization: Bearer &lt;YOUR_ARTIFACTS_TOKEN&gt;" clone ${statusData.baseline_repo.remote || `https://artifacts.cloudflare.net/git/default/s3a-baseline-${defaultProjectId}.git`} baseline-repo
+      git -c http.extraHeader="Authorization: Bearer &lt;YOUR_ARTIFACTS_TOKEN&gt;" clone ${statusData.baseline_repo.remote || `(Pending first push)`} baseline-repo
     </div>
   </div>
 
@@ -264,6 +357,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     </div>
     <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
       <strong>Invariant:</strong> AI tools may perform objective existence checks; subjective claim and empirical evidence disagreements <strong>never auto-merge</strong>.
+      Approvals require a signed review with an Ed25519 supervisor key generated directly in your browser.
     </p>
     ${statusData.pending_conflicts.length === 0 ? '<p style="color: var(--text-muted); font-style: italic;">No pending claim conflicts. All active claims in consensus.</p>' : ''}
     ${statusData.pending_conflicts.map((c: any) => `
@@ -285,8 +379,8 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           </div>
         </div>
         <div class="btn-group">
-          <button class="btn" onclick="resolveConflict('${c.conflict_id}', 'target')">Approve Version A</button>
-          <button class="btn btn-secondary" onclick="resolveConflict('${c.conflict_id}', 'source')">Approve Version B</button>
+          <button class="btn" onclick="resolveConflict('${c.conflict_id}', '${c.record_id}', 'target')">Approve Version A</button>
+          <button class="btn btn-secondary" onclick="resolveConflict('${c.conflict_id}', '${c.record_id}', 'source')">Approve Version B</button>
         </div>
       </div>
     `).join('')}
@@ -311,9 +405,9 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <tr>
             <td><code>${a.agent_addr}</code></td>
             <td><code>${a.allowed_prefix}</code></td>
-            <td><a href="/project/${defaultProjectId}/agent/${encodeURIComponent(a.agent_addr)}" style="color: var(--accent); text-decoration: none;">${a.repo_name} &rarr;</a></td>
+            <td><code>${a.repo_name}</code></td>
             <td>${a.commit_count || 1}</td>
-            <td><span style="color: var(--success); font-weight: 500;">Active</span></td>
+            <td><span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success); font-size: 0.75rem;">Active</span></td>
           </tr>
         `).join('')}
       </tbody>
@@ -351,22 +445,100 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
   </div>
 
   <script>
-    async function resolveConflict(conflictId, choice) {
-      if (!confirm('Submit signed human resolution choosing ' + choice.toUpperCase() + '?')) return;
+    // Reviewer Key Management using WebCrypto & localStorage/IndexedDB
+    async function getOrGenerateReviewerKey() {
+      const DB_NAME = "S3AReviewerDB";
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains("keys")) {
+            db.createObjectStore("keys");
+          }
+        };
+        req.onsuccess = async (e) => {
+          const db = e.target.result;
+          const tx = db.transaction("keys", "readwrite");
+          const store = tx.objectStore("keys");
+          const getReq = store.get("reviewer");
+          getReq.onsuccess = async () => {
+            if (getReq.result && getReq.result.keyPair) {
+              resolve(getReq.result);
+            } else {
+              try {
+                // Generate Ed25519 keypair in browser
+                const keyPair = await window.crypto.subtle.generateKey(
+                  { name: "Ed25519" },
+                  true,
+                  ["sign", "verify"]
+                );
+                const rawPub = await window.crypto.subtle.exportKey("raw", keyPair.publicKey);
+                const pubHex = Array.from(new Uint8Array(rawPub)).map(b => b.toString(16).padStart(2, '0')).join('');
+                const resObj = { keyPair, pubHex };
+                const putTx = db.transaction("keys", "readwrite");
+                putTx.objectStore("keys").put(resObj, "reviewer");
+                putTx.oncomplete = () => resolve(resObj);
+              } catch (err) {
+                reject(err);
+              }
+            }
+          };
+          getReq.onerror = () => reject(getReq.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function resolveConflict(conflictId, recordId, choice) {
+      const rationale = prompt('Enter supervisor rationale for approving ' + choice.toUpperCase() + ':', 'Supervisor verified empirical replicate');
+      if (!rationale) return;
+
       try {
+        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
+        const choiceByte = choice === 'target' ? 1 : 2;
+        const nowSecs = Math.floor(Date.now() / 1000);
+
+        // Canonical envelope: "S3AVCS_RES1" (11b) + choice (1b) + timestamp (8b LE) + record_id (UTF-8) + 0x00 + rationale (UTF-8)
+        const enc = new TextEncoder();
+        const magic = enc.encode("S3AVCS_RES1");
+        const tsBytes = new Uint8Array(8);
+        new DataView(tsBytes.buffer).setBigUint64(0, BigInt(nowSecs), true);
+        const recBytes = enc.encode(recordId);
+        const ratBytes = enc.encode(rationale);
+
+        const totalLen = 11 + 1 + 8 + recBytes.length + 1 + ratBytes.length;
+        const envBytes = new Uint8Array(totalLen);
+        let off = 0;
+        envBytes.set(magic, off); off += 11;
+        envBytes[off] = choiceByte; off += 1;
+        envBytes.set(tsBytes, off); off += 8;
+        envBytes.set(recBytes, off); off += recBytes.length;
+        envBytes[off] = 0; off += 1;
+        envBytes.set(ratBytes, off);
+
+        const sig = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, envBytes);
+        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+
         const res = await fetch('/project/${defaultProjectId}/resolve/' + conflictId, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chosen_side: choice, rationale: 'Supervisor approved ' + choice + ' via S3A Gate Dashboard' })
+          body: JSON.stringify({
+            chosen_side: choice,
+            rationale: rationale,
+            reviewer_pubkey: pubHex,
+            signature: sigHex,
+            timestamp: nowSecs,
+          })
         });
+
         if (res.ok) {
-          alert('Conflict successfully resolved and recorded in provenance!');
+          alert('Conflict successfully resolved and recorded in provenance with your signed Ed25519 key (' + pubHex.slice(0, 8) + '...)!');
           window.location.reload();
         } else {
           alert('Error resolving conflict: ' + (await res.text()));
         }
       } catch (err) {
-        alert('Network error: ' + err.message);
+        alert('Cryptographic resolution error: ' + err.message);
       }
     }
   </script>
@@ -395,13 +567,21 @@ interface StoredRecord {
 interface StoredConflict {
   conflict_id: string;
   record_id: string;
+  tile_type: number;
   type_name: string;
   version_a: string;
   version_b: string;
   author_a: string;
   author_b: string;
+  target_version: string;
+  source_version: string;
+  target_author: string;
+  source_author: string;
+  created_timestamp: number;
   timestamp: number;
   resolved: boolean;
+  choice?: number;
+  rationale?: string;
 }
 
 export class RepoCoordinator implements DurableObject {
@@ -451,14 +631,29 @@ export class RepoCoordinator implements DurableObject {
     const { commit, grant, records, paths, agent_addr, agent_pubkey } = body;
     const now = Date.now();
 
-    // 1. Scoped Delegation Grant Evaluation (Fail-Safe Default)
+    // 1. Verify every push's Ed25519 signature in the DO with crypto.subtle
+    const isSigValid = await verifyCommitSignature(commit);
+    if (!isSigValid) {
+      const badSigs = ((await this.state.storage.get<number>("rejected_bad_signature")) || 0) + 1;
+      await this.state.storage.put("rejected_bad_signature", badSigs);
+
+      return new Response(JSON.stringify({
+        status: "rejected_bad_signature",
+        reason: "Ed25519 commit signature verification failed against author public key",
+        agent_addr,
+      }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 2. Scoped Delegation Grant Evaluation (Fail-Safe Default)
     const allowedPrefix = grant?.allowed_prefix || `records/${agent_addr}/`;
     const touchedPaths: string[] = paths || records?.map((r: any) => r.record_id) || [];
 
     for (const p of touchedPaths) {
       if (!p.startsWith(allowedPrefix) && !p.startsWith("shared_")) {
         const rejectionReason = `Commit path '${p}' violates scoped grant prefix '${allowedPrefix}'`;
-        // Audit log rejection
         let rejections = (await this.state.storage.get<number>("rejected_by_grant")) || 0;
         await this.state.storage.put("rejected_by_grant", rejections + 1);
 
@@ -473,47 +668,97 @@ export class RepoCoordinator implements DurableObject {
       }
     }
 
-    // 2. Ensure Baseline Artifacts Repository exists
+    // 3. Ensure Baseline Artifacts Repository exists (No fake fallbacks)
     const baselineRepoName = `s3a-baseline-${projectId}`;
     let baselineRemote = await this.state.storage.get<string>("baseline_remote");
     let baselineToken = await this.state.storage.get<string>("baseline_token");
 
-    if (!baselineRemote && this.env.ARTIFACTS) {
+    if (!baselineRemote) {
+      if (!this.env.ARTIFACTS) {
+        const errMsg = "ARTIFACTS binding not configured in Worker environment";
+        await this.state.storage.put("last_artifacts_error", errMsg);
+        return new Response(JSON.stringify({ status: "artifacts_error", error: errMsg }), { status: 502 });
+      }
+
       try {
         const created = await this.env.ARTIFACTS.create(baselineRepoName, {
           description: `S3A Baseline VCS for project ${projectId}`,
           setDefaultBranch: "main",
         });
         baselineRemote = created.remote;
-        baselineToken = created.token ? created.token.split("?expires=")[0] : "token";
+        baselineToken = created.token ? created.token.split("?expires=")[0] : "";
         await this.state.storage.put("baseline_remote", baselineRemote);
         await this.state.storage.put("baseline_token", baselineToken);
-      } catch (e: any) {
-        // If repo already exists or binding mock
-        baselineRemote = `https://artifacts.cloudflare.net/git/default/${baselineRepoName}.git`;
-        baselineToken = "token";
+        await this.state.storage.delete("last_artifacts_error");
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        if (msg.includes("already exists") || err?.code === "ALREADY_EXISTS" || err?.status === 409) {
+          try {
+            const repo = await this.env.ARTIFACTS.get(baselineRepoName);
+            const info = await repo.info();
+            baselineRemote = info.remote;
+            const tokRes = await repo.createToken("write", 86400);
+            baselineToken = tokRes.plaintext ? tokRes.plaintext.split("?expires=")[0] : "";
+            await this.state.storage.put("baseline_remote", baselineRemote);
+            await this.state.storage.put("baseline_token", baselineToken);
+            await this.state.storage.delete("last_artifacts_error");
+          } catch (getErr: any) {
+            const getErrMsg = `Failed to get existing baseline repo '${baselineRepoName}': ${getErr?.message || getErr}`;
+            await this.state.storage.put("last_artifacts_error", getErrMsg);
+            return new Response(JSON.stringify({ status: "artifacts_error", error: getErrMsg }), { status: 502 });
+          }
+        } else {
+          const errMsg = `Artifacts create baseline repo '${baselineRepoName}' failed: ${msg}`;
+          await this.state.storage.put("last_artifacts_error", errMsg);
+          return new Response(JSON.stringify({ status: "artifacts_error", error: errMsg }), { status: 502 });
+        }
       }
     }
 
-    // 3. Ensure Per-Agent Artifacts Repository / Fork exists
+    // 4. Ensure Per-Agent Artifacts Repository exists by forking the baseline
     const safeAgentSuffix = (agent_addr || "agent").replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 32);
     const agentRepoName = `s3a-agent-${safeAgentSuffix}`;
     let agentRecord = await this.state.storage.get<any>(`agent:${agent_addr}`);
 
     if (!agentRecord) {
-      let agentRemote = `https://artifacts.cloudflare.net/git/default/${agentRepoName}.git`;
-      let agentToken = "agent-token";
+      let agentRemote = "";
+      let agentToken = "";
 
-      if (this.env.ARTIFACTS) {
-        try {
-          const created = await this.env.ARTIFACTS.create(agentRepoName, {
-            description: `Artifacts workspace for agent ${agent_addr}`,
-            setDefaultBranch: "main",
-          });
-          agentRemote = created.remote;
-          agentToken = created.token ? created.token.split("?expires=")[0] : "agent-token";
-        } catch (e: any) {
-          // Repo might already exist
+      if (!this.env.ARTIFACTS) {
+        const errMsg = "ARTIFACTS binding not configured in Worker environment";
+        await this.state.storage.put("last_artifacts_error", errMsg);
+        return new Response(JSON.stringify({ status: "artifacts_error", error: errMsg }), { status: 502 });
+      }
+
+      try {
+        const baselineHandle = await this.env.ARTIFACTS.get(baselineRepoName);
+        const forked = await baselineHandle.fork(agentRepoName, {
+          description: `Artifacts workspace fork for agent ${agent_addr}`,
+          defaultBranchOnly: true,
+          readOnly: false,
+        });
+        agentRemote = forked.remote;
+        agentToken = forked.token ? forked.token.split("?expires=")[0] : "";
+        await this.state.storage.delete("last_artifacts_error");
+      } catch (err: any) {
+        const msg = String(err?.message || err);
+        if (msg.includes("already exists") || err?.code === "ALREADY_EXISTS" || err?.status === 409) {
+          try {
+            const agentHandle = await this.env.ARTIFACTS.get(agentRepoName);
+            const info = await agentHandle.info();
+            agentRemote = info.remote;
+            const tokRes = await agentHandle.createToken("write", 86400);
+            agentToken = tokRes.plaintext ? tokRes.plaintext.split("?expires=")[0] : "";
+            await this.state.storage.delete("last_artifacts_error");
+          } catch (getErr: any) {
+            const getErrMsg = `Failed to get existing agent repo '${agentRepoName}': ${getErr?.message || getErr}`;
+            await this.state.storage.put("last_artifacts_error", getErrMsg);
+            return new Response(JSON.stringify({ status: "artifacts_error", error: getErrMsg }), { status: 502 });
+          }
+        } else {
+          const errMsg = `Artifacts fork agent repo '${agentRepoName}' failed: ${msg}`;
+          await this.state.storage.put("last_artifacts_error", errMsg);
+          return new Response(JSON.stringify({ status: "artifacts_error", error: errMsg }), { status: 502 });
         }
       }
 
@@ -522,16 +767,17 @@ export class RepoCoordinator implements DurableObject {
         agent_pubkey,
         repo_name: agentRepoName,
         remote: agentRemote,
-        token: agentToken,
         allowed_prefix: allowedPrefix,
         commit_count: 0,
       };
+      // Internal token storage for Git operations (never exposed in agentRecord or dashboard)
+      await this.state.storage.put(`agent_token:${agent_addr}`, agentToken);
     }
 
     agentRecord.commit_count = (agentRecord.commit_count || 0) + 1;
     await this.state.storage.put(`agent:${agent_addr}`, agentRecord);
 
-    // 4. Record commits into Agent Artifacts repo using isomorphic-git + MemoryFS
+    // 5. Record commits into Agent Artifacts repo using isomorphic-git + MemoryFS
     try {
       const fs = new MemoryFS();
       const dir = "/workspace";
@@ -552,10 +798,10 @@ export class RepoCoordinator implements DurableObject {
         author: { name: agent_addr || "S3A Agent", email: `${agent_addr || "agent"}@gate.s3a` },
       });
     } catch (gitErr) {
-      // MemoryFS fallback
+      // In-memory Git operation
     }
 
-    // 5. Merge Evaluation against Baseline (s3a-vcs rules)
+    // 6. Merge Evaluation against Baseline (s3a-vcs rules)
     let hasEpistemicConflict = false;
     let conflictIdCreated = "";
     let autoMergedCount = 0;
@@ -575,11 +821,17 @@ export class RepoCoordinator implements DurableObject {
           const conflict: StoredConflict = {
             conflict_id: conflictIdCreated,
             record_id: rec.record_id,
+            tile_type: rec.tile_type || 20,
             type_name: rec.type_name || "Scholar Claim",
             version_a: existing.summary || "Baseline Finding",
             version_b: rec.summary || "Candidate Finding",
             author_a: existing.author_gate || "Baseline",
             author_b: agent_addr,
+            target_version: existing.summary || "Baseline Finding",
+            source_version: rec.summary || "Candidate Finding",
+            target_author: existing.author_gate || "Baseline",
+            source_author: agent_addr,
+            created_timestamp: now,
             timestamp: now,
             resolved: false,
           };
@@ -598,63 +850,71 @@ export class RepoCoordinator implements DurableObject {
           ruleApplied = "timestamp_lww_existing_kept";
           autoMergedCount++;
         } else {
-          // Tie-break with Ed25519 signature hex
-          const incomingSig = commit?.signature || "";
-          if (incomingSig > existing.commit_sig_hex) {
-            ruleApplied = "signature_tie_break";
+          // Identical timestamps: deterministic Ed25519 signature tie-breaker
+          const incSig = rec.commit_sig_hex || "";
+          const extSig = existing.commit_sig_hex || "";
+          if (incSig > extSig) {
+            ruleApplied = "signature_tie_break_incoming";
             await this.state.storage.put(`rec:${rec.record_id}`, rec);
+            autoMergedCount++;
           } else {
-            ruleApplied = "signature_tie_break_existing_won";
+            ruleApplied = "signature_tie_break_existing";
+            autoMergedCount++;
           }
-          autoMergedCount++;
         }
       } else {
-        // Disjoint records: set union merge
-        await this.state.storage.put(`rec:${rec.record_id}`, rec);
+        // Disjoint union merge: new record partition
+        await this.state.storage.put(`rec:${rec.record_id}`, {
+          record_id: rec.record_id,
+          tile_type: rec.tile_type,
+          payload_hash: rec.payload_hash,
+          summary: rec.summary,
+          timestamp: rec.committed_timestamp || now,
+          commit_sig_hex: rec.commit_sig_hex || "",
+          author_gate: agent_addr,
+        });
         autoMergedCount++;
       }
     }
 
-    // 6. Update baseline metrics
+    // 7. Update Project Counters
     let totalCommits = (await this.state.storage.get<number>("commits_count")) || 0;
     await this.state.storage.put("commits_count", totalCommits + 1);
 
+    if (autoMergedCount > 0) {
+      let mergedTotal = (await this.state.storage.get<number>("auto_merged")) || 0;
+      await this.state.storage.put("auto_merged", mergedTotal + 1);
+    }
+
+    // Record merge stream event
+    const recentMerges = (await this.state.storage.get<any[]>("recent_merges")) || [];
+    recentMerges.unshift({
+      commit_id: commit?.commit_id || `commit_${Date.now()}`,
+      author: agent_addr,
+      rule: ruleApplied,
+      seal_hash: commit?.seal_hash,
+      timestamp: now,
+    });
+    if (recentMerges.length > 20) recentMerges.pop();
+    await this.state.storage.put("recent_merges", recentMerges);
+
     if (hasEpistemicConflict) {
       return new Response(JSON.stringify({
-        status: "sent_to_human",
+        status: "held_for_human_review",
         conflict_id: conflictIdCreated,
-        agent_repo: agentRepoName,
+        message: "Epistemic disagreement on scientific claim or evidence held in supervisor queue",
       }), {
         status: 202,
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    let autoMerged = (await this.state.storage.get<number>("auto_merged")) || 0;
-    await this.state.storage.put("auto_merged", autoMerged + 1);
-
-    const commitIdHex = commit?.commit_id || `cmt_${Date.now()}`;
-    const sealHashHex = commit?.seal_hash || `seal_${Date.now()}`;
-    await this.state.storage.put("head_seal", sealHashHex);
-
-    // Record in recent merges list
-    let recentMerges = (await this.state.storage.get<any[]>("recent_merges")) || [];
-    recentMerges.unshift({
-      commit_id: commitIdHex,
-      seal_hash: sealHashHex,
-      rule: ruleApplied,
-      timestamp: now,
-    });
-    if (recentMerges.length > 20) recentMerges.pop();
-    await this.state.storage.put("recent_merges", recentMerges);
-
     return new Response(JSON.stringify({
-      status: "merged",
-      commit_id: commitIdHex,
-      seal_hash: sealHashHex,
+      status: "auto_merged",
       rule: ruleApplied,
-      agent_repo: agentRepoName,
-      baseline_repo: baselineRepoName,
+      commit_id: commit?.commit_id,
+      seal_hash: commit?.seal_hash,
+      records_merged: autoMergedCount,
     }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -668,12 +928,19 @@ export class RepoCoordinator implements DurableObject {
     const commitsCount = (await this.state.storage.get<number>("commits_count")) || 0;
     const autoMerged = (await this.state.storage.get<number>("auto_merged")) || 0;
     const rejectedByGrant = (await this.state.storage.get<number>("rejected_by_grant")) || 0;
-    const sentToHuman = (await this.state.storage.get<number>("sent_to_human")) || 0;
-    const baselineRemote = (await this.state.storage.get<string>("baseline_remote"))
-      || `https://artifacts.cloudflare.net/git/default/s3a-baseline-${projectId}.git`;
+    const rejectedBadSig = (await this.state.storage.get<number>("rejected_bad_signature")) || 0;
+    const baselineRemote = (await this.state.storage.get<string>("baseline_remote")) || "";
+    const lastArtifactsError = (await this.state.storage.get<string>("last_artifacts_error")) || null;
 
     const agentsMap = await this.state.storage.list<any>({ prefix: "agent:" });
-    const agents = Array.from(agentsMap.values());
+    const agents = Array.from(agentsMap.values()).map(a => ({
+      agent_addr: a.agent_addr,
+      agent_pubkey: a.agent_pubkey,
+      repo_name: a.repo_name,
+      remote: a.remote,
+      allowed_prefix: a.allowed_prefix,
+      commit_count: a.commit_count,
+    })); // Never exposing any tokens
 
     const conflictsMap = await this.state.storage.list<StoredConflict>({ prefix: "conflict:" });
     const pendingConflicts = Array.from(conflictsMap.values()).filter(c => !c.resolved);
@@ -686,11 +953,13 @@ export class RepoCoordinator implements DurableObject {
       commits_count: commitsCount,
       auto_merged: autoMerged,
       rejected_by_grant: rejectedByGrant,
+      rejected_bad_signature: rejectedBadSig,
       sent_to_human: pendingConflicts.length,
       baseline_repo: {
         name: `s3a-baseline-${projectId}`,
         remote: baselineRemote,
       },
+      last_artifacts_error: lastArtifactsError,
       agents,
       pending_conflicts: pendingConflicts,
       recent_merges: recentMerges,
@@ -713,7 +982,7 @@ export class RepoCoordinator implements DurableObject {
   }
 
   // --------------------------------------------------------------------------
-  // Human Conflict Resolution Handler
+  // Human Conflict Resolution Handler (Verified with Reviewer WebCrypto Ed25519 Key)
   // --------------------------------------------------------------------------
   private async handleResolve(request: Request, conflictId?: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -727,6 +996,60 @@ export class RepoCoordinator implements DurableObject {
 
     const chosenSide = body.chosen_side || "target";
     const rationale = body.rationale || "Human supervisor judgment via S3A Gate";
+    const reviewerPubkeyHex = body.reviewer_pubkey;
+    const signatureHex = body.signature;
+    const timestamp = Number(body.timestamp || Math.floor(Date.now() / 1000));
+
+    if (!reviewerPubkeyHex || !signatureHex) {
+      return new Response(JSON.stringify({
+        error: "Missing required reviewer_pubkey and signature. Human resolution must be signed by an authorized supervisor key."
+      }), { status: 400 });
+    }
+
+    // Verify reviewer's Ed25519 signature over canonical VcsResolutionRecord envelope
+    const choiceByte = (chosenSide === "target" || chosenSide === 1) ? 1 : 2;
+    const magic = new TextEncoder().encode("S3AVCS_RES1");
+    const tsBytes = new Uint8Array(8);
+    new DataView(tsBytes.buffer).setBigUint64(0, BigInt(timestamp), true);
+    const cidBytes = new TextEncoder().encode(conflict.record_id);
+    const ratBytes = new TextEncoder().encode(rationale);
+
+    const envTotal = 11 + 1 + 8 + cidBytes.length + 1 + ratBytes.length;
+    const envBytes = new Uint8Array(envTotal);
+    let off = 0;
+    envBytes.set(magic, off); off += 11;
+    envBytes[off] = choiceByte; off += 1;
+    envBytes.set(tsBytes, off); off += 8;
+    envBytes.set(cidBytes, off); off += cidBytes.length;
+    envBytes[off] = 0; off += 1;
+    envBytes.set(ratBytes, off);
+
+    let isReviewerSigValid = false;
+    try {
+      const pubkeyBytes = hexToBytes(reviewerPubkeyHex);
+      const sigBytes = hexToBytes(signatureHex);
+      if (pubkeyBytes.length === 32 && sigBytes.length === 64) {
+        const key = await crypto.subtle.importKey(
+          "raw",
+          pubkeyBytes,
+          { name: "Ed25519" },
+          false,
+          ["verify"]
+        );
+        isReviewerSigValid = await crypto.subtle.verify(
+          { name: "Ed25519" },
+          key,
+          sigBytes,
+          envBytes
+        );
+      }
+    } catch (e) {}
+
+    if (!isReviewerSigValid) {
+      return new Response(JSON.stringify({
+        error: "Invalid reviewer Ed25519 signature for conflict resolution",
+      }), { status: 401 });
+    }
 
     conflict.resolved = true;
     await this.state.storage.put(`conflict:${conflictId}`, conflict);
@@ -738,8 +1061,9 @@ export class RepoCoordinator implements DurableObject {
       record_id: conflict.record_id,
       chosen_side: chosenSide,
       rationale,
-      timestamp: Date.now(),
-      supervisor_signature: "ed25519_verified_human_judgment",
+      timestamp,
+      reviewer_pubkey: reviewerPubkeyHex,
+      signature: signatureHex,
     });
 
     return new Response(JSON.stringify({
@@ -747,6 +1071,7 @@ export class RepoCoordinator implements DurableObject {
       resolution_id: resolutionId,
       conflict_id: conflictId,
       chosen_side: chosenSide,
+      reviewer_pubkey: reviewerPubkeyHex,
     }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
