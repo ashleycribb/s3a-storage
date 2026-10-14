@@ -16,8 +16,26 @@ class S3ASandbox extends CloudflareSandbox<Env> {
       if (!container.running) {
         container.start();
       }
+      // Ensure the background server is running inside the container if standalone server exists
+      try {
+        await this.exec(
+          "if [ -f '/workspace/baseline-repo/demo/brakets-bracket/.next/standalone/server.js' ] && ! pgrep -f 'server.js' > /dev/null; then " +
+          "cd /workspace/baseline-repo/demo/brakets-bracket/.next/standalone && PORT=3001 HOSTNAME=0.0.0.0 node server.js >/dev/null 2>&1 & " +
+          "sleep 0.5; fi"
+        );
+      } catch (e) {}
+
       const tcp = container.getTcpPort(port);
-      return await tcp.fetch(request);
+      let lastErr: any = null;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          return await tcp.fetch(request.clone());
+        } catch (err: any) {
+          lastErr = err;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      throw lastErr;
     }
     return (this as any).containerFetch(request, port);
   }
@@ -1952,6 +1970,15 @@ fi
       const sandbox = getSandbox(this.env.Sandbox, sandboxId, { normalizeId: true });
       return await sandbox.fetch(forwardRequest);
     } catch (err: any) {
+      // If server not running or repo not cloned yet, auto-trigger preview build and retry once!
+      try {
+        await this.runPreviewBuild(projectId, request.url);
+        if (typeof (stub as any).forwardToPort === "function") {
+          return await (stub as any).forwardToPort(forwardRequest.clone(), 3001);
+        }
+      } catch (buildErr: any) {
+        return new Response(`Preview proxy error: ${buildErr?.message || err?.message || err}. Has the preview been started yet? Click 'Run Preview' on the dashboard.`, { status: 502 });
+      }
       return new Response(`Preview proxy error: ${err?.message || err}. Has the preview been started yet? Click 'Run Preview' on the dashboard.`, { status: 502 });
     }
   }
