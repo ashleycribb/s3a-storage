@@ -734,7 +734,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       statusPill.style.color = "#f59e0b";
       statusPill.style.borderColor = "#f59e0b";
 
-      terminal.textContent = "[system] Connecting to Cloudflare Sandbox container runtime...\n";
+      terminal.textContent = "[system] Connecting to Cloudflare Sandbox container runtime...\\n";
 
       try {
         const res = await fetch('/project/${defaultProjectId}/preview?stream=true', {
