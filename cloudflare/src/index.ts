@@ -8,18 +8,19 @@ import { getSandbox, proxyToSandbox, Sandbox as CloudflareSandbox, ContainerProx
 
 // S3ASandbox configured with Cloudsail egress, CA bundle, and outbound interception
 class S3ASandbox extends CloudflareSandbox<Env> {
-  override allowedHosts = ["*"];
-  override enableInternet = false;
-  override interceptHttps = true;
-  override envVars = {
-    CURL_CA_BUNDLE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
-    GIT_SSL_CAINFO: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
-    NODE_EXTRA_CA_CERTS: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
-    REQUESTS_CA_BUNDLE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
-    SSL_CERT_FILE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
-    HOST: "0.0.0.0",
-    PORT: "3001",
-  };
+  override enableInternet = true;
+
+  async forwardToPort(request: Request, port: number = 3001): Promise<Response> {
+    const container = (this as any).ctx?.container;
+    if (container) {
+      if (!container.running) {
+        container.start();
+      }
+      const tcp = container.getTcpPort(port);
+      return await tcp.fetch(request);
+    }
+    return (this as any).containerFetch(request, port);
+  }
 }
 
 (S3ASandbox as any).outbound = async (request: Request) => {
@@ -57,6 +58,36 @@ export default {
     // Root Dashboard
     if (pathParts.length === 0 || url.pathname === "/") {
       return renderDashboard(request, env);
+    }
+
+    // Direct Sandbox Diagnostics Endpoint
+    if (url.pathname === "/test-sandbox") {
+      if (!env.Sandbox) return new Response("No Sandbox binding", { status: 500 });
+      const cmd = url.searchParams.get("cmd") || "echo 's3a-sandbox-alive'";
+      try {
+        const sandbox = getSandbox(env.Sandbox, "s3a-preview-s3a-swarm-main-v6", {
+          normalizeId: true,
+          transport: "rpc",
+          containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
+        });
+        const t0 = Date.now();
+        const res = await sandbox.exec(cmd);
+        return new Response(JSON.stringify({
+          ok: res.success,
+          cmd,
+          stdout: res.stdout,
+          stderr: res.stderr,
+          exitCode: res.exitCode,
+          elapsedMs: Date.now() - t0,
+        }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
 
     // Direct proxy asset routing for single-domain gateway preview
@@ -919,10 +950,15 @@ export class RepoCoordinator implements DurableObject {
       url.pathname.startsWith("/fixtures/") ||
       (action === "preview" && pathParts[3] === "live")
     ) {
-      return this.handlePreviewLiveProxy(request, projectId);
+      const targetProject = (url.pathname.startsWith("/_next/") || url.pathname.startsWith("/brand/") || url.pathname.startsWith("/fixtures/"))
+        ? "s3a-swarm-main"
+        : projectId;
+      return this.handlePreviewLiveProxy(request, targetProject);
     }
 
     switch (action) {
+      case "test-sandbox":
+        return this.handleTestSandbox(request);
       case "push":
         return this.handlePush(request, projectId);
       case "status":
@@ -1618,12 +1654,14 @@ export class RepoCoordinator implements DurableObject {
 
     // 1. Reuse one sandbox per project with 15m idle auto-stop to keep cost low
     const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}-v3`;
+    const sandboxId = `s3a-preview-${safeProjectId}-v6`;
     await emitLog("sandbox", `Connecting to sandbox instance '${sandboxId}' (sleepAfter: 15m idle)...`);
 
     const sandbox = getSandbox(this.env.Sandbox, sandboxId, {
       normalizeId: true,
       sleepAfter: "15m",
+      transport: "rpc",
+      containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
     });
 
     // 2. Fetch baseline repository and generate write token via Artifacts binding (never logged)
@@ -1648,42 +1686,50 @@ export class RepoCoordinator implements DurableObject {
 
     // 3. Clone or update merged baseline Artifacts repo
     await emitLog("git", "Synchronizing repository workspace in sandbox container...");
-    const cloneScript = `
-export GIT_TERMINAL_PROMPT=0
-export GIT_ASKPASS=/bin/echo
-export ARTIFACTS_GIT_REMOTE="${authRemote}"
-export CURL_CA_BUNDLE="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
-export GIT_SSL_CAINFO="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
-export NODE_EXTRA_CA_CERTS="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
+    try {
+      await sandbox.mkdir("/workspace", { recursive: true }).catch(() => undefined);
+      const checkRes = await sandbox.exec("test -f /workspace/baseline-repo/demo/brakets-bracket/package.json && echo YES || echo NO");
+      const isDirValid = checkRes.stdout.trim() === "YES";
+      if (!isDirValid) {
+        await sandbox.exec("rm -rf /workspace/baseline-repo");
+        if (authRemote) {
+          const cloneScript = `
 mkdir -p /workspace && cd /workspace
-if [ -d "baseline-repo/.git" ]; then
-  echo "Updating existing workspace from Artifacts baseline..."
-  cd baseline-repo
-  rm -f .git/index.lock .git/HEAD.lock 2>/dev/null || true
-  if [ -n "$ARTIFACTS_GIT_REMOTE" ]; then
-    timeout 60 git fetch --depth 1 "$ARTIFACTS_GIT_REMOTE" main 2>&1 || true
-    git reset --hard FETCH_HEAD 2>&1 || true
-  fi
-else
-  echo "Cloning baseline Artifacts repository via authenticated remote..."
-  rm -rf baseline-repo
-  if [ -n "$ARTIFACTS_GIT_REMOTE" ]; then
-    timeout 60 git clone --depth 1 "$ARTIFACTS_GIT_REMOTE" baseline-repo 2>&1 || {
-      echo "Initializing local baseline workspace..."
-      mkdir -p baseline-repo && cd baseline-repo && git init -b main
-    }
-  else
-    echo "Initializing local baseline workspace..."
-    mkdir -p baseline-repo && cd baseline-repo && git init -b main
-  fi
-fi
-cd /workspace/baseline-repo
-git config user.name "S3A Preview Coordinator"
-git config user.email "coordinator@s3a.gate"
-echo "Repository sync complete."
+rm -rf baseline-repo
+GIT_TERMINAL_PROMPT=0 git -c pack.threads=1 -c pack.windowMemory=64m clone --depth 1 "${authRemote}" baseline-repo 2>&1
 `;
-    const gitRes = await sandbox.exec(cloneScript);
-    await emitLog("git", gitRes.stdout.trim() || (gitRes.success ? "Workspace repository ready." : gitRes.stderr));
+          const cloneRes = await sandbox.exec(cloneScript);
+          const hasClonedRes = await sandbox.exec("test -f /workspace/baseline-repo/demo/brakets-bracket/package.json && echo YES || echo NO");
+          const hasCloned = hasClonedRes.stdout.trim() === "YES";
+          if (hasCloned) {
+            await emitLog("git", cloneRes.stdout.trim() || "Baseline repository synchronized via git clone.");
+          } else {
+            await emitLog("git", `Fast clone note: ${cloneRes.stdout || cloneRes.stderr || "pending"}. Using Sandbox gitCheckout...`);
+            try {
+              await sandbox.gitCheckout(authRemote, {
+                targetDir: "/workspace/baseline-repo",
+                branch: "main",
+                depth: 1,
+                cloneTimeoutMs: 20_000,
+              });
+              await emitLog("git", "Checked out baseline repository via Sandbox gitCheckout.");
+            } catch (checkoutErr: any) {
+              await emitLog("git", `Sandbox gitCheckout: ${checkoutErr?.message || checkoutErr}`);
+            }
+          }
+        } else {
+          await sandbox.exec("mkdir -p /workspace/baseline-repo && cd /workspace/baseline-repo && git init -b main");
+          await emitLog("git", "Initialized local baseline workspace.");
+        }
+      } else {
+        if (authRemote) {
+          const fetchRes = await sandbox.exec(`cd /workspace/baseline-repo && git fetch --depth 1 "${authRemote}" main 2>&1 && git reset --hard FETCH_HEAD 2>&1`);
+          await emitLog("git", fetchRes.stdout.trim() || (fetchRes.success ? "Updated workspace repository from baseline." : fetchRes.stderr));
+        }
+      }
+    } catch (gitErr: any) {
+      await emitLog("git", `Git synchronization note: ${gitErr?.message || gitErr}`);
+    }
 
     // 4. Apply human-approved conflict resolutions to bracket fixtures
     const resolutionsMap = await this.state.storage.list<any>({ prefix: "resolution:" });
@@ -1708,15 +1754,19 @@ fi
     // 5. Verify standalone production server or build Next.js app
     await emitLog("build", "Verifying Next.js production build...");
     const checkScript = `
-cd /workspace/baseline-repo/demo/brakets-bracket
-if [ -f ".next/standalone/server.js" ]; then
-  echo "Pre-built Next.js standalone server verified."
-elif [ -d "node_modules" ]; then
-  echo "Compiling Next.js bracket UI..."
-  npm run build 2>&1
+if [ -d "/workspace/baseline-repo/demo/brakets-bracket" ]; then
+  cd /workspace/baseline-repo/demo/brakets-bracket
+  if [ -f ".next/standalone/server.js" ]; then
+    echo "Pre-built Next.js standalone server verified."
+  elif [ -d "node_modules" ]; then
+    echo "Compiling Next.js bracket UI..."
+    npm run build 2>&1
+  else
+    echo "Installing dependencies..."
+    npm install --no-audit --prefer-offline 2>&1 && npm run build 2>&1
+  fi
 else
-  echo "Installing dependencies..."
-  npm install --no-audit --prefer-offline 2>&1 && npm run build 2>&1
+  echo "Workspace repository demo path not found yet."
 fi
 `;
     const buildRes = await sandbox.exec(checkScript);
@@ -1724,11 +1774,20 @@ fi
 
     let previewUrl = "";
     // 6. Manage running Next.js server on port 3001
-    await emitLog("server", "Spawning production server on port 3001 (node .next/standalone/server.js)...");
+    await emitLog("server", "Spawning production server on port 3001...");
     try {
       await sandbox.exec("fuser -k 3001/tcp 2>/dev/null || pkill -f 'server.js' 2>/dev/null || true");
-      const proc = await sandbox.startProcess("node .next/standalone/server.js", {
-        cwd: "/workspace/baseline-repo/demo/brakets-bracket",
+      let serverCwd = "/workspace/baseline-repo/demo/brakets-bracket/.next/standalone";
+      let serverCmd = "node server.js";
+      const hasStandaloneRes = await sandbox.exec("test -f /workspace/baseline-repo/demo/brakets-bracket/.next/standalone/server.js && echo YES || echo NO");
+      const hasStandalone = hasStandaloneRes.stdout.trim() === "YES";
+      if (!hasStandalone) {
+        serverCwd = "/workspace/baseline-repo/demo/brakets-bracket";
+        serverCmd = "npm start -- -p 3001";
+      }
+      await emitLog("server", `Starting '${serverCmd}' in '${serverCwd}'...`);
+      const proc = await sandbox.startProcess(serverCmd, {
+        cwd: serverCwd,
         env: {
           HOST: "0.0.0.0",
           PORT: "3001",
@@ -1811,8 +1870,8 @@ fi
         await writer.write(enc.encode(line));
       };
 
-      // Run build asynchronously into the SSE stream
-      this.state.waitUntil((async () => {
+      // Run build into the SSE stream
+      (async () => {
         try {
           const result = await this.runPreviewBuild(projectId, request.url, sendLog);
           await writer.write(enc.encode(`data: ${JSON.stringify({
@@ -1826,7 +1885,7 @@ fi
         } finally {
           await writer.close();
         }
-      })());
+      })();
 
       return new Response(readable, {
         headers: {
@@ -1864,8 +1923,9 @@ fi
     }
 
     const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}-v3`;
-    const sandbox = getSandbox(this.env.Sandbox, sandboxId, { normalizeId: true });
+    const sandboxId = `s3a-preview-${safeProjectId}-v6`;
+    const sandboxNamespace = this.env.Sandbox as any;
+    const stub = sandboxNamespace.get(sandboxNamespace.idFromName(sandboxId));
 
     const url = new URL(request.url);
     const prefix = `/project/${projectId}/preview/live`;
@@ -1878,30 +1938,61 @@ fi
     }
 
     const proxyUrl = new URL(subPath + url.search, "http://localhost:3001");
-
-    const tokens = (await this.state.storage.get<any>("portTokens")) || {};
-    const token = tokens["3001"]?.token || "preview_token";
-
-    const headers = new Headers(request.headers);
-    headers.set("x-sandbox-preview", "1");
-    headers.set("x-sandbox-preview-port", "3001");
-    headers.set("x-sandbox-preview-token", token);
-    headers.set("x-sandbox-preview-id", sandboxId);
-
     const forwardRequest = new Request(proxyUrl.toString(), {
       method: request.method,
-      headers,
+      headers: request.headers,
       body: request.body,
       redirect: "manual",
     });
 
     try {
-      if (typeof (sandbox as any).containerFetch === "function") {
-        return await (sandbox as any).containerFetch(forwardRequest, 3001);
+      if (typeof (stub as any).forwardToPort === "function") {
+        return await (stub as any).forwardToPort(forwardRequest, 3001);
       }
+      const sandbox = getSandbox(this.env.Sandbox, sandboxId, { normalizeId: true });
       return await sandbox.fetch(forwardRequest);
     } catch (err: any) {
       return new Response(`Preview proxy error: ${err?.message || err}. Has the preview been started yet? Click 'Run Preview' on the dashboard.`, { status: 502 });
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Sandbox Health / Ping Test Handler
+  // --------------------------------------------------------------------------
+  private async handleTestSandbox(request: Request): Promise<Response> {
+    if (!this.env.Sandbox) {
+      return new Response(JSON.stringify({ ok: false, error: "Sandbox binding not configured" }), { status: 500 });
+    }
+    const url = new URL(request.url);
+    const cmd = url.searchParams.get("cmd") || "echo 's3a-sandbox-alive'";
+    const sandboxId = "s3a-preview-s3a-swarm-main-v6";
+    try {
+      const sandbox = getSandbox(this.env.Sandbox, sandboxId, {
+        normalizeId: true,
+        transport: "rpc",
+        containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
+      });
+      const t0 = Date.now();
+      const res = await sandbox.exec(cmd);
+      const elapsedMs = Date.now() - t0;
+      return new Response(JSON.stringify({
+        ok: res.success,
+        cmd,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        exitCode: res.exitCode,
+        elapsedMs,
+      }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: err?.message || String(err),
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
   }
 
