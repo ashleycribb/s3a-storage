@@ -4,10 +4,30 @@
 
 import git from "isomorphic-git";
 import { MemoryFS } from "./memory-fs";
-import { getSandbox, proxyToSandbox, Sandbox, ContainerProxy } from "@cloudflare/sandbox";
+import { getSandbox, proxyToSandbox, Sandbox as CloudflareSandbox, ContainerProxy } from "@cloudflare/sandbox";
+
+// S3ASandbox configured with Cloudsail egress, CA bundle, and outbound interception
+class S3ASandbox extends CloudflareSandbox<Env> {
+  override allowedHosts = ["*"];
+  override enableInternet = false;
+  override interceptHttps = true;
+  override envVars = {
+    CURL_CA_BUNDLE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+    GIT_SSL_CAINFO: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+    NODE_EXTRA_CA_CERTS: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+    REQUESTS_CA_BUNDLE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+    SSL_CERT_FILE: "/etc/cloudflare/certs/cloudflare-containers-ca.crt",
+    HOST: "0.0.0.0",
+    PORT: "3001",
+  };
+}
+
+(S3ASandbox as any).outbound = async (request: Request) => {
+  return fetch(request);
+};
 
 // Re-export Sandbox Durable Object and ContainerProxy for Cloudflare Containers runtime
-export { Sandbox, ContainerProxy };
+export { S3ASandbox as Sandbox, ContainerProxy };
 
 export interface Env {
   ARTIFACTS: any;
@@ -722,8 +742,9 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
                 statusPill.style.color = "#10b981";
                 statusPill.style.borderColor = "#10b981";
                 timeLabel.textContent = "Build time: " + (payload.build_time_ms / 1000).toFixed(1) + "s";
-                if (payload.preview_url) {
-                  previewLink.href = payload.preview_url;
+                const targetUrl = payload.preview_url || payload.live_proxy_url;
+                if (targetUrl) {
+                  previewLink.href = targetUrl;
                   previewLink.style.display = "inline-flex";
                 }
               } else {
@@ -1597,7 +1618,7 @@ export class RepoCoordinator implements DurableObject {
 
     // 1. Reuse one sandbox per project with 15m idle auto-stop to keep cost low
     const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}`;
+    const sandboxId = `s3a-preview-${safeProjectId}-v3`;
     await emitLog("sandbox", `Connecting to sandbox instance '${sandboxId}' (sleepAfter: 15m idle)...`);
 
     const sandbox = getSandbox(this.env.Sandbox, sandboxId, {
@@ -1621,25 +1642,35 @@ export class RepoCoordinator implements DurableObject {
         await emitLog("artifacts", `Warning: baseline repo lookup: ${e?.message || e}`);
       }
     }
+    const authRemote = (rawRemote && artifactsToken)
+      ? `https://x:${artifactsToken}@${rawRemote.replace(/^https?:\/\//, "")}`
+      : "";
 
-    // 3. Clone or initialize merged baseline Artifacts repo
-
-    // 4. Clone or initialize merged baseline Artifacts repo
+    // 3. Clone or update merged baseline Artifacts repo
     await emitLog("git", "Synchronizing repository workspace in sandbox container...");
     const cloneScript = `
 export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=/bin/echo
-export ARTIFACTS_TOKEN="${artifactsToken}"
-export ARTIFACTS_REMOTE="${rawRemote}"
-export PORT="3001"
+export ARTIFACTS_GIT_REMOTE="${authRemote}"
+export CURL_CA_BUNDLE="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
+export GIT_SSL_CAINFO="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
+export NODE_EXTRA_CA_CERTS="/etc/cloudflare/certs/cloudflare-containers-ca.crt"
 mkdir -p /workspace && cd /workspace
-if [ ! -d "baseline-repo/.git" ]; then
-  if [ -n "$ARTIFACTS_TOKEN" ] && [ -n "$ARTIFACTS_REMOTE" ]; then
-    echo "Cloning baseline Artifacts repository..."
-    git -c http.extraHeader="Authorization: Bearer $ARTIFACTS_TOKEN" clone "$ARTIFACTS_REMOTE" baseline-repo 2>&1 || {
+if [ -d "baseline-repo/.git" ]; then
+  echo "Updating existing workspace from Artifacts baseline..."
+  cd baseline-repo
+  rm -f .git/index.lock .git/HEAD.lock 2>/dev/null || true
+  if [ -n "$ARTIFACTS_GIT_REMOTE" ]; then
+    timeout 60 git fetch --depth 1 "$ARTIFACTS_GIT_REMOTE" main 2>&1 || true
+    git reset --hard FETCH_HEAD 2>&1 || true
+  fi
+else
+  echo "Cloning baseline Artifacts repository via authenticated remote..."
+  rm -rf baseline-repo
+  if [ -n "$ARTIFACTS_GIT_REMOTE" ]; then
+    timeout 60 git clone --depth 1 "$ARTIFACTS_GIT_REMOTE" baseline-repo 2>&1 || {
       echo "Initializing local baseline workspace..."
       mkdir -p baseline-repo && cd baseline-repo && git init -b main
-      git remote add origin "$ARTIFACTS_REMOTE" 2>&1 || true
     }
   else
     echo "Initializing local baseline workspace..."
@@ -1647,56 +1678,25 @@ if [ ! -d "baseline-repo/.git" ]; then
   fi
 fi
 cd /workspace/baseline-repo
-if [ -n "$ARTIFACTS_TOKEN" ]; then
-  git config http.extraHeader "Authorization: Bearer $ARTIFACTS_TOKEN"
-fi
 git config user.name "S3A Preview Coordinator"
 git config user.email "coordinator@s3a.gate"
+echo "Repository sync complete."
 `;
     const gitRes = await sandbox.exec(cloneScript);
     await emitLog("git", gitRes.stdout.trim() || (gitRes.success ? "Workspace repository ready." : gitRes.stderr));
 
-    // 4b. Seed demo/brakets-bracket if not yet in workspace
-    const seedScript = `
-export GIT_TERMINAL_PROMPT=0
-export GIT_ASKPASS=/bin/echo
-export ARTIFACTS_TOKEN="${artifactsToken}"
-cd /workspace/baseline-repo
-if [ ! -f "demo/brakets-bracket/package.json" ]; then
-  echo "Seeding Brakets bracket UI from repository..."
-  rm -rf /tmp/seed
-  git clone --depth 1 --single-branch -b main https://github.com/ashleycribb/s3a-storage.git /tmp/seed 2>&1 || true
-  if [ -d "/tmp/seed/demo/brakets-bracket" ]; then
-    mkdir -p demo
-    cp -r /tmp/seed/demo/brakets-bracket demo/
-    rm -rf /tmp/seed
-    git add demo/brakets-bracket
-    git commit -m "feat(demo): seed brakets-bracket baseline" || true
-    if [ -n "$ARTIFACTS_TOKEN" ]; then
-      git push origin main 2>&1 || true
-    fi
-    echo "Brakets bracket seeded successfully."
-  else
-    echo "Seed source unavailable."
-  fi
-else
-  echo "Brakets bracket UI already present in workspace."
-fi
-`;
-    const seedRes = await sandbox.exec(seedScript);
-    await emitLog("git", seedRes.stdout.trim() || (seedRes.success ? "Project files verified." : seedRes.stderr));
-
-    // 5. Apply human-approved conflict resolutions to bracket fixtures
+    // 4. Apply human-approved conflict resolutions to bracket fixtures
     const resolutionsMap = await this.state.storage.list<any>({ prefix: "resolution:" });
     const resolutions = Array.from(resolutionsMap.values());
     if (resolutions.length > 0) {
       const lastRes = resolutions[resolutions.length - 1];
-      await emitLog("resolution", `Applying human resolution '${lastRes.resolution_id}' (Side: ${lastRes.chosen_side}) to tournament bracket...`);
+      const conflictId = lastRes.conflict_id || lastRes.resolution_id || "conflict";
+      await emitLog("resolution", `Applying human resolution '${conflictId}' (Side: ${lastRes.chosen_side}) to tournament bracket...`);
       // Team 1 is Solar Flare (target), Team 2 is Vortex Gaming (source)
       const winningTeam = (lastRes.chosen_side === "target" || lastRes.chosen_side === 1) ? "team_1" : "team_2";
       const runnerUp = winningTeam === "team_1" ? "team_2" : "team_1";
       const updateScript = `
-cd /workspace/baseline-repo/demo/brakets-bracket/fixtures
+cd /workspace/baseline-repo/demo/brakets-bracket/fixtures 2>/dev/null || true
 if [ -f "bracket-fixtures.ts" ]; then
   sed -i 's/"team_1", "team_2", "team_3", "team_4"/"${winningTeam}", "${runnerUp}", "team_3", "team_4"/g' bracket-fixtures.ts || true
 fi
@@ -1705,44 +1705,46 @@ fi
       await emitLog("resolution", `Updated bracket fixtures with human-approved winner: ${winningTeam === "team_1" ? "Solar Flare" : "Vortex Gaming"}.`);
     }
 
-    // 6. Install dependencies and build Next.js app
-    await emitLog("build", "Checking dependencies in demo/brakets-bracket...");
-    const installScript = `
+    // 5. Verify standalone production server or build Next.js app
+    await emitLog("build", "Verifying Next.js production build...");
+    const checkScript = `
 cd /workspace/baseline-repo/demo/brakets-bracket
-if [ ! -d "node_modules" ]; then
-  echo "Installing dependencies (npm install --no-audit --prefer-offline)..."
-  npm ci 2>&1 || npm install --no-audit --prefer-offline 2>&1
+if [ -f ".next/standalone/server.js" ]; then
+  echo "Pre-built Next.js standalone server verified."
+elif [ -d "node_modules" ]; then
+  echo "Compiling Next.js bracket UI..."
+  npm run build 2>&1
 else
-  echo "Dependencies already cached in container workspace."
+  echo "Installing dependencies..."
+  npm install --no-audit --prefer-offline 2>&1 && npm run build 2>&1
 fi
 `;
-    const installRes = await sandbox.exec(installScript);
-    await emitLog("build", installRes.success ? (installRes.stdout.trim() || "Dependencies verified.") : (installRes.stdout || installRes.stderr));
+    const buildRes = await sandbox.exec(checkScript);
+    await emitLog("build", buildRes.stdout.trim() || (buildRes.success ? "Next.js production build verified." : buildRes.stderr));
 
-    await emitLog("build", "Compiling Next.js bracket UI (npm run build)...");
-    const buildRes = await sandbox.exec("cd /workspace/baseline-repo/demo/brakets-bracket && npm run build 2>&1");
-    await emitLog("build", buildRes.success ? "Next.js production build compiled cleanly." : (buildRes.stdout || buildRes.stderr));
-
-    // 7. Manage running Next.js server on port 3001
-    await emitLog("server", "Configuring preview server process on port 3001...");
+    let previewUrl = "";
+    // 6. Manage running Next.js server on port 3001
+    await emitLog("server", "Spawning production server on port 3001 (node .next/standalone/server.js)...");
     try {
-      const procs = await sandbox.listProcesses();
-      for (const p of procs) {
-        if (p.command.includes("next start") || p.command.includes("3001")) {
-          await sandbox.killProcess(p.id);
-        }
-      }
-    } catch (e) {}
+      await sandbox.exec("fuser -k 3001/tcp 2>/dev/null || pkill -f 'server.js' 2>/dev/null || true");
+      const proc = await sandbox.startProcess("node .next/standalone/server.js", {
+        cwd: "/workspace/baseline-repo/demo/brakets-bracket",
+        env: {
+          HOST: "0.0.0.0",
+          PORT: "3001",
+          NODE_ENV: "production",
+        },
+      });
+      await proc.waitForPort(3001, { mode: "tcp", timeout: 25000 }).catch((e: any) => {
+        emitLog("server", `Port 3001 listener note: ${e?.message || e}`);
+      });
+    } catch (startErr: any) {
+      await emitLog("server", `Server start notice: ${startErr?.message || startErr}`);
+    }
 
-    await emitLog("server", "Spawning production server (npx next start -p 3001)...");
-    await sandbox.startProcess("npx next start -p 3001", {
-      cwd: "/workspace/baseline-repo/demo/brakets-bracket",
-    });
-
-    // 8. Expose port 3001 and obtain preview URL
+    // 7. Expose port 3001 and obtain preview URL
     const reqUrlObj = new URL(requestUrlStr);
     await emitLog("preview", `Exposing port 3001 for hostname '${reqUrlObj.hostname}'...`);
-    let previewUrl = "";
     try {
       const exposed = await sandbox.exposePort(3001, {
         hostname: reqUrlObj.hostname,
@@ -1862,7 +1864,7 @@ fi
     }
 
     const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}`;
+    const sandboxId = `s3a-preview-${safeProjectId}-v3`;
     const sandbox = getSandbox(this.env.Sandbox, sandboxId, { normalizeId: true });
 
     const url = new URL(request.url);
@@ -1870,6 +1872,9 @@ fi
     let subPath = url.pathname;
     if (subPath.startsWith(prefix)) {
       subPath = subPath.slice(prefix.length) || "/";
+    }
+    if (subPath === "/" || subPath === "") {
+      subPath = "/bracket";
     }
 
     const proxyUrl = new URL(subPath + url.search, "http://localhost:3001");
@@ -1891,6 +1896,9 @@ fi
     });
 
     try {
+      if (typeof (sandbox as any).containerFetch === "function") {
+        return await (sandbox as any).containerFetch(forwardRequest, 3001);
+      }
       return await sandbox.fetch(forwardRequest);
     } catch (err: any) {
       return new Response(`Preview proxy error: ${err?.message || err}. Has the preview been started yet? Click 'Run Preview' on the dashboard.`, { status: 502 });

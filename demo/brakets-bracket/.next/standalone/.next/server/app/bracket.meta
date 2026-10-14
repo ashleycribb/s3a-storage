@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/bracket/layout,_N_T_/bracket/page,_N_T_/bracket"
+  },
+  "routeCache": {
+    "key": "/route-cache/APP_PAGE/6e0bebc70ae9b7f11bb4d294309c20d67e47106474240eed44836a098a9dedfd/$/bracket",
+    "owner": {
+      "kind": "APP_PAGE",
+      "sourceRoute": "/bracket/page"
+    },
+    "isFallback": false
+  }
+}

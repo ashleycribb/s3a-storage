@@ -1,0 +1,162 @@
+{
+  "version": 3,
+  "pages404": true,
+  "caseSensitive": false,
+  "basePath": "",
+  "redirects": [
+    {
+      "source": "/:path+/",
+      "destination": "/:path+",
+      "internal": true,
+      "statusCode": 308,
+      "regex": "^(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))/$"
+    }
+  ],
+  "headers": [],
+  "rewrites": {
+    "beforeFiles": [],
+    "afterFiles": [],
+    "fallback": []
+  },
+  "dynamicRoutes": [
+    {
+      "page": "/api/tournaments/[id]/bracket",
+      "regex": "^/api/tournaments/([^/]+?)/bracket(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/bracket(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/bracket/reassign",
+      "regex": "^/api/tournaments/([^/]+?)/bracket/reassign(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/bracket/reassign(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/bracket/seed",
+      "regex": "^/api/tournaments/([^/]+?)/bracket/seed(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/bracket/seed(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/ready",
+      "regex": "^/api/tournaments/([^/]+?)/ready(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/ready(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/report",
+      "regex": "^/api/tournaments/([^/]+?)/report(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/report(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/report/audit",
+      "regex": "^/api/tournaments/([^/]+?)/report/audit(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/report/audit(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/report/evidence",
+      "regex": "^/api/tournaments/([^/]+?)/report/evidence(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/report/evidence(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/report/resolve",
+      "regex": "^/api/tournaments/([^/]+?)/report/resolve(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/report/resolve(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/stream-presence",
+      "regex": "^/api/tournaments/([^/]+?)/stream\\-presence(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/stream\\-presence(?:/)?$"
+    },
+    {
+      "page": "/api/tournaments/[id]/walk-up",
+      "regex": "^/api/tournaments/([^/]+?)/walk\\-up(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/api/tournaments/(?<nxtPid>[^/]+?)/walk\\-up(?:/)?$"
+    },
+    {
+      "page": "/tournaments/[id]/bracket",
+      "regex": "^/tournaments/([^/]+?)/bracket(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/tournaments/(?<nxtPid>[^/]+?)/bracket(?:/)?$"
+    },
+    {
+      "page": "/tournaments/[id]/bracket/share",
+      "regex": "^/tournaments/([^/]+?)/bracket/share(?:/)?$",
+      "routeKeys": {
+        "nxtPid": "nxtPid"
+      },
+      "namedRegex": "^/tournaments/(?<nxtPid>[^/]+?)/bracket/share(?:/)?$"
+    }
+  ],
+  "staticRoutes": [
+    {
+      "page": "/",
+      "regex": "^/(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/(?:/)?$"
+    },
+    {
+      "page": "/_not-found",
+      "regex": "^/_not\\-found(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_not\\-found(?:/)?$"
+    },
+    {
+      "page": "/bracket",
+      "regex": "^/bracket(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/bracket(?:/)?$"
+    },
+    {
+      "page": "/bracket/share",
+      "regex": "^/bracket/share(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/bracket/share(?:/)?$"
+    }
+  ],
+  "dataRoutes": [],
+  "rsc": {
+    "header": "rsc",
+    "varyHeader": "rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch",
+    "prefetchHeader": "next-router-prefetch",
+    "didPostponeHeader": "x-nextjs-postponed",
+    "contentTypeHeader": "text/x-component",
+    "suffix": ".rsc",
+    "prefetchSuffix": ".prefetch.rsc",
+    "prefetchSegmentHeader": "next-router-segment-prefetch",
+    "prefetchSegmentSuffix": ".segment.rsc",
+    "prefetchSegmentDirSuffix": ".segments"
+  },
+  "rewriteHeaders": {
+    "pathHeader": "x-nextjs-rewritten-path",
+    "queryHeader": "x-nextjs-rewritten-query"
+  }
+}

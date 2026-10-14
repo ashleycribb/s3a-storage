@@ -1,6 +1,11 @@
 node_modules/
-.next/
-out/
-build/
+.next/*
+!.next/standalone
+!.next/standalone/**
+/out/
+/build/
 .DS_Store
 *.log
+
+
+
