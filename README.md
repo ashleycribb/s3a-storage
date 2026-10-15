@@ -176,6 +176,7 @@ cargo run -p s3a-cli -- benchmark-bvh
 - **[Durability & Crash Recovery Contract](docs/durability.md)**: Dual-slot A/B commit mechanics, append write barriers, and crash-safe compaction replacement.
 - **[Schema Evolution Contract](docs/schema-evolution.md)**: Hyper-tile record layout versioning (`record_layout_version`), global registry, and additive evolution rules.
 - **[Scholar Ingestion & Snapshot Specification](docs/scholar-ingest.md)**: Ingestion of external literature corpora into Scholar Hyper-Tiles and portable SRS snapshot containers.
+- **[Commercial Vision & Business Architecture](docs/VISION-BUSINESS.md)**: Autonomous agent data cleaning, problem scoping, human-in-the-loop governance, and commercial engagement flow.
 
 ---
 
