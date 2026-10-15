@@ -30,3 +30,26 @@ class_name = "Sandbox"
 image = "docker.io/cloudflare/sandbox:0.12.10"
 instance_type = "standard-1"
 max_instances = 5
+
+# Workers AI binding for Autonomous Coding and Planning
+[ai]
+binding = "AI"
+
+# Browser Rendering binding for real Puppeteer headless testing & screenshots
+[browser]
+binding = "BROWSER"
+
+# R2 Bucket for QA screenshots and test evidence
+[[r2_buckets]]
+binding = "EVIDENCE_BUCKET"
+bucket_name = "s3a-evidence"
+
+# Cloudflare Workflows for autonomous agent task lifecycle
+[[workflows]]
+name = "agent-task-workflow"
+binding = "AGENT_WORKFLOW"
+class_name = "AgentTaskWorkflow"
+
+# Cron triggers for autonomous scheduling every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]

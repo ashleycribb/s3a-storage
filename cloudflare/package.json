@@ -9,6 +9,7 @@
     "types": "wrangler types"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
     "@cloudflare/sandbox": "^0.12.10",
     "isomorphic-git": "^1.27.0"
   },
