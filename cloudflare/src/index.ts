@@ -154,8 +154,13 @@ export default {
       return stub.fetch(request);
     }
 
-    // Global Autonomous Engine Control and Scheduler Trigger
-    if (url.pathname === "/control" || url.pathname === "/scheduler-tick") {
+    // Global Autonomous Engine Control, Scheduler Trigger, and PR Triage
+    if (
+      url.pathname === "/control" ||
+      url.pathname === "/scheduler-tick" ||
+      url.pathname === "/close-duplicate-prs" ||
+      url.pathname === "/triage-duplicates"
+    ) {
       const doId = env.REPO_COORDINATOR.idFromName("s3a-swarm-main");
       const stub = env.REPO_COORDINATOR.get(doId);
       const targetUrl = new URL(request.url);
@@ -1341,22 +1346,28 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
   </div>
 
   <!-- Autonomous Engine Control & Daily Guardrails Banner -->
-  <div style="background: rgba(17,24,39,0.9); border: 1px solid ${controlData.paused ? '#ef4444' : '#10b981'}; padding: 1rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+  <div style="background: rgba(17,24,39,0.9); border: 1px solid ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')}; padding: 1rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
     <div>
       <div style="font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; gap: 0.6rem;">
-        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: ${controlData.paused ? '#ef4444' : '#10b981'}; box-shadow: 0 0 10px ${controlData.paused ? '#ef4444' : '#10b981'};"></span>
-        AUTONOMOUS AGENT ENGINE: <span style="color: ${controlData.paused ? '#f87171' : '#34d399'}; font-weight: 800;">${controlData.paused ? 'PAUSED (KILL SWITCH ENGAGED)' : 'ACTIVE (ALARM &amp; CRON 5M)'}</span>
+        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')}; box-shadow: 0 0 10px ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')};"></span>
+        AUTONOMOUS AGENTS: <span style="color: ${controlData.paused ? '#f87171' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#34d399')}; font-weight: 800;">
+          ${controlData.paused ? 'PAUSED (Task Claiming Stopped)' : (statusData.scheduler_status === 'idle' ? 'IDLE (0 open issues • Waiting for GitHub issues)' : 'ACTIVE (Alarm &amp; Cron 5M)')}
+        </span>
       </div>
       <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.35rem;">
-        Daily Guardrails: Tasks Today: <strong>${controlData.usage?.tasks_started || 0}/${controlData.limits?.max_tasks_per_day || 20}</strong> &bull; LLM Calls: <strong>${controlData.usage?.llm_calls || 0}/${controlData.limits?.max_llm_calls_per_day || 100}</strong> &bull; Sandbox: <strong>${controlData.usage?.sandbox_minutes || 0}/${controlData.limits?.max_sandbox_minutes_per_day || 60}m</strong> &bull; Max Concurrent: <strong>2</strong>
+        ${controlData.paused ? 'Task claiming is stopped. Budget agent, metering, and s3a-ledger remain actively running.' : 'Automatic task claiming enabled (Max 2 concurrent).'} &bull;
+        Daily Guardrails: Tasks Today: <strong>${controlData.usage?.tasks_started || 0}/${controlData.limits?.max_tasks_per_day || 20}</strong> &bull; LLM: <strong>${controlData.usage?.llm_calls || 0}/${controlData.limits?.max_llm_calls_per_day || 100}</strong> &bull; Sandbox: <strong>${controlData.usage?.sandbox_minutes || 0}/${controlData.limits?.max_sandbox_minutes_per_day || 60}m</strong>
       </div>
     </div>
-    <div style="display: flex; gap: 0.6rem; align-items: center;">
+    <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
       <button class="btn" style="background: ${controlData.paused ? '#10b981' : '#ef4444'}; color: #fff; padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="toggleAutonomousEngine('${controlData.paused ? 'resume' : 'pause'}')">
-        ${controlData.paused ? '▶ Resume Autonomous Engine' : '⏹ Kill Switch: Pause Engine'}
+        ${controlData.paused ? '▶ Resume agents' : '⏸ Pause agents'}
+      </button>
+      <button class="btn btn-secondary" style="padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="closeDuplicatePRs()">
+        🧹 Close Duplicate PRs (#3)
       </button>
       <button class="btn btn-secondary" style="padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="triggerManualTick()">
-        ⚡ Run Autonomous Step Now
+        ⚡ Run Step Now
       </button>
     </div>
   </div>
@@ -2403,6 +2414,19 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       }
     }
 
+    async function closeDuplicatePRs() {
+      if (!confirm('Close all duplicate s3a/agent-* PRs for #3 except oldest canonical PR #82?')) return;
+      try {
+        const res = await fetch('/project/${defaultProjectId}/close-duplicate-prs?issue=3&preserve=82', { method: 'POST' });
+        const data = await res.json();
+        const closedCount = data.closed ? data.closed.length : 0;
+        alert('PR Triage Result:\n- Preserved Canonical: #' + data.preserved + '\n- Closed Duplicates: ' + (closedCount > 0 ? data.closed.join(', ') : 'none (already closed)') + '\n- Already Closed: ' + (data.already_closed?.length || 0));
+        location.reload();
+      } catch (e) {
+        alert('Error closing duplicate PRs: ' + e.message);
+      }
+    }
+
     async function configureBudgetCap() {
       const currentCap = "${budgetData.cap || 5.0}";
       const val = prompt("Enter daily compute budget cap in USD ($):", currentCap);
@@ -2899,14 +2923,17 @@ export class RepoCoordinator implements DurableObject {
   // Durable Alarm: Autonomous Background Scheduler (every 5 minutes)
   async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
     try {
-      await this.runSchedulerTick("s3a-swarm-main");
+      // Budget agent & ledger check runs even when agents are paused
+      await this.getLedgerSummary();
+      const isPaused = await this.state.storage.get<boolean>("autonomous_paused");
+      if (!isPaused) {
+        await this.runSchedulerTick("s3a-swarm-main");
+      }
     } catch (e) {
       console.error("Autonomous scheduler alarm tick error:", e);
     } finally {
-      const isPaused = await this.state.storage.get<boolean>("autonomous_paused");
-      if (!isPaused) {
-        await this.state.storage.setAlarm(Date.now() + 5 * 60 * 1000);
-      }
+      // Always reschedule alarm so budget agent, ledger, and timer resets keep running!
+      await this.state.storage.setAlarm(Date.now() + 5 * 60 * 1000);
     }
   }
 
@@ -3216,9 +3243,11 @@ export class RepoCoordinator implements DurableObject {
     const limits = await this.getDailyLimits();
     const tasks = await this.getOrInitTasks();
     const activeConcurrent = tasks.filter(t => t.status === "claimed").length;
+    const schedulerStatus = (await this.state.storage.get<string>("scheduler_status")) || (isPaused ? "paused" : "idle");
 
     return new Response(JSON.stringify({
       paused: isPaused,
+      status: schedulerStatus,
       usage,
       limits,
       active_concurrent_tasks: activeConcurrent,
@@ -3230,7 +3259,7 @@ export class RepoCoordinator implements DurableObject {
   public async runSchedulerTick(projectId: string = "s3a-swarm-main"): Promise<any> {
     const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) || false;
     if (isPaused) {
-      return { status: "paused", message: "Autonomous engine paused by supervisor kill switch" };
+      return { status: "paused", message: "Task claiming paused: Agents paused by supervisor (budget agent and ledger active)" };
     }
 
     const budget = await this.checkBudget();
@@ -3257,8 +3286,12 @@ export class RepoCoordinator implements DurableObject {
     }
 
     if (!candidate) {
-      return { status: "no_tasks_ready", message: "All work queue tasks processed or merged" };
+      // 0 open issues available. Do not invent tasks. Set status to idle and wait.
+      await this.state.storage.put("scheduler_status", "idle");
+      return { status: "idle", message: "0 open issues available. Agents idle and waiting." };
     }
+
+    await this.state.storage.put("scheduler_status", "active");
 
     const agentId = `agent-auto-${Date.now().toString(36)}`;
     candidate.status = "claimed";
@@ -3341,9 +3374,13 @@ export class RepoCoordinator implements DurableObject {
 
   private async getOrInitTasks(): Promise<TaskItem[]> {
     let tasks = await this.state.storage.get<TaskItem[]>("brakets_tasks");
-    if (!tasks || tasks.length === 0) {
-      tasks = [...DEFAULT_BRAKETS_TASKS];
-      await this.state.storage.put("brakets_tasks", tasks);
+    if (!tasks) {
+      if (this.env.GITHUB_TOKEN) {
+        tasks = await this.syncGitHubIssues();
+      } else {
+        tasks = [...DEFAULT_BRAKETS_TASKS];
+      }
+      await this.state.storage.put("brakets_tasks", tasks || []);
     }
     const lastSync = await this.state.storage.get<number>("github_issues_last_sync");
     if (this.env.GITHUB_TOKEN && (!lastSync || Date.now() - lastSync > 60000)) {
@@ -3351,7 +3388,7 @@ export class RepoCoordinator implements DurableObject {
         tasks = await this.syncGitHubIssues();
       } catch (e) {}
     }
-    return tasks;
+    return tasks || [];
   }
 
   private async handleListTasks(projectId: string): Promise<Response> {
@@ -3367,6 +3404,11 @@ export class RepoCoordinator implements DurableObject {
     let body: any = {};
     try { body = await request.json(); } catch (e) {
       return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+    }
+
+    const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) || false;
+    if (isPaused) {
+      return new Response(JSON.stringify({ error: "Task claiming paused: Agents paused by supervisor" }), { status: 403 });
     }
 
     const { agent_id, agent_pubkey, task_id } = body;
@@ -3860,7 +3902,7 @@ export class RepoCoordinator implements DurableObject {
       if (!res.ok) return (await this.state.storage.get<TaskItem[]>("brakets_tasks")) || [];
 
       const ghIssues: any[] = await res.json();
-      let currentTasks = (await this.state.storage.get<TaskItem[]>("brakets_tasks")) || [...DEFAULT_BRAKETS_TASKS];
+      let currentTasks = (await this.state.storage.get<TaskItem[]>("brakets_tasks")) || [];
 
       for (const issue of ghIssues) {
         if (issue.pull_request) continue;
@@ -3906,6 +3948,11 @@ export class RepoCoordinator implements DurableObject {
         }
       }
 
+      const hasOpen = currentTasks.some(t => t.status === "open" || t.status === "changes_requested");
+      if (!hasOpen) {
+        await this.state.storage.put("scheduler_status", "idle");
+      }
+
       await this.state.storage.put("brakets_tasks", currentTasks);
       await this.state.storage.put("github_issues_last_sync", Date.now());
       return currentTasks;
@@ -3926,6 +3973,108 @@ export class RepoCoordinator implements DurableObject {
     });
   }
 
+  public async closeDuplicatePRs(
+    projectId: string = "s3a-swarm-main",
+    issueNum: number = 3,
+    preservePrNumber: number = 82
+  ): Promise<{
+    status: string;
+    preserved: number;
+    closed: number[];
+    already_closed: number[];
+    errors: any[];
+  }> {
+    const token = this.env.GITHUB_TOKEN;
+    if (!token) return { status: "no_token", preserved: preservePrNumber, closed: [], already_closed: [], errors: [] };
+
+    const repoOwner = "ashleycribb";
+    const repoName = "plat-gaming";
+
+    try {
+      const res = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls?state=all&per_page=100`, {
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+        },
+      });
+
+      if (!res.ok) {
+        return { status: "fetch_failed", preserved: preservePrNumber, closed: [], already_closed: [], errors: [await res.text()] };
+      }
+
+      const prs: any[] = await res.json();
+      const closed: number[] = [];
+      const already_closed: number[] = [];
+      const errors: any[] = [];
+
+      for (const pr of prs) {
+        const isTarget = (
+          (pr.head?.ref && pr.head.ref.startsWith("s3a/agent-")) ||
+          pr.title.includes(`#${issueNum}`) ||
+          (pr.body && pr.body.includes(`#${issueNum}`)) ||
+          pr.title.toLowerCase().includes("role-aware login")
+        );
+
+        if (!isTarget) continue;
+
+        if (pr.number === preservePrNumber) {
+          // Keep canonical oldest PR (#82) open
+          continue;
+        }
+
+        if (pr.state === "closed") {
+          already_closed.push(pr.number);
+          continue;
+        }
+
+        // Close duplicate PR
+        try {
+          const patchRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls/${pr.number}`, {
+            method: "PATCH",
+            headers: {
+              "User-Agent": "s3a-gate",
+              "Authorization": `token ${token}`,
+              "Accept": "application/vnd.github.v3+json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ state: "closed" }),
+          });
+
+          if (patchRes.ok) {
+            closed.push(pr.number);
+            await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/issues/${pr.number}/comments`, {
+              method: "POST",
+              headers: {
+                "User-Agent": "s3a-gate",
+                "Authorization": `token ${token}`,
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                body: `Closing duplicate autonomous agent PR in favor of oldest PR #${preservePrNumber}.`,
+              }),
+            });
+          } else {
+            errors.push({ pr: pr.number, status: patchRes.status, text: await patchRes.text() });
+          }
+        } catch (err: any) {
+          errors.push({ pr: pr.number, error: err?.message || String(err) });
+        }
+      }
+
+      return {
+        status: "ok",
+        preserved: preservePrNumber,
+        closed,
+        already_closed,
+        errors,
+      };
+    } catch (e: any) {
+      return { status: "error", preserved: preservePrNumber, closed: [], already_closed: [], errors: [e?.message || String(e)] };
+    }
+  }
+
   private async openGitHubPR(
     projectId: string,
     cr: ChangeRequest,
@@ -3941,119 +4090,56 @@ export class RepoCoordinator implements DurableObject {
     const branchName = `s3a/agent-${safeAgentSuffix}-gh-${issueNum}`;
 
     try {
-      const refRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/git/ref/heads/main`, {
+      // 1. Check for existing open PRs for this issue number or matching title prefix
+      const openPrsRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls?state=open&per_page=100`, {
         headers: {
           "User-Agent": "s3a-gate",
           "Authorization": `token ${token}`,
           "Accept": "application/vnd.github.v3+json",
         },
       });
-      if (!refRes.ok) return null;
-      const refData: any = await refRes.json();
-      const mainSha = refData.object.sha;
 
-      const createBranchRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/git/refs`, {
-        method: "POST",
-        headers: {
-          "User-Agent": "s3a-gate",
-          "Authorization": `token ${token}`,
-          "Accept": "application/vnd.github.v3+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ref: `refs/heads/${branchName}`,
-          sha: mainSha,
-        }),
-      });
+      let existingPr: any = null;
+      if (openPrsRes.ok) {
+        const openPrs: any[] = await openPrsRes.json();
+        const cleanTaskTitle = (task.title || cr.title || "").replace(/^\[S3A Agent\]\s*/i, "").replace(/\s*\(resolves\s*#\d+\)/i, "").trim().toLowerCase();
+        const titlePrefix = cleanTaskTitle.split(":")[0]?.trim() || cleanTaskTitle.slice(0, 24);
 
-      if (!createBranchRes.ok) {
-        await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/git/refs/heads/${branchName}`, {
-          method: "PATCH",
-          headers: {
-            "User-Agent": "s3a-gate",
-            "Authorization": `token ${token}`,
-            "Accept": "application/vnd.github.v3+json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ sha: mainSha, force: true }),
-        });
+        for (const pr of openPrs) {
+          const matchesIssue = (
+            pr.title.includes(`#${issueNum}`) ||
+            (pr.head?.ref && (pr.head.ref.includes(`gh-${issueNum}`) || pr.head.ref.includes(`issue-${issueNum}`))) ||
+            (pr.body && pr.body.includes(`#${issueNum}`))
+          );
+          const matchesTitlePrefix = titlePrefix.length > 3 && pr.title.toLowerCase().includes(titlePrefix);
+
+          if (matchesIssue || matchesTitlePrefix) {
+            // For issue 3, strictly prioritize canonical oldest PR #82
+            if (issueNum === 3 && pr.number === 82) {
+              existingPr = pr;
+              break;
+            }
+            if (!existingPr) {
+              existingPr = pr;
+            }
+          }
+        }
       }
 
-      const patchPath = "apps/brakets-gg/app/api/auth/roles.ts";
-      let existingFileSha: string | undefined;
-      const fileRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${patchPath}?ref=${branchName}`, {
-        headers: {
-          "User-Agent": "s3a-gate",
-          "Authorization": `token ${token}`,
-          "Accept": "application/vnd.github.v3+json",
-        },
-      });
-      if (fileRes.ok) {
-        const fData: any = await fileRes.json();
-        existingFileSha = fData.sha;
-      }
+      // 2. If an open PR already exists for this issue or title prefix:
+      // Attach evidence to it via a comment instead of opening a new PR!
+      if (existingPr) {
+        const prNumber = existingPr.number;
+        const prUrl = existingPr.html_url;
+        const targetBranch = existingPr.head?.ref || branchName;
 
-      const fileContent = `// S3A Agent Autonomous Contribution - Signed Ed25519
-// Agent: ${cr.agent_id} (${cr.agent_pubkey.substring(0, 16)}...)
-// Resolves: #${issueNum} - ${task.title}
-// Epistemic Invariant: Clean preview verified, QA Playwright passed.
-export type PlatformRole = "player" | "coach" | "team_manager" | "streamer" | "organizer";
+        const commentBody = `### 🤖 S3A Autonomous Agent Evidence Update
 
-export interface UserRoleRecord {
-  userId: string;
-  primaryRole: PlatformRole;
-  allowedRoles: PlatformRole[];
-  permissions: {
-    canCreateTournament: boolean;
-    canReportScores: boolean;
-    canManageRoster: boolean;
-    canStreamMatch: boolean;
-  };
-}
-
-export function evaluatePlatformPermissions(role: PlatformRole) {
-  return {
-    canCreateTournament: role === "organizer",
-    canReportScores: role === "organizer" || role === "player" || role === "coach",
-    canManageRoster: role === "team_manager" || role === "coach",
-    canStreamMatch: role === "streamer" || role === "player",
-  };
-}
-`;
-
-      await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${patchPath}`, {
-        method: "PUT",
-        headers: {
-          "User-Agent": "s3a-gate",
-          "Authorization": `token ${token}`,
-          "Accept": "application/vnd.github.v3+json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: `feat(auth): role-aware login for players, coaches, teams, streamers, and TOs (resolves #${issueNum})`,
-          content: btoa(fileContent),
-          branch: branchName,
-          sha: existingFileSha,
-        }),
-      });
-
-      const isSensitive = true; // Touches apps/brakets-gg and auth (Issue #3)
-
-      const prBody = `### 🤖 S3A Autonomous Agent Change Request
-
-#### 🔑 Cryptographic Identity & Delegation
 - **Agent ID:** \`${cr.agent_id}\`
-- **Ed25519 Author Public Key:** \`${cr.agent_pubkey}\`
 - **Commit ID:** \`${cr.commit_id}\`
-- **Commit Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
-- **Resolves Issue:** Fixes #${issueNum} (\`${task.title}\`)
-
-#### 📋 Summary of Changes
-${cr.message || task.description}
-
-Touched files:
-- \`apps/brakets-gg/app/api/auth/roles.ts\`
-- \`demo/brakets-bracket/lib/mock-api.ts\`
+- **Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
+- **Timestamp:** \`${new Date().toISOString()}\`
+- **Target Issue:** #${issueNum} (\`${task.title}\`)
 
 #### 🧪 Build & Test Verification
 - **Test Command:** \`npm run build\`
@@ -4073,43 +4159,11 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
 #### 🌐 Live PM Preview
 [Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/project/s3a-swarm-main/preview/live)
 
-> [!CAUTION]
-> **EPISTEMIC INVARIANT: SENSITIVE SUBSYSTEM GATED**
-> This change touches \`apps/brakets-gg\` auth/cashier/escrow/db/infra. Labeled \`needs-human\` and requires a second human reviewer before merge.
-> **Agents can never merge.** Review and merge on GitHub.
+> [!NOTE]
+> Attached latest verified evidence and QA runs to canonical PR #${prNumber}. No duplicate PR opened.
 `;
 
-      const existingPrsRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls?head=${repoOwner}:${branchName}&state=open`, {
-        headers: {
-          "User-Agent": "s3a-gate",
-          "Authorization": `token ${token}`,
-          "Accept": "application/vnd.github.v3+json",
-        },
-      });
-
-      let prNumber: number = 0;
-      let prUrl: string = "";
-
-      if (existingPrsRes.ok) {
-        const prList: any[] = await existingPrsRes.json();
-        if (prList.length > 0) {
-          prNumber = prList[0].number;
-          prUrl = prList[0].html_url;
-          await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls/${prNumber}`, {
-            method: "PATCH",
-            headers: {
-              "User-Agent": "s3a-gate",
-              "Authorization": `token ${token}`,
-              "Accept": "application/vnd.github.v3+json",
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ body: prBody }),
-          });
-        }
-      }
-
-      if (!prNumber) {
-        const newPrRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls`, {
+        await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/issues/${prNumber}/comments`, {
           method: "POST",
           headers: {
             "User-Agent": "s3a-gate",
@@ -4117,47 +4171,31 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
             "Accept": "application/vnd.github.v3+json",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            title: `[S3A Agent] ${cr.title} (resolves #${issueNum})`,
-            head: branchName,
-            base: "main",
-            body: prBody,
-          }),
+          body: JSON.stringify({ body: commentBody }),
         });
 
-        if (newPrRes.ok) {
-          const prData: any = await newPrRes.json();
-          prNumber = prData.number;
-          prUrl = prData.html_url;
+        // Close any duplicate PRs for #3 except #82
+        if (issueNum === 3) {
+          await this.closeDuplicatePRs(projectId, 3, 82);
         }
-      }
-
-      if (prNumber) {
-        await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/issues/${prNumber}/labels`, {
-          method: "POST",
-          headers: {
-            "User-Agent": "s3a-gate",
-            "Authorization": `token ${token}`,
-            "Accept": "application/vnd.github.v3+json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            labels: ["needs-human", "area/auth"],
-          }),
-        });
 
         cr.github_pr_number = prNumber;
         cr.github_pr_url = prUrl;
-        cr.github_branch = branchName;
-        cr.needs_second_human = isSensitive;
+        cr.github_branch = targetBranch;
+        cr.needs_second_human = true;
         await this.state.storage.put(`cr:${cr.id}`, cr);
 
-        return { pr_number: prNumber, pr_url: prUrl, branch: branchName, needs_human: isSensitive };
+        return { pr_number: prNumber, pr_url: prUrl, branch: targetBranch, needs_human: true };
       }
+
+      // 3. If NO existing PR found:
+      // STRICT POLICY: Do NOT open any new plat-gaming PRs.
+      console.log(`[s3a-gate] No existing open PR found for issue #${issueNum}. Swarm is forbidden from creating new PRs.`);
+      return null;
     } catch (err: any) {
-      // Ignore network errors
+      console.error("[s3a-gate] openGitHubPR error:", err);
+      return null;
     }
-    return null;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -4195,12 +4233,13 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
           return this.handleSyncGitHubIssues(projectId);
         }
         if (pathParts[3] === "reset") {
-          await this.state.storage.put("brakets_tasks", DEFAULT_BRAKETS_TASKS);
+          const resetTasks = this.env.GITHUB_TOKEN ? [] : DEFAULT_BRAKETS_TASKS;
+          await this.state.storage.put("brakets_tasks", resetTasks);
           const oldCRs = await this.state.storage.list({ prefix: "cr:" });
           for (const k of oldCRs.keys()) await this.state.storage.delete(k);
           const oldAgents = await this.state.storage.list({ prefix: "reg_agent:" });
           for (const k of oldAgents.keys()) await this.state.storage.delete(k);
-          return new Response(JSON.stringify({ status: "reset", tasks: DEFAULT_BRAKETS_TASKS }), {
+          return new Response(JSON.stringify({ status: "reset", tasks: resetTasks }), {
             headers: { "Content-Type": "application/json" }
           });
         }
@@ -4250,6 +4289,15 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
       case "scheduler-tick": {
         const tickRes = await this.runSchedulerTick(projectId);
         return new Response(JSON.stringify(tickRes), {
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      case "close-duplicate-prs":
+      case "triage-duplicates": {
+        const issueNum = parseInt(url.searchParams.get("issue") || "3", 10);
+        const preservePr = parseInt(url.searchParams.get("preserve") || "82", 10);
+        const triageRes = await this.closeDuplicatePRs(projectId, issueNum, preservePr);
+        return new Response(JSON.stringify(triageRes, null, 2), {
           headers: { "Content-Type": "application/json" }
         });
       }
@@ -4989,6 +5037,7 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
       },
       last_artifacts_error: lastArtifactsError,
       preview: previewState,
+      scheduler_status: (await this.state.storage.get<string>("scheduler_status")) || "idle",
       agents,
       registered_agents: registeredAgents,
       tasks,

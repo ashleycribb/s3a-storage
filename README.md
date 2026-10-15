@@ -177,6 +177,7 @@ cargo run -p s3a-cli -- benchmark-bvh
 - **[Schema Evolution Contract](docs/schema-evolution.md)**: Hyper-tile record layout versioning (`record_layout_version`), global registry, and additive evolution rules.
 - **[Scholar Ingestion & Snapshot Specification](docs/scholar-ingest.md)**: Ingestion of external literature corpora into Scholar Hyper-Tiles and portable SRS snapshot containers.
 - **[Commercial Vision & Business Architecture](docs/VISION-BUSINESS.md)**: Autonomous agent data cleaning, problem scoping, human-in-the-loop governance, and commercial engagement flow.
+- **[Pull Request Triage & Human Governance Checklist](docs/PR-TRIAGE.md)**: Swarm duplicate PR closure, canonical PR identification, Playwright QA evaluation, and sensitive subsystem review policies.
 
 ---
 
