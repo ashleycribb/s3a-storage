@@ -153,3 +153,27 @@ class MockApiStore {
 }
 
 export const mockStore = new MockApiStore();
+
+// --- S3A Agent Autonomous Contribution: Role-Aware Auth (Issue #3) ---
+export type PlatformRole = "player" | "coach" | "team_manager" | "streamer" | "organizer";
+
+export interface UserRoleRecord {
+  userId: string;
+  handle: string;
+  primaryRole: PlatformRole;
+  permissions: {
+    canCreateTournament: boolean;
+    canReportScores: boolean;
+    canManageRoster: boolean;
+    canStreamMatch: boolean;
+  };
+}
+
+export function evaluatePlatformPermissions(role: PlatformRole) {
+  return {
+    canCreateTournament: role === "organizer",
+    canReportScores: role === "organizer" || role === "player" || role === "coach",
+    canManageRoster: role === "team_manager" || role === "coach",
+    canStreamMatch: role === "streamer" || role === "player",
+  };
+}
