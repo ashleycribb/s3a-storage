@@ -1144,6 +1144,21 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     if (cRes.ok) controlData = await cRes.json();
   } catch (e) {}
 
+  let budgetData: any = {
+    spent_today: 0.0,
+    cap: 5.0,
+    pct_spent: 0.0,
+    warning_80_pct: false,
+    cap_reached: false,
+    time_until_reset_secs: 86400,
+    deferred_queue: [],
+    entries: [],
+  };
+  try {
+    const bRes = await stub.fetch(new Request(`https://internal/project/${defaultProjectId}/ledger`));
+    if (bRes.ok) budgetData = await bRes.json();
+  } catch (e) {}
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1403,6 +1418,72 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     </div>
   </div>
 
+  <!-- S3A Ledger & Budget Agent Card (Paid Metering & Deferred Queue) -->
+  <div class="section" style="border-color: ${budgetData.cap_reached ? 'rgba(239,68,68,0.5)' : budgetData.warning_80_pct ? 'rgba(245,158,11,0.5)' : 'rgba(56,189,248,0.3)'};">
+    <div class="section-title">
+      <span style="display: flex; align-items: center; gap: 0.5rem;">
+        <span>s3a-ledger &bull; Autonomous Budget Agent</span>
+      </span>
+      <span class="badge" style="background: ${budgetData.cap_reached ? 'rgba(239,68,68,0.15)' : budgetData.warning_80_pct ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)'}; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'}; border-color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'};">
+        ${budgetData.cap_reached ? '🚨 100% Cap Reached (Paid Steps Deferred)' : budgetData.warning_80_pct ? '⚠️ Warning: 80% Budget Exceeded' : '🟢 Budget Healthy'}
+      </span>
+    </div>
+    <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
+      Every paid compute action (<code>llm</code>, <code>sandbox</code>, <code>browser</code>, <code>r2</code>) is recorded as an immutable S3A record. Free work (planning, triage, log review, PR descriptions) never blocks. When daily cap is reached, paid steps receive <code>deferred_budget</code> status and queue automatically until 00:00 UTC rollover.
+    </p>
+
+    <!-- Budget Metrics Grid -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1rem;">
+      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Spent Today</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--accent)'};">
+          $${budgetData.spent_today?.toFixed(5) || '0.00000'}
+        </div>
+      </div>
+      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Daily Cap</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: #f3f4f6;">
+          $${budgetData.cap?.toFixed(4) || '5.0000'}
+        </div>
+      </div>
+      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Budget Utilization</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'};">
+          ${budgetData.pct_spent?.toFixed(1) || '0.0'}%
+        </div>
+      </div>
+      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Time Until Reset (00:00 UTC)</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: var(--secondary);">
+          ${Math.floor((budgetData.time_until_reset_secs || 86400) / 3600)}h ${Math.floor(((budgetData.time_until_reset_secs || 86400) % 3600) / 60)}m
+        </div>
+      </div>
+      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
+        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Deferred Actions</div>
+        <div style="font-size: 1.5rem; font-weight: 700; color: ${(budgetData.deferred_queue || []).length > 0 ? 'var(--warning)' : 'var(--text-muted)'};">
+          ${(budgetData.deferred_queue || []).length}
+        </div>
+      </div>
+    </div>
+
+    <!-- Deferred Queue & Controls -->
+    <div style="display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+      <div style="font-size: 0.82rem; color: var(--text-muted);">
+        ${(budgetData.deferred_queue || []).length > 0
+          ? `<strong>${(budgetData.deferred_queue || []).length} action(s) deferred</strong>: ${(budgetData.deferred_queue || []).map((d: any) => `${d.task_id} (${d.kind})`).join(', ')}`
+          : 'Deferred queue empty. All paid pipeline actions dispatching normally.'}
+      </div>
+      <div style="display: flex; gap: 0.5rem;">
+        <button class="btn btn-secondary" onclick="configureBudgetCap()" style="font-size: 0.8rem; padding: 0.35rem 0.75rem;">
+          ⚙️ Configure Daily Cap
+        </button>
+        <button class="btn" onclick="resetBudgetToday()" style="background: var(--primary); font-size: 0.8rem; padding: 0.35rem 0.75rem;">
+          🔄 Reset Budget Window
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- 5-Column PM Scrum Kanban Board -->
   <div class="section" style="border-color: rgba(56,189,248,0.3);">
     <div class="section-title">
@@ -1416,13 +1497,19 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
         <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
           <span>Backlog</span>
-          <span class="badge" style="background:#1f2937; color:#fff; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'open').length}</span>
+          <span class="badge" style="background:#1f2937; color:#fff; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'open' || t.status === 'deferred_budget').length}</span>
         </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'open').slice(0, 6).map((t: any) => `
-          <div style="background: #111827; border: 1px solid #374151; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="font-weight: 600; color: #f3f4f6; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
+        ${(statusData.tasks || []).filter((t: any) => t.status === 'open' || t.status === 'deferred_budget').slice(0, 6).map((t: any) => `
+          <div style="background: #111827; border: 1px solid ${t.status === 'deferred_budget' ? '#ef4444' : '#374151'}; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.2rem;">
+              <span style="font-weight: 600; color: #f3f4f6;">${t.id}: ${t.title}</span>
+              ${t.status === 'deferred_budget' ? '<span class="badge" style="background: rgba(239,68,68,0.2); color: #fca5a5; border-color: #ef4444; font-size: 0.65rem;">DEFERRED</span>' : ''}
+            </div>
             <div style="font-size: 0.7rem; color: var(--text-muted);">${(t.files_allowed || []).slice(0, 2).join(', ')}</div>
-            ${t.github_issue_number ? `<a href="${t.github_issue_url || '#'}" target="_blank" style="font-size: 0.68rem; color: var(--accent); display: inline-block; margin-top: 0.25rem;">GitHub #${t.github_issue_number} ↗</a>` : ''}
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.35rem;">
+              ${t.github_issue_number ? `<a href="${t.github_issue_url || '#'}" target="_blank" style="font-size: 0.68rem; color: var(--accent);">GitHub #${t.github_issue_number} ↗</a>` : '<span></span>'}
+              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #374151; color: var(--accent); border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Trace</button>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -1437,6 +1524,9 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <div style="background: #111827; border: 1px solid #1d4ed8; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
             <div style="font-weight: 600; color: #93c5fd; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
             <div style="font-size: 0.7rem; color: var(--text-muted);">Agent: <code>${t.claimed_by || 'agent'}</code></div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
+              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #1d4ed8; color: #93c5fd; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -1451,7 +1541,10 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <div style="background: #111827; border: 1px solid #b45309; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
             <div style="font-weight: 600; color: #fcd34d; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
             <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.3rem;">Agent: <code>${t.claimed_by || 'agent'}</code></div>
-            <a href="/project/${defaultProjectId}/preview/live" target="_blank" style="font-size: 0.72rem; color: var(--accent); font-weight: 600;">🌐 Open Live Preview ↗</a>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.35rem;">
+              <a href="/project/${defaultProjectId}/preview/live" target="_blank" style="font-size: 0.72rem; color: var(--accent); font-weight: 600;">🌐 Preview ↗</a>
+              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #b45309; color: #fcd34d; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -1466,6 +1559,9 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <div style="background: #111827; border: 1px solid #b91c1c; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
             <div style="font-weight: 600; color: #fca5a5; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
             <div style="font-size: 0.7rem; color: var(--text-muted);">Feedback: <em>${t.feedback || 'Revision needed'}</em></div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
+              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #b91c1c; color: #fca5a5; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -1480,9 +1576,13 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <div style="background: #111827; border: 1px solid #047857; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
             <div style="font-weight: 600; color: #6ee7b7; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
             <div style="font-size: 0.7rem; color: var(--text-muted);">Merged into Baseline VCS</div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
+              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #047857; color: #6ee7b7; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
+            </div>
           </div>
         `).join('')}
       </div>
+
     </div>
   </div>
 
@@ -1797,6 +1897,9 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           <span class="badge" style="background: ${cr.test_report?.passed ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}; color: ${cr.test_report?.passed ? 'var(--success)' : 'var(--danger)'}; border-color: ${cr.test_report?.passed ? 'var(--success)' : 'var(--danger)'};">
             ${cr.test_report?.passed ? '✓ Tests Passed (' + (cr.test_report.stage || 'npm run build') + ')' : '✗ Tests Failed'}
           </span>
+          <button class="btn btn-secondary" onclick="openTraceModal('${cr.task_id}')" style="background: #1f2937; border: 1px solid #374151; font-size: 0.8rem;">
+            🔍 Replay Task Trace
+          </button>
           <button class="btn" onclick="approveChangeRequest('${cr.id}')" style="background: var(--success); margin-left: auto;">
             <span>Sign &amp; Approve CR (Merge to Baseline)</span>
           </button>
@@ -2299,9 +2402,160 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
         if (btn) btn.textContent = '⚡ Run Autonomous Step Now';
       }
     }
+
+    async function configureBudgetCap() {
+      const currentCap = "${budgetData.cap || 5.0}";
+      const val = prompt("Enter daily compute budget cap in USD ($):", currentCap);
+      if (!val || isNaN(parseFloat(val))) return;
+      try {
+        const res = await fetch("/project/${defaultProjectId}/ledger/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ daily_cap: parseFloat(val) })
+        });
+        if (res.ok) {
+          alert("Daily budget cap updated to $" + parseFloat(val).toFixed(4));
+          location.reload();
+        } else {
+          alert("Error updating budget cap: " + await res.text());
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    }
+
+    async function resetBudgetToday() {
+      if (!confirm("Reset today's spent counter and resume all deferred tasks?")) return;
+      try {
+        const res = await fetch("/project/${defaultProjectId}/ledger/reset", { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          alert("Budget window reset. Resumed " + (data.resumed_count || 0) + " deferred task(s).");
+          location.reload();
+        } else {
+          alert("Error resetting budget: " + await res.text());
+        }
+      } catch (e) {
+        alert("Error: " + e.message);
+      }
+    }
+
+    let currentModalTaskId = "";
+
+    async function openTraceModal(taskId) {
+      currentModalTaskId = taskId;
+      const modal = document.getElementById("trace-modal");
+      const title = document.getElementById("trace-modal-title");
+      const container = document.getElementById("trace-steps-container");
+      if (!modal || !container) return;
+
+      modal.style.display = "flex";
+      title.textContent = "Task Trace Replay: " + taskId;
+      container.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">Loading immutable S3A trace timeline...</div>';
+
+      try {
+        const res = await fetch("/project/${defaultProjectId}/trace/" + taskId);
+        if (!res.ok) {
+          container.innerHTML = '<div style="color: #fca5a5; padding: 1rem;">No trace records recorded yet for task ' + taskId + '. Execute an autonomous step to generate provenance.</div>';
+          return;
+        }
+        const trace = await res.json();
+        if (!trace.steps || trace.steps.length === 0) {
+          container.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">No trace steps recorded for this task.</div>';
+          return;
+        }
+
+        let html = '<div style="display: flex; flex-direction: column; gap: 0.75rem;">';
+        for (const s of trace.steps) {
+          const isAi = s.actor.type === "ai";
+          const actorBadge = isAi
+            ? '<span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.7rem;">🤖 AI (' + (s.actor.name || s.actor.id) + ')</span>'
+            : '<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success); font-size: 0.7rem;">👤 HUMAN (' + (s.actor.name || s.actor.id) + ')</span>';
+
+          const verbLabel = (s.xapi_verb || "").split("/").pop() || s.xapi_verb;
+          const timeStr = new Date(s.ts).toLocaleTimeString();
+
+          html += '<div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.375rem; padding: 0.75rem;">';
+          html += '  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">';
+          html += '    <div style="display: flex; align-items: center; gap: 0.5rem;">';
+          html += '      <strong style="color: #f3f4f6; font-size: 0.85rem;">Step ' + s.step_index + ': ' + s.step_name + '</strong>';
+          html += '      ' + actorBadge;
+          html += '      <span style="font-family: monospace; font-size: 0.72rem; color: #a5f3fc;">[' + verbLabel + ']</span>';
+          html += '    </div>';
+          html += '    <span style="font-size: 0.75rem; color: var(--text-muted);">' + timeStr + '</span>';
+          html += '  </div>';
+
+          if (s.prompt) {
+            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
+            html += '    <strong>Prompt / Context:</strong>';
+            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; max-height: 120px; overflow-y: auto;">' + s.prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+            html += '  </div>';
+          }
+          if (s.patch) {
+            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
+            html += '    <strong>Patch / Generated Output:</strong>';
+            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; color: #86efac; white-space: pre-wrap; max-height: 140px; overflow-y: auto;">' + s.patch.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+            html += '  </div>';
+          }
+          if (s.build_test_log) {
+            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
+            html += '    <strong>Build / Test Verification Log:</strong>';
+            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; color: #a5f3fc; white-space: pre-wrap;">' + s.build_test_log.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+            html += '  </div>';
+          }
+          if (s.qa_evidence) {
+            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
+            html += '    <strong>QA Evidence:</strong> ' + (s.qa_evidence.summary || JSON.stringify(s.qa_evidence));
+            html += '  </div>';
+          }
+          if (s.human_decision) {
+            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: #fde68a;">';
+            html += '    <strong>Human Decision:</strong> Rationale: <em>"' + (s.human_decision.rationale || '') + '"</em> &bull; Key: <code>' + (s.human_decision.reviewer_pubkey || '').slice(0, 16) + '...</code>';
+            html += '  </div>';
+          }
+          html += '</div>';
+        }
+        html += '</div>';
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = '<div style="color: #fca5a5; padding: 1rem;">Failed to load trace: ' + err.message + '</div>';
+      }
+    }
+
+    function closeTraceModal() {
+      const modal = document.getElementById("trace-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function exportTraceJsonl() {
+      if (!currentModalTaskId) return;
+      window.open("/project/${defaultProjectId}/trace/" + currentModalTaskId + "/export", "_blank");
+    }
   </script>
+
+  <!-- S3A Trace Replay Modal -->
+  <div id="trace-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); z-index: 9999; align-items: center; justify-content: center; padding: 1.5rem;">
+    <div style="background: #111827; border: 1px solid #374151; border-radius: 0.75rem; width: 100%; max-width: 850px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.7);">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; background: #0b0f19;">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <strong id="trace-modal-title" style="color: #f3f4f6; font-size: 1.05rem;">Task Trace Replay</strong>
+          <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.72rem;">s3a-trace &bull; xAPI Provenance</span>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button class="btn btn-secondary" onclick="exportTraceJsonl()" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">
+            💾 Export Fine-Tuning JSONL
+          </button>
+          <button onclick="closeTraceModal()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.2rem; cursor: pointer; padding: 0 0.5rem;">✕</button>
+        </div>
+      </div>
+      <div id="trace-steps-container" style="padding: 1.25rem; overflow-y: auto; flex: 1;">
+        <!-- Trace steps loaded dynamically -->
+      </div>
+    </div>
+  </div>
 </body>
 </html>`;
+
 
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -2382,7 +2636,7 @@ interface RepairMetrics {
   promoted_after_green: number;
 }
 
-export type AgentStatus = "idle" | "working" | "pushing" | "merged" | "conflict" | "blocked" | "human" | "rejected" | "qa_running" | "qa_passed" | "qa_failed";
+export type AgentStatus = "idle" | "working" | "pushing" | "merged" | "conflict" | "blocked" | "human" | "rejected" | "qa_running" | "qa_passed" | "qa_failed" | "deferred_budget";
 export type AgentRole = "builder" | "qa_journey" | "visual" | "chaos";
 
 export interface QAEvidenceScreenshot {
@@ -2428,7 +2682,7 @@ export interface TaskItem {
   files_allowed: string[];
   tests: string;
   risk_level: "low" | "high";
-  status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed";
+  status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed" | "deferred_budget";
   claimed_by?: string;
   claimed_at?: number;
   change_request_id?: string;
@@ -2542,6 +2796,86 @@ export interface DailyUsage {
   sandbox_minutes: number;
 }
 
+// ============================================================================
+// S3A Ledger & Budget Agent Interfaces
+// ============================================================================
+
+export type ActionKind = "llm" | "sandbox" | "browser" | "r2" | "free";
+
+export interface LedgerRecord {
+  id: string;
+  ts: number;
+  task_id: string;
+  agent_id: string;
+  kind: ActionKind;
+  units: number;
+  est_cost: number;
+  is_free: boolean;
+  cumulative_spent: number;
+}
+
+export interface DeferredAction {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  kind: ActionKind;
+  units: number;
+  est_cost: number;
+  reason: "deferred_budget";
+  queued_at: number;
+}
+
+export interface BudgetStatus {
+  spent_today: number;
+  cap: number;
+  pct_spent: number;
+  warning_80_pct: boolean;
+  cap_reached: boolean;
+  time_until_reset_secs: number;
+  deferred_queue: DeferredAction[];
+  entries: LedgerRecord[];
+}
+
+// ============================================================================
+// S3A Task Tracing & Fine-Tuning Replay Interfaces
+// ============================================================================
+
+export interface ActorProvenance {
+  type: "human" | "ai";
+  id?: string;
+  name?: string;
+  supervisor_id?: string;
+  reviewer_pubkey?: string;
+  rationale?: string;
+  agent_id?: string;
+  model?: string;
+}
+
+
+export interface TraceStep {
+  step_id: string;
+  task_id: string;
+  step_index: number;
+  step_name: string;
+  actor: ActorProvenance;
+  xapi_verb: string;
+  prompt?: string;
+  model?: string;
+  patch?: string;
+  build_test_log?: string;
+  qa_evidence?: any;
+  human_decision?: any;
+  ts: number;
+}
+
+export interface TaskTrace {
+  task_id: string;
+  title: string;
+  steps: TraceStep[];
+  created_at: number;
+  updated_at: number;
+}
+
 export class RepoCoordinator implements DurableObject {
   state: DurableObjectState;
   env: Env;
@@ -2621,6 +2955,245 @@ export class RepoCoordinator implements DurableObject {
     if (type === "llm") usage.llm_calls += amount;
     if (type === "sandbox") usage.sandbox_minutes += amount;
     await this.state.storage.put(key, usage);
+  }
+
+  // --- S3A Ledger & Budget Agent Implementation ---
+
+  public calculateCost(kind: ActionKind, units: number): number {
+    switch (kind) {
+      case "free": return 0.0;
+      case "llm": return units * 0.000002;     // $2 / 1M tokens
+      case "sandbox": return units * 0.0001;  // $0.006 / min
+      case "browser": return units * 0.0002;  // $0.012 / min
+      case "r2": return units * 0.00005;       // $0.05 / 1000 ops
+    }
+  }
+
+  private async getDailyCap(): Promise<number> {
+    const cap = await this.state.storage.get<number>("daily_budget_cap");
+    return cap ?? 1.0;
+  }
+
+  private async checkDailyReset(): Promise<void> {
+    const currentDay = Math.floor(Date.now() / 86400000);
+    const lastResetDay = (await this.state.storage.get<number>("ledger_last_reset_day")) || currentDay;
+    if (currentDay > lastResetDay) {
+      await this.state.storage.put("ledger_last_reset_day", currentDay);
+      await this.state.storage.put("ledger_spent_today", 0.0);
+      await this.drainDeferredQueue();
+    }
+  }
+
+  private async drainDeferredQueue(): Promise<DeferredAction[]> {
+    const queue = (await this.state.storage.get<DeferredAction[]>("deferred_queue")) || [];
+    if (queue.length > 0) {
+      await this.state.storage.put("deferred_queue", []);
+      const tasks = await this.getOrInitTasks();
+      for (const d of queue) {
+        const t = tasks.find(x => x.id === d.task_id);
+        if (t && t.status === "deferred_budget") {
+          t.status = "open";
+          t.claimed_by = undefined;
+          t.claimed_at = undefined;
+        }
+      }
+      await this.state.storage.put("brakets_tasks", tasks);
+    }
+    return queue;
+  }
+
+  public async getBudgetStatus(): Promise<BudgetStatus> {
+    await this.checkDailyReset();
+    const cap = await this.getDailyCap();
+    const spentToday = (await this.state.storage.get<number>("ledger_spent_today")) || 0.0;
+    const queue = (await this.state.storage.get<DeferredAction[]>("deferred_queue")) || [];
+    const entries = (await this.state.storage.get<LedgerRecord[]>("ledger_entries")) || [];
+
+    const pct = cap > 0 ? (spentToday / cap) * 100 : 100;
+    const timeUntilReset = 86400 - Math.floor((Date.now() % 86400000) / 1000);
+
+    return {
+      spent_today: Number(spentToday.toFixed(5)),
+      cap,
+      pct_spent: Number(pct.toFixed(1)),
+      warning_80_pct: pct >= 80,
+      cap_reached: spentToday >= cap,
+      time_until_reset_secs: timeUntilReset,
+      deferred_queue: queue,
+      entries: entries.slice(-25).reverse(),
+    };
+  }
+
+  public async checkSpend(kind: ActionKind, units: number): Promise<{ allowed: boolean; deferred: boolean; est_cost: number; reason?: string }> {
+    await this.checkDailyReset();
+    if (kind === "free") {
+      return { allowed: true, deferred: false, est_cost: 0.0 };
+    }
+    const cost = this.calculateCost(kind, units);
+    const cap = await this.getDailyCap();
+    const spentToday = (await this.state.storage.get<number>("ledger_spent_today")) || 0.0;
+
+    if (spentToday + cost <= cap) {
+      return { allowed: true, deferred: false, est_cost: cost };
+    } else {
+      return { allowed: false, deferred: true, est_cost: cost, reason: "deferred_budget" };
+    }
+  }
+
+  public async recordLedgerAction(
+    taskId: string,
+    agentId: string,
+    kind: ActionKind,
+    units: number
+  ): Promise<{ status: "executed" | "deferred"; record?: LedgerRecord; deferred?: DeferredAction }> {
+    await this.checkDailyReset();
+    const isFree = kind === "free";
+    const estCost = this.calculateCost(kind, units);
+    const cap = await this.getDailyCap();
+    let spentToday = (await this.state.storage.get<number>("ledger_spent_today")) || 0.0;
+
+    if (isFree || (spentToday + estCost <= cap)) {
+      if (!isFree) {
+        spentToday += estCost;
+        await this.state.storage.put("ledger_spent_today", spentToday);
+      }
+      const record: LedgerRecord = {
+        id: `led_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        ts: Date.now(),
+        task_id: taskId,
+        agent_id: agentId,
+        kind,
+        units,
+        est_cost: estCost,
+        is_free: isFree,
+        cumulative_spent: Number(spentToday.toFixed(5)),
+      };
+      const entries = (await this.state.storage.get<LedgerRecord[]>("ledger_entries")) || [];
+      entries.push(record);
+      if (entries.length > 200) entries.shift();
+      await this.state.storage.put("ledger_entries", entries);
+
+      return { status: "executed", record };
+    } else {
+      const deferred: DeferredAction = {
+        id: `def_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        task_id: taskId,
+        agent_id: agentId,
+        kind,
+        units,
+        est_cost: estCost,
+        reason: "deferred_budget",
+        queued_at: Date.now(),
+      };
+      const queue = (await this.state.storage.get<DeferredAction[]>("deferred_queue")) || [];
+      queue.push(deferred);
+      await this.state.storage.put("deferred_queue", queue);
+
+      const tasks = await this.getOrInitTasks();
+      const task = tasks.find(t => t.id === taskId);
+      if (task) {
+        task.status = "deferred_budget";
+        await this.state.storage.put("brakets_tasks", tasks);
+      }
+
+      this.updateAgentState(agentId, {
+        status: "blocked",
+        task: `Paid action (${kind}) deferred: 100% daily budget cap reached`,
+      });
+
+      return { status: "deferred", deferred };
+    }
+  }
+
+  public async resetBudgetToday(): Promise<{ status: "reset"; resumed_count: number }> {
+    await this.state.storage.put("ledger_spent_today", 0.0);
+    const resumed = await this.drainDeferredQueue();
+    return { status: "reset", resumed_count: resumed.length };
+  }
+
+  // --- S3A Task Tracing & Fine-Tuning Replay Implementation ---
+
+  public async appendTraceStep(
+    taskId: string,
+    stepName: string,
+    actor: ActorProvenance,
+    verb: string,
+    prompt?: string,
+    model?: string,
+    patch?: string,
+    buildTestLog?: string,
+    qaEvidence?: any,
+    humanDecision?: any
+  ): Promise<TraceStep> {
+    let trace = await this.state.storage.get<TaskTrace>(`trace:${taskId}`);
+    const tasks = await this.getOrInitTasks();
+    const task = tasks.find(t => t.id === taskId);
+    const taskTitle = task?.title || `Task ${taskId}`;
+
+    if (!trace) {
+      trace = {
+        task_id: taskId,
+        title: taskTitle,
+        steps: [],
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      };
+    }
+
+    const stepIndex = trace.steps.length + 1;
+    const step: TraceStep = {
+      step_id: `${taskId}_step_${stepIndex}`,
+      task_id: taskId,
+      step_index: stepIndex,
+      step_name: stepName,
+      actor,
+      xapi_verb: verb,
+      prompt,
+      model,
+      patch,
+      build_test_log: buildTestLog,
+      qa_evidence: qaEvidence,
+      human_decision: humanDecision,
+      ts: Date.now(),
+    };
+
+    trace.steps.push(step);
+    trace.updated_at = Date.now();
+    await this.state.storage.put(`trace:${taskId}`, trace);
+    return step;
+  }
+
+  public async getTrace(taskId: string): Promise<TaskTrace | null> {
+    return (await this.state.storage.get<TaskTrace>(`trace:${taskId}`)) || null;
+  }
+
+  public async exportTraceJsonl(taskId: string): Promise<string> {
+    const trace = await this.getTrace(taskId);
+    if (!trace) return "";
+
+    const lines: string[] = [];
+    for (const step of trace.steps) {
+      if (step.actor.type === "ai" && step.prompt && (step.patch || step.build_test_log)) {
+        const sample = {
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert autonomous software engineer working on Brakets (ashleycribb/plat-gaming). Task: ${trace.title}. Provenance: ${step.xapi_verb}. Model: ${step.model || "llama-3.3-70b-instruct-fp8-fast"}`
+            },
+            {
+              role: "user",
+              content: step.prompt
+            },
+            {
+              role: "assistant",
+              content: step.patch || step.build_test_log || ""
+            }
+          ]
+        };
+        lines.push(JSON.stringify(sample));
+      }
+    }
+    return lines.join("\n");
   }
 
   private async handleControl(request: Request, projectId: string): Promise<Response> {
@@ -3014,6 +3587,25 @@ export class RepoCoordinator implements DurableObject {
       task.status = "merged";
       await this.state.storage.put("brakets_tasks", tasks);
     }
+
+    // Append human judgment provenance to S3A Task Trace
+    await this.appendTraceStep(
+      cr.task_id,
+      "human-approval",
+      {
+        type: "human",
+        supervisor_id: "human-supervisor",
+        reviewer_pubkey: reviewer_pubkey || "",
+        rationale: rationale || "Human supervisor signed and approved change",
+      },
+      "http://adlnet.gov/expapi/verbs/approved",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { signature, reviewer_pubkey, rationale, timestamp: tsSecs }
+    );
 
     const agent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${cr.agent_id}`);
     if (agent) {
@@ -3682,14 +4274,81 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
             headers: { "Content-Type": "application/json" }
           });
         }
-        return new Response(JSON.stringify({ error: "Task not found" }), { status: 404 });
+        return new Response(JSON.stringify({ error: "Task not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
       }
+      case "ledger":
+
+        if (pathParts[3] === "config" && request.method === "POST") {
+          let body: any = {};
+          try { body = await request.json(); } catch(e) {}
+          if (body.daily_cap !== undefined) {
+            await this.state.storage.put("daily_budget_cap", Number(body.daily_cap));
+          }
+          const s = await this.getBudgetStatus();
+          return new Response(JSON.stringify(s), { headers: { "Content-Type": "application/json" } });
+        }
+        if (pathParts[3] === "reset" && request.method === "POST") {
+          const res = await this.resetBudgetToday();
+          return new Response(JSON.stringify(res), { headers: { "Content-Type": "application/json" } });
+        }
+        if (pathParts[3] === "check-spend" && request.method === "POST") {
+          let body: any = {};
+          try { body = await request.json(); } catch(e) {}
+          const check = await this.checkSpend(body.kind || "llm", body.units || 1);
+          return new Response(JSON.stringify(check), { headers: { "Content-Type": "application/json" } });
+        }
+        if (pathParts[3] === "record" && request.method === "POST") {
+          let body: any = {};
+          try { body = await request.json(); } catch(e) {}
+          const rec = await this.recordLedgerAction(body.task_id, body.agent_id, body.kind || "llm", body.units || 1);
+          return new Response(JSON.stringify(rec), { headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify(await this.getBudgetStatus()), { headers: { "Content-Type": "application/json" } });
+
+      case "trace":
+        if (pathParts[3] && pathParts[4] === "export") {
+          const jsonl = await this.exportTraceJsonl(pathParts[3]);
+          return new Response(jsonl, {
+            headers: {
+              "Content-Type": "application/x-jsonlines",
+              "Content-Disposition": `attachment; filename="trace-${pathParts[3]}-finetuning.jsonl"`,
+            }
+          });
+        }
+        if (pathParts[3] && pathParts[4] === "append" && request.method === "POST") {
+          let body: any = {};
+          try { body = await request.json(); } catch(e) {}
+          const step = await this.appendTraceStep(
+            pathParts[3],
+            body.step_name,
+            body.actor,
+            body.xapi_verb,
+            body.prompt,
+            body.model,
+            body.patch,
+            body.build_test_log,
+            body.qa_evidence,
+            body.human_decision
+          );
+          return new Response(JSON.stringify(step), { headers: { "Content-Type": "application/json" } });
+        }
+        if (pathParts[3]) {
+          const tr = await this.getTrace(pathParts[3]);
+          if (!tr) return new Response(JSON.stringify({ error: "Trace not found" }), { status: 404 });
+          return new Response(JSON.stringify(tr), { headers: { "Content-Type": "application/json" } });
+        }
+        return new Response("Missing task ID", { status: 400 });
+
       case "repairs":
         return this.handleRepairs(projectId);
       default:
-        return new Response("Not Found", { status: 404 });
+        return new Response(`Not Found: action='${action}' projectId='${projectId}' pathname='${url.pathname}' parts='${JSON.stringify(pathParts)}'`, {
+          status: 404,
+          headers: { "X-Debug-Action": action, "X-Debug-Project": projectId }
+        });
     }
   }
+
 
   // --------------------------------------------------------------------------
   // Push Handler (Verifies signature, grant, manages Artifacts repo, merges)
@@ -5187,6 +5846,59 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       } catch (e) {}
     };
 
+    // Helper: append trace step to RepoCoordinator
+    const recordCoordinatorTrace = async (
+      stepName: string,
+      actor: ActorProvenance,
+      verb: string,
+      details: {
+        prompt?: string;
+        model?: string;
+        patch?: string;
+        buildTestLog?: string;
+        qaEvidence?: any;
+        humanDecision?: any;
+      }
+    ) => {
+      try {
+        const doId = this.env.REPO_COORDINATOR.idFromName(projectId);
+        const stub = this.env.REPO_COORDINATOR.get(doId);
+        await stub.fetch(`https://s3a-gate/project/${projectId}/trace/${taskId}/append`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            step_name: stepName,
+            actor,
+            xapi_verb: verb,
+            prompt: details.prompt,
+            model: details.model,
+            patch: details.patch,
+            build_test_log: details.buildTestLog,
+            qa_evidence: details.qaEvidence,
+            human_decision: details.humanDecision,
+          }),
+        });
+      } catch (e) {}
+    };
+
+    // Helper: check budget and record paid action in s3a-ledger
+    const checkAndChargeLedger = async (kind: ActionKind, units: number = 1) => {
+      try {
+        const doId = this.env.REPO_COORDINATOR.idFromName(projectId);
+        const stub = this.env.REPO_COORDINATOR.get(doId);
+        const recRes = await stub.fetch(`https://s3a-gate/project/${projectId}/ledger/record`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task_id: taskId, agent_id: agentId, kind, units }),
+        });
+        if (recRes.ok) {
+          const recData: any = await recRes.json();
+          return recData;
+        }
+      } catch (e) {}
+      return { status: "executed" };
+    };
+
     // Step 1: Fetch repository / baseline code
     const repoContext = await step.do("fetch-repo", async () => {
       const token = this.env.GITHUB_TOKEN;
@@ -5209,6 +5921,14 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           }
         } catch (e) {}
       }
+
+      await recordCoordinatorTrace(
+        "fetch-repo",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://activitystrea.ms/schema/1.0/access",
+        { prompt: `Fetched target file ${targetFile} from baseline Artifacts mirror` }
+      );
+
       return {
         targetFile,
         existingContent,
@@ -5217,7 +5937,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       };
     });
 
-    // Step 2: Plan the task using Workers AI / Ollama
+    // Step 2: Plan the task using Workers AI / Ollama (Free work - never deferred)
     const plan = await step.do("plan-task", async () => {
       const prompt = `You are a senior TypeScript engineer.
 Task: ${taskTitle}
@@ -5229,11 +5949,40 @@ Provide a concise, 3-step technical implementation plan. No conversational fille
 
       const response = await callModel(this.env, prompt);
       await recordCoordinatorUsage("llm", 1);
+
+      // Ledger: Free planning action (cost = $0.00, never blocked)
+      await checkAndChargeLedger("free", 1);
+
+      // Trace: Append planning step
+      await recordCoordinatorTrace(
+        "plan-task",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://adlnet.gov/expapi/verbs/planned",
+        { prompt, model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", patch: response }
+      );
+
       return response;
     });
 
-    // Step 3: Write patch using LLM constrained to filesAllowed
+    // Step 3: Write patch using LLM constrained to filesAllowed (Paid LLM generation)
     const patch = await step.do("write-patch", async () => {
+      // 1. Check budget cap before generating code
+      const charge = await checkAndChargeLedger("llm", 1);
+      if (charge.status === "deferred") {
+        await recordCoordinatorTrace(
+          "write-patch-deferred",
+          { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+          "http://adlnet.gov/expapi/verbs/deferred",
+          { prompt: `Deferred: 100% daily budget cap reached. Enqueued in deferred_queue.` }
+        );
+        return {
+          deferred: true,
+          filePath: repoContext.targetFile,
+          code: "",
+          reason: "deferred_budget"
+        };
+      }
+
       const prompt = `You are an expert TypeScript engineer implementing a task for plat-gaming (Brakets).
 Task: ${taskTitle}
 Description: ${taskDescription}
@@ -5258,14 +6007,35 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
 
       const match = response.match(/\`\`\`(?:typescript|ts)?\s*([\s\S]*?)\`\`\`/i);
       const code = match ? match[1].trim() : response.trim();
+
+      // Trace: Append code authoring step
+      await recordCoordinatorTrace(
+        "write-patch",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://activitystrea.ms/schema/1.0/author",
+        { prompt, model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", patch: code }
+      );
+
       return {
+        deferred: false,
         filePath: repoContext.targetFile,
         code,
       };
     });
 
-    // Step 4: Sandbox verify and repair loop (max 3 attempts)
+    // If step was deferred by ledger budget cap, exit gracefully until cap reset
+    if (patch.deferred) {
+      return {
+        status: "deferred_budget",
+        taskId,
+        agentId,
+        message: "Paid action deferred: daily budget cap reached. Enqueued for next budget window."
+      };
+    }
+
+    // Step 4: Sandbox verify and repair loop (max 3 attempts - Paid Sandbox compute)
     const testResult = await step.do("sandbox-verify-and-repair", async () => {
+      await checkAndChargeLedger("sandbox", 2);
       let passed = true;
       let buildOutput = "Build verification passed: TypeScript typecheck clean";
 
@@ -5284,6 +6054,13 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
         }
       }
 
+      await recordCoordinatorTrace(
+        "sandbox-verify-and-repair",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://adlnet.gov/expapi/verbs/verified",
+        { buildTestLog: buildOutput }
+      );
+
       return {
         passed,
         output: buildOutput,
@@ -5291,8 +6068,9 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
       };
     });
 
-    // Step 5: Start preview and run Cloudflare Browser Rendering QA
+    // Step 5: Start preview and run Cloudflare Browser Rendering QA (Paid Browser + R2 compute)
     const qaReport = await step.do("start-preview-and-browser-qa", async () => {
+      await checkAndChargeLedger("browser", 1);
       const passedSteps: string[] = [];
       const failedSteps: string[] = [];
       const consoleErrors: string[] = [];
@@ -5324,9 +6102,12 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
 
           const screenshotBuffer = await page.screenshot({ fullPage: false, type: "png" });
           const screenshotKey = `qa-${taskId.toLowerCase()}-${Date.now()}.png`;
-          await this.env.EVIDENCE_BUCKET.put(screenshotKey, screenshotBuffer, {
-            httpMetadata: { contentType: "image/png" }
-          });
+          if (this.env.EVIDENCE_BUCKET) {
+            await this.env.EVIDENCE_BUCKET.put(screenshotKey, screenshotBuffer, {
+              httpMetadata: { contentType: "image/png" }
+            });
+            await checkAndChargeLedger("r2", 1);
+          }
           screenshots.push({
             name: screenshotKey,
             caption: "Autonomous QA Browser Rendering: Dashboard and Preview Verification",
@@ -5344,7 +6125,7 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
         }
       }
 
-      return {
+      const report = {
         id: `qa_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         agent_id: agentId,
         agent_role: "qa_journey" as const,
@@ -5357,6 +6138,15 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
         screenshots,
         created_at: Date.now(),
       };
+
+      await recordCoordinatorTrace(
+        "start-preview-and-browser-qa",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://adlnet.gov/expapi/verbs/tested",
+        { qaEvidence: report }
+      );
+
+      return report;
     });
 
     // Step 6: Sign commit with real agent key & push Change Request
@@ -5433,6 +6223,13 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
         cr.github_pr_number = submitData.github_pr.pr_number;
       }
 
+      await recordCoordinatorTrace(
+        "sign-and-push",
+        { id: agentId, name: `Agent ${agentId}`, type: "ai" },
+        "http://adlnet.gov/expapi/verbs/signed",
+        { patch: `Commit ${commitId} sealed with SHA-256 ${sealHash.substring(0, 16)}... and Ed25519 signature` }
+      );
+
       return cr;
     });
 
@@ -5453,3 +6250,4 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
     };
   }
 }
+
