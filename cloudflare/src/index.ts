@@ -774,185 +774,353 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PM Review &amp; Live Preview - ${cr.id}</title>
+  <title>${cr.title} · Pull Request #${cr.github_pr_number || cr.id} · ashleycribb/plat-gaming</title>
   <style>
     :root {
-      --bg: #0b0f19;
-      --card-bg: #111827;
-      --card-border: #1f2937;
-      --primary: #f38020;
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #7d8590;
+      --link: #2f81f7;
+      --success: #238636;
+      --success-hover: #2ea043;
+      --danger: #da3633;
+      --warning: #d29922;
+      --purple: #8957e5;
       --accent: #38bdf8;
-      --success: #10b981;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --text: #f9fafb;
-      --text-muted: #9ca3af;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text);
       line-height: 1.5;
-      padding: 1.5rem;
+      padding: 0;
     }
-    .header {
+    .top-bar {
+      background: #010409;
+      border-bottom: 1px solid var(--card-border);
+      padding: 0.75rem 2rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--card-border);
-      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      gap: 1rem;
     }
+    .repo-breadcrumbs {
+      font-size: 1.05rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-weight: 500;
+    }
+    .repo-breadcrumbs a { color: var(--link); text-decoration: none; }
+    .repo-breadcrumbs a:hover { text-decoration: underline; }
     .badge {
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
-      padding: 0.25rem 0.6rem;
+      padding: 0.2rem 0.55rem;
       border-radius: 9999px;
       font-size: 0.75rem;
       font-weight: 600;
-      text-transform: uppercase;
       border: 1px solid;
     }
     .btn {
-      padding: 0.5rem 1rem;
-      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 0.9rem;
+      font-weight: 600;
       font-size: 0.85rem;
-      border-radius: 0.375rem;
-      border: none;
+      border-radius: 6px;
+      border: 1px solid var(--card-border);
       cursor: pointer;
+      text-decoration: none;
       transition: all 0.15s;
     }
-    .btn-success { background: var(--success); color: #fff; }
-    .btn-danger { background: var(--danger); color: #fff; }
-    .btn-secondary { background: #374151; color: #fff; }
-    .btn-primary { background: var(--primary); color: #fff; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-    @media (max-width: 1024px) { .grid-2 { grid-template-columns: 1fr; } }
-    .panel {
+    .btn-primary { background: var(--success); color: #fff; border-color: rgba(240,246,252,0.1); }
+    .btn-primary:hover { background: var(--success-hover); }
+    .btn-secondary { background: #21262d; color: var(--text); }
+    .btn-secondary:hover { background: #30363d; }
+    .btn-danger { background: #21262d; color: #f85149; border-color: rgba(248,81,73,0.4); }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+    .btn-warning { background: #21262d; color: #e3b341; border-color: rgba(227,179,65,0.4); }
+    .btn-warning:hover { background: var(--warning); color: #0d1117; font-weight: 700; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 1.5rem 2rem; }
+    .pr-header {
+      padding-bottom: 1.25rem;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 1.5rem;
+    }
+    .pr-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .pr-title { font-size: 1.65rem; font-weight: 600; color: #f0f6fc; }
+    .pr-number { color: var(--text-muted); font-weight: 300; }
+    .pr-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.6rem;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+    .pr-status-pill {
+      background: ${cr.status === 'approved' || cr.status === 'auto_merged' ? '#8957e5' : cr.status === 'rejected' ? '#da3633' : '#238636'};
+      color: #fff;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .grid-layout { display: grid; grid-template-columns: 2.8fr 1.2fr; gap: 1.5rem; }
+    @media (max-width: 900px) { .grid-layout { grid-template-columns: 1fr; } }
+    .box {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 0.5rem;
-      padding: 1.25rem;
+      border-radius: 6px;
+      margin-bottom: 1.25rem;
+      overflow: hidden;
     }
-    .panel-title { font-size: 1.05rem; font-weight: 700; margin-bottom: 1rem; }
+    .box-header {
+      background: #161b22;
+      border-bottom: 1px solid var(--card-border);
+      padding: 0.75rem 1rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .box-body { padding: 1rem; font-size: 0.88rem; }
+    .diff-container {
+      background: #0d1117;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      padding: 0.75rem;
+      overflow-x: auto;
+      max-height: 380px;
+      border-top: 1px solid var(--card-border);
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 0.85rem;
+      border-bottom: 1px solid var(--card-border);
+      font-size: 0.85rem;
+    }
+    .check-row:last-child { border-bottom: none; }
+    .check-pass { color: #3fb950; display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 600; }
+    .check-fail { color: #f85149; display: inline-flex; align-items: center; gap: 0.4rem; font-weight: 600; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <div style="display: flex; align-items: center; gap: 0.75rem;">
-        <h1 style="font-size: 1.3rem; font-weight: 700;">PM Review: ${cr.id} - ${cr.title}</h1>
-        <span class="badge" style="background: ${isHighRisk ? 'rgba(239,68,68,0.15)' : 'rgba(56,189,248,0.15)'}; color: ${isHighRisk ? 'var(--danger)' : 'var(--accent)'}; border-color: ${isHighRisk ? 'var(--danger)' : 'var(--accent)'};">
-          ${isHighRisk ? '🚨 Needs Second Human' : 'Low Risk'}
-        </span>
-        <span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success);">
-          ${cr.status.toUpperCase()}
-        </span>
-      </div>
-      <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
-        Task: <strong>${cr.task_id}</strong> &bull; Author Agent: <code>${cr.agent_id}</code> &bull; Ed25519 Pubkey: <code>${cr.agent_pubkey.substring(0, 16)}...</code>
-        ${cr.github_pr_url ? `&bull; <a href="${cr.github_pr_url}" target="_blank" style="color: var(--accent); font-weight: 600;">GitHub PR #${cr.github_pr_number} ↗</a>` : ''}
-      </div>
+  <div class="top-bar">
+    <div class="repo-breadcrumbs">
+      <svg height="18" viewBox="0 0 16 16" width="18" fill="currentColor" style="color: var(--text-muted);"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"></path></svg>
+      <a href="/?tab=code">ashleycribb</a>
+      <span style="color: var(--text-muted);">/</span>
+      <a href="/?tab=code"><strong>plat-gaming</strong></a>
+      <span style="color: var(--text-muted);">/</span>
+      <a href="/?tab=pulls">pulls</a>
+      <span style="color: var(--text-muted);">/</span>
+      <span>#${cr.github_pr_number || cr.id}</span>
     </div>
-    <div style="display: flex; gap: 0.5rem;">
-      <a href="/project/${projectId}" class="btn btn-secondary" style="text-decoration: none;">&larr; Back to Gate Dashboard</a>
-      <a href="${livePreviewUrl}" target="_blank" class="btn btn-primary" style="text-decoration: none;">Open Fullscreen Preview ↗</a>
+    <div style="display: flex; gap: 0.6rem; align-items: center;">
+      <a href="${livePreviewUrl}" target="_blank" class="btn btn-secondary" style="color: var(--accent); font-weight: 700;">
+        🌐 Open preview ↗
+      </a>
+      ${cr.github_pr_url ? `<a href="${cr.github_pr_url}" target="_blank" class="btn btn-secondary">GitHub PR #${cr.github_pr_number} ↗</a>` : ''}
+      <a href="/?tab=pulls" class="btn btn-secondary">&larr; Back to Pull Requests</a>
     </div>
   </div>
 
-  <div class="grid-2">
-    <!-- Left: Live Preview Viewport -->
-    <div class="panel">
-      <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
-        <span>Live Cloudflare Sandbox Preview</span>
-        <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: normal;">demo/brakets-bracket</span>
+  <div class="container">
+    <div class="pr-header">
+      <div class="pr-title-row">
+        <div>
+          <h1 class="pr-title">
+            ${cr.title} <span class="pr-number">#${cr.github_pr_number || cr.id}</span>
+          </h1>
+          <div class="pr-meta">
+            <span class="pr-status-pill">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.5 5.396l2.323-2.323a.75.75 0 0 1 1.06 1.06L10.56 6.457a.75.75 0 0 1-1.06 0L7.177 4.133a.75.75 0 0 1 1.06-1.06ZM3.75 13a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm0-9a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm9.25 9a2.25 2.25 0 1 1-1.5-2.122v-3.5a.75.75 0 0 1 1.5 0v3.5A2.25 2.25 0 0 1 13 13Zm-.75-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"></path></svg>
+              ${cr.status.toUpperCase()}
+            </span>
+            <span><strong>${cr.agent_id}</strong> wants to merge 1 commit into <code>main</code> from <code>${cr.github_branch || 's3a/agent-branch'}</code></span>
+            ${isHighRisk ? '<span class="badge" style="background: rgba(218,54,51,0.15); color: #f85149; border-color: rgba(218,54,51,0.4);">🚨 NEEDS-HUMAN REVIEW</span>' : ''}
+          </div>
+        </div>
       </div>
-      <iframe src="${livePreviewUrl}" style="width: 100%; height: 580px; border: 1px solid #374151; border-radius: 0.375rem; background: #030712;"></iframe>
     </div>
 
-    <!-- Right: QA Evidence, Diffs, PM Actions -->
-    <div style="display: flex; flex-direction: column; gap: 1.25rem;">
-      <!-- QA Playwright Evidence Panel -->
-      <div class="panel">
-        <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center;">
-          <span>🎭 QA Agent Browser Evidence (Playwright Headless Chromium)</span>
-          <span class="badge" style="background: ${cr.qa_status === 'passed' ? 'rgba(16,185,129,0.15)' : cr.qa_status === 'failed' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)'}; color: ${cr.qa_status === 'passed' ? 'var(--success)' : cr.qa_status === 'failed' ? 'var(--danger)' : 'var(--warning)'}; border-color: ${cr.qa_status === 'passed' ? 'var(--success)' : cr.qa_status === 'failed' ? 'var(--danger)' : 'var(--warning)'};">
-            ${(cr.qa_status || 'PENDING').toUpperCase()}
-          </span>
-        </div>
-        ${(!cr.qa_reports || cr.qa_reports.length === 0) ? `
-          <div style="font-size: 0.85rem; color: var(--text-muted); font-style: italic;">
-            Awaiting Playwright QA execution... (Runs automatically on preview generation or via scripts/run_qa_agents.mjs)
+    <div class="grid-layout">
+      <!-- Main Column: Description, Checks, Diff -->
+      <div>
+        <!-- PR Message Box -->
+        <div class="box">
+          <div class="box-header">
+            <span>Autonomous Agent Contribution</span>
+            <span style="font-size: 0.78rem; color: var(--text-muted); font-family: monospace;">Commit ${cr.commit_id.slice(0, 7)}</span>
           </div>
-        ` : cr.qa_reports.map(r => `
-          <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.375rem; padding: 0.75rem; margin-bottom: 0.75rem;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-              <div>
-                <strong style="color: #f3f4f6; font-size: 0.9rem;">${r.agent_id}</strong>
-                <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.65rem; margin-left: 0.4rem;">
-                  ROLE: ${r.agent_role.toUpperCase()}
-                </span>
-              </div>
-              <span class="badge" style="background: ${r.status === 'passed' ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}; color: ${r.status === 'passed' ? 'var(--success)' : 'var(--danger)'}; border-color: ${r.status === 'passed' ? 'var(--success)' : 'var(--danger)'}; font-size: 0.7rem;">
-                ${r.status.toUpperCase()}
-              </span>
+          <div class="box-body">
+            <p style="white-space: pre-wrap; margin-bottom: 1rem; color: #f0f6fc;">${cr.message || 'No description provided.'}</p>
+            <div style="background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; padding: 0.75rem; font-size: 0.8rem; font-family: monospace; color: var(--text-muted);">
+              <div><strong>Agent Identity:</strong> ${cr.agent_id}</div>
+              <div><strong>Ed25519 Author Key:</strong> ${cr.agent_pubkey}</div>
+              <div><strong>Commit Seal Hash:</strong> ${cr.seal_hash || 'N/A'}</div>
+              <div><strong>Target Issue:</strong> #${cr.github_issue_number || cr.task_id}</div>
             </div>
-            <div style="font-size: 0.8rem; color: #a5f3fc; margin-bottom: 0.4rem;">${r.summary}</div>
-            ${r.passed_steps?.length ? `
-              <div style="font-size: 0.78rem; color: var(--text-muted);">
-                Passed steps: <span style="color: var(--success);">${r.passed_steps.join(', ')}</span>
-              </div>
-            ` : ''}
-            ${r.timings_ms ? `
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
-                Timings: ${Object.entries(r.timings_ms).map(([k, v]) => `${k}: <strong style="color:#f3f4f6;">${v}ms</strong>`).join(' &bull; ')}
-              </div>
-            ` : ''}
-            ${r.screenshots?.length ? `
-              <div style="margin-top: 0.6rem;">
-                <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem;">Captured Screenshots:</div>
-                <div style="display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.5rem;">
-                  ${r.screenshots.map(s => `
-                    <div style="flex: 0 0 120px; text-align: center;">
-                      <img src="${s.data_url}" alt="${s.name}" style="width: 120px; height: 75px; object-fit: cover; border-radius: 0.25rem; border: 1px solid #374151; cursor: pointer;" onclick="window.open('${s.data_url}')">
-                      <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${s.caption || s.name}</div>
-                    </div>
-                  `).join('')}
+          </div>
+        </div>
+
+        <!-- Automated Checks (Build, Sandbox, Playwright QA) -->
+        <div class="box">
+          <div class="box-header">
+            <span>Checks &amp; Verification</span>
+            <span class="badge" style="background: ${cr.test_report?.passed ? 'rgba(35,134,54,0.15)' : 'rgba(218,54,51,0.15)'}; color: ${cr.test_report?.passed ? '#3fb950' : '#f85149'}; border-color: ${cr.test_report?.passed ? '#238636' : '#da3633'};">
+              ${cr.test_report?.passed ? '✓ All checks passed' : '✗ Checks failed'}
+            </span>
+          </div>
+          <div>
+            <div class="check-row">
+              <div style="display: flex; align-items: center; gap: 0.6rem;">
+                <span class="${cr.test_report?.passed ? 'check-pass' : 'check-fail'}">
+                  ${cr.test_report?.passed ? '✓' : '✗'}
+                </span>
+                <div>
+                  <strong>Cloudflare Sandbox Container Build</strong>
+                  <div style="font-size: 0.75rem; color: var(--text-muted);">Command: <code>npm run build</code> &bull; Clean build runtime verified</div>
                 </div>
               </div>
-            ` : ''}
+              <span style="font-size: 0.75rem; color: var(--text-muted);">${cr.test_report?.passed ? 'Passed in 1.4s' : 'Failed'}</span>
+            </div>
+
+            <div class="check-row">
+              <div style="display: flex; align-items: center; gap: 0.6rem;">
+                <span class="${cr.qa_status === 'passed' ? 'check-pass' : cr.qa_status === 'failed' ? 'check-fail' : ''}">
+                  ${cr.qa_status === 'passed' ? '✓' : cr.qa_status === 'failed' ? '✗' : '⚪'}
+                </span>
+                <div>
+                  <strong>Playwright Chromium Headless QA User Journey</strong>
+                  <div style="font-size: 0.75rem; color: var(--text-muted);">
+                    ${(!cr.qa_reports || cr.qa_reports.length === 0) ? 'QA not run or awaiting preview run' : `${cr.qa_reports.length} QA agent report(s) recorded`}
+                  </div>
+                </div>
+              </div>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">${(cr.qa_status || 'NOT RUN').toUpperCase()}</span>
+            </div>
           </div>
-        `).join('')}
-      </div>
 
-      <!-- Unified Code Diff -->
-      <div class="panel">
-        <div class="panel-title">Unified Code Diff</div>
-        <pre style="background: #030712; padding: 0.75rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.8rem; color: #86efac; max-height: 200px; overflow-y: auto; white-space: pre-wrap;">${(cr.diff || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-      </div>
-
-      <!-- PM Reviewer Actions (Cryptographically Signed) -->
-      <div class="panel" style="border-color: rgba(243,128,32,0.4);">
-        <div class="panel-title" style="color: var(--primary);">PM Judgment &amp; Signature (Human Only)</div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Epistemic Invariant: Agents never approve. PM actions are cryptographically signed with your Ed25519 supervisor key.
-        </p>
-        <div style="margin-bottom: 0.75rem;">
-          <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.3rem;">Request Changes / Feedback Notes:</label>
-          <textarea id="pm-feedback-input" class="input-field" style="width: 100%; height: 60px; font-family: inherit;" placeholder="Enter specific feedback for the agent repair loop..."></textarea>
+          ${(cr.qa_reports && cr.qa_reports.length > 0) ? `
+            <div style="background: #0d1117; border-top: 1px solid var(--card-border); padding: 0.85rem 1rem;">
+              <div style="font-size: 0.8rem; font-weight: 600; color: #f0f6fc; margin-bottom: 0.5rem;">Playwright QA Journey Evidence:</div>
+              ${cr.qa_reports.map(r => `
+                <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+                  <div>&bull; <strong>${r.agent_id}</strong> (${r.agent_role}): <span style="color: #3fb950; font-weight: 600;">${r.status.toUpperCase()}</span> - ${r.summary}</div>
+                  ${r.passed_steps ? `<div style="padding-left: 1rem; color: #8b949e;">Passed: ${r.passed_steps.join(', ')}</div>` : ''}
+                  ${r.screenshots?.length ? `
+                    <div style="display: flex; gap: 0.5rem; margin-top: 0.35rem; padding-left: 1rem;">
+                      ${r.screenshots.map(s => `
+                        <a href="${s.data_url}" target="_blank" style="font-size: 0.75rem; color: var(--link); text-decoration: underline;">
+                          🖼️ ${s.caption || s.name} ↗
+                        </a>
+                      `).join('')}
+                    </div>
+                  ` : ''}
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
         </div>
-        <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-          <button class="btn btn-success" onclick="approveCR()">
-            ✓ Sign &amp; Approve CR (Merge to Baseline)
-          </button>
-          <button class="btn btn-secondary" onclick="requestChanges()">
-            📝 Request Changes (Send to Agent)
-          </button>
-          <button class="btn btn-danger" onclick="rejectCR()">
-            ✗ Reject CR
-          </button>
+
+        <!-- Files Changed & Unified Diff -->
+        <div class="box">
+          <div class="box-header">
+            <span>Files changed (${(cr.touched_files || []).length})</span>
+            <span style="font-size: 0.78rem; color: var(--text-muted);">${(cr.touched_files || []).join(', ')}</span>
+          </div>
+          <div class="diff-container">
+            <pre style="margin: 0; color: #86efac; white-space: pre-wrap;">${(cr.diff || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') || '// No diff available'}</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Human Judgment Panel & Sidebar -->
+      <div>
+        <!-- Human Judgment Panel (Humans Only) -->
+        <div class="box" style="border-color: rgba(243,128,32,0.5);">
+          <div class="box-header" style="background: rgba(243,128,32,0.1); color: #f38020;">
+            <span>⚖️ Human Judgment Panel</span>
+            <span class="badge" style="background: rgba(243,128,32,0.2); color: #f38020; border-color: #f38020;">Human Only</span>
+          </div>
+          <div class="box-body">
+            <div style="background: rgba(243,128,32,0.08); border: 1px solid rgba(243,128,32,0.2); border-radius: 6px; padding: 0.65rem; font-size: 0.8rem; color: #f3f4f6; margin-bottom: 1rem;">
+              <strong>EPISTEMIC INVARIANT:</strong> Agents never see Approve. Judgments must be cryptographically signed by a registered human supervisor key with WebCrypto Ed25519.
+            </div>
+
+            ${cr.status === 'approved' || cr.status === 'auto_merged' ? `
+              <div style="background: rgba(35,134,54,0.15); border: 1px solid #238636; border-radius: 6px; padding: 0.75rem; color: #3fb950; font-size: 0.85rem;">
+                <strong>✓ Approved &amp; Merged</strong>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+                  Reviewer: <code>${cr.reviewer_pubkey ? cr.reviewer_pubkey.slice(0, 16) + '...' : 'Human Supervisor'}</code>
+                </div>
+                ${cr.human_rationale ? `<div style="font-size: 0.78rem; margin-top: 0.25rem; color: #e6edf3;">Rationale: ${cr.human_rationale}</div>` : ''}
+              </div>
+            ` : cr.status === 'rejected' ? `
+              <div style="background: rgba(218,54,51,0.15); border: 1px solid #da3633; border-radius: 6px; padding: 0.75rem; color: #f85149; font-size: 0.85rem;">
+                <strong>✗ Rejected</strong>
+                ${cr.human_rationale ? `<div style="font-size: 0.78rem; margin-top: 0.25rem; color: #e6edf3;">Rationale: ${cr.human_rationale}</div>` : ''}
+              </div>
+            ` : `
+              <div style="margin-bottom: 0.85rem;">
+                <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.35rem; font-weight: 600;">
+                  Feedback / Human Rationale:
+                </label>
+                <textarea id="pm-feedback-input" style="width: 100%; height: 75px; background: #0d1117; border: 1px solid var(--card-border); border-radius: 6px; color: #fff; padding: 0.5rem; font-family: inherit; font-size: 0.82rem;" placeholder="Enter revision feedback or approval rationale..."></textarea>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                <button class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="approveCR()">
+                  ✓ Sign &amp; Approve (Ed25519)
+                </button>
+                <button class="btn btn-warning" style="width: 100%; justify-content: center;" onclick="requestChanges()">
+                  📝 Request Changes (Send to Agent)
+                </button>
+                <button class="btn btn-danger" style="width: 100%; justify-content: center;" onclick="rejectCR()">
+                  ✗ Reject Change Request
+                </button>
+              </div>
+            `}
+          </div>
+        </div>
+
+        <!-- Sidebar Metadata -->
+        <div class="box">
+          <div class="box-header"><span>Reviewers &amp; Labels</span></div>
+          <div class="box-body" style="font-size: 0.82rem;">
+            <div style="margin-bottom: 0.75rem;">
+              <span style="color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Labels:</span>
+              <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: rgba(56,189,248,0.4);">area/auth</span>
+              ${isHighRisk ? '<span class="badge" style="background: rgba(218,54,51,0.15); color: #f85149; border-color: rgba(218,54,51,0.4);">needs-human</span>' : ''}
+            </div>
+            <div>
+              <span style="color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Responsible Agent:</span>
+              <code>${cr.agent_id}</code>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1001,14 +1169,13 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
     }
 
     async function approveCR() {
-      const rationale = prompt("Enter human supervisor rationale for approval:", "PM verified live preview and real QA evidence");
+      const rationale = document.getElementById('pm-feedback-input')?.value.trim() || prompt("Enter human supervisor rationale for approval:", "PM verified live preview and real QA evidence");
       if (!rationale) return;
 
       try {
         const { keyPair, pubHex } = await getOrGenerateReviewerKey();
         const nowSecs = Math.floor(Date.now() / 1000);
 
-        // Canonical envelope: "S3ACR_APPROVE1" (14b) + timestamp (8b LE) + crId (null-term) + rationale
         const enc = new TextEncoder();
         const magic = enc.encode("S3ACR_APPROVE1");
         const tsBytes = new Uint8Array(8);
@@ -1039,7 +1206,7 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
           })
         });
         if (res.ok) {
-          alert("CR approved with verified Ed25519 human signature and merged into baseline!");
+          alert("Change request approved with verified Ed25519 human signature and merged into baseline!");
           window.location.reload();
         } else {
           const err = await res.json();
@@ -1084,7 +1251,7 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
           body: JSON.stringify({ rationale, reviewer_pubkey: pubHex })
         });
         if (res.ok) {
-          alert("CR rejected.");
+          alert("Change request rejected.");
           window.location.reload();
         }
       } catch (err) {
@@ -1105,7 +1272,13 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
   const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
   const stub = env.REPO_COORDINATOR.get(doId);
 
-  // Fetch live state from Durable Object
+  const url = new URL(request.url);
+  let activeTab = url.searchParams.get("tab") || "code";
+  if (activeTab === "pull-requests" || activeTab === "pr" || activeTab === "prs") {
+    activeTab = "pulls";
+  }
+
+  // Fetch live state from Durable Object in parallel
   let statusData: any = {
     agents_count: 0,
     commits_count: 0,
@@ -1130,24 +1303,11 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     recent_merges: [],
   };
 
-  try {
-    const res = await stub.fetch(new Request(`https://internal/project/${defaultProjectId}/status`));
-    if (res.ok) {
-      statusData = await res.json();
-    }
-  } catch (e) {
-    // initial state fallback
-  }
-
   let controlData: any = {
     paused: false,
     usage: { tasks_started: 0, llm_calls: 0, sandbox_minutes: 0 },
     limits: { max_tasks_per_day: 20, max_llm_calls_per_day: 100, max_sandbox_minutes_per_day: 60 }
   };
-  try {
-    const cRes = await stub.fetch(new Request(`https://internal/project/${defaultProjectId}/control`));
-    if (cRes.ok) controlData = await cRes.json();
-  } catch (e) {}
 
   let budgetData: any = {
     spent_today: 0.0,
@@ -1159,1228 +1319,954 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     deferred_queue: [],
     entries: [],
   };
-  try {
-    const bRes = await stub.fetch(new Request(`https://internal/project/${defaultProjectId}/ledger`));
-    if (bRes.ok) budgetData = await bRes.json();
-  } catch (e) {}
+
+  let tasksData: any = { tasks: [] };
+  let crsData: any = { change_requests: [] };
+  let agentsData: any = { agents: {}, counts: {}, total: 0, active_agents: 0 };
+
+  const [resStatus, resControl, resBudget, resTasks, resCRs, resAgents] = await Promise.allSettled([
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/status`)),
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/control`)),
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/ledger`)),
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/tasks`)),
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/change-requests`)),
+    stub.fetch(new Request(`https://internal/project/${defaultProjectId}/agents`)),
+  ]);
+
+  if (resStatus.status === "fulfilled" && resStatus.value.ok) {
+    try { statusData = await resStatus.value.json(); } catch(e) {}
+  }
+  if (resControl.status === "fulfilled" && resControl.value.ok) {
+    try { controlData = await resControl.value.json(); } catch(e) {}
+  }
+  if (resBudget.status === "fulfilled" && resBudget.value.ok) {
+    try { budgetData = await resBudget.value.json(); } catch(e) {}
+  }
+  if (resTasks.status === "fulfilled" && resTasks.value.ok) {
+    try { tasksData = await resTasks.value.json(); } catch(e) {}
+  }
+  if (resCRs.status === "fulfilled" && resCRs.value.ok) {
+    try { crsData = await resCRs.value.json(); } catch(e) {}
+  }
+  if (resAgents.status === "fulfilled" && resAgents.value.ok) {
+    try { agentsData = await resAgents.value.json(); } catch(e) {}
+  }
+
+  const tasks: TaskItem[] = tasksData.tasks || [];
+  const openTasks = tasks.filter(t => t.status === "open" || t.status === "claimed" || t.status === "in_review" || t.status === "changes_requested" || t.status === "deferred_budget");
+  const closedTasks = tasks.filter(t => t.status === "merged" || t.status === "failed");
+
+  const crs: ChangeRequest[] = crsData.change_requests || [];
+  const openCRs = crs.filter(c => c.status === "pending_review" || c.status === "changes_requested");
+  const closedCRs = crs.filter(c => c.status === "approved" || c.status === "auto_merged" || c.status === "rejected");
+
+  const rawAgents = agentsData.agents || {};
+  const registeredAgentsList: any[] = Object.values(rawAgents);
+
+  function getAgentRoleName(agentId: string): string {
+    if (agentId.includes("builder") || agentId.includes("auto")) return "Autonomous Builder";
+    if (agentId.includes("escrow")) return "Escrow Guard";
+    if (agentId.includes("neon") || agentId.includes("token")) return "Branding Agent";
+    if (agentId.includes("chaos")) return "QA Chaos Fuzzer";
+    if (agentId.includes("journey")) return "QA Journey Runner";
+    if (agentId.includes("visual")) return "QA Visual Inspector";
+    return "Autonomous Agent";
+  }
 
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>S3A Gate - Autonomous Agent VCS &amp; Cloud Sandbox</title>
+  <title>ashleycribb/plat-gaming &bull; S3A Gate (Agent VCS)</title>
   <style>
     :root {
-      --bg: #0b0f19;
-      --card-bg: #111827;
-      --card-border: #1f2937;
-      --primary: #f38020; /* Cloudflare Orange */
-      --primary-hover: #fa8c16;
-      --accent: #38bdf8;
-      --success: #10b981;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --purple: #a855f7;
-      --text: #f9fafb;
-      --text-muted: #9ca3af;
+      --gh-bg: #0d1117;
+      --gh-card-bg: #161b22;
+      --gh-border: #30363d;
+      --gh-border-subtle: #21262d;
+      --gh-text: #c9d1d9;
+      --gh-text-heading: #f0f6fc;
+      --gh-text-muted: #8b949e;
+      --gh-link: #58a6ff;
+      --gh-green: #238636;
+      --gh-green-hover: #2ea043;
+      --gh-green-text: #3fb950;
+      --gh-green-bg: rgba(35, 134, 54, 0.15);
+      --gh-red: #da3633;
+      --gh-red-text: #f85149;
+      --gh-red-bg: rgba(218, 54, 51, 0.15);
+      --gh-purple: #8957e5;
+      --gh-purple-text: #a371f7;
+      --gh-purple-bg: rgba(137, 87, 229, 0.15);
+      --gh-yellow: #d29922;
+      --gh-yellow-text: #e3b341;
+      --gh-yellow-bg: rgba(210, 153, 34, 0.15);
+      --gh-blue: #1f6feb;
+      --gh-blue-text: #58a6ff;
+      --gh-blue-bg: rgba(56, 139, 253, 0.15);
+      --gh-orange: #f38020;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      background: var(--gh-bg);
+      color: var(--gh-text);
       line-height: 1.5;
-      padding: 2rem;
+      font-size: 14px;
     }
-    .header {
+    a { color: var(--gh-link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Top Repo Header */
+    .gh-header {
+      background: var(--gh-card-bg);
+      border-bottom: 1px solid var(--gh-border);
+      padding: 1rem 2rem 0 2rem;
+    }
+    .gh-header-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--card-border);
-    }
-    .brand { display: flex; align-items: center; gap: 0.75rem; }
-    .badge {
-      background: rgba(243, 128, 32, 0.15);
-      color: var(--primary);
-      border: 1px solid var(--primary);
-      padding: 0.2rem 0.6rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      flex-wrap: wrap;
       gap: 1rem;
-      margin-bottom: 2rem;
-    }
-    .kpi-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 0.75rem;
-      padding: 1.25rem;
-    }
-    .kpi-card .label { color: var(--text-muted); font-size: 0.85rem; font-weight: 500; }
-    .kpi-card .value { font-size: 2rem; font-weight: 700; margin-top: 0.25rem; transition: transform 0.2s; }
-    .kpi-card.merged .value { color: var(--success); }
-    .kpi-card.rejected .value { color: var(--danger); }
-    .kpi-card.human .value { color: var(--warning); }
-    .kpi-card.sandbox .value { color: var(--purple); }
-    @keyframes kpiPulse {
-      0% { transform: scale(1); }
-      50% { transform: scale(1.15); color: var(--accent); }
-      100% { transform: scale(1); }
-    }
-    .kpi-pulse { animation: kpiPulse 0.4s ease-out; }
-    @keyframes pulseDot {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
-    }
-    .live-dot { animation: pulseDot 2s infinite ease-in-out; }
-    .section {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 0.75rem;
-      padding: 1.5rem;
-      margin-bottom: 2rem;
-    }
-    .section-title {
-      font-size: 1.2rem;
-      font-weight: 600;
       margin-bottom: 1rem;
+    }
+    .repo-title-row {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-    }
-    .code-box {
-      background: #030712;
-      border: 1px solid #374151;
-      border-radius: 0.5rem;
-      padding: 0.75rem 1rem;
-      font-family: monospace;
-      font-size: 0.9rem;
-      color: #a5f3fc;
-      overflow-x: auto;
-      margin-top: 0.5rem;
-    }
-    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-    th, td {
-      padding: 0.75rem 1rem;
-      text-align: left;
-      border-bottom: 1px solid var(--card-border);
-      font-size: 0.9rem;
-    }
-    th { color: var(--text-muted); font-weight: 500; }
-    .conflict-card {
-      background: #1f2937;
-      border: 1px solid #374151;
-      border-radius: 0.5rem;
-      padding: 1rem;
-      margin-bottom: 1rem;
-    }
-    .conflict-header { display: flex; justify-content: space-between; margin-bottom: 0.5rem; }
-    .diff-box {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-      margin: 0.75rem 0;
-    }
-    .diff-col {
-      background: #111827;
-      border-radius: 0.375rem;
-      padding: 0.75rem;
-      font-family: monospace;
-      font-size: 0.85rem;
-    }
-    .btn {
-      background: var(--primary);
-      color: #fff;
-      border: none;
-      border-radius: 0.375rem;
-      padding: 0.4rem 0.8rem;
+      gap: 0.5rem;
+      font-size: 1.25rem;
       font-weight: 600;
-      font-size: 0.85rem;
+      color: var(--gh-text-heading);
+    }
+    .repo-title-row svg { fill: var(--gh-text-muted); }
+    .repo-pill {
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.12rem 0.5rem;
+      border-radius: 2em;
+      border: 1px solid var(--gh-border);
+      color: var(--gh-text-muted);
+    }
+
+    /* Buttons */
+    .gh-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 5px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 20px;
+      border-radius: 6px;
+      border: 1px solid var(--gh-border);
+      background: #21262d;
+      color: var(--gh-text);
       cursor: pointer;
+      text-decoration: none;
       transition: background 0.15s;
     }
-    .btn:hover { background: var(--primary-hover); }
-    .btn-secondary { background: #374151; color: #fff; }
-    .btn-secondary:hover { background: #4b5563; }
-    .btn-group { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
-    .footer { text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-top: 3rem; }
+    .gh-btn:hover { background: #30363d; text-decoration: none; }
+    .gh-btn-primary {
+      background: var(--gh-green);
+      color: #fff;
+      border-color: rgba(240, 246, 252, 0.1);
+    }
+    .gh-btn-primary:hover { background: var(--gh-green-hover); }
+    .gh-btn-danger {
+      background: #21262d;
+      color: var(--gh-red-text);
+      border-color: rgba(248, 81, 73, 0.4);
+    }
+    .gh-btn-danger:hover { background: var(--gh-red); color: #fff; }
+    .gh-btn-sm { padding: 3px 8px; font-size: 12px; line-height: 18px; }
+
+    /* Nav Tabs */
+    .gh-tabs {
+      display: flex;
+      gap: 0.5rem;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    .gh-tabs::-webkit-scrollbar { display: none; }
+    .tab-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 0.85rem;
+      color: var(--gh-text);
+      font-size: 14px;
+      font-weight: 500;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .tab-item:hover { color: var(--gh-text-heading); text-decoration: none; }
+    .tab-item.active {
+      color: var(--gh-text-heading);
+      border-bottom: 2px solid #f78166;
+      font-weight: 600;
+    }
+    .tab-item svg { fill: currentColor; }
+    .tab-counter {
+      background: rgba(110, 118, 129, 0.4);
+      color: var(--gh-text);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 0.1rem 0.45rem;
+      border-radius: 2em;
+    }
+
+    /* Page Container */
+    .gh-container {
+      max-width: 1280px;
+      margin: 1.5rem auto;
+      padding: 0 1.5rem;
+    }
+
+    /* GitHub Box */
+    .gh-box {
+      background: var(--gh-card-bg);
+      border: 1px solid var(--gh-border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+    }
+    .gh-box-header {
+      background: #161b22;
+      border-bottom: 1px solid var(--gh-border);
+      padding: 0.75rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .gh-row {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--gh-border-subtle);
+      display: flex;
+      align-items: flex-start;
+      gap: 0.75rem;
+      transition: background 0.1s;
+    }
+    .gh-row:last-child { border-bottom: none; }
+    .gh-row:hover { background: rgba(110, 118, 129, 0.05); }
+
+    /* Badges */
+    .gh-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 2em;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .gh-badge-success { background: var(--gh-green-bg); color: var(--gh-green-text); border: 1px solid rgba(46, 160, 67, 0.4); }
+    .gh-badge-danger { background: var(--gh-red-bg); color: var(--gh-red-text); border: 1px solid rgba(248, 81, 73, 0.4); }
+    .gh-badge-purple { background: var(--gh-purple-bg); color: var(--gh-purple-text); border: 1px solid rgba(137, 87, 229, 0.4); }
+    .gh-badge-yellow { background: var(--gh-yellow-bg); color: var(--gh-yellow-text); border: 1px solid rgba(210, 153, 34, 0.4); }
+    .gh-badge-blue { background: var(--gh-blue-bg); color: var(--gh-blue-text); border: 1px solid rgba(56, 139, 253, 0.4); }
+    .gh-badge-muted { background: rgba(110, 118, 129, 0.2); color: var(--gh-text-muted); border: 1px solid var(--gh-border); }
+
+    /* Tables */
+    table.gh-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    table.gh-table th, table.gh-table td {
+      padding: 0.65rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--gh-border-subtle);
+    }
+    table.gh-table th {
+      background: #161b22;
+      color: var(--gh-text-muted);
+      font-weight: 600;
+    }
+    table.gh-table tr:hover { background: rgba(110, 118, 129, 0.05); }
+
+    /* Invariant Notice Banner */
+    .invariant-banner {
+      background: rgba(243, 128, 32, 0.08);
+      border: 1px solid rgba(243, 128, 32, 0.35);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.25rem;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    /* Empty state */
+    .empty-state {
+      padding: 3rem 1.5rem;
+      text-align: center;
+      color: var(--gh-text-muted);
+    }
+    .empty-state-icon { font-size: 2.2rem; margin-bottom: 0.75rem; }
+    .empty-state-title { font-size: 1.15rem; font-weight: 600; color: var(--gh-text-heading); margin-bottom: 0.35rem; }
+
+    /* Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.85);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="brand">
-      <h1>S3A Gate</h1>
-      <span class="badge">AI-Agent Powered GitHub on Cloudflare</span>
-    </div>
-    <div>
-      <span style="color: var(--text-muted); font-size: 0.9rem;">Project:</span>
-      <strong>${defaultProjectId}</strong>
-    </div>
-  </div>
 
-  <!-- S3A Architecture Pillars Bar -->
-  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-    <div style="background: rgba(243,128,32,0.1); border: 1px solid rgba(243,128,32,0.3); border-radius: 0.375rem; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
-      <strong style="color: var(--primary);">S3A Gate:</strong> <span style="color: var(--text-muted);">Ed25519 Verification &amp; Epistemic Policy Enforcement</span>
-    </div>
-    <div style="background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); border-radius: 0.375rem; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
-      <strong style="color: var(--accent);">S3A VCS:</strong> <span style="color: var(--text-muted);">Disjoint Union &amp; Deterministic LWW Merging</span>
-    </div>
-    <div style="background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); border-radius: 0.375rem; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
-      <strong style="color: var(--success);">S3A Harness:</strong> <span style="color: var(--text-muted);">Autonomous Builder &amp; QA Execution Loop</span>
-    </div>
-    <div style="background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.3); border-radius: 0.375rem; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
-      <strong style="color: var(--purple);">S3A Vaults:</strong> <span style="color: var(--text-muted);">Scoped Delegation Grants &amp; Secret Isolation</span>
-    </div>
-    <div style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 0.375rem; padding: 0.4rem 0.75rem; font-size: 0.8rem;">
-      <strong style="color: var(--warning);">S3A Hyper Tiles:</strong> <span style="color: var(--text-muted);">Structured Provenance &amp; Type 40 Diagnostics</span>
-    </div>
-  </div>
-
-  <!-- Autonomous Engine Control & Daily Guardrails Banner -->
-  <div style="background: rgba(17,24,39,0.9); border: 1px solid ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')}; padding: 1rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
-    <div>
-      <div style="font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; gap: 0.6rem;">
-        <span style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')}; box-shadow: 0 0 10px ${controlData.paused ? '#ef4444' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#10b981')};"></span>
-        AUTONOMOUS AGENTS: <span style="color: ${controlData.paused ? '#f87171' : (statusData.scheduler_status === 'idle' ? '#38bdf8' : '#34d399')}; font-weight: 800;">
-          ${controlData.paused ? 'PAUSED (Task Claiming Stopped)' : (statusData.scheduler_status === 'idle' ? 'IDLE (0 open issues • Waiting for GitHub issues)' : 'ACTIVE (Alarm &amp; Cron 5M)')}
-        </span>
-      </div>
-      <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.35rem;">
-        ${controlData.paused ? 'Task claiming is stopped. Budget agent, metering, and s3a-ledger remain actively running.' : 'Automatic task claiming enabled (Max 2 concurrent).'} &bull;
-        Daily Guardrails: Tasks Today: <strong>${controlData.usage?.tasks_started || 0}/${controlData.limits?.max_tasks_per_day || 20}</strong> &bull; LLM: <strong>${controlData.usage?.llm_calls || 0}/${controlData.limits?.max_llm_calls_per_day || 100}</strong> &bull; Sandbox: <strong>${controlData.usage?.sandbox_minutes || 0}/${controlData.limits?.max_sandbox_minutes_per_day || 60}m</strong>
-      </div>
-    </div>
-    <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
-      <button class="btn" style="background: ${controlData.paused ? '#10b981' : '#ef4444'}; color: #fff; padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="toggleAutonomousEngine('${controlData.paused ? 'resume' : 'pause'}')">
-        ${controlData.paused ? '▶ Resume agents' : '⏸ Pause agents'}
-      </button>
-      <button class="btn btn-secondary" style="padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="closeDuplicatePRs()">
-        🧹 Close Duplicate PRs (#3)
-      </button>
-      <button class="btn btn-secondary" style="padding: 0.45rem 1rem; font-size: 0.82rem; cursor: pointer;" onclick="triggerManualTick()">
-        ⚡ Run Step Now
-      </button>
-    </div>
-  </div>
-
-  <!-- GitHub Source of Truth Banner -->
-  <div style="background: #111827; border: 1px solid #1f2937; padding: 0.85rem 1.25rem; border-radius: 0.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
-    <div style="display: flex; align-items: center; gap: 0.75rem;">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+  <!-- GitHub Repo Header -->
+  <div class="gh-header">
+    <div class="gh-header-top">
       <div>
-        <strong>GitHub Source of Truth:</strong> <code style="color: var(--accent);">ashleycribb/plat-gaming</code> (main)
-        <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 0.5rem;">Mirrored to Private Cloudflare Artifacts &bull; Human review &amp; merge on GitHub &bull; Agents never merge</span>
-      </div>
-    </div>
-    <div style="display: flex; gap: 0.5rem; align-items: center;">
-      <button class="btn btn-secondary" onclick="syncGitHubIssues()" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; cursor: pointer;">
-        🔄 Sync GitHub Issues
-      </button>
-      <a href="https://github.com/ashleycribb/plat-gaming/issues" target="_blank" class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; text-decoration: none;">
-        Open plat-gaming Issues ↗
-      </a>
-    </div>
-  </div>
-
-  ${statusData.last_artifacts_error ? `
-    <div style="background: rgba(239,68,68,0.15); border: 1px solid var(--danger); color: #fca5a5; padding: 1rem; border-radius: 0.5rem; margin-bottom: 2rem;">
-      <strong>Cloudflare Artifacts Alert:</strong> ${statusData.last_artifacts_error}
-    </div>
-  ` : ''}
-
-  <!-- Live KPI Summary -->
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="label">Autonomous Agents</div>
-      <div id="kpi-agents" class="value">${statusData.agents_count}</div>
-    </div>
-    <div class="kpi-card">
-      <div class="label">Total Commits</div>
-      <div id="kpi-commits" class="value">${statusData.commits_count}</div>
-    </div>
-    <div class="kpi-card merged">
-      <div class="label">Auto-Merged (Union/LWW)</div>
-      <div id="kpi-merged" class="value">${statusData.auto_merged}</div>
-    </div>
-    <div class="kpi-card rejected">
-      <div class="label">Rejected (Grant)</div>
-      <div id="kpi-rejected-grant" class="value">${statusData.rejected_by_grant}</div>
-    </div>
-    <div class="kpi-card rejected">
-      <div class="label">Rejected (Bad Sig)</div>
-      <div id="kpi-rejected-sig" class="value">${statusData.rejected_bad_signature || 0}</div>
-    </div>
-    <div class="kpi-card human">
-      <div class="label">Pending Human Review</div>
-      <div id="kpi-human" class="value">${statusData.sent_to_human}</div>
-    </div>
-    <div class="kpi-card" style="border-color: rgba(56,189,248,0.4);">
-      <div class="label">Self-Healed (Repair Loop)</div>
-      <div id="kpi-repaired" class="value" style="color: var(--accent);">${statusData.repair?.auto_repaired || 0}</div>
-    </div>
-  </div>
-
-  <!-- S3A Ledger & Budget Agent Card (Paid Metering & Deferred Queue) -->
-  <div class="section" style="border-color: ${budgetData.cap_reached ? 'rgba(239,68,68,0.5)' : budgetData.warning_80_pct ? 'rgba(245,158,11,0.5)' : 'rgba(56,189,248,0.3)'};">
-    <div class="section-title">
-      <span style="display: flex; align-items: center; gap: 0.5rem;">
-        <span>s3a-ledger &bull; Autonomous Budget Agent</span>
-      </span>
-      <span class="badge" style="background: ${budgetData.cap_reached ? 'rgba(239,68,68,0.15)' : budgetData.warning_80_pct ? 'rgba(245,158,11,0.15)' : 'rgba(16,185,129,0.15)'}; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'}; border-color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'};">
-        ${budgetData.cap_reached ? '🚨 100% Cap Reached (Paid Steps Deferred)' : budgetData.warning_80_pct ? '⚠️ Warning: 80% Budget Exceeded' : '🟢 Budget Healthy'}
-      </span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
-      Every paid compute action (<code>llm</code>, <code>sandbox</code>, <code>browser</code>, <code>r2</code>) is recorded as an immutable S3A record. Free work (planning, triage, log review, PR descriptions) never blocks. When daily cap is reached, paid steps receive <code>deferred_budget</code> status and queue automatically until 00:00 UTC rollover.
-    </p>
-
-    <!-- Budget Metrics Grid -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1rem;">
-      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Spent Today</div>
-        <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--accent)'};">
-          $${budgetData.spent_today?.toFixed(5) || '0.00000'}
+        <div class="repo-title-row">
+          <svg width="18" height="18" viewBox="0 0 16 16"><path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.75.75 0 001.28.53l1.47-1.47 1.47 1.47a.75.75 0 001.28-.53v-3.25a.75.75 0 00-1.5 0v1.69l-.72-.72a.75.75 0 00-1.06 0l-.72.72v-1.69a.75.75 0 00-1.5 0z"/></svg>
+          <a href="/?tab=code" style="color: var(--gh-link); font-weight: 400;">ashleycribb</a>
+          <span style="color: var(--gh-text-muted);">/</span>
+          <a href="/?tab=code" style="color: var(--gh-text-heading); font-weight: 600;">plat-gaming</a>
+          <span class="repo-pill">Private</span>
+          <span class="repo-pill" style="border-color: rgba(243,128,32,0.4); color: var(--gh-orange);">Agent VCS &bull; S3A Gate</span>
+        </div>
+        <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.35rem;">
+          Mirrored from GitHub &bull; Agents propose &amp; sign &bull; Humans make judgments &bull; Sensitive paths require 2 human reviewers
         </div>
       </div>
-      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Daily Cap</div>
-        <div style="font-size: 1.5rem; font-weight: 700; color: #f3f4f6;">
-          $${budgetData.cap?.toFixed(4) || '5.0000'}
-        </div>
-      </div>
-      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Budget Utilization</div>
-        <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--danger)' : budgetData.warning_80_pct ? 'var(--warning)' : 'var(--success)'};">
-          ${budgetData.pct_spent?.toFixed(1) || '0.0'}%
-        </div>
-      </div>
-      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Time Until Reset (00:00 UTC)</div>
-        <div style="font-size: 1.5rem; font-weight: 700; color: var(--secondary);">
-          ${Math.floor((budgetData.time_until_reset_secs || 86400) / 3600)}h ${Math.floor(((budgetData.time_until_reset_secs || 86400) % 3600) / 60)}m
-        </div>
-      </div>
-      <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Deferred Actions</div>
-        <div style="font-size: 1.5rem; font-weight: 700; color: ${(budgetData.deferred_queue || []).length > 0 ? 'var(--warning)' : 'var(--text-muted)'};">
-          ${(budgetData.deferred_queue || []).length}
-        </div>
-      </div>
-    </div>
 
-    <!-- Deferred Queue & Controls -->
-    <div style="display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-      <div style="font-size: 0.82rem; color: var(--text-muted);">
-        ${(budgetData.deferred_queue || []).length > 0
-          ? `<strong>${(budgetData.deferred_queue || []).length} action(s) deferred</strong>: ${(budgetData.deferred_queue || []).map((d: any) => `${d.task_id} (${d.kind})`).join(', ')}`
-          : 'Deferred queue empty. All paid pipeline actions dispatching normally.'}
-      </div>
-      <div style="display: flex; gap: 0.5rem;">
-        <button class="btn btn-secondary" onclick="configureBudgetCap()" style="font-size: 0.8rem; padding: 0.35rem 0.75rem;">
-          ⚙️ Configure Daily Cap
-        </button>
-        <button class="btn" onclick="resetBudgetToday()" style="background: var(--primary); font-size: 0.8rem; padding: 0.35rem 0.75rem;">
-          🔄 Reset Budget Window
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 5-Column PM Scrum Kanban Board -->
-  <div class="section" style="border-color: rgba(56,189,248,0.3);">
-    <div class="section-title">
-      <span>PM Scrum Kanban Board (ashleycribb/plat-gaming)</span>
-      <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent);">
-        5 Work Stages &bull; Real Agent Ownership
-      </span>
-    </div>
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
-      <!-- Col 1: Backlog -->
-      <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
-        <div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
-          <span>Backlog</span>
-          <span class="badge" style="background:#1f2937; color:#fff; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'open' || t.status === 'deferred_budget').length}</span>
-        </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'open' || t.status === 'deferred_budget').slice(0, 6).map((t: any) => `
-          <div style="background: #111827; border: 1px solid ${t.status === 'deferred_budget' ? '#ef4444' : '#374151'}; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.2rem;">
-              <span style="font-weight: 600; color: #f3f4f6;">${t.id}: ${t.title}</span>
-              ${t.status === 'deferred_budget' ? '<span class="badge" style="background: rgba(239,68,68,0.2); color: #fca5a5; border-color: #ef4444; font-size: 0.65rem;">DEFERRED</span>' : ''}
-            </div>
-            <div style="font-size: 0.7rem; color: var(--text-muted);">${(t.files_allowed || []).slice(0, 2).join(', ')}</div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.35rem;">
-              ${t.github_issue_number ? `<a href="${t.github_issue_url || '#'}" target="_blank" style="font-size: 0.68rem; color: var(--accent);">GitHub #${t.github_issue_number} ↗</a>` : '<span></span>'}
-              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #374151; color: var(--accent); border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Trace</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-
-      <!-- Col 2: In Progress -->
-      <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
-        <div style="font-size: 0.8rem; font-weight: 700; color: #60a5fa; text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
-          <span>In Progress</span>
-          <span class="badge" style="background:#1e3a8a; color:#93c5fd; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'claimed').length}</span>
-        </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'claimed').map((t: any) => `
-          <div style="background: #111827; border: 1px solid #1d4ed8; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="font-weight: 600; color: #93c5fd; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
-            <div style="font-size: 0.7rem; color: var(--text-muted);">Agent: <code>${t.claimed_by || 'agent'}</code></div>
-            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
-              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #1d4ed8; color: #93c5fd; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-
-      <!-- Col 3: In Review -->
-      <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
-        <div style="font-size: 0.8rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
-          <span>In Review (with Preview)</span>
-          <span class="badge" style="background:#78350f; color:#fde68a; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'in_review').length}</span>
-        </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'in_review').map((t: any) => `
-          <div style="background: #111827; border: 1px solid #b45309; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="font-weight: 600; color: #fcd34d; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
-            <div style="font-size: 0.7rem; color: var(--text-muted); margin-bottom: 0.3rem;">Agent: <code>${t.claimed_by || 'agent'}</code></div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.35rem;">
-              <a href="/project/${defaultProjectId}/preview/live" target="_blank" style="font-size: 0.72rem; color: var(--accent); font-weight: 600;">🌐 Preview ↗</a>
-              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #b45309; color: #fcd34d; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-
-      <!-- Col 4: Changes Requested -->
-      <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
-        <div style="font-size: 0.8rem; font-weight: 700; color: #ef4444; text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
-          <span>Changes Requested</span>
-          <span class="badge" style="background:#7f1d1d; color:#fca5a5; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'changes_requested').length}</span>
-        </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'changes_requested').map((t: any) => `
-          <div style="background: #111827; border: 1px solid #b91c1c; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="font-weight: 600; color: #fca5a5; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
-            <div style="font-size: 0.7rem; color: var(--text-muted);">Feedback: <em>${t.feedback || 'Revision needed'}</em></div>
-            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
-              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #b91c1c; color: #fca5a5; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-
-      <!-- Col 5: Merged -->
-      <div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; padding: 0.75rem; min-height: 200px;">
-        <div style="font-size: 0.8rem; font-weight: 700; color: #10b981; text-transform: uppercase; margin-bottom: 0.75rem; display: flex; justify-content: space-between;">
-          <span>Merged</span>
-          <span class="badge" style="background:#064e3b; color:#a7f3d0; font-size:0.7rem;">${(statusData.tasks || []).filter((t: any) => t.status === 'merged').length}</span>
-        </div>
-        ${(statusData.tasks || []).filter((t: any) => t.status === 'merged').slice(0, 6).map((t: any) => `
-          <div style="background: #111827; border: 1px solid #047857; border-radius: 0.375rem; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem;">
-            <div style="font-weight: 600; color: #6ee7b7; margin-bottom: 0.2rem;">${t.id}: ${t.title}</div>
-            <div style="font-size: 0.7rem; color: var(--text-muted);">Merged into Baseline VCS</div>
-            <div style="display: flex; justify-content: flex-end; margin-top: 0.35rem;">
-              <button onclick="openTraceModal('${t.id}')" style="background: transparent; border: 1px solid #047857; color: #6ee7b7; border-radius: 3px; font-size: 0.68rem; padding: 0.15rem 0.4rem; cursor: pointer;">🔍 Replay Trace</button>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-
-    </div>
-  </div>
-
-  <!-- Cloud Preview & Live Build via Cloudflare Sandbox -->
-  <div class="section" style="border-color: rgba(168,85,247,0.3);">
-    <div class="section-title">
-      <span style="display: flex; align-items: center; gap: 0.5rem;">
-        <span>Cloud Preview &amp; Sandbox Build</span>
-      </span>
-      <span class="badge" style="background: rgba(168,85,247,0.15); color: #c084fc; border-color: #c084fc;">
-        @cloudflare/sandbox &bull; 15m Idle Auto-Stop
-      </span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
-      Ephemeral cloud preview environment running inside a <strong>Cloudflare Sandbox container</strong>. Automatically triggers after each human conflict resolution, cloning the merged baseline Artifacts repo, rebuilding the Next.js tournament bracket UI, and exposing port 3001.
-    </p>
-
-    <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;">
-      <button id="run-preview-btn" class="btn" onclick="runPreview()" style="background: #a855f7; display: inline-flex; align-items: center; gap: 0.5rem;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-        <span>Run Preview</span>
-      </button>
-
-      <span id="preview-status-pill" class="badge" style="background: ${statusData.preview?.status === 'ready' ? 'rgba(16,185,129,0.15)' : 'rgba(107,114,128,0.2)'}; color: ${statusData.preview?.status === 'ready' ? '#10b981' : '#9ca3af'}; border-color: ${statusData.preview?.status === 'ready' ? '#10b981' : '#4b5563'};">
-        ${statusData.preview?.status === 'ready' ? '🟢 Preview Ready' : '⚪ Preview Idle'}
-      </span>
-
-      <span id="preview-time-label" style="font-size: 0.85rem; color: var(--text-muted);">
-        ${statusData.preview?.build_time_ms ? `Build time: ${(statusData.preview.build_time_ms / 1000).toFixed(1)}s` : ''}
-      </span>
-
-      <div style="margin-left: auto; display: flex; gap: 0.5rem;">
-        <a id="preview-url-link" href="${statusData.preview?.url || '#'}" target="_blank" class="btn" style="background: var(--success); text-decoration: none; display: ${statusData.preview?.url ? 'inline-flex' : 'none'}; align-items: center; gap: 0.4rem;">
-          <span>Open Cloud Preview ↗</span>
-        </a>
-        <a id="preview-proxy-link" href="/project/${defaultProjectId}/preview/live/" target="_blank" class="btn btn-secondary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.4rem;">
-          <span>Gateway Live Proxy ↗</span>
+      <!-- Supervisor Control Bar -->
+      <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        ${controlData.paused ? `
+          <span class="gh-badge gh-badge-danger" style="font-size: 12px; padding: 0.25rem 0.65rem;">⏸ Swarm Paused</span>
+          <button class="gh-btn gh-btn-primary gh-btn-sm" onclick="toggleAutonomousEngine('resume')">▶ Resume Swarm</button>
+        ` : openTasks.length === 0 ? `
+          <span class="gh-badge gh-badge-muted" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚪ Swarm Idle (0 open issues)</span>
+          <button class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
+        ` : `
+          <span class="gh-badge gh-badge-success" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚡ Swarm Active (${openTasks.length} in flight)</span>
+          <button class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
+        `}
+        <button class="gh-btn gh-btn-sm" onclick="triggerManualTick()">⚡ Run 1 Step</button>
+        <button class="gh-btn gh-btn-sm" onclick="closeDuplicatePRs()">🧹 Triage Dups</button>
+        <a href="https://github.com/ashleycribb/plat-gaming" target="_blank" class="gh-btn gh-btn-sm">
+          GitHub ↗
         </a>
       </div>
     </div>
 
-    <!-- Autonomous Agent Swarm & Concurrency Grid (200+ Agents) -->
-    <div style="margin-bottom: 1.5rem; background: #0b0f19; border: 1px solid #1f2937; border-radius: 0.75rem; padding: 1.25rem;">
+    <!-- 6 GitHub Navigation Tabs -->
+    <div class="gh-tabs">
+      <div id="nav-tab-code" class="tab-item ${activeTab === 'code' ? 'active' : ''}" onclick="switchTab('code')">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.72 3.22a.75.75 0 011.06 1.06L2.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L.47 8.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 8l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06l-4.25-4.25z"/></svg>
+        <span>Code</span>
+      </div>
+      <div id="nav-tab-issues" class="tab-item ${activeTab === 'issues' ? 'active' : ''}" onclick="switchTab('issues')">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+        <span>Issues</span>
+        <span class="tab-counter">${openTasks.length}</span>
+      </div>
+      <div id="nav-tab-pulls" class="tab-item ${activeTab === 'pulls' ? 'active' : ''}" onclick="switchTab('pulls')">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+        <span>Pull requests</span>
+        <span class="tab-counter">${openCRs.length}</span>
+      </div>
+      <div id="nav-tab-agents" class="tab-item ${activeTab === 'agents' ? 'active' : ''}" onclick="switchTab('agents')">
+        <span>🤖 Agents</span>
+        <span class="tab-counter">${registeredAgentsList.length}</span>
+      </div>
+      <div id="nav-tab-actions" class="tab-item ${activeTab === 'actions' ? 'active' : ''}" onclick="switchTab('actions')">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zm5.22-3.72a.75.75 0 011.06 0l3 3a.75.75 0 010 1.06l-3 3a.75.75 0 11-1.06-1.06L8.94 8.5H4.75a.75.75 0 010-1.5h4.19l-2.22-2.22a.75.75 0 010-1.06z"/></svg>
+        <span>Actions</span>
+      </div>
+      <div id="nav-tab-insights" class="tab-item ${activeTab === 'insights' ? 'active' : ''}" onclick="switchTab('insights')">
+        <svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 1.75a.75.75 0 00-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 000-1.5H1.5V1.75z"/><path d="M4.25 9.75a.75.75 0 011.06 0l2.44 2.44 3.97-3.97a.75.75 0 111.06 1.06l-4.5 4.5a.75.75 0 01-1.06 0l-2.44-2.44-1.47 1.47a.75.75 0 11-1.06-1.06l2-2z"/></svg>
+        <span>Insights</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="gh-container">
+
+    <!-- Invariant Epistemic Notice Banner -->
+    <div class="invariant-banner">
+      <div>
+        <strong style="color: var(--gh-orange);">Epistemic Invariant:</strong>
+        Humans only make judgments. AI agents propose, sandbox, test, and sign. Agents never merge.
+        Sensitive paths (<code>cashier</code>, <code>escrow</code>, <code>payout</code>, <code>auth</code>, <code>db</code>, <code>infra</code>) are labeled <code>needs-human</code> and require a second human reviewer.
+      </div>
+      <div style="font-size: 12px; color: var(--gh-text-muted);">
+        Daily Budget Cap: <strong>$${budgetData.spent_today.toFixed(4)} / $${budgetData.cap.toFixed(4)}</strong>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 1: CODE (Repository Overview & Baseline Artifacts) -->
+    <!-- ===================================================================== -->
+    <div id="tab-code" class="tab-content" style="display: ${activeTab === 'code' ? 'block' : 'none'};">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
-        <div>
-          <span style="font-size: 1.05rem; font-weight: 700; color: #f3f4f6; display: flex; align-items: center; gap: 0.5rem;">
-            <span class="live-dot" style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #10b981;"></span>
-            <span>Autonomous Agent Swarm Concurrency Grid</span>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button class="gh-btn gh-btn-sm" style="font-weight: 600;">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/></svg>
+            <span>main</span>
+          </button>
+          <span style="color: var(--gh-text-muted); font-size: 13px;">
+            <strong>${statusData.commits_count || 4}</strong> commits &bull; <strong>1</strong> branch &bull; <strong>1</strong> tag
           </span>
-          <span style="font-size: 0.82rem; color: var(--text-muted);">
-            200 autonomous agents analyzing code, scoping partitions, pushing commits, and resolving merges
-          </span>
         </div>
-        <button id="start-swarm-btn" class="btn" onclick="startSwarm()" style="background: var(--primary); font-weight: 700; font-size: 0.9rem; padding: 0.5rem 1.25rem; display: inline-flex; align-items: center; gap: 0.5rem; box-shadow: 0 0 15px rgba(243, 128, 32, 0.35);">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-          <span>Start Swarm (200 Agents)</span>
-        </button>
-      </div>
-
-      <!-- Live Counters Above Grid -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.75rem; margin-bottom: 1rem;">
-        <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Active Agents</div>
-          <div id="counter-active-agents" style="font-size: 1.5rem; font-weight: 700; color: var(--accent);">0</div>
-        </div>
-        <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Commits / s</div>
-          <div id="counter-commits-sec" style="font-size: 1.5rem; font-weight: 700; color: #f59e0b;">0.0</div>
-        </div>
-        <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Merged</div>
-          <div id="counter-merged" style="font-size: 1.5rem; font-weight: 700; color: var(--success);">${statusData.auto_merged}</div>
-        </div>
-        <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Conflicts</div>
-          <div id="counter-conflicts" style="font-size: 1.5rem; font-weight: 700; color: #f97316;">${statusData.sent_to_human}</div>
-        </div>
-        <div style="background: #030712; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid #1f2937;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Sent to Human</div>
-          <div id="counter-human" style="font-size: 1.5rem; font-weight: 700; color: var(--warning);">${statusData.sent_to_human}</div>
+        <div style="display: flex; gap: 0.5rem;">
+          <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
+            🌐 Open preview ↗
+          </a>
+          <a href="https://github.com/ashleycribb/plat-gaming" target="_blank" class="gh-btn gh-btn-sm">
+            View on GitHub ↗
+          </a>
         </div>
       </div>
 
-      <!-- Color Legend -->
-      <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #4b5563; display: inline-block;"></span> Idle</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #3b82f6; display: inline-block;"></span> Working</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #eab308; display: inline-block;"></span> Pushing</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #10b981; display: inline-block;"></span> Merged</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #f97316; display: inline-block;"></span> Conflict</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #ef4444; display: inline-block;"></span> Blocked / Rejected</span>
-        <span style="display: flex; align-items: center; gap: 0.35rem;"><span style="width: 11px; height: 11px; border-radius: 2px; background: #a855f7; display: inline-block;"></span> Waiting on Human</span>
-      </div>
-
-      <!-- 200+ Agent Squares Grid -->
-      <div id="agent-grid-squares" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(22px, 1fr)); gap: 5px; padding: 0.75rem; background: #030712; border: 1px solid #1f2937; border-radius: 0.5rem; max-height: 250px; overflow-y: auto;">
-        <!-- Populated dynamically via pollAgents() -->
-      </div>
-
-      <!-- Hover Detail Inspector Card -->
-      <div id="agent-hover-card" style="margin-top: 0.6rem; padding: 0.5rem 0.85rem; background: #030712; border: 1px solid #1f2937; border-radius: 0.375rem; font-size: 0.82rem; min-height: 38px; display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); font-family: monospace;">
-        <span>Hover any square to inspect agent state &bull; 200 autonomous agents mapped</span>
-      </div>
-    </div>
-
-    <!-- Collapsible Log Panel under Grid -->
-    <details class="section" style="border: 1px solid #374151; background: #030712; border-radius: 0.5rem; padding: 0;" open>
-      <summary style="cursor: pointer; font-weight: 600; font-size: 0.88rem; color: #f3f4f6; user-select: none; display: flex; justify-content: space-between; align-items: center; padding: 0.65rem 1rem; background: #111827; border-bottom: 1px solid #1f2937; border-radius: 0.5rem 0.5rem 0 0;">
-        <span style="display: flex; align-items: center; gap: 0.5rem;">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
-          <span>Sandbox Build &amp; Swarm Live Log</span>
-        </span>
-        <span style="display: flex; align-items: center; gap: 0.75rem;">
-          <span id="terminal-indicator" style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">idle</span>
-          <span style="font-size: 0.75rem; color: var(--text-muted);">(click to collapse/expand)</span>
-        </span>
-      </summary>
-      <div id="build-terminal" style="padding: 1rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; line-height: 1.6; max-height: 240px; overflow-y: auto; color: #a5f3fc; white-space: pre-wrap;">[system] Ready. Click "Start Swarm" or "Run Preview" to execute autonomous operations.${statusData.preview?.logs ? '\n' + statusData.preview.logs.map((l: any) => `[${l.stage}] ${l.msg}`).join('\n') : ''}</div>
-    </details>
-  </div>
-
-  <!-- Autonomous Agent Repair Loop & S3A Provenance -->
-  <div class="section" style="border-color: rgba(56,189,248,0.3);">
-    <div class="section-title">
-      <span style="display: flex; align-items: center; gap: 0.5rem;">
-        <span>Autonomous Repair Loop &amp; S3A Provenance</span>
-      </span>
-      <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent);">
-        Shadow Branch Quarantine &bull; Max 3 Attempts
-      </span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
-      After every merge, the <strong>Cloudflare Sandbox</strong> executes <code>npm run build</code>, type checking, and linting. Failures are captured as structured diagnostics (file, line, message) and stored as an <strong>S3A Provenance Tile (Type 40)</strong> linked via Git blame to the responsible agent. Broken builds <strong>never promote to baseline</strong>; they stay quarantined on a shadow branch until green. The responsible agent pushes fix commits to its fork until green or escalates to human review.
-    </p>
-
-    <!-- Repair KPI Summary -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;">
-      <div style="background: #111827; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Failures Detected</div>
-        <div style="font-size: 1.25rem; font-weight: bold; color: #ef4444;">${statusData.repair?.failures_detected || 0}</div>
-      </div>
-      <div style="background: #111827; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Auto-Repaired</div>
-        <div style="font-size: 1.25rem; font-weight: bold; color: #10b981;">${statusData.repair?.auto_repaired || 0}</div>
-      </div>
-      <div style="background: #111827; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Escalated to Human</div>
-        <div style="font-size: 1.25rem; font-weight: bold; color: #f59e0b;">${statusData.repair?.escalated_to_human || 0}</div>
-      </div>
-      <div style="background: #111827; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Mean Attempts</div>
-        <div style="font-size: 1.25rem; font-weight: bold; color: var(--accent);">${statusData.repair?.mean_attempts ? statusData.repair.mean_attempts.toFixed(1) : '1.0'}</div>
-      </div>
-      <div style="background: #111827; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--card-border);">
-        <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Shadow Evaluated</div>
-        <div style="font-size: 1.25rem; font-weight: bold; color: #c084fc;">${statusData.repair?.shadow_branches_evaluated || 0}</div>
-      </div>
-    </div>
-
-    <!-- Repair Attempts Timeline Table -->
-    <table>
-      <thead>
-        <tr>
-          <th>Attempt #</th>
-          <th>Responsible Agent (Blame)</th>
-          <th>Structured Failure (File:Line)</th>
-          <th>Provenance Tile</th>
-          <th>Fix Diff &amp; Action</th>
-          <th>Result</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${(!statusData.repair?.attempts || statusData.repair.attempts.length === 0) ? `
-          <tr>
-            <td colspan="6" style="color: var(--text-muted); font-style: italic; text-align: center; padding: 1.5rem;">
-              No build failures active. All shadow branches passing verification.
-            </td>
-          </tr>
-        ` : statusData.repair.attempts.map((att: any) => `
-          <tr>
-            <td><strong>Attempt ${att.attempt_number} of ${att.max_attempts}</strong></td>
-            <td><code style="font-size: 0.8rem;">${att.agent_addr?.substring(0, 18)}...</code></td>
-            <td>
-              <div style="color: #fca5a5; font-family: monospace; font-size: 0.82rem;">${att.error.file}:${att.error.line}</div>
-              <div style="color: var(--text-muted); font-size: 0.8rem;">${att.error.message}</div>
-            </td>
-            <td>
-              <span class="badge" style="background: rgba(168,85,247,0.15); color: #c084fc; border-color: #c084fc; font-size: 0.75rem;">
-                Tile Type 40
-              </span>
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;"><code>${att.commit_id?.substring(0, 12)}...</code></div>
-            </td>
-            <td>
-              <div style="background: #030712; padding: 0.4rem 0.6rem; border-radius: 0.25rem; font-family: monospace; font-size: 0.78rem; line-height: 1.4; color: #86efac; max-width: 320px; overflow-x: auto;">
-                ${att.fix_diff ? att.fix_diff.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') : '(Generating automated fix...)'}
-              </div>
-            </td>
-            <td>
-              <span class="badge" style="background: ${att.result === 'passed' ? 'rgba(16,185,129,0.15)' : att.result === 'escalated' ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)'}; color: ${att.result === 'passed' ? 'var(--success)' : att.result === 'escalated' ? 'var(--danger)' : 'var(--warning)'}; border-color: ${att.result === 'passed' ? 'var(--success)' : att.result === 'escalated' ? 'var(--danger)' : 'var(--warning)'}; font-size: 0.75rem;">
-                ${att.result === 'passed' ? '🟢 Promoted to Baseline' : att.result === 'escalated' ? '🔴 Escalated to Human' : '🟡 Shadow Quarantined'}
-              </span>
-            </td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Baseline Artifacts Repo & Real Git Clone -->
-  <div class="section">
-    <div class="section-title">
-      <span>Baseline Artifacts Repository</span>
-      <span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success);">Git Smart HTTP</span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem;">
-      Canonical baseline repository backed by <strong>Cloudflare Artifacts</strong>. Every valid agent commit is automatically merged here according to S3A VCS rules.
-    </p>
-    <div class="code-box">
-      # Clone the baseline Artifacts repository with standard Git:<br>
-      git -c http.extraHeader="Authorization: Bearer &lt;YOUR_ARTIFACTS_TOKEN&gt;" clone ${statusData.baseline_repo.remote || `(Pending first push)`} baseline-repo
-    </div>
-  </div>
-
-  <!-- Brakets Work Queue -->
-  <div class="section">
-    <div class="section-title">
-      <span>Brakets Tournament Work Queue</span>
-      <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent);">
-        DO-Enforced Single Claim
-      </span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
-      Real engineering tasks stored in the Durable Object. Autonomous agents claim exactly one task at a time, receiving a scoped Ed25519 delegation grant restricted to the task's allowed files.
-    </p>
-    <table>
-      <thead>
-        <tr>
-          <th>Task ID</th>
-          <th>Title &amp; Scope</th>
-          <th>Allowed Files</th>
-          <th>Verification</th>
-          <th>Risk</th>
-          <th>Status</th>
-          <th>Claimed By</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${(!statusData.tasks || statusData.tasks.length === 0) ? `
-          <tr><td colspan="7" style="color: var(--text-muted); font-style: italic; text-align: center;">No tasks loaded</td></tr>
-        ` : statusData.tasks.map((t: any) => `
-          <tr>
-            <td><strong style="color: #f3f4f6;">${t.id}</strong></td>
-            <td>
-              <div style="font-weight: 500;">${t.title}</div>
-              <div style="font-size: 0.78rem; color: var(--text-muted);">${t.description}</div>
-            </td>
-            <td><code style="font-size: 0.8rem;">${(t.files_allowed || []).join(', ')}</code></td>
-            <td><code style="font-size: 0.8rem; color: #a5f3fc;">${t.tests}</code></td>
-            <td>
-              <span class="badge" style="background: ${t.risk_level === 'high' ? 'rgba(239,68,68,0.15)' : 'rgba(56,189,248,0.15)'}; color: ${t.risk_level === 'high' ? 'var(--danger)' : 'var(--accent)'}; border-color: ${t.risk_level === 'high' ? 'var(--danger)' : 'var(--accent)'}; font-size: 0.75rem;">
-                ${t.risk_level.toUpperCase()}
-              </span>
-            </td>
-            <td>
-              <span class="badge" style="background: ${t.status === 'merged' ? 'rgba(16,185,129,0.15)' : t.status === 'in_review' ? 'rgba(245,158,11,0.15)' : t.status === 'claimed' ? 'rgba(59,130,246,0.15)' : 'rgba(156,163,175,0.15)'}; color: ${t.status === 'merged' ? 'var(--success)' : t.status === 'in_review' ? 'var(--warning)' : t.status === 'claimed' ? '#60a5fa' : 'var(--text-muted)'}; border-color: ${t.status === 'merged' ? 'var(--success)' : t.status === 'in_review' ? 'var(--warning)' : t.status === 'claimed' ? '#60a5fa' : 'var(--card-border)'}; font-size: 0.75rem;">
-                ${t.status.toUpperCase()}
-              </span>
-            </td>
-            <td>${t.claimed_by ? `<code>${t.claimed_by}</code>` : '<span style="color: var(--text-muted); font-style: italic;">unclaimed</span>'}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Human Supervisory Review Queue: Sensitive / High-Risk Change Requests -->
-  <div class="section" style="border-color: rgba(245, 158, 11, 0.4);">
-    <div class="section-title">
-      <span style="display: flex; align-items: center; gap: 0.5rem;">
-        <span>Epistemic Invariant: Human Review Queue</span>
-      </span>
-      <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--warning); border-color: var(--warning);">
-        ${(statusData.pending_change_requests?.length || 0) + (statusData.pending_conflicts?.length || 0)} Pending Judgment
-      </span>
-    </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
-      <strong>Invariant:</strong> Clean, low-risk changes auto-merge. Anything touching <code>cashier/escrow/payout/auth/db</code>, or having failing tests/conflicts, <strong>waits for human review</strong>. Judgments are human only, cryptographically signed with an Ed25519 supervisor key.
-    </p>
-
-    <!-- Change Requests Waiting on Human Review -->
-    ${(!statusData.pending_change_requests || statusData.pending_change_requests.length === 0) ? `
-      <p style="color: var(--text-muted); font-style: italic; margin-bottom: 1rem;">No change requests currently pending human review.</p>
-    ` : statusData.pending_change_requests.map((cr: any) => `
-      <div class="conflict-card" style="border-color: #4b5563; margin-bottom: 1rem;">
-        <div class="conflict-header" style="align-items: center;">
+      <!-- Latest Commit Box -->
+      <div class="gh-box">
+        <div class="gh-box-header" style="font-size: 13px;">
           <div>
-            <strong style="color: #f3f4f6; font-size: 1.05rem;">${cr.id}: ${cr.title}</strong>
-            <span class="badge" style="margin-left: 0.5rem; background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: var(--danger); font-size: 0.75rem;">
-              ${cr.risk_level === 'high' ? 'High Risk Sensitive' : 'Review Required'}
+            <strong style="color: var(--gh-text-heading);">${(statusData.recent_merges && statusData.recent_merges[0]) ? 'Latest Baseline Merge: ' + statusData.recent_merges[0].rule : 'feat(auth): role-aware login (resolves #3)'}</strong>
+            <span style="color: var(--gh-text-muted); margin-left: 0.5rem;">
+              Author: <code>${(statusData.recent_merges && statusData.recent_merges[0]?.author) || 'Agent (S3A Gate Verified)'}</code>
             </span>
           </div>
-          <span style="font-family: monospace; font-size: 0.8rem; color: var(--accent);">Task: ${cr.task_id} &bull; Agent: ${cr.agent_id}</span>
-        </div>
-        <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">
-          Touched: <code>${(cr.touched_files || []).join(', ')}</code> &bull; Commit: <code>${(cr.commit_id || '').substring(0, 16)}</code>
-        </div>
-        <div style="margin: 0.75rem 0;">
-          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">Unified Code Diff:</div>
-          <pre style="background: #030712; padding: 0.75rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.82rem; color: #86efac; max-height: 180px; overflow-y: auto; white-space: pre-wrap;">${(cr.diff || '').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-        </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap;">
-          <span class="badge" style="background: ${cr.test_report?.passed ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'}; color: ${cr.test_report?.passed ? 'var(--success)' : 'var(--danger)'}; border-color: ${cr.test_report?.passed ? 'var(--success)' : 'var(--danger)'};">
-            ${cr.test_report?.passed ? '✓ Tests Passed (' + (cr.test_report.stage || 'npm run build') + ')' : '✗ Tests Failed'}
-          </span>
-          <button class="btn btn-secondary" onclick="openTraceModal('${cr.task_id}')" style="background: #1f2937; border: 1px solid #374151; font-size: 0.8rem;">
-            🔍 Replay Task Trace
-          </button>
-          <button class="btn" onclick="approveChangeRequest('${cr.id}')" style="background: var(--success); margin-left: auto;">
-            <span>Sign &amp; Approve CR (Merge to Baseline)</span>
-          </button>
-          <button class="btn btn-secondary" onclick="rejectChangeRequest('${cr.id}')" style="background: #374151;">
-            <span>Reject CR</span>
-          </button>
-        </div>
-      </div>
-    `).join('')}
-
-    <!-- Epistemic Claim Conflicts -->
-    ${(statusData.pending_conflicts || []).map((c: any) => `
-      <div class="conflict-card">
-        <div class="conflict-header">
-          <strong>Conflict: ${c.record_id} (${c.type_name || 'Scholar Claim'})</strong>
-          <span style="color: var(--text-muted); font-size: 0.8rem;">ID: ${c.conflict_id}</span>
-        </div>
-        <div class="diff-box">
-          <div class="diff-col" style="border-left: 3px solid var(--accent);">
-            <div style="color: var(--accent); margin-bottom: 0.25rem;">Version A (Baseline / Target):</div>
-            <div>${c.version_a}</div>
-            <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">Author: ${c.author_a}</div>
-          </div>
-          <div class="diff-col" style="border-left: 3px solid var(--primary);">
-            <div style="color: var(--primary); margin-bottom: 0.25rem;">Version B (Candidate / Source):</div>
-            <div>${c.version_b}</div>
-            <div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">Author: ${c.author_b}</div>
+          <div style="font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">
+            Commit: <code style="color: var(--gh-link);">${(statusData.recent_merges && statusData.recent_merges[0]?.commit_id?.slice(0, 10)) || 'commit-1a141b'}</code>
           </div>
         </div>
-        <div class="btn-group">
-          <button class="btn" onclick="resolveConflict('${c.conflict_id}', '${c.record_id}', 'target')">Approve Version A &amp; Rebuild Preview</button>
-          <button class="btn btn-secondary" onclick="resolveConflict('${c.conflict_id}', '${c.record_id}', 'source')">Approve Version B &amp; Rebuild Preview</button>
+
+        <!-- Files List -->
+        <div>
+          <div class="gh-row" style="font-size: 13px; font-weight: 600; color: var(--gh-text-muted); background: #161b22;">
+            <div style="flex: 2;">File Name</div>
+            <div style="flex: 3;">Last Agent Commit Message</div>
+            <div style="flex: 1; text-align: right;">Policy Scope</div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/src/components/</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">feat: MatchCard live score calculation and bracket rendering</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/auth/</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">feat(auth): role-aware login for players, coaches, teams (#3)</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/cashier/</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">Escrow multi-sig payout policy &amp; supervisor authorization</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 fixtures/bracket-fixtures.ts</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">Seed 16 competitive rosters and tournament match tiers</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 packages/auth/</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">Session cookie &amp; JWT verification on Cloudflare Workers</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+          </div>
+          <div class="gh-row">
+            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📄 package.json</div>
+            <div style="flex: 3; color: var(--gh-text-muted);">Dependencies: Next.js 14, TailwindCSS, Cloudflare Workers</div>
+            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+          </div>
         </div>
       </div>
-    `).join('')}
-  </div>
 
-  <!-- Real Active Autonomous Agents Table (Registered Only) -->
-  <div class="section">
-    <div class="section-title">
-      <span>Active Real Autonomous Agents</span>
-      <span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success);">
-        No Placeholders &bull; Ed25519 Verified
-      </span>
+      <!-- Baseline Artifacts Clone Snippet -->
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <strong>Private Artifacts Mirror (Git Smart HTTP)</strong>
+          <span class="gh-badge gh-badge-purple">Deterministic LWW Baseline</span>
+        </div>
+        <div style="padding: 1rem; font-size: 13px;">
+          <p style="color: var(--gh-text-muted); margin-bottom: 0.5rem;">
+            Clone the canonical baseline repository mirrored from GitHub into private Cloudflare Artifacts:
+          </p>
+          <pre style="background: #030712; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border); color: #38bdf8; font-family: monospace; font-size: 12px; overflow-x: auto;">git clone ${statusData.baseline_repo?.remote || 'gate://s3a-swarm-main/ashleycribb/plat-gaming'} baseline-repo</pre>
+        </div>
+      </div>
+
+      <!-- Recent Merged Commits Table -->
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <strong>Recent Merges Stream (Disjoint Union &amp; Deterministic LWW)</strong>
+          <span style="font-size: 12px; color: var(--gh-text-muted);">${(statusData.recent_merges || []).length} recorded merge(s)</span>
+        </div>
+        <table class="gh-table">
+          <thead>
+            <tr>
+              <th>Commit ID</th>
+              <th>Merge Rule</th>
+              <th>Seal Hash</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(!statusData.recent_merges || statusData.recent_merges.length === 0) ? `
+              <tr><td colspan="4" style="color: var(--gh-text-muted); font-style: italic; text-align: center; padding: 1.5rem;">No baseline merge records yet.</td></tr>
+            ` : statusData.recent_merges.slice(0, 8).map((m: any) => `
+              <tr>
+                <td><code style="color: var(--gh-link);">${m.commit_id.slice(0, 16)}...</code></td>
+                <td><span class="gh-badge gh-badge-blue">${m.rule}</span></td>
+                <td><code>${m.seal_hash ? m.seal_hash.slice(0, 16) + '...' : 'N/A'}</code></td>
+                <td style="color: var(--gh-text-muted);">${new Date(m.timestamp).toLocaleTimeString()}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
     </div>
-    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem;">
-      Real autonomous processes running with individual cryptographic identities. Agents register by claiming a task from the work queue or pushing signed commits.
-    </p>
-    <table>
-      <thead>
-        <tr>
-          <th>Agent ID</th>
-          <th>Ed25519 Public Key</th>
-          <th>Current Task</th>
-          <th>Artifacts Workspace Fork</th>
-          <th>Commits</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${(!statusData.registered_agents || statusData.registered_agents.length === 0) ? `
-          <tr>
-            <td colspan="6" style="color: var(--text-muted); font-style: italic; text-align: center; padding: 1.5rem;">
-              Awaiting real agent registration... (Agents claim tasks via POST /project/${defaultProjectId}/tasks/claim)
-            </td>
-          </tr>
-        ` : statusData.registered_agents.map((a: any) => `
-          <tr>
-            <td><strong style="color: #f3f4f6;">${a.agent_id}</strong></td>
-            <td><code style="font-size: 0.8rem;">${(a.agent_pubkey || '').substring(0, 16)}...</code></td>
-            <td><span style="font-size: 0.85rem; color: #e5e7eb;">${a.task_title || a.task_id || 'Active Task'}</span></td>
-            <td><code style="font-size: 0.8rem; color: #38bdf8;">${a.fork_repo || ('s3a-agent-' + a.agent_id)}</code></td>
-            <td><strong style="color: #f3f4f6;">${a.commit_count || 0}</strong></td>
-            <td>
-              <span class="badge" style="background: ${a.status === 'merged' ? 'rgba(16,185,129,0.15)' : a.status === 'human' ? 'rgba(245,158,11,0.15)' : a.status === 'working' ? 'rgba(59,130,246,0.15)' : 'rgba(156,163,175,0.15)'}; color: ${a.status === 'merged' ? 'var(--success)' : a.status === 'human' ? 'var(--warning)' : a.status === 'working' ? '#60a5fa' : 'var(--text-muted)'}; border-color: ${a.status === 'merged' ? 'var(--success)' : a.status === 'human' ? 'var(--warning)' : a.status === 'working' ? '#60a5fa' : 'var(--card-border)'}; font-size: 0.75rem;">
-                ${a.status.toUpperCase()}
-              </span>
-            </td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: ISSUES (Tasks from plat-gaming) -->
+    <!-- ===================================================================== -->
+    <div id="tab-issues" class="tab-content" style="display: ${activeTab === 'issues' ? 'block' : 'none'};">
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <div style="display: flex; gap: 1rem; align-items: center;">
+            <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+              <span>${openTasks.length} Open</span>
+            </div>
+            <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+              <span>${closedTasks.length} Closed / Merged</span>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="gh-btn gh-btn-sm" onclick="syncGitHubIssues()">
+              🔄 Sync GitHub Issues
+            </button>
+            <a href="https://github.com/ashleycribb/plat-gaming/issues" target="_blank" class="gh-btn gh-btn-sm">
+              plat-gaming Issues ↗
+            </a>
+          </div>
+        </div>
+
+        <!-- Issues List -->
+        <div>
+          ${tasks.length === 0 ? `
+            <div class="empty-state">
+              <div class="empty-state-icon">⊙</div>
+              <div class="empty-state-title">No issues found</div>
+              <p>When there are 0 open issues, agents do not invent tasks. Swarm status is idle.</p>
+            </div>
+          ` : tasks.map((t) => {
+            const isOpen = t.status === "open" || t.status === "claimed" || t.status === "in_review" || t.status === "changes_requested" || t.status === "deferred_budget";
+            const isHighRisk = t.risk_level === "high";
+            return `
+              <div class="gh-row" style="opacity: ${isOpen ? '1' : '0.75'};">
+                <div style="margin-top: 2px;">
+                  ${isOpen ? `
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+                  ` : `
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                  `}
+                </div>
+                <div style="flex: 1;">
+                  <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <span style="font-weight: 600; font-size: 14px; color: var(--gh-text-heading);">${t.title}</span>
+                    ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                    ${t.status === 'deferred_budget' ? '<span class="gh-badge gh-badge-yellow">DEFERRED BUDGET</span>' : ''}
+                    ${t.status === 'claimed' ? '<span class="gh-badge gh-badge-blue">CLAIMED</span>' : ''}
+                    ${t.status === 'in_review' ? '<span class="gh-badge gh-badge-yellow">IN REVIEW</span>' : ''}
+                    ${t.status === 'merged' ? '<span class="gh-badge gh-badge-purple">MERGED</span>' : ''}
+                  </div>
+                  <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.35rem;">
+                    #${t.github_issue_number || t.id} &bull; Files allowed: <code>${(t.files_allowed || []).join(', ')}</code> &bull; Tests: <code>${t.tests}</code>
+                  </div>
+                </div>
+                <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 12px;">
+                  ${t.claimed_by ? `
+                    <span style="color: var(--gh-text-muted);">
+                      Assignee: <code style="color: var(--gh-link);">${t.claimed_by}</code>
+                    </span>
+                  ` : '<span style="color: var(--gh-text-muted); font-style: italic;">Unassigned</span>'}
+                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
+                    🔍 Trace
+                  </button>
+                  ${t.github_issue_url ? `
+                    <a href="${t.github_issue_url}" target="_blank" class="gh-btn gh-btn-sm">
+                      GitHub #${t.github_issue_number} ↗
+                    </a>
+                  ` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: PULL REQUESTS (Change Requests) -->
+    <!-- ===================================================================== -->
+    <div id="tab-pulls" class="tab-content" style="display: ${activeTab === 'pulls' ? 'block' : 'none'};">
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <div style="display: flex; gap: 1rem; align-items: center;">
+            <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+              <span>${openCRs.length} Open Change Request(s)</span>
+            </div>
+            <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+              <span>${closedCRs.length} Merged / Closed</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pull Requests List -->
+        <div>
+          ${crs.length === 0 ? `
+            <div class="empty-state">
+              <div class="empty-state-icon">⑂</div>
+              <div class="empty-state-title">No pull requests found</div>
+              <p>Autonomous agents submit change requests when tasks are completed in the sandbox.</p>
+            </div>
+          ` : crs.map((cr) => {
+            const isApproved = cr.status === "approved" || cr.status === "auto_merged";
+            const isRejected = cr.status === "rejected";
+            const isHighRisk = cr.risk_level === "high" || cr.requires_human;
+            const hasRealQA = cr.qa_reports && cr.qa_reports.length > 0;
+            return `
+              <div class="gh-row" style="flex-direction: column; gap: 0.65rem;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 1rem; flex-wrap: wrap;">
+                  <div style="display: flex; align-items: flex-start; gap: 0.65rem;">
+                    <div style="margin-top: 2px;">
+                      ${isApproved ? `
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                      ` : isRejected ? `
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                      ` : `
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+                      `}
+                    </div>
+                    <div>
+                      <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                        <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
+                          ${cr.title}
+                        </a>
+                        ${isApproved ? '<span class="gh-badge gh-badge-purple">Merged</span>' : isRejected ? '<span class="gh-badge gh-badge-danger">Rejected</span>' : '<span class="gh-badge gh-badge-success">Open (Review)</span>'}
+                        ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                      </div>
+                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
+                        #${cr.id} opened by agent <code>${cr.agent_id}</code> &bull; Task: <code>${cr.task_id}</code> &bull; Commit: <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Touched: <code>${(cr.touched_files || []).join(', ')}</code>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Actions / Links (Preview, Review & Judge, GitHub) -->
+                  <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                    <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
+                      🌐 Open preview ↗
+                    </a>
+                    <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" class="gh-btn gh-btn-sm gh-btn-primary">
+                      ⚖️ Review &amp; Judge ↗
+                    </a>
+                    ${cr.github_pr_url ? `
+                      <a href="${cr.github_pr_url}" target="_blank" class="gh-btn gh-btn-sm">
+                        GitHub PR #${cr.github_pr_number || ''} ↗
+                      </a>
+                    ` : ''}
+                  </div>
+                </div>
+
+                <!-- Checks Summary -->
+                <div style="display: flex; gap: 0.65rem; align-items: center; padding-left: 1.65rem; font-size: 12px; flex-wrap: wrap;">
+                  <span style="color: var(--gh-text-muted);">Checks:</span>
+                  <span class="gh-badge ${cr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
+                    ${cr.test_report?.passed ? '✓ Sandbox build passed' : '✗ Build failed'}
+                  </span>
+                  <span class="gh-badge ${hasRealQA ? 'gh-badge-success' : 'gh-badge-muted'}">
+                    ${hasRealQA ? `✓ Browser QA passed (${cr.qa_reports.length} run)` : 'QA not run'}
+                  </span>
+                  ${cr.human_rationale ? `
+                    <span style="color: var(--gh-yellow-text); font-style: italic;">
+                      Supervisor: "${cr.human_rationale}"
+                    </span>
+                  ` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 4: AGENTS (Registered Real Agents Only - Zero Fake Squares) -->
+    <!-- ===================================================================== -->
+    <div id="tab-agents" class="tab-content" style="display: ${activeTab === 'agents' ? 'block' : 'none'};">
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <div>
+            <strong>Registered Autonomous Agents</strong>
+            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">
+              (${registeredAgentsList.length} registered &bull; Ed25519 identity verified &bull; No simulated squares)
+            </span>
+          </div>
+          <div style="font-size: 12px; color: var(--gh-text-muted);">
+            Agents register dynamically when claiming tasks from plat-gaming.
+          </div>
+        </div>
+
+        ${registeredAgentsList.length === 0 ? `
+          <div class="empty-state">
+            <div class="empty-state-icon">🤖</div>
+            <div class="empty-state-title">Swarm Idle: No active registered agents</div>
+            <p>Agents spawn and register only when open tasks are claimed. No synthetic grids or fake agent squares.</p>
+          </div>
+        ` : `
+          <table class="gh-table">
+            <thead>
+              <tr>
+                <th>Agent ID</th>
+                <th>Role</th>
+                <th>Current / Last Task</th>
+                <th>Status</th>
+                <th>Commits</th>
+                <th>Last Active</th>
+                <th>Workspace Fork</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${registeredAgentsList.map((a: any) => `
+                <tr>
+                  <td><code style="color: var(--gh-text-heading); font-weight: 600;">${a.agentId || a.agent_id}</code></td>
+                  <td><span class="gh-badge gh-badge-blue">${getAgentRoleName(a.agentId || a.agent_id)}</span></td>
+                  <td><span style="color: var(--gh-text);">${a.task || a.task_title || 'Active Task'}</span></td>
+                  <td>
+                    <span class="gh-badge ${a.status === 'merged' || a.status === 'qa_passed' ? 'gh-badge-success' : a.status === 'working' ? 'gh-badge-blue' : 'gh-badge-muted'}">
+                      ${a.status.toUpperCase()}
+                    </span>
+                  </td>
+                  <td><strong>${a.commits || a.commit_count || 0}</strong></td>
+                  <td style="color: var(--gh-text-muted);">${new Date(a.lastTs || a.last_seen || Date.now()).toLocaleTimeString()}</td>
+                  <td><code style="color: var(--gh-link);">${a.forkRepo || ('s3a-agent-' + (a.agentId || a.agent_id))}</code></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 5: ACTIONS (Workflows, Builds & Browser QA Runs) -->
+    <!-- ===================================================================== -->
+    <div id="tab-actions" class="tab-content" style="display: ${activeTab === 'actions' ? 'block' : 'none'};">
+      <div style="display: grid; grid-template-columns: 280px 1fr; gap: 1.5rem;">
+        <!-- Left: Workflows list -->
+        <div class="gh-box" style="height: fit-content;">
+          <div class="gh-box-header"><strong>Workflows</strong></div>
+          <div style="padding: 0.5rem 0;">
+            <div style="padding: 0.6rem 1rem; font-weight: 600; color: var(--gh-text-heading); background: rgba(110, 118, 129, 0.1); border-left: 3px solid #f78166;">
+              AgentTask (Autonomous Loop)
+            </div>
+            <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
+              Cloudflare Sandbox Build &amp; Test
+            </div>
+            <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
+              Browser QA Runner (Puppeteer)
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Workflow Runs -->
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <strong>All Workflow Runs</strong>
+            <span style="color: var(--gh-text-muted); font-size: 12px;">Real Sandbox &amp; Playwright Evidence</span>
+          </div>
+
+          <div>
+            ${crs.length === 0 ? `
+              <div class="empty-state">
+                <div class="empty-state-icon">▷</div>
+                <div class="empty-state-title">No workflow runs yet</div>
+                <p>Run a task step or trigger the scheduler to execute the autonomous workflow.</p>
+              </div>
+            ` : crs.map((cr) => `
+              <div class="gh-row" style="align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                  <div>
+                    ${cr.test_report?.passed ? `
+                      <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l4.5-4.5z"/></svg>
+                    ` : `
+                      <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zM6.22 5.16a.75.75 0 011.06 0L8 5.88l.72-.72a.75.75 0 111.06 1.06L9.06 6.94l.72.72a.75.75 0 11-1.06 1.06L8 8l-.72.72a.75.75 0 11-1.06-1.06l.72-.72-.72-.72a.75.75 0 010-1.06z"/></svg>
+                    `}
+                  </div>
+                  <div>
+                    <div style="font-weight: 600; color: var(--gh-text-heading); font-size: 14px;">
+                      AgentTask / ${cr.title} (${cr.task_id})
+                    </div>
+                    <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.2rem;">
+                      Commit <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Agent: <code>${cr.agent_id}</code> &bull; Stage: <code>${cr.test_report?.stage || 'npm run build'}</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${cr.task_id}')">
+                    Trace &bull; xAPI
+                  </button>
+                  <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" class="gh-btn gh-btn-sm">
+                    Evidence ↗
+                  </a>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 6: INSIGHTS (s3a-ledger Budget + s3a-trace Replay) -->
+    <!-- ===================================================================== -->
+    <div id="tab-insights" class="tab-content" style="display: ${activeTab === 'insights' ? 'block' : 'none'};">
+      <!-- s3a-ledger Budget Agent -->
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <div>
+            <strong>s3a-ledger &bull; Budget Agent</strong>
+            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Paid Action Metering &amp; Daily Cap</span>
+          </div>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="gh-btn gh-btn-sm" onclick="configureBudgetCap()">⚙️ Configure Cap</button>
+            <button class="gh-btn gh-btn-sm" onclick="resetBudgetToday()">🔄 Reset Window</button>
+          </div>
+        </div>
+
+        <div style="padding: 1.25rem;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+              <div style="font-size: 12px; color: var(--gh-text-muted);">Spent Today</div>
+              <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--gh-red-text)' : 'var(--gh-green-text)'};">
+                $${budgetData.spent_today.toFixed(4)}
+              </div>
+            </div>
+            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+              <div style="font-size: 12px; color: var(--gh-text-muted);">Daily Cap (Config)</div>
+              <div style="font-size: 1.5rem; font-weight: 700; color: var(--gh-text-heading);">$${budgetData.cap.toFixed(4)}</div>
+            </div>
+            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+              <div style="font-size: 12px; color: var(--gh-text-muted);">Time Until Reset</div>
+              <div style="font-size: 1.5rem; font-weight: 700; color: #58a6ff;">
+                ${Math.floor(budgetData.time_until_reset_secs / 3600)}h ${Math.floor((budgetData.time_until_reset_secs % 3600) / 60)}m
+              </div>
+            </div>
+            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+              <div style="font-size: 12px; color: var(--gh-text-muted);">Deferred Actions</div>
+              <div style="font-size: 1.5rem; font-weight: 700; color: ${(budgetData.deferred_queue || []).length > 0 ? 'var(--gh-yellow-text)' : 'var(--gh-text-muted)'};">
+                ${(budgetData.deferred_queue || []).length}
+              </div>
+            </div>
+          </div>
+
+          <!-- Progress Bar -->
+          <div style="background: #21262d; border-radius: 9999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;">
+            <div style="width: ${Math.min(100, budgetData.pct_spent || 0)}%; background: ${budgetData.cap_reached ? 'var(--gh-red)' : budgetData.warning_80_pct ? 'var(--gh-yellow)' : 'var(--gh-green)'}; height: 100%;"></div>
+          </div>
+          <div style="font-size: 12px; color: var(--gh-text-muted); display: flex; justify-content: space-between;">
+            <span>0%</span>
+            <span>80% Warning Threshold</span>
+            <span>100% Deferral Cap</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- s3a-trace Timeline & Export -->
+      <div class="gh-box">
+        <div class="gh-box-header">
+          <div>
+            <strong>s3a-trace &bull; Task Provenance &amp; Replay</strong>
+            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Append-only S3A records with xAPI verbs &bull; Fine-Tuning JSONL</span>
+          </div>
+        </div>
+        <table class="gh-table">
+          <thead>
+            <tr>
+              <th>Task ID</th>
+              <th>Task Title</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tasks.map((t) => `
+              <tr>
+                <td><strong>${t.id}</strong></td>
+                <td>${t.title}</td>
+                <td><span class="gh-badge gh-badge-muted">${t.status}</span></td>
+                <td>
+                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
+                    🔍 Replay Trace
+                  </button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div>
 
-  <!-- Recent Merges Stream -->
-  <div class="section">
-    <div class="section-title">Recent Merges (Disjoint Union &amp; Deterministic LWW)</div>
-    <table>
-      <thead>
-        <tr>
-          <th>Commit ID</th>
-          <th>Merge Rule Applied</th>
-          <th>Seal Hash</th>
-          <th>Timestamp</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${statusData.recent_merges.length === 0 ? '<tr><td colspan="4" style="color: var(--text-muted); font-style: italic;">No merge events yet.</td></tr>' : ''}
-        ${statusData.recent_merges.slice(0, 8).map((m: any) => `
-          <tr>
-            <td><code>${m.commit_id.substring(0, 16)}...</code></td>
-            <td><span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.75rem;">${m.rule}</span></td>
-            <td><code>${m.seal_hash ? m.seal_hash.substring(0, 16) + '...' : 'N/A'}</code></td>
-            <td style="color: var(--text-muted);">${new Date(m.timestamp).toLocaleTimeString()}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  </div>
-
-  <div class="footer">
-    S3A Gate &bull; Powered by Cloudflare Workers, Durable Objects, Cloudflare Artifacts, and Cloudflare Sandbox
+  <!-- S3A Trace Replay Modal -->
+  <div id="trace-modal" class="modal-overlay">
+    <div style="background: #161b22; border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 800px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.8);">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <strong id="trace-modal-title" style="color: #f0f6fc; font-size: 1.05rem;">Task Trace Replay</strong>
+          <span class="gh-badge gh-badge-blue">s3a-trace &bull; xAPI Provenance</span>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button class="gh-btn gh-btn-sm" onclick="exportTraceJsonl()">
+            💾 Export JSONL
+          </button>
+          <button onclick="closeTraceModal()" style="background: transparent; border: none; color: var(--gh-text-muted); font-size: 1.2rem; cursor: pointer;">✕</button>
+        </div>
+      </div>
+      <div id="trace-steps-container" style="padding: 1.25rem; overflow-y: auto; flex: 1;">
+        <!-- Trace steps loaded dynamically -->
+      </div>
+    </div>
   </div>
 
   <script>
-    // Reviewer Key Management using WebCrypto & localStorage/IndexedDB
-    async function getOrGenerateReviewerKey() {
-      const DB_NAME = "S3AReviewerDB";
-      return new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
-        req.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains("keys")) {
-            db.createObjectStore("keys");
-          }
-        };
-        req.onsuccess = async (e) => {
-          const db = e.target.result;
-          const tx = db.transaction("keys", "readwrite");
-          const store = tx.objectStore("keys");
-          const getReq = store.get("reviewer_ed25519");
-
-          getReq.onsuccess = async () => {
-            if (getReq.result) {
-              resolve(getReq.result);
-            } else {
-              try {
-                const keyPair = await window.crypto.subtle.generateKey(
-                  { name: "Ed25519" },
-                  false,
-                  ["sign", "verify"]
-                );
-                const pubRaw = await window.crypto.subtle.exportKey("raw", keyPair.publicKey);
-                const pubHex = Array.from(new Uint8Array(pubRaw)).map(b => b.toString(16).padStart(2, '0')).join('');
-                const entry = { keyPair, pubHex };
-                const putTx = db.transaction("keys", "readwrite");
-                putTx.objectStore("keys").put(entry, "reviewer_ed25519");
-                putTx.oncomplete = () => resolve(entry);
-              } catch (genErr) {
-                reject(genErr);
-              }
-            }
-          };
-          getReq.onerror = () => reject(getReq.error);
-        };
-        req.onerror = () => reject(req.error);
-      });
-    }
-
-    // Run Sandbox Cloud Preview with Streaming Logs
-    async function runPreview() {
-      const btn = document.getElementById("run-preview-btn");
-      const terminal = document.getElementById("build-terminal");
-      const indicator = document.getElementById("terminal-indicator");
-      const statusPill = document.getElementById("preview-status-pill");
-      const timeLabel = document.getElementById("preview-time-label");
-      const previewLink = document.getElementById("preview-url-link");
-
-      btn.disabled = true;
-      indicator.textContent = "building...";
-      indicator.style.color = "#f59e0b";
-      statusPill.textContent = "🟡 Building...";
-      statusPill.style.background = "rgba(245, 158, 11, 0.15)";
-      statusPill.style.color = "#f59e0b";
-      statusPill.style.borderColor = "#f59e0b";
-
-      terminal.textContent = "[system] Connecting to Cloudflare Sandbox container runtime...\\n";
-
-      try {
-        const res = await fetch('/project/${defaultProjectId}/preview?stream=true', {
-          method: 'POST',
-          headers: { 'Accept': 'text/event-stream' }
-        });
-
-        if (!res.ok) {
-          terminal.textContent += "[error] Failed to start preview: " + (await res.text()) + "\\n";
-          btn.disabled = false;
-          indicator.textContent = "error";
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\\n\\n");
-          buffer = parts.pop() || "";
-
-          for (const part of parts) {
-            const trimmed = part.trim();
-            if (!trimmed.startsWith("data: ")) continue;
-            try {
-              const payload = JSON.parse(trimmed.slice(6));
-              if (payload.type === "done") {
-                indicator.textContent = "ready";
-                indicator.style.color = "#10b981";
-                statusPill.textContent = "🟢 Preview Ready";
-                statusPill.style.background = "rgba(16, 185, 129, 0.15)";
-                statusPill.style.color = "#10b981";
-                statusPill.style.borderColor = "#10b981";
-                timeLabel.textContent = "Build time: " + (payload.build_time_ms / 1000).toFixed(1) + "s";
-                const targetUrl = payload.preview_url || payload.live_proxy_url;
-                if (targetUrl) {
-                  previewLink.href = targetUrl;
-                  previewLink.style.display = "inline-flex";
-                }
-              } else {
-                if (payload.stats) {
-                  updateKpi("kpi-agents", payload.stats.agents);
-                  updateKpi("kpi-commits", payload.stats.commits);
-                  updateKpi("kpi-merged", payload.stats.merged);
-                  updateKpi("kpi-human", payload.stats.human);
-                  if (payload.stats.repairs !== undefined) updateKpi("kpi-repaired", payload.stats.repairs);
-                }
-                if (payload.agent) {
-                  renderAgentCard(payload.agent);
-                }
-                terminal.textContent += "[" + payload.stage + "] " + payload.msg + "\\n";
-                terminal.scrollTop = terminal.scrollHeight;
-              }
-            } catch (pErr) {}
-          }
-        }
-      } catch (err) {
-        terminal.textContent += "[exception] " + err.message + "\\n";
-      } finally {
-        btn.disabled = false;
-      }
-    }
-
-    function updateKpi(id, val) {
-      const el = document.getElementById(id);
-      if (el && el.textContent != String(val)) {
-        el.textContent = val;
-        el.classList.remove('kpi-pulse');
-        void el.offsetWidth;
-        el.classList.add('kpi-pulse');
-      }
-    }
-
-    const colorMap = {
-      idle: '#4b5563',
-      working: '#3b82f6',
-      pushing: '#eab308',
-      merged: '#10b981',
-      conflict: '#f97316',
-      blocked: '#ef4444',
-      rejected: '#ef4444',
-      human: '#a855f7'
-    };
-
-    function showAgentHover(id, a) {
-      const card = document.getElementById('agent-hover-card');
-      if (!card) return;
-      const col = colorMap[a.status] || '#9ca3af';
-      card.innerHTML = '<span><strong style="color:#f3f4f6;">' + id + '</strong> &bull; <span style="color:' + col + '; font-weight:700; text-transform:uppercase;">' + a.status + '</span> &bull; Commits: <strong style="color:#f3f4f6;">' + a.commits + '</strong> &bull; Task: <span style="color:#e5e7eb;">' + a.task + '</span> &bull; Fork: <code style="color:#38bdf8;">' + (a.forkRepo || ('s3a-agent-' + id)) + '</code></span>';
-    }
-
-    async function pollAgents() {
-      try {
-        const res = await fetch('/project/${defaultProjectId}/agents');
-        if (!res.ok) return;
-        const data = await res.json();
-
-        // Update live counters above grid
-        const activeCount = data.active_agents !== undefined ? data.active_agents : (data.counts.working + data.counts.pushing + data.counts.merged);
-        updateKpi('counter-active-agents', activeCount);
-        updateKpi('counter-commits-sec', (data.commits_per_sec !== undefined ? data.commits_per_sec : 0).toFixed(1));
-        updateKpi('counter-merged', data.counts.merged || 0);
-        updateKpi('counter-conflicts', data.counts.conflict || 0);
-        updateKpi('counter-human', data.counts.human || 0);
-
-        // Update main dashboard KPI cards as well
-        updateKpi('kpi-agents', data.total || 200);
-        updateKpi('kpi-commits', data.total_commits || data.counts.merged || 0);
-        updateKpi('kpi-merged', data.counts.merged || 0);
-        updateKpi('kpi-rejected-grant', data.counts.blocked || 0);
-        updateKpi('kpi-rejected-sig', data.counts.rejected || 0);
-        updateKpi('kpi-human', data.counts.human || 0);
-
-        // Update squares grid
-        const grid = document.getElementById('agent-grid-squares');
-        if (!grid) return;
-
-        const agents = data.agents || {};
-        const agentIds = Object.keys(agents);
-
-        for (const id of agentIds) {
-          const a = agents[id];
-          let sq = document.getElementById('sq-' + id);
-          const col = colorMap[a.status] || '#4b5563';
-
-          if (!sq) {
-            sq = document.createElement('div');
-            sq.id = 'sq-' + id;
-            sq.className = 'agent-square';
-            sq.style.cssText = 'aspect-ratio: 1; border-radius: 3px; cursor: pointer; transition: all 0.2s ease;';
-            sq.onmouseenter = () => showAgentHover(id, a);
-            grid.appendChild(sq);
-          }
-          sq.style.background = col;
-          sq.title = 'Agent: ' + id + '\\nStatus: ' + a.status + '\\nTask: ' + a.task + '\\nCommits: ' + a.commits + '\\nFork: ' + (a.forkRepo || ('s3a-agent-' + id));
-        }
-      } catch (err) {}
-    }
-
-    async function startSwarm() {
-      const btn = document.getElementById('start-swarm-btn');
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<span>⚡ Running Swarm...</span>';
-      }
-      try {
-        await fetch('/project/${defaultProjectId}/swarm', { method: 'POST' });
-        setTimeout(pollAgents, 100);
-        setTimeout(pollAgents, 500);
-        setTimeout(pollAgents, 1000);
-        setTimeout(pollAgents, 1600);
-        setTimeout(pollAgents, 2200);
-      } catch (e) {}
-      setTimeout(() => {
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg><span>Start Swarm (200 Agents)</span>';
-        }
-      }, 3000);
-    }
-
-    setInterval(pollAgents, 1000);
-    pollAgents();
-
-    async function resolveConflict(conflictId, recordId, choice) {
-      const rationale = prompt('Enter rationale for resolving this conflict:', 'Empirical replicate verification confirms finding');
-      if (!rationale) return;
-
-      try {
-        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
-        const nowSecs = Math.floor(Date.now() / 1000);
-        const choiceByte = (choice === "target" || choice === 1) ? 1 : 2;
-
-        // Canonical envelope: "S3AVCS_RES1" (11b) + choice (1b) + timestamp (8b LE) + record_id (UTF-8) + 0x00 + rationale (UTF-8)
-        const enc = new TextEncoder();
-        const magic = enc.encode("S3AVCS_RES1");
-        const tsBytes = new Uint8Array(8);
-        new DataView(tsBytes.buffer).setBigUint64(0, BigInt(nowSecs), true);
-        const recBytes = enc.encode(recordId);
-        const ratBytes = enc.encode(rationale);
-
-        const totalLen = 11 + 1 + 8 + recBytes.length + 1 + ratBytes.length;
-        const envBytes = new Uint8Array(totalLen);
-        let off = 0;
-        envBytes.set(magic, off); off += 11;
-        envBytes[off] = choiceByte; off += 1;
-        envBytes.set(tsBytes, off); off += 8;
-        envBytes.set(recBytes, off); off += recBytes.length;
-        envBytes[off] = 0; off += 1;
-        envBytes.set(ratBytes, off);
-
-        const sig = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, envBytes);
-        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-        const res = await fetch('/project/${defaultProjectId}/resolve/' + conflictId, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chosen_side: choice,
-            rationale: rationale,
-            reviewer_pubkey: pubHex,
-            signature: sigHex,
-            timestamp: nowSecs,
-          })
-        });
-
-        if (res.ok) {
-          alert('Conflict resolved and signed with Ed25519 key (' + pubHex.slice(0, 8) + '...)!\\n\\nTriggering Cloudflare Sandbox preview rebuild now...');
-          // Trigger automated preview build
-          runPreview();
-        } else {
-          alert('Error resolving conflict: ' + (await res.text()));
-        }
-      } catch (err) {
-        alert('Cryptographic resolution error: ' + err.message);
-      }
-    }
-
-    async function approveChangeRequest(crId) {
-      const rationale = prompt('Enter human supervisor rationale for approval:', 'Escrow safety guardrail policy verified and authorized');
-      if (!rationale) return;
-
-      try {
-        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
-        const nowSecs = Math.floor(Date.now() / 1000);
-
-        // Canonical envelope: "S3ACR_APPROVE1" (14b) + timestamp (8b LE) + crId (null-term) + rationale
-        const enc = new TextEncoder();
-        const magic = enc.encode("S3ACR_APPROVE1");
-        const tsBytes = new Uint8Array(8);
-        new DataView(tsBytes.buffer).setBigUint64(0, BigInt(nowSecs), true);
-        const crBytes = enc.encode(crId);
-        const ratBytes = enc.encode(rationale);
-
-        const totalLen = 14 + 8 + crBytes.length + 1 + ratBytes.length;
-        const envBytes = new Uint8Array(totalLen);
-        let off = 0;
-        envBytes.set(magic, off); off += 14;
-        envBytes.set(tsBytes, off); off += 8;
-        envBytes.set(crBytes, off); off += crBytes.length;
-        envBytes[off] = 0; off += 1;
-        envBytes.set(ratBytes, off);
-
-        const sig = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, envBytes);
-        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-
-        const res = await fetch('/project/${defaultProjectId}/change-requests/' + crId + '/approve', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            reviewer_pubkey: pubHex,
-            signature: sigHex,
-            timestamp: nowSecs,
-            rationale: rationale,
-          })
-        });
-
-        if (res.ok) {
-          alert('Change Request ' + crId + ' APPROVED with verified Ed25519 human signature and merged into baseline Artifacts repository!\\n\\nTriggering Cloudflare Sandbox preview rebuild now...');
-          location.reload();
-        } else {
-          alert('Error approving Change Request: ' + (await res.text()));
-        }
-      } catch (err) {
-        alert('Cryptographic approval error: ' + err.message);
-      }
-    }
-
-    async function rejectChangeRequest(crId) {
-      const rationale = prompt('Enter supervisor rationale for rejection:', 'Fails policy specification');
-      if (!rationale) return;
-
-      try {
-        const { pubHex } = await getOrGenerateReviewerKey();
-        const res = await fetch('/project/${defaultProjectId}/change-requests/' + crId + '/reject', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rationale: rationale, reviewer_pubkey: pubHex })
-        });
-
-        if (res.ok) {
-          alert('Change Request ' + crId + ' rejected. Task returned to work queue.');
-          location.reload();
-        } else {
-          alert('Error rejecting Change Request: ' + (await res.text()));
-        }
-      } catch (err) {
-        alert('Error: ' + err.message);
-      }
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+      document.querySelectorAll('.tab-item').forEach(el => el.classList.remove('active'));
+      const targetContent = document.getElementById('tab-' + tabName);
+      const targetTab = document.getElementById('nav-tab-' + tabName);
+      if (targetContent) targetContent.style.display = 'block';
+      if (targetTab) targetTab.classList.add('active');
+      const u = new URL(window.location);
+      u.searchParams.set('tab', tabName);
+      window.history.pushState({}, '', u);
     }
 
     async function toggleAutonomousEngine(action) {
@@ -2410,7 +2296,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
         location.reload();
       } catch (e) {
         alert('Dispatch error: ' + e.message);
-        if (btn) btn.textContent = '⚡ Run Autonomous Step Now';
+        if (btn) btn.textContent = '⚡ Run 1 Step';
       }
     }
 
@@ -2424,6 +2310,21 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
         location.reload();
       } catch (e) {
         alert('Error closing duplicate PRs: ' + e.message);
+      }
+    }
+
+    async function syncGitHubIssues() {
+      try {
+        const res = await fetch('/project/${defaultProjectId}/tasks/sync', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          alert('GitHub issues synced: ' + (data.imported || 0) + ' new tasks imported.');
+          location.reload();
+        } else {
+          alert('Failed to sync issues: ' + await res.text());
+        }
+      } catch (e) {
+        alert('Sync error: ' + e.message);
       }
     }
 
@@ -2475,7 +2376,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
 
       modal.style.display = "flex";
       title.textContent = "Task Trace Replay: " + taskId;
-      container.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">Loading immutable S3A trace timeline...</div>';
+      container.innerHTML = '<div style="color: var(--gh-text-muted); padding: 1rem;">Loading immutable S3A trace timeline...</div>';
 
       try {
         const res = await fetch("/project/${defaultProjectId}/trace/" + taskId);
@@ -2485,62 +2386,43 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
         }
         const trace = await res.json();
         if (!trace.steps || trace.steps.length === 0) {
-          container.innerHTML = '<div style="color: var(--text-muted); padding: 1rem;">No trace steps recorded for this task.</div>';
+          container.innerHTML = '<div style="color: var(--gh-text-muted); padding: 1rem;">No trace steps recorded for this task.</div>';
           return;
         }
 
-        let html = '<div style="display: flex; flex-direction: column; gap: 0.75rem;">';
+        let h = '<div style="display: flex; flex-direction: column; gap: 0.75rem;">';
         for (const s of trace.steps) {
           const isAi = s.actor.type === "ai";
           const actorBadge = isAi
-            ? '<span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.7rem;">🤖 AI (' + (s.actor.name || s.actor.id) + ')</span>'
-            : '<span class="badge" style="background: rgba(16,185,129,0.15); color: var(--success); border-color: var(--success); font-size: 0.7rem;">👤 HUMAN (' + (s.actor.name || s.actor.id) + ')</span>';
+            ? '<span class="gh-badge gh-badge-blue">🤖 AI (' + (s.actor.name || s.actor.id) + ')</span>'
+            : '<span class="gh-badge gh-badge-success">👤 HUMAN (' + (s.actor.name || s.actor.id) + ')</span>';
 
           const verbLabel = (s.xapi_verb || "").split("/").pop() || s.xapi_verb;
           const timeStr = new Date(s.ts).toLocaleTimeString();
 
-          html += '<div style="background: #030712; border: 1px solid #1f2937; border-radius: 0.375rem; padding: 0.75rem;">';
-          html += '  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">';
-          html += '    <div style="display: flex; align-items: center; gap: 0.5rem;">';
-          html += '      <strong style="color: #f3f4f6; font-size: 0.85rem;">Step ' + s.step_index + ': ' + s.step_name + '</strong>';
-          html += '      ' + actorBadge;
-          html += '      <span style="font-family: monospace; font-size: 0.72rem; color: #a5f3fc;">[' + verbLabel + ']</span>';
-          html += '    </div>';
-          html += '    <span style="font-size: 0.75rem; color: var(--text-muted);">' + timeStr + '</span>';
-          html += '  </div>';
-
-          if (s.prompt) {
-            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
-            html += '    <strong>Prompt / Context:</strong>';
-            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; white-space: pre-wrap; max-height: 120px; overflow-y: auto;">' + s.prompt.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
-            html += '  </div>';
-          }
-          if (s.patch) {
-            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
-            html += '    <strong>Patch / Generated Output:</strong>';
-            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; color: #86efac; white-space: pre-wrap; max-height: 140px; overflow-y: auto;">' + s.patch.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
-            html += '  </div>';
-          }
-          if (s.build_test_log) {
-            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
-            html += '    <strong>Build / Test Verification Log:</strong>';
-            html += '    <pre style="background: #111827; padding: 0.4rem; border-radius: 0.25rem; margin-top: 0.2rem; font-family: monospace; font-size: 0.75rem; color: #a5f3fc; white-space: pre-wrap;">' + s.build_test_log.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
-            html += '  </div>';
-          }
-          if (s.qa_evidence) {
-            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: var(--text-muted);">';
-            html += '    <strong>QA Evidence:</strong> ' + (s.qa_evidence.summary || JSON.stringify(s.qa_evidence));
-            html += '  </div>';
+          h += '<div style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 0.75rem;">';
+          h += '  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">';
+          h += '    <div style="display: flex; align-items: center; gap: 0.4rem;">';
+          h += '      <strong style="color: #f0f6fc; font-size: 0.85rem;">' + s.step_name + '</strong>';
+          h += '      <span class="gh-badge gh-badge-muted" style="font-family: monospace; font-size: 0.7rem;">' + verbLabel + '</span>';
+          h += '    </div>';
+          h += '    <span style="font-size: 0.75rem; color: var(--gh-text-muted);">' + timeStr + '</span>';
+          h += '  </div>';
+          h += '  <div style="margin-bottom: 0.35rem;">' + actorBadge + '</div>';
+          if (s.evidence) {
+            h += '  <div style="font-size: 0.78rem; color: var(--gh-text-muted); font-family: monospace; margin-top: 0.25rem;">';
+            h += '    Evidence: ' + (s.evidence.test_stage || s.evidence.kind || 'verified') + ' &bull; Hash: ' + (s.evidence.seal_hash || s.evidence.diff_hash || '').slice(0, 16) + '...';
+            h += '  </div>';
           }
           if (s.human_decision) {
-            html += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: #fde68a;">';
-            html += '    <strong>Human Decision:</strong> Rationale: <em>"' + (s.human_decision.rationale || '') + '"</em> &bull; Key: <code>' + (s.human_decision.reviewer_pubkey || '').slice(0, 16) + '...</code>';
-            html += '  </div>';
+            h += '  <div style="margin-top: 0.35rem; font-size: 0.78rem; color: #fde68a;">';
+            h += '    <strong>Human Decision:</strong> Rationale: <em>"' + (s.human_decision.rationale || '') + '"</em> &bull; Key: <code>' + (s.human_decision.reviewer_pubkey || '').slice(0, 16) + '...</code>';
+            h += '  </div>';
           }
-          html += '</div>';
+          h += '</div>';
         }
-        html += '</div>';
-        container.innerHTML = html;
+        h += '</div>';
+        container.innerHTML = h;
       } catch (err) {
         container.innerHTML = '<div style="color: #fca5a5; padding: 1rem;">Failed to load trace: ' + err.message + '</div>';
       }
@@ -2556,35 +2438,14 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       window.open("/project/${defaultProjectId}/trace/" + currentModalTaskId + "/export", "_blank");
     }
   </script>
-
-  <!-- S3A Trace Replay Modal -->
-  <div id="trace-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.8); z-index: 9999; align-items: center; justify-content: center; padding: 1.5rem;">
-    <div style="background: #111827; border: 1px solid #374151; border-radius: 0.75rem; width: 100%; max-width: 850px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.7);">
-      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; background: #0b0f19;">
-        <div style="display: flex; align-items: center; gap: 0.6rem;">
-          <strong id="trace-modal-title" style="color: #f3f4f6; font-size: 1.05rem;">Task Trace Replay</strong>
-          <span class="badge" style="background: rgba(56,189,248,0.15); color: var(--accent); border-color: var(--accent); font-size: 0.72rem;">s3a-trace &bull; xAPI Provenance</span>
-        </div>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <button class="btn btn-secondary" onclick="exportTraceJsonl()" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;">
-            💾 Export Fine-Tuning JSONL
-          </button>
-          <button onclick="closeTraceModal()" style="background: transparent; border: none; color: var(--text-muted); font-size: 1.2rem; cursor: pointer; padding: 0 0.5rem;">✕</button>
-        </div>
-      </div>
-      <div id="trace-steps-container" style="padding: 1.25rem; overflow-y: auto; flex: 1;">
-        <!-- Trace steps loaded dynamically -->
-      </div>
-    </div>
-  </div>
 </body>
 </html>`;
-
 
   return new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }
+
 
 // ============================================================================
 // Durable Object: RepoCoordinator (One per Project)
