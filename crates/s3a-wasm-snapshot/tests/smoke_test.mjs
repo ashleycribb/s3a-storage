@@ -52,9 +52,9 @@ async function main() {
     const humanIdx = session.record_human(verbId, 0x12345678, 0x9999, null);
     console.log("Recorded Human step at index:", humanIdx);
 
-    // 4. Record one AI step referencing the human step
-    const aiIdx = session.record_ai("lab-assistant", 1, 0.95, humanIdx);
-    console.log("Recorded AI step at index:", aiIdx, "referencing human index:", humanIdx);
+    // 4. Record one AI step referencing the human step (using verb 18: ai-answered)
+    const aiIdx = session.record_ai("lab-assistant", 18, 0.95, humanIdx);
+    console.log("Recorded AI step (verb 18) at index:", aiIdx, "referencing human index:", humanIdx);
 
     // Add a paper for literature context
     const paperIdx = session.add_paper("W123456789", "10.1000/182", 2024, 42, null);
@@ -92,6 +92,12 @@ async function main() {
     const reloaded = from_bytes(snapshotBytes);
     assert(reloaded instanceof WasmAgentSnapshot, "from_bytes must return WasmAgentSnapshot instance");
     console.log("WASM in-memory from_bytes roundtrip successful");
+
+    // Verify export_bytes on the restored snapshot succeeds and lengths are stable
+    const reloadedBytes = reloaded.export_bytes();
+    assert(reloadedBytes instanceof Uint8Array, "reloaded.export_bytes must return Uint8Array");
+    console.log(`Exported from reloaded snapshot: ${reloadedBytes.length} bytes (${(reloadedBytes.length / 1024).toFixed(1)} KB)`);
+    assert.strictEqual(reloadedBytes.length, snapshotBytes.length, "Export bytes size before and after from_bytes must be stable");
 
     // 8. Run s3a-cli snapshot intake on the exported bytes
     const repoRoot = path.resolve(__dirname, '../../..');

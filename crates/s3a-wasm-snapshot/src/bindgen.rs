@@ -421,7 +421,9 @@ impl WasmAgentSnapshot {
             + (self.inner.claims.len() * 2) as u64
             + self.inner.policy_marks.len() as u64;
 
-        Ok(self.inner.export_bytes())
+        self.inner
+            .export_bytes()
+            .map_err(|e| JsValue::from_str(&format!("Snapshot export error: {}", e)))
     }
 
     /// Loads a snapshot from a Uint8Array byte slice.
@@ -571,6 +573,12 @@ pub fn new_session(session_uuid_hex: &str) -> Result<WasmAgentSnapshot, JsValue>
 #[wasm_bindgen]
 pub fn from_bytes(bytes: &[u8]) -> Result<WasmAgentSnapshot, JsValue> {
     WasmAgentSnapshot::from_bytes(bytes)
+}
+
+/// Standalone function exporting the snapshot as an immutable .snapshot.s3a Uint8Array buffer.
+#[wasm_bindgen]
+pub fn export_bytes(snapshot: &mut WasmAgentSnapshot) -> Result<Vec<u8>, JsValue> {
+    snapshot.export_bytes()
 }
 
 /// Standalone function resolving an xAPI IRI or label to its 32-bit integer verb_id.

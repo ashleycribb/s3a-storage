@@ -302,7 +302,7 @@ impl WasmAgentSnapshot {
     }
 
     /// Exports the snapshot into an immutable .snapshot.s3a byte buffer.
-    pub fn export_bytes(&self) -> Vec<u8> {
+    pub fn export_bytes(&self) -> Result<Vec<u8>, String> {
         let mut tiles: Vec<(u32, Vec<u8>, u32, u64, u64)> = Vec::new();
 
         if let Some(ref ws) = self.workspace {
@@ -408,7 +408,8 @@ impl WasmAgentSnapshot {
             out[payload_start..payload_start + payload.len()].copy_from_slice(payload);
         }
 
-        s3a_engine::seal_buffer(&out, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M).unwrap_or(out)
+        s3a_engine::seal_buffer(&out, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)
+            .map_err(|e| format!("Failed to seal snapshot buffer: {}", e))
     }
 
     /// Exports pending delta records since the last sync as a compact byte packet.

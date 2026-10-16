@@ -13,7 +13,7 @@ pub mod bindgen;
 pub use snapshot_view::WasmSnapshotView;
 pub use agent_api::WasmAgentSnapshot;
 pub use bindgen::{
-    new_session, from_bytes, verb_id_for_iri, iri_for_verb_id,
+    new_session, from_bytes, export_bytes, verb_id_for_iri, iri_for_verb_id,
     TOOL_READ_FILE, TOOL_OPENALEX_QUERY, TOOL_EXTRACT_CLAIMS, TOOL_SYNTHESIZE_EVIDENCE,
     TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_TA_SUPERVISOR_CALL, TOOL_MUTATE_GRAPH,
     TOOL_PUBLISH, TOOL_CREDENTIAL_EXPORT,
@@ -100,7 +100,7 @@ mod tests {
         };
 
         // 2. Export to byte buffer (simulates web app packaging)
-        let bytes = agent_snap.export_bytes();
+        let bytes = agent_snap.export_bytes().unwrap();
         assert!(bytes.len() >= s3a_core::FILE_HEADER_SIZE);
 
         // 3. Read back from byte buffer using WasmSnapshotView
@@ -171,7 +171,7 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
-        }.export_bytes()).unwrap();
+        }.export_bytes().unwrap()).unwrap();
 
         // Mutate snap1: add a claim and an AI trace
         snap1.add_claim(101, 0xCAFE, 0.95, s3a_pack_scholar::CLAIM_KIND_EMPIRICAL, "Evidence for room temperature superconductor refuted", None);
@@ -254,7 +254,7 @@ mod tests {
         );
 
         // Export snapshot to bytes and reload from bytes
-        let bytes = snap.export_bytes();
+        let bytes = snap.export_bytes().unwrap();
         let loaded = WasmAgentSnapshot::from_bytes(&bytes).expect("deserialization");
 
         assert_eq!(loaded.claims.len(), 2);
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(snap.search_claims_vector(&query_vec, 5, 0.5, true).len(), 1);
 
         // Export and reload: verify quarantine mark is preserved and filtering holds
-        let bytes = snap.export_bytes();
+        let bytes = snap.export_bytes().unwrap();
         let loaded = WasmAgentSnapshot::from_bytes(&bytes).expect("reload");
         assert_eq!(loaded.search_claims_text("Majorana", 5, false).len(), 0);
         assert_eq!(loaded.search_claims_text("Majorana", 5, true).len(), 1);
@@ -627,6 +627,39 @@ mod tests {
 
         let final_bytes = session.export_bytes().unwrap();
         assert!(!final_bytes.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_roundtrip_new_session_record_export_from_bytes_export() {
+        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+            .expect("new_session should succeed");
+
+        let h_idx = session.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+            wasm_bindgen::JsValue::NULL,
+            0x12345678,
+            None,
+        ).expect("record_human should succeed");
+
+        let _ai_idx = session.record_ai(
+            "lab-assistant",
+            18, // verb 18: ai-answered
+            0.95,
+            Some(h_idx),
+        ).expect("record_ai should succeed");
+
+        let bytes1 = session.export_bytes().expect("first export_bytes should succeed");
+        assert!(!bytes1.is_empty(), "first export must not be empty");
+        println!("Export 1 size: {} bytes", bytes1.len());
+
+        let mut restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes1)
+            .expect("from_bytes should succeed");
+
+        let bytes2 = restored.export_bytes().expect("second export_bytes should succeed");
+        assert!(!bytes2.is_empty(), "second export must not be empty");
+        println!("Export 2 size: {} bytes", bytes2.len());
+
+        assert_eq!(bytes1.len(), bytes2.len(), "both exports must succeed and lengths must be stable");
     }
 }
 

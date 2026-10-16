@@ -349,10 +349,7 @@ impl TileWriter {
             .truncate(true)
             .open(path)?;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_time_secs();
 
         let mut slot_a = FileHeader::new(0, now).with_file_uuid(file_uuid);
         slot_a.generation = 1;
@@ -465,10 +462,7 @@ impl TileWriter {
 
     fn commit_header_slot(&mut self, next_tile_count: u32, addon_mask: u32) -> io::Result<()> {
         let next_generation = self.generation + 1;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = current_time_secs();
 
         let target_slot = 1 - self.active_slot;
         let mut new_slot = FileHeader::with_commit(
@@ -1536,10 +1530,7 @@ impl<'a> QuerySieve<'a> {
 
     /// Initializes a QuerySieve configured for export operations (default purpose = Research).
     pub fn for_export(reader: &'a MmapReader) -> Self {
-        let now_sec = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now_sec = current_time_secs();
         Self {
             reader,
             include_hidden: false,
