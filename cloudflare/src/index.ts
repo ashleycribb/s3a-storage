@@ -75,6 +75,60 @@ export interface Env {
   AGENT_ED25519_KEY?: string;
   OLLAMA_BASE_URL?: string;
   CUSTOM_MODEL_URL?: string;
+  ADMIN_SECRET?: string;
+  SUPERVISOR_PUBKEYS?: string;
+}
+
+export function checkAdminAuth(request: Request, env: Env): { authorized: boolean; reason?: string } {
+  // 1. Cloudflare Access Headers
+  const cfAssertion = request.headers.get("Cf-Access-Jwt-Assertion");
+  const cfEmail = request.headers.get("Cf-Access-Authenticated-User-Email");
+  if (cfAssertion || cfEmail) {
+    return { authorized: true };
+  }
+
+  // 2. Bearer ADMIN secret or X-Admin-Secret
+  const authHeader = request.headers.get("Authorization");
+  const xAdminSecret = request.headers.get("X-Admin-Secret");
+  const url = new URL(request.url);
+  const querySecret = url.searchParams.get("admin_secret");
+
+  let providedToken = "";
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    providedToken = authHeader.slice(7).trim();
+  } else if (xAdminSecret) {
+    providedToken = xAdminSecret.trim();
+  } else if (querySecret) {
+    providedToken = querySecret.trim();
+  }
+
+  const expectedSecret = env.ADMIN_SECRET ? env.ADMIN_SECRET.trim() : "";
+  if (!expectedSecret) {
+    return {
+      authorized: false,
+      reason: "ADMIN_SECRET is not configured on the server."
+    };
+  }
+
+  if (providedToken && providedToken === expectedSecret) {
+    return { authorized: true };
+  }
+
+  return {
+    authorized: false,
+    reason: providedToken ? "Invalid ADMIN_SECRET" : "Missing admin authorization (Cloudflare Access or Bearer ADMIN_SECRET)"
+  };
+}
+
+export function isSupervisorKeyAllowed(reviewerPubkey: string | undefined, env: Env): boolean {
+  if (!reviewerPubkey || typeof reviewerPubkey !== "string") return false;
+  const rawAllowed = (env.SUPERVISOR_PUBKEYS || "").trim();
+  if (!rawAllowed) return false;
+  const allowedKeys = rawAllowed
+    .split(",")
+    .map(k => k.trim().toLowerCase())
+    .filter(Boolean);
+  return allowedKeys.includes(reviewerPubkey.trim().toLowerCase());
 }
 
 // ============================================================================
@@ -95,10 +149,118 @@ export default {
 
     const url = new URL(request.url);
     const pathParts = url.pathname.split("/").filter(Boolean);
+    const defaultProjectId = "s3a-swarm-main";
 
-    // Root Dashboard
-    if (pathParts.length === 0 || url.pathname === "/") {
-      return renderDashboard(request, env);
+    // GET /health: Health status check with zero token output
+    if (url.pathname === "/health" && request.method === "GET") {
+      const health: any = {
+        status: "ok",
+        timestamp: new Date().toISOString(),
+        components: {},
+      };
+
+      // 1. Durable Object (RepoCoordinator)
+      try {
+        const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
+        const stub = env.REPO_COORDINATOR.get(doId);
+        const doRes = await stub.fetch("https://internal/project/" + defaultProjectId + "/control");
+        if (doRes.ok) {
+          const doData = await doRes.json() as any;
+          health.components.durable_object = {
+            ok: true,
+            paused: doData.paused,
+            status: doData.status,
+          };
+        } else {
+          health.status = "degraded";
+          health.components.durable_object = { ok: false, error: `HTTP ${doRes.status}` };
+        }
+      } catch (err: any) {
+        health.status = "degraded";
+        health.components.durable_object = { ok: false, error: err?.message || String(err) };
+      }
+
+      // 2. R2 Evidence Bucket
+      try {
+        if (env.EVIDENCE_BUCKET) {
+          await env.EVIDENCE_BUCKET.list({ limit: 1 });
+          health.components.r2 = { ok: true, bucket: "s3a-evidence" };
+        } else {
+          health.status = "degraded";
+          health.components.r2 = { ok: false, error: "Binding EVIDENCE_BUCKET not found" };
+        }
+      } catch (err: any) {
+        health.status = "degraded";
+        health.components.r2 = { ok: false, error: err?.message || String(err) };
+      }
+
+      // 3. Workers AI
+      health.components.ai = {
+        ok: !!env.AI,
+        binding: env.AI ? "present" : "missing",
+      };
+
+      // 4. Browser Rendering
+      health.components.browser = {
+        ok: !!env.BROWSER,
+        binding: env.BROWSER ? "present" : "missing",
+      };
+
+      // 5. GitHub Auth (CRITICAL: zero token output!)
+      health.components.github_auth = {
+        ok: !!env.GITHUB_TOKEN,
+        configured: !!env.GITHUB_TOKEN,
+      };
+
+      // 6. Ledger Budget Under Cap
+      try {
+        const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
+        const stub = env.REPO_COORDINATOR.get(doId);
+        const ledgerRes = await stub.fetch("https://internal/project/" + defaultProjectId + "/ledger");
+        if (ledgerRes.ok) {
+          const budget = await ledgerRes.json() as any;
+          const spent = Number(budget.spent_today || 0);
+          const cap = Number(budget.cap || 5.0);
+          const underCap = spent < cap;
+          health.components.ledger = {
+            ok: underCap,
+            under_cap: underCap,
+            spent_today: spent,
+            cap: cap,
+          };
+          if (!underCap) {
+            health.status = "degraded";
+          }
+        } else {
+          health.status = "degraded";
+          health.components.ledger = { ok: false, error: `HTTP ${ledgerRes.status}` };
+        }
+      } catch (err: any) {
+        health.status = "degraded";
+        health.components.ledger = { ok: false, error: err?.message || String(err) };
+      }
+
+      return new Response(JSON.stringify(health, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
+      });
+    }
+
+    // Admin Key Enrollment & Check Endpoints
+    if (url.pathname === "/admin/check-supervisor-key") {
+      const auth = checkAdminAuth(request, env);
+      if (!auth.authorized) {
+        return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const key = url.searchParams.get("key") || "";
+      const isAllowed = isSupervisorKeyAllowed(key, env);
+      const count = (env.SUPERVISOR_PUBKEYS || "").split(",").map(k => k.trim()).filter(Boolean).length;
+      return new Response(JSON.stringify({ key, enrolled: isAllowed, total_supervisors: count }), {
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
     // Direct Sandbox Diagnostics Endpoint
@@ -149,7 +311,7 @@ export default {
       url.pathname.startsWith("/brand/") ||
       url.pathname.startsWith("/fixtures/")
     ) {
-      const doId = env.REPO_COORDINATOR.idFromName("s3a-swarm-main");
+      const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
       const stub = env.REPO_COORDINATOR.get(doId);
       return stub.fetch(request);
     }
@@ -161,16 +323,131 @@ export default {
       url.pathname === "/close-duplicate-prs" ||
       url.pathname === "/triage-duplicates"
     ) {
-      const doId = env.REPO_COORDINATOR.idFromName("s3a-swarm-main");
+      // Require admin auth on POST /control, and on scheduler-tick / close-duplicate-prs / triage-duplicates
+      if (
+        (url.pathname === "/control" && request.method === "POST") ||
+        url.pathname === "/scheduler-tick" ||
+        url.pathname === "/close-duplicate-prs" ||
+        url.pathname === "/triage-duplicates"
+      ) {
+        const auth = checkAdminAuth(request, env);
+        if (!auth.authorized) {
+          return new Response(JSON.stringify({
+            error: "Unauthorized: Admin authentication required (Cloudflare Access or Bearer ADMIN_SECRET).",
+            reason: auth.reason,
+          }), { status: 401, headers: { "Content-Type": "application/json" } });
+        }
+      }
+      const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
       const stub = env.REPO_COORDINATOR.get(doId);
       const targetUrl = new URL(request.url);
-      targetUrl.pathname = `/project/s3a-swarm-main${url.pathname}`;
+      targetUrl.pathname = `/project/${defaultProjectId}${url.pathname}`;
       return stub.fetch(new Request(targetUrl.toString(), request));
     }
 
-    // API Routes: /project/:id/...
+    // ------------------------------------------------------------------------
+    // Clean Top-Level Deep Links:
+    // /, /code, /issues, /issues/:taskId, /pulls, /pulls/:crId, /agents, /actions, /insights
+    // ------------------------------------------------------------------------
+    if (pathParts.length === 0 || url.pathname === "/") {
+      return renderDashboard(request, env, { activeTab: url.searchParams.get("tab") || "code" });
+    }
+    if (pathParts[0] === "code") {
+      return renderDashboard(request, env, { activeTab: "code" });
+    }
+    if (pathParts[0] === "issues") {
+      if (pathParts[1]) {
+        return renderDashboard(request, env, { activeTab: "issues", selectedTaskId: pathParts[1] });
+      }
+      return renderDashboard(request, env, { activeTab: "issues" });
+    }
+    if (pathParts[0] === "pulls") {
+      if (pathParts[1]) {
+        return renderDashboard(request, env, { activeTab: "pulls", selectedCrId: pathParts[1] });
+      }
+      return renderDashboard(request, env, { activeTab: "pulls" });
+    }
+    if (pathParts[0] === "agents") {
+      return renderDashboard(request, env, { activeTab: "agents" });
+    }
+    if (pathParts[0] === "actions") {
+      return renderDashboard(request, env, { activeTab: "actions" });
+    }
+    if (pathParts[0] === "insights") {
+      return renderDashboard(request, env, { activeTab: "insights" });
+    }
+
+    // ------------------------------------------------------------------------
+    // Project-Scoped Routes: /project/:projectId/...
+    // ------------------------------------------------------------------------
     if (pathParts[0] === "project" && pathParts.length >= 2) {
       const projectId = pathParts[1];
+      const sub = pathParts[2] || "";
+
+      // Preview Live Proxy
+      if (sub === "preview" && pathParts[3] === "live") {
+        const doId = env.REPO_COORDINATOR.idFromName(projectId);
+        const stub = env.REPO_COORDINATOR.get(doId);
+        return stub.fetch(request);
+      }
+
+      // Preview CR Detail URL: /project/:id/preview/cr/:crId
+      if (sub === "preview" && pathParts[3] === "cr" && pathParts[4]) {
+        return renderDashboard(request, env, { projectId, activeTab: "pulls", selectedCrId: pathParts[4] });
+      }
+
+      // /project/:id/issues and /project/:id/issues/:taskId
+      if (sub === "issues") {
+        if (pathParts[3]) {
+          return renderDashboard(request, env, { projectId, activeTab: "issues", selectedTaskId: pathParts[3] });
+        }
+        return renderDashboard(request, env, { projectId, activeTab: "issues" });
+      }
+
+      // /project/:id/pulls and /project/:id/pulls/:crId
+      if (sub === "pulls") {
+        if (pathParts[3]) {
+          return renderDashboard(request, env, { projectId, activeTab: "pulls", selectedCrId: pathParts[3] });
+        }
+        return renderDashboard(request, env, { projectId, activeTab: "pulls" });
+      }
+
+      // /project/:id/code
+      if (sub === "code") {
+        return renderDashboard(request, env, { projectId, activeTab: "code" });
+      }
+
+      // /project/:id/actions
+      if (sub === "actions") {
+        return renderDashboard(request, env, { projectId, activeTab: "actions" });
+      }
+
+      // /project/:id/insights
+      if (sub === "insights") {
+        return renderDashboard(request, env, { projectId, activeTab: "insights" });
+      }
+
+      // /project/:id/agents (Render HTML view if browser/HTML request; otherwise forward to DO JSON API)
+      if (sub === "agents") {
+        if (request.headers.get("Accept")?.includes("application/json") || request.method !== "GET") {
+          const doId = env.REPO_COORDINATOR.idFromName(projectId);
+          const stub = env.REPO_COORDINATOR.get(doId);
+          return stub.fetch(request);
+        }
+        return renderDashboard(request, env, { projectId, activeTab: "agents" });
+      }
+
+      // /project/:id/tasks (If browser/HTML request without sub-action, render issues view)
+      if (sub === "tasks" && pathParts.length === 3 && request.method === "GET" && !request.headers.get("Accept")?.includes("application/json")) {
+        return renderDashboard(request, env, { projectId, activeTab: "issues" });
+      }
+
+      // Project Root: /project/:id
+      if (pathParts.length === 2) {
+        return renderDashboard(request, env, { projectId, activeTab: url.searchParams.get("tab") || "code" });
+      }
+
+      // All other API routes forward to Durable Object
       const doId = env.REPO_COORDINATOR.idFromName(projectId);
       const stub = env.REPO_COORDINATOR.get(doId);
       return stub.fetch(request);
@@ -178,12 +455,15 @@ export default {
 
     return new Response("Not Found", { status: 404 });
   },
-
   // Cron Trigger: Autonomous background scheduler backup (every 5 minutes)
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const doId = env.REPO_COORDINATOR.idFromName("s3a-swarm-main");
     const stub = env.REPO_COORDINATOR.get(doId);
-    await stub.fetch("https://s3a-gate/project/s3a-swarm-main/scheduler-tick", { method: "POST" });
+    const headers: Record<string, string> = {};
+    if (env.ADMIN_SECRET) {
+      headers["Authorization"] = `Bearer ${env.ADMIN_SECRET}`;
+    }
+    await stub.fetch("https://s3a-gate/project/s3a-swarm-main/scheduler-tick", { method: "POST", headers });
   },
 };
 
@@ -1195,9 +1475,19 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
         const sig = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, envBytes);
         const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
 
+        function getAuthHeaders() {
+          const secret = localStorage.getItem("s3a_admin_secret");
+          const h = { 'Content-Type': 'application/json' };
+          if (secret) {
+            h['Authorization'] = 'Bearer ' + secret;
+            h['X-Admin-Secret'] = secret;
+          }
+          return h;
+        }
+
         const res = await fetch('/project/${projectId}/change-requests/${cr.id}/approve', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify({
             reviewer_pubkey: pubHex,
             signature: sigHex,
@@ -1208,6 +1498,14 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
         if (res.ok) {
           alert("Change request approved with verified Ed25519 human signature and merged into baseline!");
           window.location.reload();
+        } else if (res.status === 401) {
+          const sec = prompt("Admin authorization required (Cloudflare Access or Bearer ADMIN_SECRET).\nPlease enter ADMIN_SECRET:");
+          if (sec) {
+            localStorage.setItem("s3a_admin_secret", sec.trim());
+            approveCR();
+          }
+        } else if (res.status === 403) {
+          alert("Forbidden: Your browser public key is not enrolled in SUPERVISOR_PUBKEYS.");
         } else {
           const err = await res.json();
           alert("Approval failed: " + (err.error || JSON.stringify(err)));
@@ -1225,14 +1523,26 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
       }
       try {
         const { pubHex } = await getOrGenerateReviewerKey();
+        const secret = localStorage.getItem("s3a_admin_secret");
+        const headers = { 'Content-Type': 'application/json' };
+        if (secret) {
+          headers['Authorization'] = 'Bearer ' + secret;
+          headers['X-Admin-Secret'] = secret;
+        }
         const res = await fetch('/project/${projectId}/change-requests/${cr.id}/request-changes', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           body: JSON.stringify({ feedback, reviewer_pubkey: pubHex })
         });
         if (res.ok) {
           alert("Changes requested! Feedback sent back to agent task.");
           window.location.reload();
+        } else if (res.status === 401) {
+          const sec = prompt("Admin authorization required (Cloudflare Access or Bearer ADMIN_SECRET).\nPlease enter ADMIN_SECRET:");
+          if (sec) {
+            localStorage.setItem("s3a_admin_secret", sec.trim());
+            requestChanges();
+          }
         } else {
           alert("Request failed: " + await res.text());
         }
@@ -1245,14 +1555,28 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
       const rationale = document.getElementById('pm-feedback-input').value.trim() || "Rejected by PM supervisor";
       try {
         const { pubHex } = await getOrGenerateReviewerKey();
+        const secret = localStorage.getItem("s3a_admin_secret");
+        const headers = { 'Content-Type': 'application/json' };
+        if (secret) {
+          headers['Authorization'] = 'Bearer ' + secret;
+          headers['X-Admin-Secret'] = secret;
+        }
         const res = await fetch('/project/${projectId}/change-requests/${cr.id}/reject', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           body: JSON.stringify({ rationale, reviewer_pubkey: pubHex })
         });
         if (res.ok) {
           alert("Change request rejected.");
           window.location.reload();
+        } else if (res.status === 401) {
+          const sec = prompt("Admin authorization required (Cloudflare Access or Bearer ADMIN_SECRET).\nPlease enter ADMIN_SECRET:");
+          if (sec) {
+            localStorage.setItem("s3a_admin_secret", sec.trim());
+            rejectCR();
+          }
+        } else {
+          alert("Rejection failed: " + await res.text());
         }
       } catch (err) {
         alert("Supervisor key error: " + err.message);
@@ -1267,14 +1591,27 @@ function renderPMPreviewHtml(projectId: string, cr: ChangeRequest, livePreviewUr
 // Dashboard HTML Renderer (Simple, Clean, Modern UX - 25% Judging)
 // ============================================================================
 
-async function renderDashboard(request: Request, env: Env): Promise<Response> {
-  const defaultProjectId = "s3a-swarm-main";
+export interface RenderViewOptions {
+  projectId?: string;
+  activeTab?: string;
+  selectedTaskId?: string;
+  selectedCrId?: string;
+}
+
+async function renderDashboard(request: Request, env: Env, options: RenderViewOptions = {}): Promise<Response> {
+  const defaultProjectId = options.projectId || "s3a-swarm-main";
   const doId = env.REPO_COORDINATOR.idFromName(defaultProjectId);
   const stub = env.REPO_COORDINATOR.get(doId);
 
   const url = new URL(request.url);
-  let activeTab = url.searchParams.get("tab") || "code";
+  let activeTab = options.activeTab || url.searchParams.get("tab") || "code";
   if (activeTab === "pull-requests" || activeTab === "pr" || activeTab === "prs") {
+    activeTab = "pulls";
+  }
+  if (options.selectedTaskId) {
+    activeTab = "issues";
+  }
+  if (options.selectedCrId) {
     activeTab = "pulls";
   }
 
@@ -1373,12 +1710,25 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     return "Autonomous Agent";
   }
 
+  // Selected Detail View lookup
+  const selectedTask = options.selectedTaskId ? tasks.find(t => t.id === options.selectedTaskId || (t.github_issue_number && String(t.github_issue_number) === options.selectedTaskId)) : null;
+  const linkedCrForTask = selectedTask ? crs.find(c => c.task_id === selectedTask.id || c.id === selectedTask.change_request_id) : null;
+
+  const selectedCr = options.selectedCrId ? crs.find(c => c.id === options.selectedCrId || (c.github_pr_number && String(c.github_pr_number) === options.selectedCrId)) : null;
+  const linkedTaskForCr = selectedCr ? tasks.find(t => t.id === selectedCr.task_id) : null;
+
+  const pageTitle = options.selectedTaskId
+    ? (selectedTask ? `${selectedTask.title} · Issue #${selectedTask.github_issue_number || selectedTask.id} · ashleycribb/plat-gaming` : `Issue Not Found · ashleycribb/plat-gaming`)
+    : options.selectedCrId
+      ? (selectedCr ? `${selectedCr.title} · Pull Request #${selectedCr.github_pr_number || selectedCr.id} · ashleycribb/plat-gaming` : `Pull Request Not Found · ashleycribb/plat-gaming`)
+      : `ashleycribb/plat-gaming · S3A Gate (Agent VCS)`;
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ashleycribb/plat-gaming &bull; S3A Gate (Agent VCS)</title>
+  <title>${pageTitle.replace(/"/g, '&quot;')}</title>
   <style>
     :root {
       --gh-bg: #0d1117;
@@ -1436,9 +1786,10 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      font-size: 1.25rem;
+      font-size: 1.2rem;
       font-weight: 600;
       color: var(--gh-text-heading);
+      flex-wrap: wrap;
     }
     .repo-title-row svg { fill: var(--gh-text-muted); }
     .repo-pill {
@@ -1465,22 +1816,46 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       color: var(--gh-text);
       cursor: pointer;
       text-decoration: none;
-      transition: background 0.15s;
+      transition: background 0.15s, opacity 0.15s;
     }
-    .gh-btn:hover { background: #30363d; text-decoration: none; }
+    .gh-btn:hover:not(:disabled) { background: #30363d; text-decoration: none; }
+    .gh-btn:disabled { opacity: 0.6; cursor: not-allowed; }
     .gh-btn-primary {
       background: var(--gh-green);
       color: #fff;
       border-color: rgba(240, 246, 252, 0.1);
     }
-    .gh-btn-primary:hover { background: var(--gh-green-hover); }
+    .gh-btn-primary:hover:not(:disabled) { background: var(--gh-green-hover); }
     .gh-btn-danger {
       background: #21262d;
       color: var(--gh-red-text);
       border-color: rgba(248, 81, 73, 0.4);
     }
-    .gh-btn-danger:hover { background: var(--gh-red); color: #fff; }
+    .gh-btn-danger:hover:not(:disabled) { background: var(--gh-red); color: #fff; }
+    .gh-btn-warning {
+      background: #21262d;
+      color: var(--gh-yellow-text);
+      border-color: rgba(210, 153, 34, 0.4);
+    }
+    .gh-btn-warning:hover:not(:disabled) { background: var(--gh-yellow); color: #0d1117; }
     .gh-btn-sm { padding: 3px 8px; font-size: 12px; line-height: 18px; }
+
+    /* Inputs */
+    .gh-input, .gh-textarea, .gh-select {
+      background: #0d1117;
+      border: 1px solid var(--gh-border);
+      border-radius: 6px;
+      color: var(--gh-text-heading);
+      padding: 6px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      width: 100%;
+    }
+    .gh-input:focus, .gh-textarea:focus, .gh-select:focus {
+      outline: none;
+      border-color: var(--gh-link);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.2);
+    }
 
     /* Nav Tabs */
     .gh-tabs {
@@ -1503,6 +1878,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       cursor: pointer;
       user-select: none;
       white-space: nowrap;
+      text-decoration: none;
     }
     .tab-item:hover { color: var(--gh-text-heading); text-decoration: none; }
     .tab-item.active {
@@ -1569,7 +1945,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     }
     .gh-badge-success { background: var(--gh-green-bg); color: var(--gh-green-text); border: 1px solid rgba(46, 160, 67, 0.4); }
     .gh-badge-danger { background: var(--gh-red-bg); color: var(--gh-red-text); border: 1px solid rgba(248, 81, 73, 0.4); }
-    .gh-badge-purple { background: var(--gh-purple-bg); color: var(--gh-purple-text); border: 1px solid rgba(137, 87, 229, 0.4); }
+    .gh-badge-purple { background: var(--gh-purple-bg); color: var(--gh-purple-text); border: 1px solid rgba(163, 113, 247, 0.4); }
     .gh-badge-yellow { background: var(--gh-yellow-bg); color: var(--gh-yellow-text); border: 1px solid rgba(210, 153, 34, 0.4); }
     .gh-badge-blue { background: var(--gh-blue-bg); color: var(--gh-blue-text); border: 1px solid rgba(56, 139, 253, 0.4); }
     .gh-badge-muted { background: rgba(110, 118, 129, 0.2); color: var(--gh-text-muted); border: 1px solid var(--gh-border); }
@@ -1607,6 +1983,30 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       gap: 0.75rem;
     }
 
+    /* Detail Grid Layout */
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 2.8fr 1.2fr;
+      gap: 1.5rem;
+    }
+    @media (max-width: 900px) {
+      .detail-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Diff Pre */
+    .diff-pre {
+      background: #030712;
+      padding: 0.75rem;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.8rem;
+      color: #86efac;
+      max-height: 380px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      border: 1px solid var(--gh-border);
+    }
+
     /* Empty state */
     .empty-state {
       padding: 3rem 1.5rem;
@@ -1616,7 +2016,7 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     .empty-state-icon { font-size: 2.2rem; margin-bottom: 0.75rem; }
     .empty-state-title { font-size: 1.15rem; font-weight: 600; color: var(--gh-text-heading); margin-bottom: 0.35rem; }
 
-    /* Modal */
+    /* Modals */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -1632,15 +2032,28 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
 </head>
 <body>
 
-  <!-- GitHub Repo Header -->
+  <!-- ===================================================================== -->
+  <!-- SHARED SHELL: Unified Header & Top Nav (Present on ALL Views) -->
+  <!-- ===================================================================== -->
   <div class="gh-header">
     <div class="gh-header-top">
       <div>
         <div class="repo-title-row">
           <svg width="18" height="18" viewBox="0 0 16 16"><path d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.75.75 0 001.28.53l1.47-1.47 1.47 1.47a.75.75 0 001.28-.53v-3.25a.75.75 0 00-1.5 0v1.69l-.72-.72a.75.75 0 00-1.06 0l-.72.72v-1.69a.75.75 0 00-1.5 0z"/></svg>
-          <a href="/?tab=code" style="color: var(--gh-link); font-weight: 400;">ashleycribb</a>
+          <a href="/code" style="color: var(--gh-link); font-weight: 400;">ashleycribb</a>
           <span style="color: var(--gh-text-muted);">/</span>
-          <a href="/?tab=code" style="color: var(--gh-text-heading); font-weight: 600;">plat-gaming</a>
+          <a href="/code" style="color: var(--gh-text-heading); font-weight: 600;">plat-gaming</a>
+          ${options.selectedTaskId ? `
+            <span style="color: var(--gh-text-muted);">/</span>
+            <a href="/issues" style="color: var(--gh-link);">Issues</a>
+            <span style="color: var(--gh-text-muted);">/</span>
+            <span style="color: var(--gh-text-heading); font-size: 1.1rem;">#${options.selectedTaskId}</span>
+          ` : options.selectedCrId ? `
+            <span style="color: var(--gh-text-muted);">/</span>
+            <a href="/pulls" style="color: var(--gh-link);">Pull requests</a>
+            <span style="color: var(--gh-text-muted);">/</span>
+            <span style="color: var(--gh-text-heading); font-size: 1.1rem;">#${options.selectedCrId}</span>
+          ` : ''}
           <span class="repo-pill">Private</span>
           <span class="repo-pill" style="border-color: rgba(243,128,32,0.4); color: var(--gh-orange);">Agent VCS &bull; S3A Gate</span>
         </div>
@@ -1652,601 +2065,986 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       <!-- Supervisor Control Bar -->
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
         ${controlData.paused ? `
-          <span class="gh-badge gh-badge-danger" style="font-size: 12px; padding: 0.25rem 0.65rem;">⏸ Swarm Paused</span>
-          <button class="gh-btn gh-btn-primary gh-btn-sm" onclick="toggleAutonomousEngine('resume')">▶ Resume Swarm</button>
+          <span id="engine-status-badge" class="gh-badge gh-badge-danger" style="font-size: 12px; padding: 0.25rem 0.65rem;">⏸ Swarm Paused</span>
+          <button id="engine-toggle-btn" class="gh-btn gh-btn-primary gh-btn-sm" onclick="toggleAutonomousEngine('resume')">▶ Resume Swarm</button>
         ` : openTasks.length === 0 ? `
-          <span class="gh-badge gh-badge-muted" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚪ Swarm Idle (0 open issues)</span>
-          <button class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
+          <span id="engine-status-badge" class="gh-badge gh-badge-muted" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚪ Swarm Idle (0 open issues)</span>
+          <button id="engine-toggle-btn" class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
         ` : `
-          <span class="gh-badge gh-badge-success" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚡ Swarm Active (${openTasks.length} in flight)</span>
-          <button class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
+          <span id="engine-status-badge" class="gh-badge gh-badge-success" style="font-size: 12px; padding: 0.25rem 0.65rem;">⚡ Swarm Active (${openTasks.length} in flight)</span>
+          <button id="engine-toggle-btn" class="gh-btn gh-btn-danger gh-btn-sm" onclick="toggleAutonomousEngine('pause')">⏸ Pause Swarm</button>
         `}
-        <button class="gh-btn gh-btn-sm" onclick="triggerManualTick()">⚡ Run 1 Step</button>
-        <button class="gh-btn gh-btn-sm" onclick="closeDuplicatePRs()">🧹 Triage Dups</button>
+        <button id="btn-manual-step" class="gh-btn gh-btn-sm" onclick="triggerManualTick()">⚡ Run 1 Step</button>
+        <button id="btn-triage-dups" class="gh-btn gh-btn-sm" onclick="closeDuplicatePRs()">🧹 Triage Dups</button>
+        <button id="btn-enroll-key" class="gh-btn gh-btn-sm" onclick="openEnrollmentModal()" title="View and enroll browser Ed25519 supervisor key">🔑 Enroll Key</button>
         <a href="https://github.com/ashleycribb/plat-gaming" target="_blank" class="gh-btn gh-btn-sm">
           GitHub ↗
         </a>
       </div>
     </div>
 
-    <!-- 6 GitHub Navigation Tabs -->
+    <!-- 6 GitHub Navigation Tabs (Always functional from any page) -->
     <div class="gh-tabs">
-      <div id="nav-tab-code" class="tab-item ${activeTab === 'code' ? 'active' : ''}" onclick="switchTab('code')">
+      <a id="nav-tab-code" href="/code" class="tab-item ${activeTab === 'code' && !options.selectedTaskId && !options.selectedCrId ? 'active' : ''}" onclick="return handleNav(event, 'code')">
         <svg width="16" height="16" viewBox="0 0 16 16"><path d="M4.72 3.22a.75.75 0 011.06 1.06L2.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L.47 8.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 8l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06l-4.25-4.25z"/></svg>
         <span>Code</span>
-      </div>
-      <div id="nav-tab-issues" class="tab-item ${activeTab === 'issues' ? 'active' : ''}" onclick="switchTab('issues')">
+      </a>
+      <a id="nav-tab-issues" href="/issues" class="tab-item ${activeTab === 'issues' || options.selectedTaskId ? 'active' : ''}" onclick="return handleNav(event, 'issues')">
         <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
         <span>Issues</span>
         <span class="tab-counter">${openTasks.length}</span>
-      </div>
-      <div id="nav-tab-pulls" class="tab-item ${activeTab === 'pulls' ? 'active' : ''}" onclick="switchTab('pulls')">
+      </a>
+      <a id="nav-tab-pulls" href="/pulls" class="tab-item ${activeTab === 'pulls' || options.selectedCrId ? 'active' : ''}" onclick="return handleNav(event, 'pulls')">
         <svg width="16" height="16" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
         <span>Pull requests</span>
         <span class="tab-counter">${openCRs.length}</span>
-      </div>
-      <div id="nav-tab-agents" class="tab-item ${activeTab === 'agents' ? 'active' : ''}" onclick="switchTab('agents')">
+      </a>
+      <a id="nav-tab-agents" href="/agents" class="tab-item ${activeTab === 'agents' && !options.selectedTaskId && !options.selectedCrId ? 'active' : ''}" onclick="return handleNav(event, 'agents')">
         <span>🤖 Agents</span>
         <span class="tab-counter">${registeredAgentsList.length}</span>
-      </div>
-      <div id="nav-tab-actions" class="tab-item ${activeTab === 'actions' ? 'active' : ''}" onclick="switchTab('actions')">
+      </a>
+      <a id="nav-tab-actions" href="/actions" class="tab-item ${activeTab === 'actions' && !options.selectedTaskId && !options.selectedCrId ? 'active' : ''}" onclick="return handleNav(event, 'actions')">
         <svg width="16" height="16" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zm5.22-3.72a.75.75 0 011.06 0l3 3a.75.75 0 010 1.06l-3 3a.75.75 0 11-1.06-1.06L8.94 8.5H4.75a.75.75 0 010-1.5h4.19l-2.22-2.22a.75.75 0 010-1.06z"/></svg>
         <span>Actions</span>
-      </div>
-      <div id="nav-tab-insights" class="tab-item ${activeTab === 'insights' ? 'active' : ''}" onclick="switchTab('insights')">
+      </a>
+      <a id="nav-tab-insights" href="/insights" class="tab-item ${activeTab === 'insights' && !options.selectedTaskId && !options.selectedCrId ? 'active' : ''}" onclick="return handleNav(event, 'insights')">
         <svg width="16" height="16" viewBox="0 0 16 16"><path d="M1.5 1.75a.75.75 0 00-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 000-1.5H1.5V1.75z"/><path d="M4.25 9.75a.75.75 0 011.06 0l2.44 2.44 3.97-3.97a.75.75 0 111.06 1.06l-4.5 4.5a.75.75 0 01-1.06 0l-2.44-2.44-1.47 1.47a.75.75 0 11-1.06-1.06l2-2z"/></svg>
         <span>Insights</span>
-      </div>
+      </a>
     </div>
   </div>
 
   <div class="gh-container">
 
-    <!-- Invariant Epistemic Notice Banner -->
-    <div class="invariant-banner">
+    <!-- ===================================================================== -->
+    <!-- VIEW A: SPECIFIC ISSUE DETAIL VIEW (/issues/:taskId) -->
+    <!-- ===================================================================== -->
+    ${options.selectedTaskId ? `
       <div>
-        <strong style="color: var(--gh-orange);">Epistemic Invariant:</strong>
-        Humans only make judgments. AI agents propose, sandbox, test, and sign. Agents never merge.
-        Sensitive paths (<code>cashier</code>, <code>escrow</code>, <code>payout</code>, <code>auth</code>, <code>db</code>, <code>infra</code>) are labeled <code>needs-human</code> and require a second human reviewer.
-      </div>
-      <div style="font-size: 12px; color: var(--gh-text-muted);">
-        Daily Budget Cap: <strong>$${budgetData.spent_today.toFixed(4)} / $${budgetData.cap.toFixed(4)}</strong>
-      </div>
-    </div>
+        <a href="/issues" class="gh-btn gh-btn-sm" style="margin-bottom: 1.25rem;">&larr; Back to Issues</a>
 
-    <!-- ===================================================================== -->
-    <!-- TAB 1: CODE (Repository Overview & Baseline Artifacts) -->
-    <!-- ===================================================================== -->
-    <div id="tab-code" class="tab-content" style="display: ${activeTab === 'code' ? 'block' : 'none'};">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <button class="gh-btn gh-btn-sm" style="font-weight: 600;">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/></svg>
-            <span>main</span>
-          </button>
-          <span style="color: var(--gh-text-muted); font-size: 13px;">
-            <strong>${statusData.commits_count || 4}</strong> commits &bull; <strong>1</strong> branch &bull; <strong>1</strong> tag
-          </span>
+        ${!selectedTask ? `
+          <div class="gh-box">
+            <div class="empty-state">
+              <div class="empty-state-icon">⚠️</div>
+              <div class="empty-state-title">Issue Not Found</div>
+              <p style="margin-bottom: 1rem;">No task exists matching ID "<code>${options.selectedTaskId}</code>".</p>
+              <a href="/issues" class="gh-btn gh-btn-primary">&larr; Return to Issues List</a>
+            </div>
+          </div>
+        ` : `
+          <!-- Issue Header -->
+          <div style="margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--gh-border);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap;">
+              <div>
+                <h1 style="font-size: 1.65rem; font-weight: 600; color: var(--gh-text-heading); margin-bottom: 0.5rem;">
+                  ${selectedTask.title} <span style="color: var(--gh-text-muted); font-weight: 300;">#${selectedTask.github_issue_number || selectedTask.id}</span>
+                </h1>
+                <div style="display: flex; align-items: center; gap: 0.75rem; font-size: 13px; color: var(--gh-text-muted); flex-wrap: wrap;">
+                  <span class="gh-badge ${selectedTask.status === 'merged' ? 'gh-badge-purple' : selectedTask.status === 'claimed' ? 'gh-badge-blue' : selectedTask.status === 'in_review' ? 'gh-badge-yellow' : 'gh-badge-success'}">
+                    ${selectedTask.status.toUpperCase()}
+                  </span>
+                  ${selectedTask.risk_level === 'high' ? '<span class="gh-badge gh-badge-danger">🚨 needs-human</span>' : ''}
+                  <span>Opened from GitHub &bull; Claimed by ${selectedTask.claimed_by ? `<code>${selectedTask.claimed_by}</code>` : '<em>Unassigned</em>'}</span>
+                </div>
+              </div>
+              <div style="display: flex; gap: 0.5rem;">
+                <button class="gh-btn gh-btn-sm" onclick="openNewIssueModal()">+ New Issue</button>
+                ${selectedTask.github_issue_url ? `<a href="${selectedTask.github_issue_url}" target="_blank" class="gh-btn gh-btn-sm">GitHub Issue #${selectedTask.github_issue_number} ↗</a>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-grid">
+            <!-- Left Column: Description & Scope -->
+            <div>
+              <div class="gh-box">
+                <div class="gh-box-header"><strong>Issue Description &amp; Acceptance Criteria</strong></div>
+                <div style="padding: 1rem; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${(selectedTask.description || 'No description provided.').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+              </div>
+
+              <div class="gh-box">
+                <div class="gh-box-header"><strong>S3A Gate Policy &amp; Scope Constraints</strong></div>
+                <div style="padding: 1rem; font-size: 13px;">
+                  <div style="margin-bottom: 0.75rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Allowed File Prefixes:</span>
+                    <code>${(selectedTask.files_allowed || []).join(', ') || 'No file restrictions specified'}</code>
+                  </div>
+                  <div style="margin-bottom: 0.75rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Verification Command:</span>
+                    <code style="color: #38bdf8;">${selectedTask.tests || 'npm run build'}</code>
+                  </div>
+                  <div>
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Risk Classification:</span>
+                    <span class="gh-badge ${selectedTask.risk_level === 'high' ? 'gh-badge-danger' : 'gh-badge-muted'}">${selectedTask.risk_level.toUpperCase()}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Linked PR -->
+              <div class="gh-box">
+                <div class="gh-box-header"><strong>Linked Pull Request / Change Request</strong></div>
+                <div style="padding: 1rem; font-size: 13px;">
+                  ${linkedCrForTask ? `
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+                      <div>
+                        <div style="font-weight: 600; font-size: 14px; color: var(--gh-text-heading);">${linkedCrForTask.title}</div>
+                        <div style="color: var(--gh-text-muted); font-size: 12px; margin-top: 0.25rem;">
+                          #${linkedCrForTask.id} opened by agent <code>${linkedCrForTask.agent_id}</code> &bull; Commit: <code>${(linkedCrForTask.commit_id || '').slice(0, 10)}</code>
+                        </div>
+                      </div>
+                      <a href="/pulls/${linkedCrForTask.id}" class="gh-btn gh-btn-primary gh-btn-sm">
+                        View Pull Request #${linkedCrForTask.github_pr_number || linkedCrForTask.id} &rarr;
+                      </a>
+                    </div>
+                  ` : `
+                    <p style="color: var(--gh-text-muted); margin-bottom: 0.5rem;">No pull request has been submitted for this task yet. When an agent claims this task, it will run sandbox build &amp; QA tests before opening a change request.</p>
+                    <button class="gh-btn gh-btn-sm" onclick="triggerManualTick()">⚡ Trigger Autonomous Step</button>
+                  `}
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Sidebar Metadata -->
+            <div>
+              <div class="gh-box">
+                <div class="gh-box-header"><strong>Assignees &amp; Metadata</strong></div>
+                <div style="padding: 1rem; font-size: 13px;">
+                  <div style="margin-bottom: 1rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.35rem;">Assignee:</span>
+                    <strong>${selectedTask.claimed_by ? `🤖 ${selectedTask.claimed_by}` : '<em>Unassigned</em>'}</strong>
+                  </div>
+                  <div style="margin-bottom: 1rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.35rem;">Labels:</span>
+                    <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
+                      <span class="gh-badge gh-badge-blue">area/auth</span>
+                      ${selectedTask.risk_level === 'high' ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                      <span class="gh-badge gh-badge-muted">${selectedTask.status}</span>
+                    </div>
+                  </div>
+                  <div style="margin-bottom: 1rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.35rem;">Provenance &amp; Trace:</span>
+                    <button class="gh-btn gh-btn-sm" style="width: 100%; justify-content: center;" onclick="openTraceModal('${selectedTask.id}')">
+                      🔍 Replay Task Trace
+                    </button>
+                  </div>
+                  <div>
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.35rem;">Supervisor Action:</span>
+                    <button id="btn-reset-task" class="gh-btn gh-btn-sm" style="width: 100%; justify-content: center; color: var(--gh-red-text);" onclick="resetTask('${selectedTask.id}')">
+                      🔄 Reset Task to Open
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `}
+      </div>
+    ` : options.selectedCrId ? `
+      <!-- ===================================================================== -->
+      <!-- VIEW B: SPECIFIC PR DETAIL VIEW (/pulls/:crId) -->
+      <!-- ===================================================================== -->
+      <div>
+        <a href="/pulls" class="gh-btn gh-btn-sm" style="margin-bottom: 1.25rem;">&larr; Back to Pull Requests</a>
+
+        ${!selectedCr ? `
+          <div class="gh-box">
+            <div class="empty-state">
+              <div class="empty-state-icon">⚠️</div>
+              <div class="empty-state-title">Pull Request Not Found</div>
+              <p style="margin-bottom: 1rem;">No change request exists matching ID "<code>${options.selectedCrId}</code>".</p>
+              <a href="/pulls" class="gh-btn gh-btn-primary">&larr; Return to Pull Requests List</a>
+            </div>
+          </div>
+        ` : `
+          <!-- PR Header -->
+          <div style="margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--gh-border);">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap;">
+              <div>
+                <h1 style="font-size: 1.65rem; font-weight: 600; color: var(--gh-text-heading); margin-bottom: 0.5rem;">
+                  ${selectedCr.title} <span style="color: var(--gh-text-muted); font-weight: 300;">#${selectedCr.github_pr_number || selectedCr.id}</span>
+                </h1>
+                <div style="display: flex; align-items: center; gap: 0.75rem; font-size: 13px; color: var(--gh-text-muted); flex-wrap: wrap;">
+                  <span class="gh-badge ${selectedCr.status === 'approved' || selectedCr.status === 'auto_merged' ? 'gh-badge-purple' : selectedCr.status === 'rejected' ? 'gh-badge-danger' : 'gh-badge-success'}">
+                    ${selectedCr.status.toUpperCase()}
+                  </span>
+                  ${selectedCr.risk_level === 'high' || selectedCr.needs_second_human ? '<span class="gh-badge gh-badge-danger">🚨 NEEDS-HUMAN REVIEW</span>' : ''}
+                  <span><strong>${selectedCr.agent_id}</strong> wants to merge 1 commit into <code>main</code> from <code>${selectedCr.github_branch || 's3a/agent-branch'}</code></span>
+                </div>
+              </div>
+              <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4); font-weight: 600;">
+                  🌐 Open preview ↗
+                </a>
+                ${selectedCr.github_pr_url ? `<a href="${selectedCr.github_pr_url}" target="_blank" class="gh-btn gh-btn-sm">GitHub PR #${selectedCr.github_pr_number} ↗</a>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-grid">
+            <!-- Left Column: Agent Contribution, Checks & Diff -->
+            <div>
+              <!-- Agent Plan Card -->
+              <div class="gh-box">
+                <div class="gh-box-header">
+                  <strong>Autonomous Agent Contribution</strong>
+                  <span style="font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">Commit: ${(selectedCr.commit_id || '').slice(0, 12)}</span>
+                </div>
+                <div style="padding: 1rem; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${(selectedCr.message || 'Autonomous agent change request').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                <div style="background: #030712; padding: 0.75rem 1rem; border-top: 1px solid var(--gh-border); font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">
+                  Agent Identity: <code>${selectedCr.agent_id}</code><br>
+                  Ed25519 Author Key: <code>${(selectedCr.agent_pubkey || '').slice(0, 32)}...</code><br>
+                  Commit Seal Hash: <code>${(selectedCr.seal_hash || '').slice(0, 32)}...</code>
+                </div>
+              </div>
+
+              <!-- Checks & Verification -->
+              <div class="gh-box">
+                <div class="gh-box-header">
+                  <strong>Checks &amp; Verification</strong>
+                  <span class="gh-badge ${selectedCr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
+                    ${selectedCr.test_report?.passed ? '✓ All checks passed' : '✗ Checks failed'}
+                  </span>
+                </div>
+                <div>
+                  <div class="gh-row" style="justify-content: space-between; align-items: center;">
+                    <div>
+                      <div style="font-weight: 600; color: var(--gh-text-heading);">Cloudflare Sandbox Container Build</div>
+                      <div style="font-size: 12px; color: var(--gh-text-muted);">Command: npm run build &bull; ${selectedCr.test_report?.output || 'Clean build runtime verified'}</div>
+                    </div>
+                    <span class="gh-badge ${selectedCr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
+                      ${selectedCr.test_report?.passed ? 'Passed' : 'Failed'}
+                    </span>
+                  </div>
+
+                  <div class="gh-row" style="justify-content: space-between; align-items: center;">
+                    <div>
+                      <div style="font-weight: 600; color: var(--gh-text-heading);">Playwright Chromium Headless QA User Journey</div>
+                      <div style="font-size: 12px; color: var(--gh-text-muted);">
+                        ${(selectedCr.qa_reports && selectedCr.qa_reports.length > 0) ? `${selectedCr.qa_reports.length} QA report(s) recorded with screenshot verification` : 'QA not run'}
+                      </div>
+                    </div>
+                    <span class="gh-badge ${(selectedCr.qa_reports && selectedCr.qa_reports.length > 0) ? 'gh-badge-success' : 'gh-badge-muted'}">
+                      ${(selectedCr.qa_reports && selectedCr.qa_reports.length > 0) ? 'Passed' : 'QA not run'}
+                    </span>
+                  </div>
+
+                  ${(selectedCr.qa_reports && selectedCr.qa_reports.length > 0) ? `
+                    <div style="padding: 0.75rem 1rem; background: #030712; border-top: 1px solid var(--gh-border); font-size: 12px;">
+                      <div style="font-weight: 600; color: var(--gh-text-heading); margin-bottom: 0.4rem;">Playwright QA Evidence:</div>
+                      ${selectedCr.qa_reports.map((qa: any) => `
+                        <div style="margin-bottom: 0.35rem; color: var(--gh-text-muted);">
+                          &bull; <strong>${qa.agent_id}</strong>: <span style="color: var(--gh-green-text); font-weight: 600;">PASSED</span> - ${qa.summary}
+                          ${(qa.screenshots || []).map((s: any) => `
+                            <div style="margin-left: 1rem; margin-top: 0.2rem;">
+                              <a href="${s.data_url}" target="_blank" style="color: var(--gh-link);">🖼️ ${s.caption || s.name} ↗</a>
+                            </div>
+                          `).join('')}
+                        </div>
+                      `).join('')}
+                    </div>
+                  ` : ''}
+                </div>
+              </div>
+
+              <!-- Unified Code Diff -->
+              <div class="gh-box">
+                <div class="gh-box-header">
+                  <strong>Files Changed (${(selectedCr.touched_files || []).length}) &amp; Unified Diff</strong>
+                  <span style="font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">${(selectedCr.touched_files || []).join(', ')}</span>
+                </div>
+                <div style="padding: 1rem;">
+                  <pre class="diff-pre">${(selectedCr.diff || '// No diff available').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Human Judgment Panel & Sidebar -->
+            <div>
+              <!-- Human Judgment Panel (Humans Only) -->
+              <div class="gh-box" style="border-color: rgba(243,128,32,0.5);">
+                <div class="gh-box-header" style="background: rgba(243,128,32,0.1); color: var(--gh-orange);">
+                  <span>⚖️ Human Judgment Panel</span>
+                  <span class="gh-badge" style="background: rgba(243,128,32,0.2); color: var(--gh-orange); border-color: var(--gh-orange);">Human Only</span>
+                </div>
+                <div style="padding: 1rem;">
+                  <div style="background: rgba(243,128,32,0.08); border: 1px solid rgba(243,128,32,0.2); border-radius: 6px; padding: 0.65rem; font-size: 12px; color: var(--gh-text); margin-bottom: 1rem;">
+                    <strong>EPISTEMIC INVARIANT:</strong> Agents never see Approve. Judgments must be cryptographically signed by a registered human supervisor key with WebCrypto Ed25519.
+                  </div>
+
+                  ${selectedCr.status === 'approved' || selectedCr.status === 'auto_merged' ? `
+                    <div style="background: rgba(35,134,54,0.15); border: 1px solid var(--gh-green); border-radius: 6px; padding: 0.75rem; color: var(--gh-green-text); font-size: 13px;">
+                      <strong>✓ Approved &amp; Merged</strong>
+                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
+                        Reviewer: <code>${selectedCr.reviewer_pubkey ? selectedCr.reviewer_pubkey.slice(0, 16) + '...' : 'Human Supervisor'}</code>
+                      </div>
+                      ${selectedCr.human_rationale ? `<div style="font-size: 12px; margin-top: 0.35rem; color: #e6edf3;">Rationale: ${selectedCr.human_rationale}</div>` : ''}
+                    </div>
+                  ` : selectedCr.status === 'rejected' ? `
+                    <div style="background: rgba(218,54,51,0.15); border: 1px solid var(--gh-red); border-radius: 6px; padding: 0.75rem; color: var(--gh-red-text); font-size: 13px;">
+                      <strong>✗ Rejected</strong>
+                      ${selectedCr.human_rationale ? `<div style="font-size: 12px; margin-top: 0.35rem; color: #e6edf3;">Rationale: ${selectedCr.human_rationale}</div>` : ''}
+                    </div>
+                  ` : `
+                    <div style="margin-bottom: 0.85rem;">
+                      <label style="font-size: 12px; color: var(--gh-text-muted); display: block; margin-bottom: 0.35rem; font-weight: 600;">
+                        Feedback / Human Rationale:
+                      </label>
+                      <textarea id="pm-feedback-input" class="gh-textarea" rows="3" placeholder="Enter revision feedback or approval rationale..."></textarea>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+                      <button id="btn-approve-cr" class="gh-btn gh-btn-primary" style="width: 100%; justify-content: center;" onclick="approveCR('${selectedCr.id}')">
+                        ✓ Sign &amp; Approve (Ed25519)
+                      </button>
+                      <button id="btn-request-changes" class="gh-btn gh-btn-warning" style="width: 100%; justify-content: center;" onclick="requestChanges('${selectedCr.id}')">
+                        📝 Request Changes (Send to Agent)
+                      </button>
+                      <button id="btn-reject-cr" class="gh-btn gh-btn-danger" style="width: 100%; justify-content: center;" onclick="rejectCR('${selectedCr.id}')">
+                        ✗ Reject Change Request
+                      </button>
+                    </div>
+                  `}
+                </div>
+              </div>
+
+              <!-- Sidebar Metadata -->
+              <div class="gh-box">
+                <div class="gh-box-header"><strong>Reviewers &amp; Labels</strong></div>
+                <div style="padding: 1rem; font-size: 13px;">
+                  <div style="margin-bottom: 0.75rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Linked Issue:</span>
+                    <a href="/issues/${selectedCr.task_id}" style="font-weight: 600;">Task #${selectedCr.task_id} &rarr;</a>
+                  </div>
+                  <div style="margin-bottom: 0.75rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Responsible Agent:</span>
+                    <code>${selectedCr.agent_id}</code>
+                  </div>
+                  <div style="margin-bottom: 0.75rem;">
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Labels:</span>
+                    <span class="gh-badge gh-badge-blue">area/auth</span>
+                    ${selectedCr.risk_level === 'high' || selectedCr.needs_second_human ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                  </div>
+                  <div>
+                    <span style="color: var(--gh-text-muted); display: block; margin-bottom: 0.25rem;">Provenance &amp; Trace:</span>
+                    <button class="gh-btn gh-btn-sm" style="width: 100%; justify-content: center;" onclick="openTraceModal('${selectedCr.task_id}')">
+                      🔍 Replay Task Trace
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `}
+      </div>
+    ` : `
+      <!-- ===================================================================== -->
+      <!-- VIEW C: 6-TAB REPOSITORY OVERVIEW -->
+      <!-- ===================================================================== -->
+
+      <!-- Invariant Epistemic Notice Banner -->
+      <div class="invariant-banner">
+        <div>
+          <strong style="color: var(--gh-orange);">Epistemic Invariant:</strong>
+          Humans only make judgments. AI agents propose, sandbox, test, and sign. Agents never merge.
+          Sensitive paths (<code>cashier</code>, <code>escrow</code>, <code>payout</code>, <code>auth</code>, <code>db</code>, <code>infra</code>) are labeled <code>needs-human</code> and require a second human reviewer.
         </div>
-        <div style="display: flex; gap: 0.5rem;">
-          <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
-            🌐 Open preview ↗
-          </a>
-          <a href="https://github.com/ashleycribb/plat-gaming" target="_blank" class="gh-btn gh-btn-sm">
-            View on GitHub ↗
-          </a>
+        <div style="font-size: 12px; color: var(--gh-text-muted);">
+          Daily Budget Cap: <strong>$${budgetData.spent_today.toFixed(4)} / $${budgetData.cap.toFixed(4)}</strong>
         </div>
       </div>
 
-      <!-- Latest Commit Box -->
-      <div class="gh-box">
-        <div class="gh-box-header" style="font-size: 13px;">
-          <div>
-            <strong style="color: var(--gh-text-heading);">${(statusData.recent_merges && statusData.recent_merges[0]) ? 'Latest Baseline Merge: ' + statusData.recent_merges[0].rule : 'feat(auth): role-aware login (resolves #3)'}</strong>
-            <span style="color: var(--gh-text-muted); margin-left: 0.5rem;">
-              Author: <code>${(statusData.recent_merges && statusData.recent_merges[0]?.author) || 'Agent (S3A Gate Verified)'}</code>
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 1: CODE (Repository Overview & Baseline Artifacts) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-code" class="tab-content" style="display: ${activeTab === 'code' ? 'block' : 'none'};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;">
+          <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="gh-btn gh-btn-sm" style="font-weight: 600;">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/></svg>
+              <span>main</span>
+            </button>
+            <span style="color: var(--gh-text-muted); font-size: 13px;">
+              <strong>${statusData.commits_count || 4}</strong> commits &bull; <strong>1</strong> branch &bull; <strong>1</strong> tag
             </span>
           </div>
-          <div style="font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">
-            Commit: <code style="color: var(--gh-link);">${(statusData.recent_merges && statusData.recent_merges[0]?.commit_id?.slice(0, 10)) || 'commit-1a141b'}</code>
-          </div>
-        </div>
-
-        <!-- Files List -->
-        <div>
-          <div class="gh-row" style="font-size: 13px; font-weight: 600; color: var(--gh-text-muted); background: #161b22;">
-            <div style="flex: 2;">File Name</div>
-            <div style="flex: 3;">Last Agent Commit Message</div>
-            <div style="flex: 1; text-align: right;">Policy Scope</div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/src/components/</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">feat: MatchCard live score calculation and bracket rendering</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/auth/</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">feat(auth): role-aware login for players, coaches, teams (#3)</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/cashier/</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">Escrow multi-sig payout policy &amp; supervisor authorization</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 fixtures/bracket-fixtures.ts</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">Seed 16 competitive rosters and tournament match tiers</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 packages/auth/</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">Session cookie &amp; JWT verification on Cloudflare Workers</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
-          </div>
-          <div class="gh-row">
-            <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📄 package.json</div>
-            <div style="flex: 3; color: var(--gh-text-muted);">Dependencies: Next.js 14, TailwindCSS, Cloudflare Workers</div>
-            <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Baseline Artifacts Clone Snippet -->
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <strong>Private Artifacts Mirror (Git Smart HTTP)</strong>
-          <span class="gh-badge gh-badge-purple">Deterministic LWW Baseline</span>
-        </div>
-        <div style="padding: 1rem; font-size: 13px;">
-          <p style="color: var(--gh-text-muted); margin-bottom: 0.5rem;">
-            Clone the canonical baseline repository mirrored from GitHub into private Cloudflare Artifacts:
-          </p>
-          <pre style="background: #030712; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border); color: #38bdf8; font-family: monospace; font-size: 12px; overflow-x: auto;">git clone ${statusData.baseline_repo?.remote || 'gate://s3a-swarm-main/ashleycribb/plat-gaming'} baseline-repo</pre>
-        </div>
-      </div>
-
-      <!-- Recent Merged Commits Table -->
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <strong>Recent Merges Stream (Disjoint Union &amp; Deterministic LWW)</strong>
-          <span style="font-size: 12px; color: var(--gh-text-muted);">${(statusData.recent_merges || []).length} recorded merge(s)</span>
-        </div>
-        <table class="gh-table">
-          <thead>
-            <tr>
-              <th>Commit ID</th>
-              <th>Merge Rule</th>
-              <th>Seal Hash</th>
-              <th>Timestamp</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${(!statusData.recent_merges || statusData.recent_merges.length === 0) ? `
-              <tr><td colspan="4" style="color: var(--gh-text-muted); font-style: italic; text-align: center; padding: 1.5rem;">No baseline merge records yet.</td></tr>
-            ` : statusData.recent_merges.slice(0, 8).map((m: any) => `
-              <tr>
-                <td><code style="color: var(--gh-link);">${m.commit_id.slice(0, 16)}...</code></td>
-                <td><span class="gh-badge gh-badge-blue">${m.rule}</span></td>
-                <td><code>${m.seal_hash ? m.seal_hash.slice(0, 16) + '...' : 'N/A'}</code></td>
-                <td style="color: var(--gh-text-muted);">${new Date(m.timestamp).toLocaleTimeString()}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ===================================================================== -->
-    <!-- TAB 2: ISSUES (Tasks from plat-gaming) -->
-    <!-- ===================================================================== -->
-    <div id="tab-issues" class="tab-content" style="display: ${activeTab === 'issues' ? 'block' : 'none'};">
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <div style="display: flex; gap: 1rem; align-items: center;">
-            <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
-              <span>${openTasks.length} Open</span>
-            </div>
-            <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-              <span>${closedTasks.length} Closed / Merged</span>
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <button class="gh-btn gh-btn-sm" onclick="syncGitHubIssues()">
-              🔄 Sync GitHub Issues
-            </button>
-            <a href="https://github.com/ashleycribb/plat-gaming/issues" target="_blank" class="gh-btn gh-btn-sm">
-              plat-gaming Issues ↗
+          <div style="display: flex; gap: 0.5rem;">
+            <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
+              🌐 Open preview ↗
+            </a>
+            <a href="https://github.com/ashleycribb/plat-gaming" target="_blank" class="gh-btn gh-btn-sm">
+              View on GitHub ↗
             </a>
           </div>
         </div>
 
-        <!-- Issues List -->
-        <div>
-          ${tasks.length === 0 ? `
-            <div class="empty-state">
-              <div class="empty-state-icon">⊙</div>
-              <div class="empty-state-title">No issues found</div>
-              <p>When there are 0 open issues, agents do not invent tasks. Swarm status is idle.</p>
+        <!-- Latest Commit Box -->
+        <div class="gh-box">
+          <div class="gh-box-header" style="font-size: 13px;">
+            <div>
+              <strong style="color: var(--gh-text-heading);">${(statusData.recent_merges && statusData.recent_merges[0]) ? 'Latest Baseline Merge: ' + statusData.recent_merges[0].rule : 'feat(auth): role-aware login (resolves #3)'}</strong>
+              <span style="color: var(--gh-text-muted); margin-left: 0.5rem;">
+                Author: <code>${(statusData.recent_merges && statusData.recent_merges[0]?.author) || 'Agent (S3A Gate Verified)'}</code>
+              </span>
             </div>
-          ` : tasks.map((t) => {
-            const isOpen = t.status === "open" || t.status === "claimed" || t.status === "in_review" || t.status === "changes_requested" || t.status === "deferred_budget";
-            const isHighRisk = t.risk_level === "high";
-            return `
-              <div class="gh-row" style="opacity: ${isOpen ? '1' : '0.75'};">
-                <div style="margin-top: 2px;">
-                  ${isOpen ? `
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
-                  ` : `
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-                  `}
-                </div>
-                <div style="flex: 1;">
-                  <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                    <span style="font-weight: 600; font-size: 14px; color: var(--gh-text-heading);">${t.title}</span>
-                    ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
-                    ${t.status === 'deferred_budget' ? '<span class="gh-badge gh-badge-yellow">DEFERRED BUDGET</span>' : ''}
-                    ${t.status === 'claimed' ? '<span class="gh-badge gh-badge-blue">CLAIMED</span>' : ''}
-                    ${t.status === 'in_review' ? '<span class="gh-badge gh-badge-yellow">IN REVIEW</span>' : ''}
-                    ${t.status === 'merged' ? '<span class="gh-badge gh-badge-purple">MERGED</span>' : ''}
-                  </div>
-                  <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.35rem;">
-                    #${t.github_issue_number || t.id} &bull; Files allowed: <code>${(t.files_allowed || []).join(', ')}</code> &bull; Tests: <code>${t.tests}</code>
-                  </div>
-                </div>
-                <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 12px;">
-                  ${t.claimed_by ? `
-                    <span style="color: var(--gh-text-muted);">
-                      Assignee: <code style="color: var(--gh-link);">${t.claimed_by}</code>
-                    </span>
-                  ` : '<span style="color: var(--gh-text-muted); font-style: italic;">Unassigned</span>'}
-                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
-                    🔍 Trace
-                  </button>
-                  ${t.github_issue_url ? `
-                    <a href="${t.github_issue_url}" target="_blank" class="gh-btn gh-btn-sm">
-                      GitHub #${t.github_issue_number} ↗
-                    </a>
-                  ` : ''}
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    </div>
-
-    <!-- ===================================================================== -->
-    <!-- TAB 3: PULL REQUESTS (Change Requests) -->
-    <!-- ===================================================================== -->
-    <div id="tab-pulls" class="tab-content" style="display: ${activeTab === 'pulls' ? 'block' : 'none'};">
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <div style="display: flex; gap: 1rem; align-items: center;">
-            <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
-              <span>${openCRs.length} Open Change Request(s)</span>
-            </div>
-            <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-              <span>${closedCRs.length} Merged / Closed</span>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-text-muted);">
+              Commit: <code style="color: var(--gh-link);">${(statusData.recent_merges && statusData.recent_merges[0]?.commit_id?.slice(0, 10)) || 'commit-1a141b'}</code>
             </div>
           </div>
-        </div>
 
-        <!-- Pull Requests List -->
-        <div>
-          ${crs.length === 0 ? `
-            <div class="empty-state">
-              <div class="empty-state-icon">⑂</div>
-              <div class="empty-state-title">No pull requests found</div>
-              <p>Autonomous agents submit change requests when tasks are completed in the sandbox.</p>
-            </div>
-          ` : crs.map((cr) => {
-            const isApproved = cr.status === "approved" || cr.status === "auto_merged";
-            const isRejected = cr.status === "rejected";
-            const isHighRisk = cr.risk_level === "high" || cr.requires_human;
-            const hasRealQA = cr.qa_reports && cr.qa_reports.length > 0;
-            return `
-              <div class="gh-row" style="flex-direction: column; gap: 0.65rem;">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 1rem; flex-wrap: wrap;">
-                  <div style="display: flex; align-items: flex-start; gap: 0.65rem;">
-                    <div style="margin-top: 2px;">
-                      ${isApproved ? `
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-                      ` : isRejected ? `
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
-                      ` : `
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
-                      `}
-                    </div>
-                    <div>
-                      <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                        <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
-                          ${cr.title}
-                        </a>
-                        ${isApproved ? '<span class="gh-badge gh-badge-purple">Merged</span>' : isRejected ? '<span class="gh-badge gh-badge-danger">Rejected</span>' : '<span class="gh-badge gh-badge-success">Open (Review)</span>'}
-                        ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
-                      </div>
-                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
-                        #${cr.id} opened by agent <code>${cr.agent_id}</code> &bull; Task: <code>${cr.task_id}</code> &bull; Commit: <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Touched: <code>${(cr.touched_files || []).join(', ')}</code>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- Actions / Links (Preview, Review & Judge, GitHub) -->
-                  <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
-                    <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
-                      🌐 Open preview ↗
-                    </a>
-                    <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" class="gh-btn gh-btn-sm gh-btn-primary">
-                      ⚖️ Review &amp; Judge ↗
-                    </a>
-                    ${cr.github_pr_url ? `
-                      <a href="${cr.github_pr_url}" target="_blank" class="gh-btn gh-btn-sm">
-                        GitHub PR #${cr.github_pr_number || ''} ↗
-                      </a>
-                    ` : ''}
-                  </div>
-                </div>
-
-                <!-- Checks Summary -->
-                <div style="display: flex; gap: 0.65rem; align-items: center; padding-left: 1.65rem; font-size: 12px; flex-wrap: wrap;">
-                  <span style="color: var(--gh-text-muted);">Checks:</span>
-                  <span class="gh-badge ${cr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
-                    ${cr.test_report?.passed ? '✓ Sandbox build passed' : '✗ Build failed'}
-                  </span>
-                  <span class="gh-badge ${hasRealQA ? 'gh-badge-success' : 'gh-badge-muted'}">
-                    ${hasRealQA ? `✓ Browser QA passed (${cr.qa_reports.length} run)` : 'QA not run'}
-                  </span>
-                  ${cr.human_rationale ? `
-                    <span style="color: var(--gh-yellow-text); font-style: italic;">
-                      Supervisor: "${cr.human_rationale}"
-                    </span>
-                  ` : ''}
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    </div>
-
-    <!-- ===================================================================== -->
-    <!-- TAB 4: AGENTS (Registered Real Agents Only - Zero Fake Squares) -->
-    <!-- ===================================================================== -->
-    <div id="tab-agents" class="tab-content" style="display: ${activeTab === 'agents' ? 'block' : 'none'};">
-      <div class="gh-box">
-        <div class="gh-box-header">
+          <!-- Files List -->
           <div>
-            <strong>Registered Autonomous Agents</strong>
-            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">
-              (${registeredAgentsList.length} registered &bull; Ed25519 identity verified &bull; No simulated squares)
-            </span>
-          </div>
-          <div style="font-size: 12px; color: var(--gh-text-muted);">
-            Agents register dynamically when claiming tasks from plat-gaming.
+            <div class="gh-row" style="font-size: 13px; font-weight: 600; color: var(--gh-text-muted); background: #161b22;">
+              <div style="flex: 2;">File Name</div>
+              <div style="flex: 3;">Last Agent Commit Message</div>
+              <div style="flex: 1; text-align: right;">Policy Scope</div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/src/components/</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">feat: MatchCard live score calculation and bracket rendering</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/auth/</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">feat(auth): role-aware login for players, coaches, teams (#3)</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 apps/brakets-gg/app/api/cashier/</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">Escrow multi-sig payout policy &amp; supervisor authorization</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 fixtures/bracket-fixtures.ts</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">Seed 16 competitive rosters and tournament match tiers</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📁 packages/auth/</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">Session cookie &amp; JWT verification on Cloudflare Workers</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-danger">needs-human</span></div>
+            </div>
+            <div class="gh-row">
+              <div style="flex: 2; font-family: monospace; color: var(--gh-text-heading);">📄 package.json</div>
+              <div style="flex: 3; color: var(--gh-text-muted);">Dependencies: Next.js 14, TailwindCSS, Cloudflare Workers</div>
+              <div style="flex: 1; text-align: right;"><span class="gh-badge gh-badge-success">Standard</span></div>
+            </div>
           </div>
         </div>
 
-        ${registeredAgentsList.length === 0 ? `
-          <div class="empty-state">
-            <div class="empty-state-icon">🤖</div>
-            <div class="empty-state-title">Swarm Idle: No active registered agents</div>
-            <p>Agents spawn and register only when open tasks are claimed. No synthetic grids or fake agent squares.</p>
+        <!-- Baseline Artifacts Clone Snippet -->
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <strong>Private Artifacts Mirror (Git Smart HTTP)</strong>
+            <span class="gh-badge gh-badge-purple">Deterministic LWW Baseline</span>
           </div>
-        ` : `
+          <div style="padding: 1rem; font-size: 13px;">
+            <p style="color: var(--gh-text-muted); margin-bottom: 0.5rem;">
+              Clone the canonical baseline repository mirrored from GitHub into private Cloudflare Artifacts:
+            </p>
+            <pre style="background: #030712; padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border); color: #38bdf8; font-family: monospace; font-size: 12px; overflow-x: auto;">git clone ${statusData.baseline_repo?.remote || 'gate://s3a-swarm-main/ashleycribb/plat-gaming'} baseline-repo</pre>
+          </div>
+        </div>
+
+        <!-- Recent Merged Commits Table -->
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <strong>Recent Merges Stream (Disjoint Union &amp; Deterministic LWW)</strong>
+            <span style="font-size: 12px; color: var(--gh-text-muted);">${(statusData.recent_merges || []).length} recorded merge(s)</span>
+          </div>
           <table class="gh-table">
             <thead>
               <tr>
-                <th>Agent ID</th>
-                <th>Role</th>
-                <th>Current / Last Task</th>
-                <th>Status</th>
-                <th>Commits</th>
-                <th>Last Active</th>
-                <th>Workspace Fork</th>
+                <th>Commit ID</th>
+                <th>Merge Rule</th>
+                <th>Seal Hash</th>
+                <th>Timestamp</th>
               </tr>
             </thead>
             <tbody>
-              ${registeredAgentsList.map((a: any) => `
+              ${(!statusData.recent_merges || statusData.recent_merges.length === 0) ? `
+                <tr><td colspan="4" style="color: var(--gh-text-muted); font-style: italic; text-align: center; padding: 1.5rem;">No baseline merge records yet.</td></tr>
+              ` : statusData.recent_merges.slice(0, 8).map((m: any) => `
                 <tr>
-                  <td><code style="color: var(--gh-text-heading); font-weight: 600;">${a.agentId || a.agent_id}</code></td>
-                  <td><span class="gh-badge gh-badge-blue">${getAgentRoleName(a.agentId || a.agent_id)}</span></td>
-                  <td><span style="color: var(--gh-text);">${a.task || a.task_title || 'Active Task'}</span></td>
-                  <td>
-                    <span class="gh-badge ${a.status === 'merged' || a.status === 'qa_passed' ? 'gh-badge-success' : a.status === 'working' ? 'gh-badge-blue' : 'gh-badge-muted'}">
-                      ${a.status.toUpperCase()}
-                    </span>
-                  </td>
-                  <td><strong>${a.commits || a.commit_count || 0}</strong></td>
-                  <td style="color: var(--gh-text-muted);">${new Date(a.lastTs || a.last_seen || Date.now()).toLocaleTimeString()}</td>
-                  <td><code style="color: var(--gh-link);">${a.forkRepo || ('s3a-agent-' + (a.agentId || a.agent_id))}</code></td>
+                  <td><code style="color: var(--gh-link);">${m.commit_id.slice(0, 16)}...</code></td>
+                  <td><span class="gh-badge gh-badge-blue">${m.rule}</span></td>
+                  <td><code>${m.seal_hash ? m.seal_hash.slice(0, 16) + '...' : 'N/A'}</code></td>
+                  <td style="color: var(--gh-text-muted);">${new Date(m.timestamp).toLocaleTimeString()}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
-        `}
-      </div>
-    </div>
-
-    <!-- ===================================================================== -->
-    <!-- TAB 5: ACTIONS (Workflows, Builds & Browser QA Runs) -->
-    <!-- ===================================================================== -->
-    <div id="tab-actions" class="tab-content" style="display: ${activeTab === 'actions' ? 'block' : 'none'};">
-      <div style="display: grid; grid-template-columns: 280px 1fr; gap: 1.5rem;">
-        <!-- Left: Workflows list -->
-        <div class="gh-box" style="height: fit-content;">
-          <div class="gh-box-header"><strong>Workflows</strong></div>
-          <div style="padding: 0.5rem 0;">
-            <div style="padding: 0.6rem 1rem; font-weight: 600; color: var(--gh-text-heading); background: rgba(110, 118, 129, 0.1); border-left: 3px solid #f78166;">
-              AgentTask (Autonomous Loop)
-            </div>
-            <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
-              Cloudflare Sandbox Build &amp; Test
-            </div>
-            <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
-              Browser QA Runner (Puppeteer)
-            </div>
-          </div>
         </div>
+      </div>
 
-        <!-- Right: Workflow Runs -->
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 2: ISSUES (Tasks from plat-gaming) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-issues" class="tab-content" style="display: ${activeTab === 'issues' ? 'block' : 'none'};">
         <div class="gh-box">
           <div class="gh-box-header">
-            <strong>All Workflow Runs</strong>
-            <span style="color: var(--gh-text-muted); font-size: 12px;">Real Sandbox &amp; Playwright Evidence</span>
+            <div style="display: flex; gap: 1rem; align-items: center;">
+              <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+                <span>${openTasks.length} Open</span>
+              </div>
+              <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                <span>${closedTasks.length} Closed / Merged</span>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <button class="gh-btn gh-btn-primary gh-btn-sm" onclick="openNewIssueModal()">
+                + New Issue
+              </button>
+              <button id="btn-sync-issues" class="gh-btn gh-btn-sm" onclick="syncGitHubIssues()">
+                🔄 Sync GitHub Issues
+              </button>
+              <a href="https://github.com/ashleycribb/plat-gaming/issues" target="_blank" class="gh-btn gh-btn-sm">
+                plat-gaming Issues ↗
+              </a>
+            </div>
           </div>
 
+          <!-- Issues List -->
+          <div>
+            ${tasks.length === 0 ? `
+              <div class="empty-state">
+                <div class="empty-state-icon">⊙</div>
+                <div class="empty-state-title">No issues found</div>
+                <p style="margin-bottom: 1rem;">When there are 0 open issues, agents do not invent tasks. Swarm status is idle.</p>
+                <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                  <button class="gh-btn gh-btn-primary" onclick="openNewIssueModal()">+ Create Issue</button>
+                  <button class="gh-btn" onclick="syncGitHubIssues()">🔄 Sync from GitHub</button>
+                </div>
+              </div>
+            ` : tasks.map((t) => {
+              const isOpen = t.status === "open" || t.status === "claimed" || t.status === "in_review" || t.status === "changes_requested" || t.status === "deferred_budget";
+              const isHighRisk = t.risk_level === "high";
+              return `
+                <div class="gh-row" style="opacity: ${isOpen ? '1' : '0.8'};">
+                  <div style="margin-top: 2px;">
+                    ${isOpen ? `
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+                    ` : `
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                    `}
+                  </div>
+                  <div style="flex: 1;">
+                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                      <a href="/issues/${t.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
+                        ${t.title}
+                      </a>
+                      ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                      ${t.status === 'deferred_budget' ? '<span class="gh-badge gh-badge-yellow">DEFERRED BUDGET</span>' : ''}
+                      ${t.status === 'claimed' ? '<span class="gh-badge gh-badge-blue">CLAIMED</span>' : ''}
+                      ${t.status === 'in_review' ? '<span class="gh-badge gh-badge-yellow">IN REVIEW</span>' : ''}
+                      ${t.status === 'merged' ? '<span class="gh-badge gh-badge-purple">MERGED</span>' : ''}
+                    </div>
+                    <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.35rem;">
+                      #${t.github_issue_number || t.id} &bull; Files allowed: <code>${(t.files_allowed || []).join(', ')}</code> &bull; Tests: <code>${t.tests}</code>
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 12px; flex-wrap: wrap;">
+                    ${t.claimed_by ? `
+                      <span style="color: var(--gh-text-muted);">
+                        Assignee: <code style="color: var(--gh-link);">${t.claimed_by}</code>
+                      </span>
+                    ` : '<span style="color: var(--gh-text-muted); font-style: italic;">Unassigned</span>'}
+                    <a href="/issues/${t.id}" class="gh-btn gh-btn-sm">View Issue &rarr;</a>
+                    <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
+                      🔍 Trace
+                    </button>
+                    ${t.github_issue_url ? `
+                      <a href="${t.github_issue_url}" target="_blank" class="gh-btn gh-btn-sm">
+                        GitHub #${t.github_issue_number} ↗
+                      </a>
+                    ` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 3: PULL REQUESTS (Change Requests) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-pulls" class="tab-content" style="display: ${activeTab === 'pulls' ? 'block' : 'none'};">
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <div style="display: flex; gap: 1rem; align-items: center;">
+              <div style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.4rem;">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+                <span>${openCRs.length} Open Change Request(s)</span>
+              </div>
+              <div style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.4rem;">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                <span>${closedCRs.length} Merged / Closed</span>
+              </div>
+            </div>
+            <button class="gh-btn gh-btn-sm" onclick="triggerManualTick()">⚡ Run 1 Step</button>
+          </div>
+
+          <!-- Pull Requests List -->
           <div>
             ${crs.length === 0 ? `
               <div class="empty-state">
-                <div class="empty-state-icon">▷</div>
-                <div class="empty-state-title">No workflow runs yet</div>
-                <p>Run a task step or trigger the scheduler to execute the autonomous workflow.</p>
+                <div class="empty-state-icon">⑂</div>
+                <div class="empty-state-title">No pull requests found</div>
+                <p style="margin-bottom: 1rem;">Autonomous agents submit change requests when tasks are completed in the sandbox.</p>
+                <button class="gh-btn gh-btn-primary" onclick="triggerManualTick()">⚡ Trigger Autonomous Step</button>
               </div>
-            ` : crs.map((cr) => `
-              <div class="gh-row" style="align-items: center; justify-content: space-between;">
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                  <div>
-                    ${cr.test_report?.passed ? `
-                      <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l4.5-4.5z"/></svg>
-                    ` : `
-                      <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zM6.22 5.16a.75.75 0 011.06 0L8 5.88l.72-.72a.75.75 0 111.06 1.06L9.06 6.94l.72.72a.75.75 0 11-1.06 1.06L8 8l-.72.72a.75.75 0 11-1.06-1.06l.72-.72-.72-.72a.75.75 0 010-1.06z"/></svg>
-                    `}
+            ` : crs.map((cr) => {
+              const isApproved = cr.status === "approved" || cr.status === "auto_merged";
+              const isRejected = cr.status === "rejected";
+              const isHighRisk = cr.risk_level === "high" || cr.requires_human;
+              const hasRealQA = cr.qa_reports && cr.qa_reports.length > 0;
+              return `
+                <div class="gh-row" style="flex-direction: column; gap: 0.65rem;">
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 1rem; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: flex-start; gap: 0.65rem;">
+                      <div style="margin-top: 2px;">
+                        ${isApproved ? `
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                        ` : isRejected ? `
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                        ` : `
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+                        `}
+                      </div>
+                      <div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                          <a href="/pulls/${cr.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
+                            ${cr.title}
+                          </a>
+                          ${isApproved ? '<span class="gh-badge gh-badge-purple">Merged</span>' : isRejected ? '<span class="gh-badge gh-badge-danger">Rejected</span>' : '<span class="gh-badge gh-badge-success">Open (Review)</span>'}
+                          ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
+                        </div>
+                        <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
+                          #${cr.id} opened by agent <code>${cr.agent_id}</code> &bull; Task: <code>${cr.task_id}</code> &bull; Commit: <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Touched: <code>${(cr.touched_files || []).join(', ')}</code>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Actions / Links (Preview, Review & Judge, GitHub) -->
+                    <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+                      <a href="/project/${defaultProjectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
+                        🌐 Open preview ↗
+                      </a>
+                      <a href="/pulls/${cr.id}" class="gh-btn gh-btn-sm gh-btn-primary">
+                        ⚖️ Review &amp; Judge ↗
+                      </a>
+                      ${cr.github_pr_url ? `
+                        <a href="${cr.github_pr_url}" target="_blank" class="gh-btn gh-btn-sm">
+                          GitHub PR #${cr.github_pr_number || ''} ↗
+                        </a>
+                      ` : ''}
+                    </div>
                   </div>
-                  <div>
-                    <div style="font-weight: 600; color: var(--gh-text-heading); font-size: 14px;">
-                      AgentTask / ${cr.title} (${cr.task_id})
-                    </div>
-                    <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.2rem;">
-                      Commit <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Agent: <code>${cr.agent_id}</code> &bull; Stage: <code>${cr.test_report?.stage || 'npm run build'}</code>
-                    </div>
+
+                  <!-- Checks Summary -->
+                  <div style="display: flex; gap: 0.65rem; align-items: center; padding-left: 1.65rem; font-size: 12px; flex-wrap: wrap;">
+                    <span style="color: var(--gh-text-muted);">Checks:</span>
+                    <span class="gh-badge ${cr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
+                      ${cr.test_report?.passed ? '✓ Sandbox build passed' : '✗ Build failed'}
+                    </span>
+                    <span class="gh-badge ${hasRealQA ? 'gh-badge-success' : 'gh-badge-muted'}">
+                      ${hasRealQA ? `✓ Browser QA passed (${cr.qa_reports?.length || 0} run)` : 'QA not run'}
+                    </span>
+                    ${cr.human_rationale ? `
+                      <span style="color: var(--gh-yellow-text); font-style: italic;">
+                        Supervisor: "${cr.human_rationale}"
+                      </span>
+                    ` : ''}
                   </div>
                 </div>
-
-                <div style="display: flex; gap: 0.5rem; align-items: center;">
-                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${cr.task_id}')">
-                    Trace &bull; xAPI
-                  </button>
-                  <a href="/project/${defaultProjectId}/preview/cr/${cr.id}" class="gh-btn gh-btn-sm">
-                    Evidence ↗
-                  </a>
-                </div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===================================================================== -->
-    <!-- TAB 6: INSIGHTS (s3a-ledger Budget + s3a-trace Replay) -->
-    <!-- ===================================================================== -->
-    <div id="tab-insights" class="tab-content" style="display: ${activeTab === 'insights' ? 'block' : 'none'};">
-      <!-- s3a-ledger Budget Agent -->
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <div>
-            <strong>s3a-ledger &bull; Budget Agent</strong>
-            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Paid Action Metering &amp; Daily Cap</span>
-          </div>
-          <div style="display: flex; gap: 0.5rem;">
-            <button class="gh-btn gh-btn-sm" onclick="configureBudgetCap()">⚙️ Configure Cap</button>
-            <button class="gh-btn gh-btn-sm" onclick="resetBudgetToday()">🔄 Reset Window</button>
-          </div>
-        </div>
-
-        <div style="padding: 1.25rem;">
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
-            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
-              <div style="font-size: 12px; color: var(--gh-text-muted);">Spent Today</div>
-              <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--gh-red-text)' : 'var(--gh-green-text)'};">
-                $${budgetData.spent_today.toFixed(4)}
-              </div>
-            </div>
-            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
-              <div style="font-size: 12px; color: var(--gh-text-muted);">Daily Cap (Config)</div>
-              <div style="font-size: 1.5rem; font-weight: 700; color: var(--gh-text-heading);">$${budgetData.cap.toFixed(4)}</div>
-            </div>
-            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
-              <div style="font-size: 12px; color: var(--gh-text-muted);">Time Until Reset</div>
-              <div style="font-size: 1.5rem; font-weight: 700; color: #58a6ff;">
-                ${Math.floor(budgetData.time_until_reset_secs / 3600)}h ${Math.floor((budgetData.time_until_reset_secs % 3600) / 60)}m
-              </div>
-            </div>
-            <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
-              <div style="font-size: 12px; color: var(--gh-text-muted);">Deferred Actions</div>
-              <div style="font-size: 1.5rem; font-weight: 700; color: ${(budgetData.deferred_queue || []).length > 0 ? 'var(--gh-yellow-text)' : 'var(--gh-text-muted)'};">
-                ${(budgetData.deferred_queue || []).length}
-              </div>
-            </div>
-          </div>
-
-          <!-- Progress Bar -->
-          <div style="background: #21262d; border-radius: 9999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;">
-            <div style="width: ${Math.min(100, budgetData.pct_spent || 0)}%; background: ${budgetData.cap_reached ? 'var(--gh-red)' : budgetData.warning_80_pct ? 'var(--gh-yellow)' : 'var(--gh-green)'}; height: 100%;"></div>
-          </div>
-          <div style="font-size: 12px; color: var(--gh-text-muted); display: flex; justify-content: space-between;">
-            <span>0%</span>
-            <span>80% Warning Threshold</span>
-            <span>100% Deferral Cap</span>
+              `;
+            }).join('')}
           </div>
         </div>
       </div>
 
-      <!-- s3a-trace Timeline & Export -->
-      <div class="gh-box">
-        <div class="gh-box-header">
-          <div>
-            <strong>s3a-trace &bull; Task Provenance &amp; Replay</strong>
-            <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Append-only S3A records with xAPI verbs &bull; Fine-Tuning JSONL</span>
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 4: AGENTS (Registered Real Agents Only - Zero Fake Squares) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-agents" class="tab-content" style="display: ${activeTab === 'agents' ? 'block' : 'none'};">
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <div>
+              <strong>Registered Autonomous Agents</strong>
+              <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">
+                (${registeredAgentsList.length} registered &bull; Ed25519 identity verified &bull; No simulated squares)
+              </span>
+            </div>
+            <div style="font-size: 12px; color: var(--gh-text-muted);">
+              Agents register dynamically when claiming tasks from plat-gaming.
+            </div>
+          </div>
+
+          ${registeredAgentsList.length === 0 ? `
+            <div class="empty-state">
+              <div class="empty-state-icon">🤖</div>
+              <div class="empty-state-title">Swarm Idle: No active registered agents</div>
+              <p style="margin-bottom: 1rem;">Agents spawn and register only when open tasks are claimed. No synthetic grids or fake agent squares.</p>
+              <button class="gh-btn gh-btn-primary" onclick="triggerManualTick()">⚡ Run 1 Step</button>
+            </div>
+          ` : `
+            <table class="gh-table">
+              <thead>
+                <tr>
+                  <th>Agent ID</th>
+                  <th>Role</th>
+                  <th>Current / Last Task</th>
+                  <th>Status</th>
+                  <th>Commits</th>
+                  <th>Last Active</th>
+                  <th>Workspace Fork</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${registeredAgentsList.map((a: any) => `
+                  <tr>
+                    <td><code style="color: var(--gh-text-heading); font-weight: 600;">${a.agentId || a.agent_id}</code></td>
+                    <td><span class="gh-badge gh-badge-blue">${getAgentRoleName(a.agentId || a.agent_id)}</span></td>
+                    <td><span style="color: var(--gh-text);">${a.task || a.task_title || 'Active Task'}</span></td>
+                    <td>
+                      <span class="gh-badge ${a.status === 'merged' || a.status === 'qa_passed' ? 'gh-badge-success' : a.status === 'working' ? 'gh-badge-blue' : 'gh-badge-muted'}">
+                        ${a.status.toUpperCase()}
+                      </span>
+                    </td>
+                    <td><strong>${a.commits || a.commit_count || 0}</strong></td>
+                    <td style="color: var(--gh-text-muted);">${new Date(a.lastTs || a.last_seen || Date.now()).toLocaleTimeString()}</td>
+                    <td><code style="color: var(--gh-link);">${a.forkRepo || ('s3a-agent-' + (a.agentId || a.agent_id))}</code></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+      </div>
+
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 5: ACTIONS (Workflows, Builds & Browser QA Runs) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-actions" class="tab-content" style="display: ${activeTab === 'actions' ? 'block' : 'none'};">
+        <div style="display: grid; grid-template-columns: 280px 1fr; gap: 1.5rem;">
+          <!-- Left: Workflows list -->
+          <div class="gh-box" style="height: fit-content;">
+            <div class="gh-box-header"><strong>Workflows</strong></div>
+            <div style="padding: 0.5rem 0;">
+              <div style="padding: 0.6rem 1rem; font-weight: 600; color: var(--gh-text-heading); background: rgba(110, 118, 129, 0.1); border-left: 3px solid #f78166;">
+                AgentTask (Autonomous Loop)
+              </div>
+              <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
+                Cloudflare Sandbox Build &amp; Test
+              </div>
+              <div style="padding: 0.6rem 1rem; color: var(--gh-text-muted);">
+                Browser QA Runner (Puppeteer)
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Workflow Runs -->
+          <div class="gh-box">
+            <div class="gh-box-header">
+              <strong>All Workflow Runs</strong>
+              <span style="color: var(--gh-text-muted); font-size: 12px;">Real Sandbox &amp; Playwright Evidence</span>
+            </div>
+
+            <div>
+              ${crs.length === 0 ? `
+                <div class="empty-state">
+                  <div class="empty-state-icon">▷</div>
+                  <div class="empty-state-title">No workflow runs yet</div>
+                  <p style="margin-bottom: 1rem;">Run a task step or trigger the scheduler to execute the autonomous workflow.</p>
+                  <button class="gh-btn gh-btn-primary" onclick="triggerManualTick()">⚡ Run Step Now</button>
+                </div>
+              ` : crs.map((cr) => `
+                <div class="gh-row" style="align-items: center; justify-content: space-between;">
+                  <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div>
+                      ${cr.test_report?.passed ? `
+                        <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zm3.78-9.72a.75.75 0 00-1.06-1.06L6.75 9.19 5.28 7.72a.75.75 0 00-1.06 1.06l2 2a.75.75 0 001.06 0l4.5-4.5z"/></svg>
+                      ` : `
+                        <svg width="18" height="18" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M8 16A8 8 0 108 0a8 8 0 000 16zM6.22 5.16a.75.75 0 011.06 0L8 5.88l.72-.72a.75.75 0 111.06 1.06L9.06 6.94l.72.72a.75.75 0 11-1.06 1.06L8 8l-.72.72a.75.75 0 11-1.06-1.06l.72-.72-.72-.72a.75.75 0 010-1.06z"/></svg>
+                      `}
+                    </div>
+                    <div>
+                      <div style="font-weight: 600; color: var(--gh-text-heading); font-size: 14px;">
+                        <a href="/pulls/${cr.id}">AgentTask / ${cr.title} (${cr.task_id})</a>
+                      </div>
+                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.2rem;">
+                        Commit <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Agent: <code>${cr.agent_id}</code> &bull; Stage: <code>${cr.test_report?.stage || 'npm run build'}</code>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${cr.task_id}')">
+                      Trace &bull; xAPI
+                    </button>
+                    <a href="/pulls/${cr.id}" class="gh-btn gh-btn-sm">
+                      Evidence ↗
+                    </a>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
           </div>
         </div>
-        <table class="gh-table">
-          <thead>
-            <tr>
-              <th>Task ID</th>
-              <th>Task Title</th>
-              <th>Status</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tasks.map((t) => `
+      </div>
+
+      <!-- ----------------------------------------------------------------- -->
+      <!-- TAB 6: INSIGHTS (s3a-ledger Budget + s3a-trace Replay) -->
+      <!-- ----------------------------------------------------------------- -->
+      <div id="tab-insights" class="tab-content" style="display: ${activeTab === 'insights' ? 'block' : 'none'};">
+        <!-- s3a-ledger Budget Agent -->
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <div>
+              <strong>s3a-ledger &bull; Budget Agent</strong>
+              <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Paid Action Metering &amp; Daily Cap</span>
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="gh-btn gh-btn-sm" onclick="configureBudgetCap()">⚙️ Configure Cap</button>
+              <button class="gh-btn gh-btn-sm" onclick="resetBudgetToday()">🔄 Reset Window</button>
+            </div>
+          </div>
+
+          <div style="padding: 1.25rem;">
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+              <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+                <div style="font-size: 12px; color: var(--gh-text-muted);">Spent Today</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: ${budgetData.cap_reached ? 'var(--gh-red-text)' : 'var(--gh-green-text)'};">
+                  $${budgetData.spent_today.toFixed(4)}
+                </div>
+              </div>
+              <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+                <div style="font-size: 12px; color: var(--gh-text-muted);">Daily Cap (Config)</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: var(--gh-text-heading);">$${budgetData.cap.toFixed(4)}</div>
+              </div>
+              <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+                <div style="font-size: 12px; color: var(--gh-text-muted);">Time Until Reset</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: #58a6ff;">
+                  ${Math.floor(budgetData.time_until_reset_secs / 3600)}h ${Math.floor((budgetData.time_until_reset_secs % 3600) / 60)}m
+                </div>
+              </div>
+              <div style="background: #0d1117; padding: 0.85rem 1rem; border-radius: 6px; border: 1px solid var(--gh-border);">
+                <div style="font-size: 12px; color: var(--gh-text-muted);">Deferred Actions</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: ${(budgetData.deferred_queue || []).length > 0 ? 'var(--gh-yellow-text)' : 'var(--gh-text-muted)'};">
+                  ${(budgetData.deferred_queue || []).length}
+                </div>
+              </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div style="background: #21262d; border-radius: 9999px; height: 10px; overflow: hidden; margin-bottom: 0.5rem;">
+              <div style="width: ${Math.min(100, budgetData.pct_spent || 0)}%; background: ${budgetData.cap_reached ? 'var(--gh-red)' : budgetData.warning_80_pct ? 'var(--gh-yellow)' : 'var(--gh-green)'}; height: 100%;"></div>
+            </div>
+            <div style="font-size: 12px; color: var(--gh-text-muted); display: flex; justify-content: space-between;">
+              <span>0%</span>
+              <span>80% Warning Threshold</span>
+              <span>100% Deferral Cap</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- s3a-trace Timeline & Export -->
+        <div class="gh-box">
+          <div class="gh-box-header">
+            <div>
+              <strong>s3a-trace &bull; Task Provenance &amp; Replay</strong>
+              <span style="color: var(--gh-text-muted); font-size: 12px; margin-left: 0.5rem;">Append-only S3A records with xAPI verbs &bull; Fine-Tuning JSONL</span>
+            </div>
+          </div>
+          <table class="gh-table">
+            <thead>
               <tr>
-                <td><strong>${t.id}</strong></td>
-                <td>${t.title}</td>
-                <td><span class="gh-badge gh-badge-muted">${t.status}</span></td>
-                <td>
-                  <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
-                    🔍 Replay Trace
-                  </button>
-                </td>
+                <th>Task ID</th>
+                <th>Task Title</th>
+                <th>Status</th>
+                <th>Action</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              ${tasks.map((t) => `
+                <tr>
+                  <td><a href="/issues/${t.id}" style="font-weight: 600;">${t.id}</a></td>
+                  <td>${t.title}</td>
+                  <td><span class="gh-badge gh-badge-muted">${t.status}</span></td>
+                  <td>
+                    <button class="gh-btn gh-btn-sm" onclick="openTraceModal('${t.id}')">
+                      🔍 Replay Trace
+                    </button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    `}
 
   </div>
 
-  <!-- S3A Trace Replay Modal -->
+  <!-- ===================================================================== -->
+  <!-- MODAL: CREATE NEW ISSUE / TASK -->
+  <!-- ===================================================================== -->
+  <div id="new-issue-modal" class="modal-overlay">
+    <div style="background: #161b22; border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 600px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.85);">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
+        <strong style="color: var(--gh-text-heading); font-size: 1.05rem;">+ Create New Engineering Issue</strong>
+        <button onclick="closeNewIssueModal()" style="background: transparent; border: none; color: var(--gh-text-muted); font-size: 1.2rem; cursor: pointer;">✕</button>
+      </div>
+      <div style="padding: 1.25rem;">
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.35rem; font-weight: 600;">Issue Title *</label>
+          <input id="new-issue-title" class="gh-input" placeholder="e.g. feat(payout): instant payout webhook validation" required />
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.35rem; font-weight: 600;">Description &amp; Acceptance Criteria</label>
+          <textarea id="new-issue-desc" class="gh-textarea" rows="4" placeholder="Detail what the autonomous agent should implement..."></textarea>
+        </div>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.35rem; font-weight: 600;">Allowed File Prefixes (comma-separated)</label>
+          <input id="new-issue-files" class="gh-input" value="apps/brakets-gg/, packages/, lib/" />
+        </div>
+        <div style="margin-bottom: 1.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div>
+            <label style="display: block; font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.35rem; font-weight: 600;">Verification Tests</label>
+            <input id="new-issue-tests" class="gh-input" value="npm run build" />
+          </div>
+          <div>
+            <label style="display: block; font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.35rem; font-weight: 600;">Risk Classification</label>
+            <select id="new-issue-risk" class="gh-select">
+              <option value="low">Low Risk (Standard)</option>
+              <option value="high">High Risk (needs-human)</option>
+            </select>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+          <button class="gh-btn" onclick="closeNewIssueModal()">Cancel</button>
+          <button id="btn-submit-issue" class="gh-btn gh-btn-primary" onclick="submitNewIssue()">Submit Issue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: S3A TRACE REPLAY -->
+  <!-- ===================================================================== -->
   <div id="trace-modal" class="modal-overlay">
-    <div style="background: #161b22; border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 800px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.8);">
+    <div style="background: #161b22; border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 800px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.85);">
       <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
         <div style="display: flex; align-items: center; gap: 0.6rem;">
           <strong id="trace-modal-title" style="color: #f0f6fc; font-size: 1.05rem;">Task Trace Replay</strong>
           <span class="gh-badge gh-badge-blue">s3a-trace &bull; xAPI Provenance</span>
         </div>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <button class="gh-btn gh-btn-sm" onclick="exportTraceJsonl()">
-            💾 Export JSONL
-          </button>
+          <button class="gh-btn gh-btn-sm" onclick="exportTraceJsonl()">💾 Export JSONL</button>
           <button onclick="closeTraceModal()" style="background: transparent; border: none; color: var(--gh-text-muted); font-size: 1.2rem; cursor: pointer;">✕</button>
         </div>
       </div>
@@ -2256,7 +3054,63 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     </div>
   </div>
 
+  <!-- ===================================================================== -->
+  <!-- MODAL: SUPERVISOR KEY ENROLLMENT (ADMIN ONLY) -->
+  <!-- ===================================================================== -->
+  <div id="enrollment-modal" class="modal-overlay">
+    <div style="background: #161b22; border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 650px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.85);">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <strong style="color: #f0f6fc; font-size: 1.05rem;">🔑 Supervisor Key Enrollment</strong>
+          <span class="gh-badge gh-badge-blue">Ed25519 WebCrypto</span>
+        </div>
+        <button onclick="closeEnrollmentModal()" style="background: transparent; border: none; color: var(--gh-text-muted); font-size: 1.2rem; cursor: pointer;">✕</button>
+      </div>
+      <div style="padding: 1.25rem; font-size: 13px;">
+        <p style="color: var(--gh-text-muted); margin-bottom: 1rem; line-height: 1.5;">
+          Human approvals require a valid Ed25519 signature from a public key authorized in the Worker secret <code>SUPERVISOR_PUBKEYS</code>. Auto-registration is disabled.
+        </p>
+
+        <div style="margin-bottom: 1rem;">
+          <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Your Browser's Ed25519 Public Key (Hex):</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="text" id="enrollment-pubkey-input" readonly style="flex: 1; background: #0d1117; border: 1px solid var(--gh-border); color: #7ee787; font-family: monospace; font-size: 12px; padding: 0.5rem 0.75rem; border-radius: 6px;">
+            <button class="gh-btn gh-btn-sm" onclick="copyEnrollmentPubkey()">📋 Copy</button>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Worker Authorization Status:</label>
+          <div id="enrollment-status-badge">
+            <span class="gh-badge gh-badge-muted">Checking authorization...</span>
+          </div>
+        </div>
+
+        <div style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 1rem; margin-bottom: 1.25rem;">
+          <div style="font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-orange);">How to Register in Worker Secret:</div>
+          <p style="color: var(--gh-text-muted); font-size: 12px; margin-bottom: 0.5rem;">Run the following command in terminal to enroll this public key into the Worker secret:</p>
+          <pre style="background: #030712; padding: 0.6rem 0.8rem; border-radius: 4px; font-family: monospace; font-size: 12px; color: #38bdf8; overflow-x: auto; margin: 0;">npx wrangler secret put SUPERVISOR_PUBKEYS</pre>
+          <p style="color: var(--gh-text-muted); font-size: 11px; margin-top: 0.5rem;">Paste the public key above. If multiple human supervisors exist, separate keys with commas.</p>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+          <button class="gh-btn" onclick="closeEnrollmentModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
+    // Navigation routing helper: ensures links work off nested URLs or switch tabs
+    function handleNav(event, tabName) {
+      if (window.location.pathname.startsWith('/issues/') || window.location.pathname.startsWith('/pulls/') || window.location.pathname.includes('/preview/cr/')) {
+        return true; // proceed with browser navigation to /tabName
+      }
+      event.preventDefault();
+      switchTab(tabName);
+      return false;
+    }
+
     function switchTab(tabName) {
       document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
       document.querySelectorAll('.tab-item').forEach(el => el.classList.remove('active'));
@@ -2264,56 +3118,246 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       const targetTab = document.getElementById('nav-tab-' + tabName);
       if (targetContent) targetContent.style.display = 'block';
       if (targetTab) targetTab.classList.add('active');
-      const u = new URL(window.location);
-      u.searchParams.set('tab', tabName);
-      window.history.pushState({}, '', u);
+      const path = tabName === 'code' ? '/' : '/' + tabName;
+      window.history.pushState({ tab: tabName }, '', path);
+    }
+
+    window.addEventListener('popstate', (e) => {
+      if (e.state && e.state.tab) {
+        switchTab(e.state.tab);
+      } else {
+        location.reload();
+      }
+    });
+
+    // New Issue Modal
+    function openNewIssueModal() {
+      const modal = document.getElementById('new-issue-modal');
+      if (modal) modal.style.display = 'flex';
+    }
+    function closeNewIssueModal() {
+      const modal = document.getElementById('new-issue-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function submitNewIssue() {
+      const titleInput = document.getElementById('new-issue-title');
+      const descInput = document.getElementById('new-issue-desc');
+      const filesInput = document.getElementById('new-issue-files');
+      const testsInput = document.getElementById('new-issue-tests');
+      const riskInput = document.getElementById('new-issue-risk');
+      const btn = document.getElementById('btn-submit-issue');
+
+      const title = titleInput.value.trim();
+      if (!title) {
+        alert('Please enter an issue title.');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = '⏳ Creating issue...';
+
+      try {
+        const res = await fetch('/project/${defaultProjectId}/tasks/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            description: descInput.value.trim(),
+            files_allowed: filesInput.value.split(',').map(s => s.trim()).filter(Boolean),
+            tests: testsInput.value.trim() || 'npm run build',
+            risk_level: riskInput.value,
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          alert('Task created successfully: ' + (data.task?.id || 'New Task'));
+          window.location.href = '/issues/' + (data.task?.id || '');
+        } else {
+          alert('Failed to create issue: ' + await res.text());
+          btn.disabled = false;
+          btn.textContent = 'Submit Issue';
+        }
+      } catch (err) {
+        alert('Error creating issue: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Submit Issue';
+      }
+    }
+
+    async function resetTask(taskId) {
+      if (!confirm('Reset task ' + taskId + ' to OPEN and unclaim any assigned agent?')) return;
+      const btn = document.getElementById('btn-reset-task');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Resetting...'; }
+      try {
+        const res = await fetch('/project/${defaultProjectId}/reset-task/' + taskId, { method: 'POST' });
+        if (res.ok) {
+          alert('Task ' + taskId + ' reset to OPEN.');
+          location.reload();
+        } else {
+          alert('Failed to reset task: ' + await res.text());
+          if (btn) { btn.disabled = false; btn.textContent = '🔄 Reset Task to Open'; }
+        }
+      } catch (err) {
+        alert('Error: ' + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 Reset Task to Open'; }
+      }
+    }
+
+    function getAdminAuthHeaders() {
+      const secret = localStorage.getItem("s3a_admin_secret");
+      const headers = { "Content-Type": "application/json" };
+      if (secret) {
+        headers["Authorization"] = "Bearer " + secret;
+        headers["X-Admin-Secret"] = secret;
+      }
+      return headers;
+    }
+
+    async function promptAndStoreAdminSecret() {
+      const entered = prompt("Admin authorization required (Cloudflare Access or Bearer ADMIN_SECRET).\nPlease enter ADMIN_SECRET:");
+      if (entered && entered.trim()) {
+        localStorage.setItem("s3a_admin_secret", entered.trim());
+        return entered.trim();
+      }
+      return null;
+    }
+
+    async function openEnrollmentModal() {
+      const modal = document.getElementById("enrollment-modal");
+      if (!modal) return;
+      modal.style.display = "flex";
+      try {
+        const { pubHex } = await getOrGenerateReviewerKey();
+        const input = document.getElementById("enrollment-pubkey-input");
+        if (input) input.value = pubHex;
+
+        const badge = document.getElementById("enrollment-status-badge");
+        if (badge) {
+          badge.innerHTML = '<span class="gh-badge gh-badge-muted">Checking secret...</span>';
+          try {
+            const adminSecret = localStorage.getItem("s3a_admin_secret") || "";
+            const headers = {};
+            if (adminSecret) {
+              headers["Authorization"] = "Bearer " + adminSecret;
+              headers["X-Admin-Secret"] = adminSecret;
+            }
+            const res = await fetch("/admin/check-supervisor-key?key=" + pubHex, { headers });
+            if (res.ok) {
+              const data = await res.json();
+              if (data.enrolled) {
+                badge.innerHTML = '<span class="gh-badge gh-badge-success">✅ Authorized Supervisor Key</span>';
+              } else {
+                badge.innerHTML = '<span class="gh-badge gh-badge-danger">⚠️ Not Enrolled in SUPERVISOR_PUBKEYS (Approvals will return 403)</span>';
+              }
+            } else if (res.status === 401) {
+              badge.innerHTML = '<span class="gh-badge gh-badge-yellow">🔒 Enter ADMIN_SECRET to verify status: <a href="javascript:void(0)" onclick="promptAndCheckKey()" style="color:var(--gh-link);">Authenticate</a></span>';
+            } else {
+              badge.innerHTML = '<span class="gh-badge gh-badge-muted">Status unavailable</span>';
+            }
+          } catch (e) {
+            badge.innerHTML = '<span class="gh-badge gh-badge-muted">Status unavailable</span>';
+          }
+        }
+      } catch (err) {
+        alert("Key error: " + err.message);
+      }
+    }
+
+    async function promptAndCheckKey() {
+      const sec = await promptAndStoreAdminSecret();
+      if (sec) openEnrollmentModal();
+    }
+
+    function closeEnrollmentModal() {
+      const modal = document.getElementById("enrollment-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function copyEnrollmentPubkey() {
+      const input = document.getElementById("enrollment-pubkey-input");
+      if (!input) return;
+      navigator.clipboard.writeText(input.value);
+      alert("Supervisor public key copied to clipboard:\n" + input.value);
     }
 
     async function toggleAutonomousEngine(action) {
+      const btn = document.getElementById('engine-toggle-btn');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Updating...'; }
       try {
         const res = await fetch('/project/${defaultProjectId}/control', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAdminAuthHeaders(),
           body: JSON.stringify({ action })
         });
         if (res.ok) {
           location.reload();
+        } else if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = action === 'pause' ? '⏸ Pause Swarm' : '▶ Resume Swarm'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) toggleAutonomousEngine(action);
         } else {
           alert('Failed to update engine state: ' + await res.text());
+          if (btn) { btn.disabled = false; btn.textContent = action === 'pause' ? '⏸ Pause Swarm' : '▶ Resume Swarm'; }
         }
       } catch (e) {
         alert('Control error: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = action === 'pause' ? '⏸ Pause Swarm' : '▶ Resume Swarm'; }
       }
     }
 
     async function triggerManualTick() {
-      const btn = event?.target;
-      if (btn) btn.textContent = '⏳ Dispatching...';
+      const btn = document.getElementById('btn-manual-step');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Dispatching...'; }
       try {
-        const res = await fetch('/project/${defaultProjectId}/scheduler-tick', { method: 'POST' });
+        const res = await fetch('/project/${defaultProjectId}/scheduler-tick', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+        });
+        if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = '⚡ Run 1 Step'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) triggerManualTick();
+          return;
+        }
         const data = await res.json();
         alert('Autonomous Step Result: ' + (data.status || 'Dispatched') + (data.task_id ? ' (' + data.task_id + ')' : '') + (data.message ? ' - ' + data.message : ''));
         location.reload();
       } catch (e) {
         alert('Dispatch error: ' + e.message);
-        if (btn) btn.textContent = '⚡ Run 1 Step';
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ Run 1 Step'; }
       }
     }
 
     async function closeDuplicatePRs() {
       if (!confirm('Close all duplicate s3a/agent-* PRs for #3 except oldest canonical PR #82?')) return;
+      const btn = document.getElementById('btn-triage-dups');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Triaging...'; }
       try {
-        const res = await fetch('/project/${defaultProjectId}/close-duplicate-prs?issue=3&preserve=82', { method: 'POST' });
+        const res = await fetch('/project/${defaultProjectId}/close-duplicate-prs?issue=3&preserve=82', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+        });
+        if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = '🧹 Triage Dups'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) closeDuplicatePRs();
+          return;
+        }
         const data = await res.json();
         const closedCount = data.closed ? data.closed.length : 0;
         alert('PR Triage Result:\n- Preserved Canonical: #' + data.preserved + '\n- Closed Duplicates: ' + (closedCount > 0 ? data.closed.join(', ') : 'none (already closed)') + '\n- Already Closed: ' + (data.already_closed?.length || 0));
         location.reload();
       } catch (e) {
         alert('Error closing duplicate PRs: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🧹 Triage Dups'; }
       }
     }
 
     async function syncGitHubIssues() {
+      const btn = document.getElementById('btn-sync-issues');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing...'; }
       try {
         const res = await fetch('/project/${defaultProjectId}/tasks/sync', { method: 'POST' });
         if (res.ok) {
@@ -2322,9 +3366,11 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
           location.reload();
         } else {
           alert('Failed to sync issues: ' + await res.text());
+          if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync GitHub Issues'; }
         }
       } catch (e) {
         alert('Sync error: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 Sync GitHub Issues'; }
       }
     }
 
@@ -2335,12 +3381,15 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
       try {
         const res = await fetch("/project/${defaultProjectId}/ledger/config", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: getAdminAuthHeaders(),
           body: JSON.stringify({ daily_cap: parseFloat(val) })
         });
         if (res.ok) {
           alert("Daily budget cap updated to $" + parseFloat(val).toFixed(4));
           location.reload();
+        } else if (res.status === 401) {
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) configureBudgetCap();
         } else {
           alert("Error updating budget cap: " + await res.text());
         }
@@ -2352,16 +3401,189 @@ async function renderDashboard(request: Request, env: Env): Promise<Response> {
     async function resetBudgetToday() {
       if (!confirm("Reset today's spent counter and resume all deferred tasks?")) return;
       try {
-        const res = await fetch("/project/${defaultProjectId}/ledger/reset", { method: "POST" });
+        const res = await fetch("/project/${defaultProjectId}/ledger/reset", {
+          method: "POST",
+          headers: getAdminAuthHeaders(),
+        });
         if (res.ok) {
           const data = await res.json();
           alert("Budget window reset. Resumed " + (data.resumed_count || 0) + " deferred task(s).");
           location.reload();
+        } else if (res.status === 401) {
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) resetBudgetToday();
         } else {
           alert("Error resetting budget: " + await res.text());
         }
       } catch (e) {
         alert("Error: " + e.message);
+      }
+    }
+
+    // WebCrypto Ed25519 Human Supervisor Key
+    async function getOrGenerateReviewerKey() {
+      const DB_NAME = "S3APMSupervisorDB";
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains("keys")) db.createObjectStore("keys");
+        };
+        req.onsuccess = async (e) => {
+          const db = e.target.result;
+          const tx = db.transaction("keys", "readwrite");
+          const store = tx.objectStore("keys");
+          const getReq = store.get("pm_supervisor_ed25519");
+
+          getReq.onsuccess = async () => {
+            if (getReq.result) {
+              resolve(getReq.result);
+            } else {
+              try {
+                const kp = await window.crypto.subtle.generateKey(
+                  { name: "Ed25519" },
+                  false,
+                  ["sign", "verify"]
+                );
+                const pubRaw = await window.crypto.subtle.exportKey("raw", kp.publicKey);
+                const pubHex = Array.from(new Uint8Array(pubRaw)).map(b => b.toString(16).padStart(2, '0')).join('');
+                const entry = { keyPair: kp, pubHex };
+                const putTx = db.transaction("keys", "readwrite");
+                putTx.objectStore("keys").put(entry, "pm_supervisor_ed25519");
+                putTx.oncomplete = () => resolve(entry);
+              } catch (genErr) {
+                reject(genErr);
+              }
+            }
+          };
+          getReq.onerror = () => reject(getReq.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function approveCR(crId) {
+      const rationale = document.getElementById('pm-feedback-input')?.value.trim() || prompt("Enter human supervisor rationale for approval:", "PM verified live preview and real QA evidence");
+      if (!rationale) return;
+
+      const btn = document.getElementById('btn-approve-cr');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Signing (Ed25519)...'; }
+
+      try {
+        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
+        const nowSecs = Math.floor(Date.now() / 1000);
+
+        const enc = new TextEncoder();
+        const magic = enc.encode("S3ACR_APPROVE1");
+        const tsBytes = new Uint8Array(8);
+        new DataView(tsBytes.buffer).setBigUint64(0, BigInt(nowSecs), true);
+        const crBytes = enc.encode(crId);
+        const ratBytes = enc.encode(rationale);
+
+        const totalLen = 14 + 8 + crBytes.length + 1 + ratBytes.length;
+        const envBytes = new Uint8Array(totalLen);
+        let off = 0;
+        envBytes.set(magic, off); off += 14;
+        envBytes.set(tsBytes, off); off += 8;
+        envBytes.set(crBytes, off); off += crBytes.length;
+        envBytes[off] = 0; off += 1;
+        envBytes.set(ratBytes, off);
+
+        const sig = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, envBytes);
+        const sigHex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const headers = getAdminAuthHeaders();
+        const res = await fetch('/project/${defaultProjectId}/change-requests/' + crId + '/approve', {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            reviewer_pubkey: pubHex,
+            signature: sigHex,
+            timestamp: nowSecs,
+            rationale: rationale,
+          })
+        });
+        if (res.ok) {
+          alert("Change request approved with verified Ed25519 human signature and merged into baseline!");
+          location.reload();
+        } else if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = '✓ Sign & Approve (Ed25519)'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) approveCR(crId);
+        } else if (res.status === 403) {
+          const err = await res.json();
+          alert("Forbidden: Your browser public key is not enrolled in SUPERVISOR_PUBKEYS.\nClick '🔑 Enroll Key' in the header to view and register your key.");
+          if (btn) { btn.disabled = false; btn.textContent = '✓ Sign & Approve (Ed25519)'; }
+        } else {
+          const err = await res.json();
+          alert("Approval failed: " + (err.error || JSON.stringify(err)));
+          if (btn) { btn.disabled = false; btn.textContent = '✓ Sign & Approve (Ed25519)'; }
+        }
+      } catch (err) {
+        alert("Cryptographic signing error: " + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '✓ Sign & Approve (Ed25519)'; }
+      }
+    }
+
+    async function requestChanges(crId) {
+      const feedback = document.getElementById('pm-feedback-input')?.value.trim();
+      if (!feedback) {
+        alert("Please enter feedback notes describing the requested revision.");
+        return;
+      }
+      const btn = document.getElementById('btn-request-changes');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Submitting...'; }
+
+      try {
+        const { pubHex } = await getOrGenerateReviewerKey();
+        const res = await fetch('/project/${defaultProjectId}/change-requests/' + crId + '/request-changes', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+          body: JSON.stringify({ feedback, reviewer_pubkey: pubHex })
+        });
+        if (res.ok) {
+          alert("Changes requested! Feedback sent back to agent task.");
+          location.reload();
+        } else if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = '📝 Request Changes'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) requestChanges(crId);
+        } else {
+          alert("Request failed: " + await res.text());
+          if (btn) { btn.disabled = false; btn.textContent = '📝 Request Changes'; }
+        }
+      } catch (err) {
+        alert("Supervisor key error: " + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '📝 Request Changes'; }
+      }
+    }
+
+    async function rejectCR(crId) {
+      const rationale = document.getElementById('pm-feedback-input')?.value.trim() || "Rejected by PM supervisor";
+      const btn = document.getElementById('btn-reject-cr');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Rejecting...'; }
+
+      try {
+        const { pubHex } = await getOrGenerateReviewerKey();
+        const res = await fetch('/project/${defaultProjectId}/change-requests/' + crId + '/reject', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+          body: JSON.stringify({ rationale, reviewer_pubkey: pubHex })
+        });
+        if (res.ok) {
+          alert("Change request rejected.");
+          location.reload();
+        } else if (res.status === 401) {
+          if (btn) { btn.disabled = false; btn.textContent = '✗ Reject Change Request'; }
+          const sec = await promptAndStoreAdminSecret();
+          if (sec) rejectCR(crId);
+        } else {
+          alert("Rejection failed: " + await res.text());
+          if (btn) { btn.disabled = false; btn.textContent = '✗ Reject Change Request'; }
+        }
+      } catch (err) {
+        alert("Supervisor key error: " + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '✗ Reject Change Request'; }
       }
     }
 
@@ -2589,12 +3811,17 @@ export interface ChangeRequest {
   seal_hash: string;
   message: string;
   diff: string;
-  test_report: {
+  test_report?: {
     passed: boolean;
-    output: string;
-    stage: string;
+    output?: string;
+    stage?: string;
     signature?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    log_url?: string;
   };
+  test_duration_ms?: number;
+  build_log_r2_url?: string;
   touched_files: string[];
   risk_level: "low" | "high";
   requires_human: boolean;
@@ -2616,6 +3843,67 @@ export interface ChangeRequest {
   resolved_at?: number;
 }
 
+export function formatPREvidenceComment(cr: ChangeRequest, task: Partial<TaskItem>, issueNum: number, prNumber: number): string {
+  const hasLogs = !!(cr.build_log || (cr.test_report && cr.test_report.output));
+  const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
+
+  let buildSection = "";
+  if (hasLogs) {
+    const exitCode = cr.test_report?.exit_code !== undefined
+      ? cr.test_report.exit_code
+      : (cr.test_report?.passed ? 0 : 1);
+    const duration = cr.test_report?.duration_ms
+      ? `${cr.test_report.duration_ms}ms`
+      : (cr.test_duration_ms ? `${cr.test_duration_ms}ms` : "N/A");
+    const logUrl = cr.test_report?.log_url || cr.build_log_r2_url;
+
+    buildSection = `#### 🧪 Build & Test Verification
+- **Test Command:** \`${cr.test_report?.stage || 'npm run build'}\`
+- **Exit Code:** \`${exitCode}\`
+- **Duration:** \`${duration}\`
+${logUrl ? `- **Log Link (R2):** [View Build & Test Log](${logUrl})` : ''}
+- **Status:** ${cr.test_report?.passed ? 'Passed' : 'Failed'}`;
+  } else {
+    buildSection = `#### 🧪 Build & Test Verification
+*Build not run*`;
+  }
+
+  let qaSection = "";
+  if (hasQa) {
+    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
+${cr.qa_reports!.map(r => `
+- **QA Agent:** \`${r.agent_id}\` (Role: **${r.agent_role.toUpperCase()}**) - **${r.status.toUpperCase()}**
+  - Passed steps: ${(r.passed_steps || []).join(', ') || 'None'}
+  - Latency: ${Object.entries(r.timings_ms || {}).map(([k, v]) => `${k}: ${v}ms`).join(', ')}
+  - Console Errors: ${(r.console_errors || []).length}
+  ${r.visual_diff ? `- Visual Mismatch: ${r.visual_diff.mismatch_percent || 0.0}% (Baseline Verified)` : ''}
+  ${(r.screenshots || []).map(s => `\n  - **${s.caption}**: ![](${s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`})`).join('')}
+`).join('\n')}`;
+  } else {
+    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
+*QA not run*`;
+  }
+
+  return `### 🤖 S3A Autonomous Agent Evidence Update
+
+- **Agent ID:** \`${cr.agent_id}\`
+- **Commit ID:** \`${cr.commit_id}\`
+- **Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
+- **Timestamp:** \`${new Date().toISOString()}\`
+- **Target Issue:** #${issueNum} (\`${task.title || 'Task'}\`)
+
+${buildSection}
+
+${qaSection}
+
+#### 🌐 Live PM Preview
+[Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/project/s3a-swarm-main/preview/live)
+
+> [!NOTE]
+> Attached latest verified evidence and QA runs to canonical PR #${prNumber}. No duplicate PR opened.
+`;
+}
+
 export interface RegisteredAgent {
   agent_id: string;
   agent_pubkey: string;
@@ -2628,45 +3916,6 @@ export interface RegisteredAgent {
   registered_at: number;
   last_seen: number;
 }
-
-const DEFAULT_BRAKETS_TASKS: TaskItem[] = [
-  {
-    id: "TASK-101",
-    title: "Branding: Update neon tournament tokens",
-    description: "Update brand neon tokens to tournament specifications: primary accent #38bdf8 and secondary #22d3ee.",
-    files_allowed: ["brand/design-tokens.json", "records/brand/"],
-    tests: "npm run build",
-    risk_level: "low",
-    status: "open",
-  },
-  {
-    id: "TASK-102",
-    title: "Fixtures: Seed 16 competitive rosters and match tiers",
-    description: "Seed 16 tournament rosters and bracket tier initial mappings in fixtures/bracket-fixtures.ts.",
-    files_allowed: ["fixtures/bracket-fixtures.ts", "records/fixtures/"],
-    tests: "npm run build",
-    risk_level: "low",
-    status: "open",
-  },
-  {
-    id: "TASK-103",
-    title: "Escrow: Multi-sig stake release and payout guardrail policy",
-    description: "Add EscrowSafetyPolicy in lib/escrow.ts requiring supervisor authorization before stake payout.",
-    files_allowed: ["lib/escrow.ts", "records/escrow/"],
-    tests: "npm run build",
-    risk_level: "high",
-    status: "open",
-  },
-  {
-    id: "TASK-104",
-    title: "Tournament: Score validation and round winner advancement",
-    description: "Add robust score verification (non-negative integer enforcement) and automatic round winner advancement into subsequent bracket tiers in lib/mock-api.ts.",
-    files_allowed: ["lib/mock-api.ts", "components/BracketBoard.tsx", "records/tournament/"],
-    tests: "npm run build",
-    risk_level: "high",
-    status: "open",
-  },
-];
 
 export interface DailyLimits {
   max_tasks_per_day: number;
@@ -2785,7 +4034,7 @@ export class RepoCoordinator implements DurableObject {
   async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
     try {
       // Budget agent & ledger check runs even when agents are paused
-      await this.getLedgerSummary();
+      await this.getBudgetStatus();
       const isPaused = await this.state.storage.get<boolean>("autonomous_paused");
       if (!isPaused) {
         await this.runSchedulerTick("s3a-swarm-main");
@@ -3086,6 +4335,13 @@ export class RepoCoordinator implements DurableObject {
 
   private async handleControl(request: Request, projectId: string): Promise<Response> {
     if (request.method === "POST") {
+      const auth = checkAdminAuth(request, this.env);
+      if (!auth.authorized) {
+        return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
       let body: any = {};
       try { body = await request.json(); } catch (e) {}
       const action = body.action || "pause";
@@ -3099,19 +4355,12 @@ export class RepoCoordinator implements DurableObject {
       });
     }
 
-    const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) || false;
-    const usage = await this.getDailyUsage();
-    const limits = await this.getDailyLimits();
-    const tasks = await this.getOrInitTasks();
-    const activeConcurrent = tasks.filter(t => t.status === "claimed").length;
+    const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) ?? true;
     const schedulerStatus = (await this.state.storage.get<string>("scheduler_status")) || (isPaused ? "paused" : "idle");
 
     return new Response(JSON.stringify({
       paused: isPaused,
       status: schedulerStatus,
-      usage,
-      limits,
-      active_concurrent_tasks: activeConcurrent,
     }), {
       headers: { "Content-Type": "application/json" }
     });
@@ -3239,9 +4488,17 @@ export class RepoCoordinator implements DurableObject {
       if (this.env.GITHUB_TOKEN) {
         tasks = await this.syncGitHubIssues();
       } else {
-        tasks = [...DEFAULT_BRAKETS_TASKS];
+        tasks = [];
       }
       await this.state.storage.put("brakets_tasks", tasks || []);
+    }
+    // Filter out any legacy dummy/demo tasks
+    if (tasks && tasks.length > 0) {
+      const filtered = tasks.filter(t => !["TASK-101", "TASK-102", "TASK-103", "TASK-104"].includes(t.id));
+      if (filtered.length !== tasks.length) {
+        tasks = filtered;
+        await this.state.storage.put("brakets_tasks", tasks);
+      }
     }
     const lastSync = await this.state.storage.get<number>("github_issues_last_sync");
     if (this.env.GITHUB_TOKEN && (!lastSync || Date.now() - lastSync > 60000)) {
@@ -3404,7 +4661,16 @@ export class RepoCoordinator implements DurableObject {
 
   private async handleListCRs(projectId: string): Promise<Response> {
     const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
-    const change_requests = Array.from(crMap.values()).reverse();
+    const demoTaskIds = new Set(["TASK-101", "TASK-102", "TASK-103", "TASK-104"]);
+    const change_requests: ChangeRequest[] = [];
+    for (const [key, cr] of crMap.entries()) {
+      if (demoTaskIds.has(cr.task_id) || key.includes("101") || key.includes("102") || key.includes("103") || key.includes("104")) {
+        await this.state.storage.delete(key);
+      } else {
+        change_requests.push(cr);
+      }
+    }
+    change_requests.reverse();
     return new Response(JSON.stringify({ project_id: projectId, change_requests }, null, 2), {
       status: 200,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
@@ -3413,14 +4679,32 @@ export class RepoCoordinator implements DurableObject {
 
   private async handleApproveCR(request: Request, crId: string, projectId: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
     let body: any = {};
     try { body = await request.json(); } catch (e) {}
+
+    const { reviewer_pubkey, signature, rationale, timestamp } = body;
+    const tsSecs = Number(timestamp || Math.floor(Date.now() / 1000));
+
+    // 1. First check supervisor key authorization: reject unknown keys with 403 Forbidden
+    if (!isSupervisorKeyAllowed(reviewer_pubkey, this.env)) {
+      return new Response(JSON.stringify({
+        error: "Forbidden: reviewer_pubkey is not in authorized SUPERVISOR_PUBKEYS secret."
+      }), { status: 403, headers: { "Content-Type": "application/json" } });
+    }
+
+    // 2. Admin Authentication Check (Cloudflare Access or Bearer ADMIN_SECRET)
+    const auth = checkAdminAuth(request, this.env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({
+        error: "Unauthorized: Admin authentication required.",
+        reason: auth.reason
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
 
     const cr = await this.state.storage.get<ChangeRequest>(`cr:${crId}`);
     if (!cr) return new Response("Change request not found", { status: 404 });
 
-    const { reviewer_pubkey, signature, rationale, timestamp } = body;
-    const tsSecs = Number(timestamp || Math.floor(Date.now() / 1000));
     if (!reviewer_pubkey || !signature) {
       return new Response(JSON.stringify({
         error: "Missing reviewer_pubkey or signature. Human approval requires a valid Ed25519 signature."
@@ -3471,12 +4755,7 @@ export class RepoCoordinator implements DurableObject {
       }), { status: 401 });
     }
 
-    // Enforce / register supervisor keys
-    let registeredKeys = (await this.state.storage.get<string[]>("registered_supervisor_keys")) || [];
-    if (!registeredKeys.includes(reviewer_pubkey)) {
-      registeredKeys.push(reviewer_pubkey);
-      await this.state.storage.put("registered_supervisor_keys", registeredKeys);
-    }
+    // Auto-registration REMOVED: reviewer_pubkey must be in SUPERVISOR_PUBKEYS secret
 
     cr.status = "approved";
     cr.human_rationale = rationale || "Human supervisor signed and approved change";
@@ -3535,6 +4814,15 @@ export class RepoCoordinator implements DurableObject {
 
   private async handleRejectCR(request: Request, crId: string, projectId: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+    const auth = checkAdminAuth(request, this.env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({
+        error: "Unauthorized: Admin authentication required.",
+        reason: auth.reason
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
+
     let body: any = {};
     try { body = await request.json(); } catch (e) {}
 
@@ -3601,6 +4889,15 @@ export class RepoCoordinator implements DurableObject {
 
   private async handleRequestChangesCR(request: Request, crId: string, projectId: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+    const auth = checkAdminAuth(request, this.env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({
+        error: "Unauthorized: Admin authentication required.",
+        reason: auth.reason
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
+
     let body: any = {};
     try { body = await request.json(); } catch (e) {}
 
@@ -3741,11 +5038,7 @@ export class RepoCoordinator implements DurableObject {
   private async handlePreviewCR(request: Request, crId: string, projectId: string): Promise<Response> {
     const cr = await this.state.storage.get<ChangeRequest>(`cr:${crId}`);
     if (!cr) return new Response("Change request not found", { status: 404 });
-    const livePreviewUrl = `/project/${projectId}/preview/live`;
-    return new Response(renderPMPreviewHtml(projectId, cr, livePreviewUrl), {
-      status: 200,
-      headers: { "Content-Type": "text/html; charset=utf-8" },
-    });
+    return renderDashboard(request, this.env, { projectId, activeTab: "pulls", selectedCrId: crId });
   }
 
   private async syncGitHubIssues(): Promise<TaskItem[]> {
@@ -3994,35 +5287,7 @@ export class RepoCoordinator implements DurableObject {
         const prUrl = existingPr.html_url;
         const targetBranch = existingPr.head?.ref || branchName;
 
-        const commentBody = `### 🤖 S3A Autonomous Agent Evidence Update
-
-- **Agent ID:** \`${cr.agent_id}\`
-- **Commit ID:** \`${cr.commit_id}\`
-- **Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
-- **Timestamp:** \`${new Date().toISOString()}\`
-- **Target Issue:** #${issueNum} (\`${task.title}\`)
-
-#### 🧪 Build & Test Verification
-- **Test Command:** \`npm run build\`
-- **Result:** ✓ Passed (Clean build verified)
-
-#### 🎭 Real QA Playwright Evidence (Headless Chromium)
-${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
-- **QA Agent:** \`${r.agent_id}\` (Role: **${r.agent_role.toUpperCase()}**) - **${r.status.toUpperCase()}**
-  - Passed steps: ${(r.passed_steps || []).join(', ')}
-  - Latency: ${Object.entries(r.timings_ms || {}).map(([k, v]) => `${k}: ${v}ms`).join(', ')}
-  - Console Errors: ${(r.console_errors || []).length}
-  ${r.visual_diff ? `- Visual Mismatch: ${r.visual_diff.mismatch_percent || 0.0}% (Baseline Verified)` : ''}
-  ${r.chaos_metrics ? `- Chaos Resilience: ${r.chaos_metrics.concurrent_sessions} concurrent browser sessions, 0 unhandled exceptions, 100% resilient` : ''}
-  ${(r.screenshots || []).map(s => `\n  - **${s.caption}**: ![](${s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`})`).join('')}
-`).join('\n') : '*QA not run*'}
-
-#### 🌐 Live PM Preview
-[Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/project/s3a-swarm-main/preview/live)
-
-> [!NOTE]
-> Attached latest verified evidence and QA runs to canonical PR #${prNumber}. No duplicate PR opened.
-`;
+        const commentBody = formatPREvidenceComment(cr, task, issueNum, prNumber);
 
         await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/issues/${prNumber}/comments`, {
           method: "POST",
@@ -4094,7 +5359,7 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
           return this.handleSyncGitHubIssues(projectId);
         }
         if (pathParts[3] === "reset") {
-          const resetTasks = this.env.GITHUB_TOKEN ? [] : DEFAULT_BRAKETS_TASKS;
+          const resetTasks: TaskItem[] = this.env.GITHUB_TOKEN ? await this.syncGitHubIssues() : [];
           await this.state.storage.put("brakets_tasks", resetTasks);
           const oldCRs = await this.state.storage.list({ prefix: "cr:" });
           for (const k of oldCRs.keys()) await this.state.storage.delete(k);
@@ -4148,6 +5413,13 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
       case "control":
         return this.handleControl(request, projectId);
       case "scheduler-tick": {
+        const auth = checkAdminAuth(request, this.env);
+        if (!auth.authorized) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
         const tickRes = await this.runSchedulerTick(projectId);
         return new Response(JSON.stringify(tickRes), {
           headers: { "Content-Type": "application/json" }
@@ -4155,6 +5427,13 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
       }
       case "close-duplicate-prs":
       case "triage-duplicates": {
+        const auth = checkAdminAuth(request, this.env);
+        if (!auth.authorized) {
+          return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
         const issueNum = parseInt(url.searchParams.get("issue") || "3", 10);
         const preservePr = parseInt(url.searchParams.get("preserve") || "82", 10);
         const triageRes = await this.closeDuplicatePRs(projectId, issueNum, preservePr);
@@ -4188,6 +5467,13 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
       case "ledger":
 
         if (pathParts[3] === "config" && request.method === "POST") {
+          const auth = checkAdminAuth(request, this.env);
+          if (!auth.authorized) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+              status: 401,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
           let body: any = {};
           try { body = await request.json(); } catch(e) {}
           if (body.daily_cap !== undefined) {
@@ -4197,6 +5483,13 @@ ${(cr.qa_reports && cr.qa_reports.length > 0) ? cr.qa_reports.map(r => `
           return new Response(JSON.stringify(s), { headers: { "Content-Type": "application/json" } });
         }
         if (pathParts[3] === "reset" && request.method === "POST") {
+          const auth = checkAdminAuth(request, this.env);
+          if (!auth.authorized) {
+            return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+              status: 401,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
           const res = await this.resetBudgetToday();
           return new Response(JSON.stringify(res), { headers: { "Content-Type": "application/json" } });
         }
