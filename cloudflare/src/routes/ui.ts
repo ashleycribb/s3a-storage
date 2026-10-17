@@ -291,7 +291,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
         } catch (e) {}
         pageTitle = "Rehearsals";
         breadcrumbs = [{ label: "Rehearsals" }];
-        pageHtml = renderRehearsalsPage(projectId, runsList, { isPaused });
+        pageHtml = renderRehearsalsPage(projectId, runsList, { isPaused, tasks });
       }
       break;
     }

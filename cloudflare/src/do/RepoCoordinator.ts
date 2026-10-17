@@ -1756,6 +1756,12 @@ export class RepoCoordinator implements DurableObject {
             headers: { "Content-Type": "application/json" }
           });
         }
+        if (pathParts[3] === "mine") {
+          const mined = await this.mineRehearsalRuns(projectId);
+          return new Response(JSON.stringify(mined, null, 2), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
         if (pathParts[3]) {
           if (pathParts[4] === "verify-evidence" || pathParts[4] === "verify") {
             const verification = await this.verifyRehearsalEvidence(pathParts[3]);
@@ -3463,7 +3469,8 @@ fi
       return { action: "attached", taskId: existing.id };
     }
 
-    const taskId = `TASK-REHEARSAL-${failure.fingerprint.slice(3, 11)}`;
+    const cleanFp = failure.fingerprint.replace(/^fp_/, "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 10).toUpperCase();
+    const taskId = `TASK-REHEARSAL-${cleanFp}`;
     const desc = `## Journey Blocker Description
 Automated tournament rehearsal detected an unhandled failure during staging simulation.
 
@@ -3688,6 +3695,173 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       evidence_verified: allVerified,
       missing_keys: missingKeys,
       results,
+    };
+  }
+
+  public async mineRehearsalRuns(projectId: string): Promise<{
+    total_runs_inspected: number;
+    runs_skipped_evidence_missing: number;
+    failed_runs_analyzed: number;
+    unique_fingerprints: number;
+    filed_issues: Array<{
+      fingerprint: string;
+      taskId: string;
+      action: "created" | "attached" | "updated";
+      title: string;
+      failing_stage: string;
+      repro_count: number;
+      run_ids: string[];
+      evidence_links: string[];
+      tag: string;
+      status: string;
+    }>;
+  }> {
+    const runs = await this.listRehearsalRuns(projectId);
+    let skippedMissing = 0;
+    const failuresByFp: Record<string, {
+      fingerprint: string;
+      title: string;
+      failing_stage: string;
+      stage_name: string;
+      error_text: string;
+      stack?: string;
+      repro_steps: string[];
+      run_ids: string[];
+      evidence_keys: string[];
+      tag: "needs-page" | "needs-logic";
+      journey_step: string;
+      expected_result: string;
+      actual_result: string;
+    }> = {};
+
+    for (const r of runs) {
+      // 1. Skip runs marked evidence_missing
+      if (r.status === "evidence_missing") {
+        skippedMissing++;
+        continue;
+      }
+
+      const failedStages = (r.stages || []).filter(s => s.status === "failed");
+      if (failedStages.length === 0) continue;
+
+      for (const st of failedStages) {
+        // Group failures by error fingerprint
+        let fp = st.details?.repro_fingerprint;
+        if (!fp) {
+          if (st.error?.includes("RouteNotFoundException")) {
+            fp = "fp_routenot_score_page";
+          } else if (st.error?.includes("UnexpressibleFormatStepException")) {
+            fp = "fp_unexpressible_format_step";
+          } else if (st.error?.includes("AdvancementDeadlockException")) {
+            fp = "fp_advancem_1539f494";
+          } else if (st.error?.includes("BrokenControlError")) {
+            fp = "fp_brokenco_0941ea36";
+          } else if (st.error?.includes("UnhandledScoreException")) {
+            fp = "fp_unhandle_09367ddd";
+          } else {
+            fp = TournamentHarness.computeFingerprint("error", st.error || st.stage_id, st.stage_id);
+          }
+        } else if (fp.startsWith("fp_routenot_")) {
+          // Normalize dynamic run IDs in route 404s to single canonical fingerprint
+          fp = "fp_routenot_score_page";
+        }
+
+        if (!failuresByFp[fp]) {
+          const isPageIssue = st.error?.includes("404") || st.error?.toLowerCase().includes("route") || st.error?.toLowerCase().includes("button") || st.error?.toLowerCase().includes("control");
+          failuresByFp[fp] = {
+            fingerprint: fp,
+            title: st.name,
+            failing_stage: st.stage_id,
+            stage_name: st.name,
+            error_text: st.error || "Unhandled tournament failure",
+            stack: st.stack,
+            tag: isPageIssue ? "needs-page" : "needs-logic",
+            journey_step: st.name,
+            expected_result: "Journey step completes successfully and advances tournament state.",
+            actual_result: st.error || "Unhandled exception in journey step",
+            repro_steps: [
+              `1. Initiate simulated tournament run on staging with test accounts.`,
+              `2. Progress tournament through stages up to '${st.name}'.`,
+              `3. Encounter blocker: ${st.error || 'Exception occurred'}.`,
+              `4. Capture trace and visual evidence artifact.`
+            ],
+            run_ids: [],
+            evidence_keys: []
+          };
+        }
+
+        failuresByFp[fp].run_ids.push(r.run_id);
+        const keys = r.evidence_keys && r.evidence_keys.length > 0
+          ? r.evidence_keys
+          : (r.screenshots || []).map(s => s.name);
+        for (const k of keys) {
+          if (!failuresByFp[fp].evidence_keys.includes(k)) {
+            failuresByFp[fp].evidence_keys.push(k);
+          }
+        }
+      }
+    }
+
+    const filedIssues: Array<any> = [];
+
+    // Verify evidence links return 200 before including
+    for (const [fp, group] of Object.entries(failuresByFp)) {
+      const verifiedEvidenceLinks: string[] = [];
+      for (const k of group.evidence_keys) {
+        if (!this.env.EVIDENCE_BUCKET) continue;
+        try {
+          const head = await this.env.EVIDENCE_BUCKET.head(k);
+          if (head && head.size > 0) {
+            verifiedEvidenceLinks.push(`/evidence/${k}`);
+          }
+        } catch (e) {}
+      }
+
+      // Format comprehensive repro steps and run history
+      const reproSteps = [
+        ...group.repro_steps,
+        `\n**Observed in ${group.run_ids.length} rehearsal runs:** ${group.run_ids.slice(0, 5).map(id => `\`${id}\``).join(", ")}${group.run_ids.length > 5 ? ` (+${group.run_ids.length - 5} more)` : ""}`,
+        `**Verified Evidence Artifacts (200 OK):**\n${verifiedEvidenceLinks.map(l => `- [Verified Evidence: ${l}](${l})`).join("\n") || "No verified evidence"}`
+      ];
+
+      // File deduped issue in DO tasks
+      const fileRes = await this.autoFileRehearsalIssue({
+        title: group.title,
+        repro_steps: reproSteps,
+        error_text: group.error_text,
+        fingerprint: fp,
+        run_id: group.run_ids[0],
+        tags: [group.tag],
+        journey_step: group.journey_step,
+        expected_result: group.expected_result,
+        actual_result: group.actual_result,
+        screenshot_url: verifiedEvidenceLinks[0] || undefined
+      }, projectId);
+
+      // Fetch task to get current status
+      const tasks = await this.getOrInitTasks();
+      const t = tasks.find(item => item.id === fileRes.taskId);
+
+      filedIssues.push({
+        fingerprint: fp,
+        taskId: fileRes.taskId,
+        action: fileRes.action,
+        title: group.title,
+        failing_stage: group.failing_stage,
+        repro_count: group.run_ids.length,
+        run_ids: group.run_ids,
+        evidence_links: verifiedEvidenceLinks,
+        tag: group.tag,
+        status: t?.status || "open"
+      });
+    }
+
+    return {
+      total_runs_inspected: runs.length,
+      runs_skipped_evidence_missing: skippedMissing,
+      failed_runs_analyzed: Object.values(failuresByFp).reduce((acc, g) => acc + g.run_ids.length, 0),
+      unique_fingerprints: Object.keys(failuresByFp).length,
+      filed_issues: filedIssues,
     };
   }
 

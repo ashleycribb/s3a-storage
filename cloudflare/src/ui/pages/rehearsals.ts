@@ -1,12 +1,12 @@
 // cloudflare/src/ui/pages/rehearsals.ts
 // Server-Rendered Rehearsals Dashboard: Run History, Stage Pass/Fail, Standings & Auto-Filed Issues
 
-import type { RehearsalRunRecord, RehearsalStage, RehearsalMatch, RehearsalStanding } from "../../types";
+import type { RehearsalRunRecord, RehearsalStage, RehearsalMatch, RehearsalStanding, TaskItem } from "../../types";
 
 export function renderRehearsalsPage(
   projectId: string,
   runs: RehearsalRunRecord[] = [],
-  options: { isPaused?: boolean } = {}
+  options: { isPaused?: boolean; tasks?: TaskItem[] } = {}
 ): string {
   const totalRuns = runs.length;
   const passedRuns = runs.filter(r => r.status === "passed" || r.status === "disputed_resolved").length;
@@ -99,6 +99,108 @@ export function renderRehearsalsPage(
         `;
       }).join("");
 
+  const tasks = options.tasks || [];
+  const rehearsalIssues = tasks.filter(t => t.is_bug && (t.error_fingerprint || t.rehearsal_run_id || t.id.startsWith("TASK-REHEARSAL")));
+
+  const issuesRowsHtml = rehearsalIssues.length === 0
+    ? `
+      <tr>
+        <td colspan="8" style="padding: 2rem; text-align: center; color: var(--gh-text-muted); font-size: 13px;">
+          No open rehearsal blocker issues filed. Click <strong>&ldquo;⛏️ Mine Runs &amp; File Deduped Issues&rdquo;</strong> to scan all rehearsal runs.
+        </td>
+      </tr>
+    `
+    : rehearsalIssues.map(t => {
+        const fp = t.error_fingerprint || "fp_unspecified";
+        const tagBadges = (t.tags || []).map(tag => {
+          const cls = tag === "needs-page" ? "gh-badge-blue" : "gh-badge-purple";
+          return `<span class="gh-badge ${cls}">${tag}</span>`;
+        }).join(" ");
+
+        const cleanTitle = t.title.replace(/^\[Rehearsal Bug\]\s*(\[[^\]]+\])?\s*/, "");
+        const statusBadge = t.status === "open"
+          ? `<span class="gh-badge gh-badge-red">Open</span>`
+          : t.status === "claimed"
+          ? `<span class="gh-badge gh-badge-yellow">Claimed</span>`
+          : t.status === "in_review"
+          ? `<span class="gh-badge gh-badge-purple">In Review</span>`
+          : `<span class="gh-badge gh-badge-green">Merged</span>`;
+
+        const lastRunHtml = t.rehearsal_run_id
+          ? `<a href="/p/${projectId}/rehearsals/${t.rehearsal_run_id}" style="font-family: monospace; font-size: 11px;">${t.rehearsal_run_id.length > 25 ? t.rehearsal_run_id.slice(0, 22) + '...' : t.rehearsal_run_id}</a>`
+          : `<span style="color: var(--gh-text-muted);">-</span>`;
+
+        const evidenceHtml = t.screenshot_url
+          ? `<a href="${t.screenshot_url}" target="_blank" class="gh-badge gh-badge-green" style="text-decoration:none;" title="Verified Evidence in R2">✓ 200 OK</a>`
+          : `<span style="color: var(--gh-text-muted); font-size: 11px;">not run</span>`;
+
+        return `
+          <tr style="border-bottom: 1px solid var(--gh-border-subtle); background: ${t.status === 'open' ? 'rgba(218,54,51,0.03)' : 'transparent'};">
+            <td style="padding: 10px 12px; font-family: monospace; font-weight: 600; color: var(--gh-text-heading);">
+              <code>${fp}</code>
+            </td>
+            <td style="padding: 10px 12px;">${tagBadges || '<span class="gh-badge gh-badge-muted">bug</span>'}</td>
+            <td style="padding: 10px 12px;">
+              <a href="/p/${projectId}/issues/${t.id}" style="font-weight: 600; font-size: 13px; color: var(--gh-text-heading); text-decoration: none;">
+                ${cleanTitle}
+              </a>
+              <div style="font-size: 11px; color: var(--gh-text-muted); margin-top: 2px;">
+                Task: <code style="color: var(--gh-text);">${t.id}</code> ${t.claimed_by ? `&bull; Claimed by: <code style="color:var(--gh-accent);">${t.claimed_by}</code>` : ''} ${t.change_request_id ? `&bull; PR: <a href="/p/${projectId}/pulls/${t.change_request_id}" style="color:var(--gh-link);">${t.change_request_id}</a>` : ''}
+              </div>
+            </td>
+            <td style="padding: 10px 12px; font-family: monospace; text-align: center;">
+              <span class="gh-badge ${Number(t.repro_count || 1) > 1 ? 'gh-badge-red' : 'gh-badge-muted'}">
+                ${t.repro_count || 1} ${Number(t.repro_count || 1) === 1 ? 'attempt' : 'attempts'}
+              </span>
+            </td>
+            <td style="padding: 10px 12px;">${statusBadge}</td>
+            <td style="padding: 10px 12px;">${lastRunHtml}</td>
+            <td style="padding: 10px 12px;">${evidenceHtml}</td>
+            <td style="padding: 10px 12px; white-space: nowrap;">
+              <a href="/p/${projectId}/issues/${t.id}" class="gh-btn gh-btn-sm">View Issue ↗</a>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+  const issuesSectionHtml = `
+    <!-- Rehearsal Journey Failures & Fingerprints Queue (Requirement 5) -->
+    <div class="gh-card" style="margin-bottom: 1.5rem;">
+      <div class="gh-card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <div>
+          <strong style="color: var(--gh-text-heading); font-size: 13px;">
+            🚨 Open Issues by Error Fingerprint (${rehearsalIssues.length})
+          </strong>
+          <span style="font-size: 11px; color: var(--gh-text-muted); margin-left: 0.5rem;">
+            Deduplicated failure queue &bull; Auto-mined from rehearsal runs &bull; Verified 200 OK evidence
+          </span>
+        </div>
+        <button id="btn-mine-runs" class="gh-btn gh-btn-sm" onclick="mineRehearsalsLive()" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+          ⛏️ Mine Runs &amp; File Deduped Issues
+        </button>
+      </div>
+      <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--gh-border); background: #0d1117; color: var(--gh-text-muted);">
+              <th style="padding: 8px 12px;">Fingerprint</th>
+              <th style="padding: 8px 12px;">Tag</th>
+              <th style="padding: 8px 12px;">Journey Failure / Title</th>
+              <th style="padding: 8px 12px; text-align: center;">Attempts</th>
+              <th style="padding: 8px 12px;">Status</th>
+              <th style="padding: 8px 12px;">Last Verified Run</th>
+              <th style="padding: 8px 12px;">Evidence</th>
+              <th style="padding: 8px 12px;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${issuesRowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
   return `
     <div style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
       <div>
@@ -149,6 +251,8 @@ export function renderRehearsalsPage(
         <div style="font-size: 11px; color: var(--gh-text-muted); margin-top: 0.25rem;">Fake test accounts &bull; Points only</div>
       </div>
     </div>
+
+    ${issuesSectionHtml}
 
     <!-- Rehearsal History List Card -->
     <div class="gh-card">
@@ -280,6 +384,26 @@ export function renderRehearsalsPage(
         const btn = document.getElementById('btn-submit-rehearsal');
         if (btn) { btn.disabled = true; btn.textContent = '⏳ Executing...'; }
         triggerRehearsal(scenario, size, format_id, game_pack_id);
+      }
+      async function mineRehearsalsLive() {
+        const btn = document.getElementById('btn-mine-runs');
+        if (btn) { btn.disabled = true; btn.textContent = '⛏️ Mining Runs...'; }
+        try {
+          const res = await fetch('/project/${projectId}/rehearsals/mine', {
+            method: 'POST'
+          });
+          if (res.ok) {
+            const data = await res.json();
+            alert('Mined ' + data.total_runs_inspected + ' runs!\n- Unique fingerprints: ' + data.unique_fingerprints + '\n- Issues filed/updated: ' + data.filed_issues.length + '\n- Skipped evidence_missing: ' + data.runs_skipped_evidence_missing);
+            window.location.reload();
+          } else {
+            alert('Mining failed: ' + await res.text());
+            if (btn) { btn.disabled = false; btn.textContent = '⛏️ Mine Runs & File Deduped Issues'; }
+          }
+        } catch (err) {
+          alert('Network error: ' + err.message);
+          if (btn) { btn.disabled = false; btn.textContent = '⛏️ Mine Runs & File Deduped Issues'; }
+        }
       }
     </script>
   `;
