@@ -1,0 +1,399 @@
+// cloudflare/src/types.ts
+// S3A Gate Shared Types and Data Models
+
+export interface Env {
+  ARTIFACTS: any;
+  REPO_COORDINATOR: any;
+  Sandbox: any;
+  AI: any;
+  BROWSER: any;
+  EVIDENCE_BUCKET: R2Bucket;
+  AGENT_WORKFLOW: Workflow<AgentTaskParams>;
+  GITHUB_TOKEN?: string;
+  AGENT_ED25519_KEY?: string;
+  OLLAMA_BASE_URL?: string;
+  CUSTOM_MODEL_URL?: string;
+  ADMIN_SECRET?: string;
+  SUPERVISOR_PUBKEYS?: string;
+}
+
+export interface AgentTaskParams {
+  projectId: string;
+  taskId: string;
+  agentId: string;
+  taskTitle: string;
+  taskDescription: string;
+  filesAllowed: string[];
+  tests?: string;
+  riskLevel?: "low" | "high";
+  githubIssueNumber?: number;
+  feedback?: string;
+}
+
+export interface StoredRecord {
+  record_id: string;
+  tile_type: number;
+  payload_hash: string;
+  summary: string;
+  timestamp: number;
+  commit_sig_hex: string;
+  author_gate: string;
+}
+
+export interface StoredConflict {
+  conflict_id: string;
+  record_id: string;
+  tile_type: number;
+  type_name: string;
+  version_a: string;
+  version_b: string;
+  author_a: string;
+  author_b: string;
+  target_version: string;
+  source_version: string;
+  target_author: string;
+  source_author: string;
+  created_timestamp: number;
+  timestamp: number;
+  resolved: boolean;
+  choice?: number;
+  rationale?: string;
+}
+
+export interface StructuredFailure {
+  file: string;
+  line: number;
+  col?: number;
+  message: string;
+  stage: "build" | "typecheck" | "lint" | "test";
+  commit_id: string;
+  responsible_agent: string;
+}
+
+export interface ProvenanceTile {
+  record_id: string;
+  tile_type: number; // 40 = PROVENANCE_DIAGNOSTIC
+  timestamp: number;
+  failure: StructuredFailure;
+  raw_diagnostic: string;
+}
+
+export interface RepairAttempt {
+  attempt_number: number;
+  max_attempts: number;
+  commit_id: string;
+  fix_commit_id?: string;
+  agent_addr: string;
+  error: StructuredFailure;
+  fix_diff?: string;
+  result: "evaluating" | "passed" | "failed" | "escalated";
+  timestamp: number;
+  rationale?: string;
+}
+
+export interface RepairMetrics {
+  failures_detected: number;
+  auto_repaired: number;
+  escalated_to_human: number;
+  mean_attempts: number;
+  shadow_branches_evaluated: number;
+  promoted_after_green: number;
+}
+
+export type AgentStatus =
+  | "idle"
+  | "working"
+  | "pushing"
+  | "merged"
+  | "conflict"
+  | "blocked"
+  | "human"
+  | "rejected"
+  | "qa_running"
+  | "qa_passed"
+  | "qa_failed"
+  | "deferred_budget";
+
+export type AgentRole = "builder" | "qa_journey" | "visual" | "chaos";
+
+export interface QAEvidenceScreenshot {
+  name: string;
+  caption: string;
+  data_url: string;
+  timestamp: number;
+}
+
+export interface QAReport {
+  id: string;
+  agent_id: string;
+  agent_role: "qa_journey" | "visual" | "chaos";
+  status: "passed" | "failed";
+  summary: string;
+  passed_steps: string[];
+  failed_steps: string[];
+  console_errors: string[];
+  timings_ms: Record<string, number>;
+  screenshots: QAEvidenceScreenshot[];
+  visual_diff?: {
+    baseline_screenshot?: string;
+    candidate_screenshot?: string;
+    diff_screenshot?: string;
+    mismatch_percent: number;
+    identical: boolean;
+  };
+  chaos_metrics?: {
+    concurrent_sessions: number;
+    total_actions: number;
+    fuzzed_inputs_tested: number;
+    unhandled_exceptions: number;
+    error_rate_percent: number;
+    resilience_passed: boolean;
+  };
+  created_at: number;
+}
+
+export interface TaskItem {
+  id: string; // e.g. "TASK-101", "GH-3", "TASK-BUG-..."
+  title: string;
+  description: string;
+  files_allowed: string[];
+  tests: string;
+  risk_level: "low" | "high";
+  status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed" | "deferred_budget";
+  claimed_by?: string;
+  claimed_at?: number;
+  change_request_id?: string;
+  feedback?: string;
+  is_bug?: boolean;
+  originating_cr_id?: string;
+  github_issue_number?: number;
+  github_issue_url?: string;
+  workflow_id?: string;
+}
+
+export interface ChangeRequest {
+  id: string; // e.g. "CR-101"
+  task_id: string;
+  agent_id: string;
+  agent_pubkey: string;
+  title: string;
+  commit_id: string;
+  seal_hash: string;
+  message: string;
+  diff: string;
+  test_report?: {
+    passed: boolean;
+    output?: string;
+    stage?: string;
+    signature?: string;
+    exit_code?: number;
+    duration_ms?: number;
+    log_url?: string;
+  };
+  test_duration_ms?: number;
+  build_log_r2_url?: string;
+  touched_files: string[];
+  risk_level: "low" | "high";
+  requires_human: boolean;
+  status: "pending_review" | "changes_requested" | "auto_merged" | "approved" | "rejected";
+  human_rationale?: string;
+  reviewer_pubkey?: string;
+  pm_feedback?: string;
+  preview_url?: string;
+  build_failed?: boolean;
+  build_log?: string;
+  qa_reports?: QAReport[];
+  qa_status?: "pending" | "running" | "passed" | "failed";
+  github_issue_number?: number;
+  github_pr_number?: number;
+  github_pr_url?: string;
+  github_branch?: string;
+  needs_second_human?: boolean;
+  created_at: number;
+  resolved_at?: number;
+}
+
+export interface RegisteredAgent {
+  agent_id: string;
+  agent_pubkey: string;
+  agent_role?: AgentRole;
+  status: AgentStatus;
+  task_id?: string;
+  task_title?: string;
+  commit_count: number;
+  fork_repo?: string;
+  registered_at: number;
+  last_seen: number;
+}
+
+export interface DailyLimits {
+  max_tasks_per_day: number;
+  max_llm_calls_per_day: number;
+  max_sandbox_minutes_per_day: number;
+}
+
+export interface DailyUsage {
+  date: string;
+  tasks_started: number;
+  llm_calls: number;
+  sandbox_minutes: number;
+}
+
+export type ActionKind = "llm" | "sandbox" | "browser" | "r2" | "free";
+
+export interface LedgerRecord {
+  id: string;
+  ts: number;
+  task_id: string;
+  agent_id: string;
+  kind: ActionKind;
+  units: number;
+  est_cost: number;
+  is_free: boolean;
+  cumulative_spent: number;
+}
+
+export interface DeferredAction {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  kind: ActionKind;
+  units: number;
+  est_cost: number;
+  reason: "deferred_budget";
+  queued_at: number;
+}
+
+export interface BudgetStatus {
+  spent_today: number;
+  cap: number;
+  pct_spent: number;
+  warning_80_pct: boolean;
+  cap_reached: boolean;
+  time_until_reset_secs: number;
+  deferred_queue: DeferredAction[];
+  entries: LedgerRecord[];
+}
+
+export interface ActorProvenance {
+  type: "human" | "ai";
+  id?: string;
+  name?: string;
+  supervisor_id?: string;
+  reviewer_pubkey?: string;
+  rationale?: string;
+  agent_id?: string;
+  model?: string;
+}
+
+export interface TraceStep {
+  step_id: string;
+  task_id: string;
+  step_index: number;
+  step_name: string;
+  actor: ActorProvenance;
+  xapi_verb: string;
+  prompt?: string;
+  model?: string;
+  patch?: string;
+  build_test_log?: string;
+  qa_evidence?: any;
+  human_decision?: any;
+  ts: number;
+}
+
+export interface TaskTrace {
+  task_id: string;
+  title: string;
+  steps: TraceStep[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BreadcrumbItem {
+  label: string;
+  url?: string;
+}
+
+export interface RenderViewOptions {
+  projectId?: string;
+  activeTab?: string;
+  breadcrumbs?: BreadcrumbItem[];
+  selectedTaskId?: string;
+  selectedCrId?: string;
+  selectedRunId?: string;
+  statusData?: any;
+  controlData?: any;
+  budgetData?: BudgetStatus;
+  tasks?: TaskItem[];
+  changeRequests?: ChangeRequest[];
+  registeredAgents?: RegisteredAgent[];
+  actionRuns?: any[];
+  error?: string;
+}
+
+export function formatPREvidenceComment(
+  cr: ChangeRequest,
+  task: Partial<TaskItem>,
+  issueNum: number,
+  prNumber: number
+): string {
+  const hasLogs = !!(cr.build_log || (cr.test_report && cr.test_report.output));
+  const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
+
+  let buildSection = "";
+  if (hasLogs) {
+    const exitCode = cr.test_report?.exit_code !== undefined
+      ? cr.test_report.exit_code
+      : (cr.test_report?.passed ? 0 : 1);
+    const duration = cr.test_report?.duration_ms
+      ? `${cr.test_report.duration_ms}ms`
+      : (cr.test_duration_ms ? `${cr.test_duration_ms}ms` : "N/A");
+    const logUrl = cr.test_report?.log_url || cr.build_log_r2_url;
+
+    buildSection = `#### 🧪 Build & Test Verification
+- **Test Command:** \`${cr.test_report?.stage || 'npm run build'}\`
+- **Exit Code:** \`${exitCode}\`
+- **Duration:** \`${duration}\`
+${logUrl ? `- **Log Link (R2):** [View Build & Test Log](${logUrl})` : ''}
+- **Status:** ${cr.test_report?.passed ? 'Passed' : 'Failed'}`;
+  } else {
+    buildSection = `#### 🧪 Build & Test Verification
+*Build not run*`;
+  }
+
+  let qaSection = "";
+  if (hasQa) {
+    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
+${cr.qa_reports!.map(r => `
+- **QA Agent:** \`${r.agent_id}\` (Role: **${r.agent_role.toUpperCase()}**) - **${r.status.toUpperCase()}**
+  - Passed steps: ${(r.passed_steps || []).join(', ') || 'None'}
+  - Latency: ${Object.entries(r.timings_ms || {}).map(([k, v]) => `${k}: ${v}ms`).join(', ')}
+  - Console Errors: ${(r.console_errors || []).length}
+  ${r.visual_diff ? `- Visual Mismatch: ${r.visual_diff.mismatch_percent || 0.0}% (Baseline Verified)` : ''}
+  ${(r.screenshots || []).map(s => `\n  - **${s.caption}**: ![](${s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`})`).join('')}
+`).join('\n')}`;
+  } else {
+    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
+*QA not run*`;
+  }
+
+  return `### 🤖 S3A Autonomous Agent Evidence Update
+
+- **Agent ID:** \`${cr.agent_id}\`
+- **Commit ID:** \`${cr.commit_id}\`
+- **Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
+- **Timestamp:** \`${new Date().toISOString()}\`
+- **Target Issue:** #${issueNum} (\`${task.title || 'Task'}\`)
+
+${buildSection}
+
+${qaSection}
+
+#### 🌐 Live PM Preview
+[Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/project/s3a-swarm-main/preview/live)
+
+> [!NOTE]
+> Attached latest verified evidence and QA runs to canonical PR #${prNumber}. No duplicate PR opened.
+`;
+}
