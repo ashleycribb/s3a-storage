@@ -29,12 +29,15 @@ export function renderRehearsalsPage(
     : runs.map(run => {
         const isPassed = run.status === "passed";
         const isDisputedResolved = run.status === "disputed_resolved";
+        const isEvidenceMissing = run.status === "evidence_missing";
         const isFailed = run.status === "failed";
 
         const statusBadge = isPassed
           ? `<span class="gh-badge gh-badge-green">✓ PASSED</span>`
           : isDisputedResolved
           ? `<span class="gh-badge gh-badge-purple">⚖️ DISPUTE RESOLVED</span>`
+          : isEvidenceMissing
+          ? `<span class="gh-badge" style="background: rgba(241,224,90,0.15); border: 1px solid rgba(241,224,90,0.4); color: #f1e05a; font-weight: 700;">⚠️ EVIDENCE MISSING</span>`
           : `<span class="gh-badge gh-badge-red">✗ FAILED</span>`;
 
         const scenarioBadge = run.scenario === "happy_path"
@@ -288,13 +291,31 @@ export function renderRehearsalDetailPage(
 ): string {
   const isPassed = run.status === "passed";
   const isDisputedResolved = run.status === "disputed_resolved";
+  const isEvidenceMissing = run.status === "evidence_missing";
   const isFailed = run.status === "failed";
 
   const statusBadge = isPassed
     ? `<span class="gh-badge gh-badge-green" style="font-size: 13px;">✓ PASSED</span>`
     : isDisputedResolved
     ? `<span class="gh-badge gh-badge-purple" style="font-size: 13px;">⚖️ DISPUTE RESOLVED</span>`
+    : isEvidenceMissing
+    ? `<span class="gh-badge" style="font-size: 13px; font-weight: 700; color: #f1e05a; background: rgba(241,224,90,0.15); border: 1px solid rgba(241,224,90,0.4);">⚠️ EVIDENCE MISSING</span>`
     : `<span class="gh-badge gh-badge-red" style="font-size: 13px;">✗ FAILED</span>`;
+
+  const evidenceMissingBanner = isEvidenceMissing
+    ? `
+      <div style="background: rgba(241,224,90,0.1); border: 1px solid rgba(241,224,90,0.4); border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; color: #f1e05a; font-weight: 700; font-size: 13px; margin-bottom: 0.25rem;">
+          <span>⚠️ Evidence Verification Barrier Blocked</span>
+        </div>
+        <p style="font-size: 12px; color: var(--gh-text); margin: 0; line-height: 1.5;">
+          This run cannot be marked as passed because one or more required evidence artifacts could not be verified in R2 (<code>s3a-evidence</code>):<br>
+          <strong style="color: var(--gh-red-text); font-family: monospace;">${(run.missing_evidence || []).join(', ') || 'Evidence artifact missing'}</strong>.<br>
+          Evidence must exist in R2 with HTTP 200 before pass state is accepted. Click &ldquo;Verify Evidence Live&rdquo; to re-check.
+        </p>
+      </div>
+    `
+    : "";
 
   // Stages rendering
   const stagesHtml = (run.stages || []).map((stage, idx) => {
@@ -440,6 +461,72 @@ export function renderRehearsalDetailPage(
     `
     : "";
 
+  // Visual evidence cards
+  const screenshots = run.screenshots || [];
+  const evidenceKeys = run.evidence_keys || screenshots.map(s => s.name);
+
+  let evidenceItemsHtml = "";
+  if (screenshots.length === 0 && evidenceKeys.length === 0) {
+    evidenceItemsHtml = `
+      <div style="padding: 1.5rem; text-align: center; color: var(--gh-text-muted); font-size: 12px; font-style: italic;">
+        Screenshots (R2): not run
+      </div>
+    `;
+  } else {
+    evidenceItemsHtml = screenshots.map(s => {
+      const isMissing = run.missing_evidence?.includes(s.name);
+      if (isMissing) {
+        return `
+          <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); background: rgba(218,54,51,0.08);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <strong style="font-size: 13px; color: var(--gh-red-text); font-family: monospace;">[evidence missing: ${s.name}]</strong>
+              <span class="gh-badge gh-badge-red">404 NOT FOUND IN R2</span>
+            </div>
+            <p style="font-size: 12px; color: var(--gh-text-muted); margin: 0;">
+              Expected verified object in R2 bucket <code>s3a-evidence</code> at key <code>${s.name}</code>, but object was not found. Run cannot pass.
+            </p>
+          </div>
+        `;
+      }
+      return `
+        <div style="padding: 1.25rem; border-bottom: 1px solid var(--gh-border);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+            <div>
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">${s.caption || s.name}</strong>
+              <div style="font-size: 11px; color: var(--gh-text-muted); font-family: monospace; margin-top: 0.2rem;">
+                Key: <code style="color: var(--gh-text);">${s.name}</code> &bull; Bucket: <code style="color: var(--gh-text);">s3a-evidence</code> &bull; Provenance: SHA-256
+              </div>
+            </div>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <span class="gh-badge gh-badge-green" style="font-size: 11px;">✓ R2 Verified (200 OK)</span>
+              <a href="${s.data_url}" target="_blank" class="gh-btn gh-btn-sm">
+                Open Full Object ↗
+              </a>
+            </div>
+          </div>
+          <div style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; overflow: hidden; max-width: 960px; margin-top: 0.5rem;">
+            <img src="${s.data_url}" alt="${s.caption || s.name}" style="width: 100%; height: auto; display: block;" onerror="this.parentElement.innerHTML='<div style=\\'padding:1rem;color:var(--gh-red-text);font-size:12px;\\'>⚠️ evidence missing: failed to load object from R2</div>'" />
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  const evidenceCardHtml = `
+    <div class="gh-card" style="margin-bottom: 1.5rem;">
+      <div class="gh-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <strong style="color: var(--gh-text-heading); font-size: 13px;">📸 Visual Evidence &amp; Screenshots (R2 Provenance)</strong>
+          <span style="font-size: 11px; color: var(--gh-text-muted); margin-left: 0.5rem;">Direct objects from <code>s3a-evidence</code></span>
+        </div>
+        <span style="font-size: 11px; color: var(--gh-text-muted); font-family: monospace;">Bucket: s3a-evidence</span>
+      </div>
+      <div>
+        ${evidenceItemsHtml}
+      </div>
+    </div>
+  `;
+
   return `
     <div style="margin-bottom: 1.5rem;">
       <a href="/p/${projectId}/rehearsals" style="font-size: 12px; color: var(--gh-link); text-decoration: none;">
@@ -453,12 +540,20 @@ export function renderRehearsalDetailPage(
             </h1>
             ${statusBadge}
           </div>
-          <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
-            ${run.tournament_name} &bull; Total Duration: <strong>${run.total_duration_ms}ms</strong> &bull; Started: ${new Date(run.started_at).toISOString()}
+          <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
+            <span>${run.tournament_name}</span>
+            <span>&bull;</span>
+            <span>Total Duration: <strong>${run.total_duration_ms}ms</strong></span>
+            <span>&bull;</span>
+            <span>Started: ${new Date(run.started_at).toISOString()}</span>
+            ${run.evidence_verified ? '<span>&bull;</span><span style="color: var(--gh-green-text); font-weight: 600;">✓ R2 Provenance Verified</span>' : ''}
           </div>
         </div>
 
-        <div style="display: flex; gap: 0.5rem;">
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <button id="btn-verify-evidence" class="gh-btn gh-btn-sm" onclick="verifyEvidenceLive('${run.run_id}')" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+            🔍 Verify Evidence Live
+          </button>
           <a href="/project/${projectId}/trace/${run.run_id}" class="gh-btn gh-btn-sm" target="_blank">
             📜 xAPI Trace JSON ↗
           </a>
@@ -466,7 +561,14 @@ export function renderRehearsalDetailPage(
       </div>
     </div>
 
+    ${evidenceMissingBanner}
     ${issuesBanner}
+
+    <!-- Live Evidence Verification Container -->
+    <div id="live-verify-container" style="display: none; margin-bottom: 1.5rem;"></div>
+
+    <!-- Visual Evidence & Screenshots (R2 Provenance) -->
+    ${evidenceCardHtml}
 
     ${run.format_id ? `
       <div class="gh-card" style="margin-bottom: 1.5rem; background: #0d1117;">
@@ -504,5 +606,51 @@ export function renderRehearsalDetailPage(
 
     ${matchesHtml}
     ${standingsHtml}
+
+    <script>
+      async function verifyEvidenceLive(runId) {
+        const btn = document.getElementById('btn-verify-evidence');
+        const container = document.getElementById('live-verify-container');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Verifying R2 Live...'; }
+        if (container) {
+          container.style.display = 'block';
+          container.innerHTML = '<div class="gh-card" style="padding: 1rem; color: var(--gh-text-muted); font-size: 12px;">⏳ Re-checking all screenshot &amp; log artifact URLs against R2 s3a-evidence...</div>';
+        }
+        try {
+          const res = await fetch('/project/${projectId}/rehearsals/' + runId + '/verify-evidence');
+          const data = await res.json();
+          let html = '<div class="gh-card" style="margin-bottom: 1.5rem; border-color: ' + (data.all_verified ? 'var(--gh-green)' : 'var(--gh-red)') + ';">';
+          html += '<div class="gh-card-header" style="display: flex; justify-content: space-between; align-items: center;">';
+          html += '<strong style="color: var(--gh-text-heading); font-size: 13px;">Live Evidence Verification (R2 HEAD Check)</strong>';
+          html += data.all_verified
+            ? '<span class="gh-badge gh-badge-green" style="font-weight: 700;">✓ ALL 200 OK (VERIFIED)</span>'
+            : '<span class="gh-badge gh-badge-red" style="font-weight: 700;">✗ EVIDENCE MISSING</span>';
+          html += '</div>';
+          html += '<div style="overflow-x: auto;">';
+          html += '<table style="width: 100%; font-size: 12px; border-collapse: collapse; text-align: left;">';
+          html += '<thead><tr style="border-bottom: 1px solid var(--gh-border); background: #0d1117; color: var(--gh-text-muted);"><th style="padding: 6px 12px;">Key</th><th style="padding: 6px 12px;">HTTP Status</th><th style="padding: 6px 12px;">Size</th><th style="padding: 6px 12px;">Content-Type</th><th style="padding: 6px 12px;">Action</th></tr></thead>';
+          html += '<tbody>';
+          for (const item of (data.results || [])) {
+            const statusBadge = item.http_status === 200
+              ? '<span class="gh-badge gh-badge-green">200 OK</span>'
+              : '<span class="gh-badge gh-badge-red">' + item.http_status + ' ' + (item.error || 'MISSING') + '</span>';
+            const sizeStr = item.size_bytes ? (item.size_bytes / 1024).toFixed(1) + ' KB' : 'N/A';
+            html += '<tr style="border-bottom: 1px solid var(--gh-border-subtle);">';
+            html += '<td style="padding: 8px 12px; font-family: monospace; font-weight: 600;">' + item.key + '</td>';
+            html += '<td style="padding: 8px 12px;">' + statusBadge + '</td>';
+            html += '<td style="padding: 8px 12px; font-family: monospace;">' + sizeStr + '</td>';
+            html += '<td style="padding: 8px 12px; font-family: monospace; color: var(--gh-text-muted);">' + (item.content_type || 'image/svg+xml') + '</td>';
+            html += '<td style="padding: 8px 12px;"><a href="' + item.url + '" target="_blank" class="gh-btn gh-btn-sm">View ↗</a></td>';
+            html += '</tr>';
+          }
+          html += '</tbody></table></div></div>';
+          if (container) container.innerHTML = html;
+          if (btn) { btn.disabled = false; btn.textContent = '✓ Verified Live'; }
+        } catch (err) {
+          if (container) container.innerHTML = '<div class="gh-card" style="padding: 1rem; color: var(--gh-red-text); font-size: 12px;">Verification error: ' + err.message + '</div>';
+          if (btn) { btn.disabled = false; btn.textContent = '🔍 Verify Evidence Live'; }
+        }
+      }
+    </script>
   `;
 }

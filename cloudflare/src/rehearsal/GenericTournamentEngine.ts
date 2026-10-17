@@ -39,9 +39,12 @@ export interface EngineExecutionResult {
   consoleErrors: RehearsalConsoleError[];
   failedApiCalls: RehearsalFailedApi[];
   screenshots: QAEvidenceScreenshot[];
+  evidenceKeys?: string[];
+  missingEvidence?: string[];
+  evidenceVerified?: boolean;
   timings: Record<string, number>;
   issuesFiled: string[];
-  status: "passed" | "failed" | "disputed_resolved";
+  status: "passed" | "failed" | "disputed_resolved" | "evidence_missing";
 }
 
 export class GenericTournamentEngine {
@@ -84,7 +87,7 @@ export class GenericTournamentEngine {
     const screenshots: QAEvidenceScreenshot[] = [];
     const timings: Record<string, number> = {};
     const issuesFiled: string[] = [];
-    let overallStatus: "passed" | "failed" | "disputed_resolved" = "passed";
+    let overallStatus: "passed" | "failed" | "disputed_resolved" | "evidence_missing" = "passed";
 
     const teams = participantList.map(p => ({ ...p }));
     const structure = this.format.advancement.structure;
@@ -752,23 +755,68 @@ export class GenericTournamentEngine {
     });
     timings["stage_finals_standings_ms"] = Date.now() - t6;
 
-    // Screenshot evidence
+    // Screenshot evidence (Requirement 1: Real R2 object uploaded in same step)
     const screenshotKey = `rehearsal-${this.runId}-${this.format.id}.png`;
     const screenshotUrl = `/evidence/${screenshotKey}`;
+    let evidenceUploaded = false;
     if (this.env?.EVIDENCE_BUCKET) {
       try {
         const svg = generateRehearsalEvidenceSvg(screenshotKey, { run_id: this.runId, status: overallStatus });
         await this.env.EVIDENCE_BUCKET.put(screenshotKey, svg, {
           httpMetadata: { contentType: "image/svg+xml" }
         });
+        evidenceUploaded = true;
       } catch (err) {}
     }
     screenshots.push({
       name: screenshotKey,
-      caption: `Format Rehearsal Evidence: ${this.format.name} (${this.pack?.name || 'Custom'}) - Status: PASSED`,
+      caption: `Format Rehearsal Evidence: ${this.format.name} (${this.pack?.name || 'Custom'}) - Status: ${overallStatus.toUpperCase()}`,
       data_url: screenshotUrl,
       timestamp: Date.now(),
     });
+
+    // Requirement 2: Evidence Verification Barrier Before Marking Run Passed
+    const evidenceKeys = [screenshotKey];
+    const missingEvidence: string[] = [];
+    for (const key of evidenceKeys) {
+      if (!this.env?.EVIDENCE_BUCKET) {
+        missingEvidence.push(key);
+        continue;
+      }
+      try {
+        const head = await this.env.EVIDENCE_BUCKET.head(key);
+        if (!head || head.size === 0) {
+          missingEvidence.push(key);
+        }
+      } catch (err) {
+        missingEvidence.push(key);
+      }
+    }
+
+    if (missingEvidence.length > 0) {
+      overallStatus = "evidence_missing";
+      stages.push({
+        stage_id: "stage_evidence_barrier",
+        name: "Evidence Provenance & R2 Storage Verification",
+        status: "evidence_missing",
+        duration_ms: 10,
+        error: `Required evidence artifact(s) missing in R2 (s3a-evidence): ${missingEvidence.join(", ")}`,
+        details: { missing_keys: missingEvidence, bucket: "s3a-evidence" }
+      });
+    } else {
+      stages.push({
+        stage_id: "stage_evidence_barrier",
+        name: "Evidence Provenance & R2 Storage Verification",
+        status: "passed",
+        duration_ms: 10,
+        details: {
+          verified_keys: evidenceKeys,
+          bucket: "s3a-evidence",
+          evidence_key: screenshotKey,
+          evidence_url: screenshotUrl,
+        }
+      });
+    }
 
     timings["total_duration_ms"] = Date.now() - startTime;
 
@@ -779,6 +827,9 @@ export class GenericTournamentEngine {
       consoleErrors,
       failedApiCalls,
       screenshots,
+      evidenceKeys,
+      missingEvidence: missingEvidence.length > 0 ? missingEvidence : undefined,
+      evidenceVerified: missingEvidence.length === 0,
       timings,
       issuesFiled,
       status: overallStatus,

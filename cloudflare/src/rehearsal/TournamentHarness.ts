@@ -204,6 +204,9 @@ export class TournamentHarness {
         console_errors: result.consoleErrors,
         failed_api_calls: result.failedApiCalls,
         screenshots: result.screenshots,
+        evidence_keys: result.evidenceKeys || result.screenshots.map(s => s.name),
+        missing_evidence: result.missingEvidence,
+        evidence_verified: result.evidenceVerified ?? (result.missingEvidence?.length === 0),
         timings_ms: result.timings,
         trace_id: this.runId,
         issues_filed: result.issuesFiled,
@@ -212,7 +215,7 @@ export class TournamentHarness {
       return record;
     }
 
-    let overallStatus: "passed" | "failed" | "disputed_resolved" = "passed";
+    let overallStatus: "passed" | "failed" | "disputed_resolved" | "evidence_missing" = "passed";
     const issuesFiled: string[] = [];
 
     const teams = this.getSeedTeams(this.size);
@@ -906,17 +909,21 @@ export class TournamentHarness {
     this.timings["stage_finals_standings_ms"] = Date.now() - t6;
 
     // ------------------------------------------------------------------------
-    // Screenshots & Evidence Capture
+    // Screenshots & Evidence Capture (Requirement 1: Real R2 Object Uploaded in Step)
     // ------------------------------------------------------------------------
     const screenshotKey = `rehearsal-${this.runId}.png`;
     const screenshotUrl = `/evidence/${screenshotKey}`;
+    let evidenceUploaded = false;
     if (this.env?.EVIDENCE_BUCKET) {
       try {
         const svg = generateRehearsalEvidenceSvg(screenshotKey, { run_id: this.runId, status: overallStatus });
         await this.env.EVIDENCE_BUCKET.put(screenshotKey, svg, {
           httpMetadata: { contentType: "image/svg+xml" }
         });
-      } catch (err) {}
+        evidenceUploaded = true;
+      } catch (err: any) {
+        this.logError(`Failed to upload evidence SVG to R2: ${err?.message || err}`, "stage_evidence_barrier");
+      }
     }
     this.screenshots.push({
       name: screenshotKey,
@@ -924,6 +931,52 @@ export class TournamentHarness {
       data_url: screenshotUrl,
       timestamp: Date.now(),
     });
+
+    // ------------------------------------------------------------------------
+    // Requirement 2: Evidence Verification Barrier Before Marking Run Passed
+    // ------------------------------------------------------------------------
+    const evidenceKeys = [screenshotKey];
+    const missingEvidence: string[] = [];
+
+    for (const key of evidenceKeys) {
+      if (!this.env?.EVIDENCE_BUCKET) {
+        missingEvidence.push(key);
+        continue;
+      }
+      try {
+        const head = await this.env.EVIDENCE_BUCKET.head(key);
+        if (!head || head.size === 0) {
+          missingEvidence.push(key);
+        }
+      } catch (err) {
+        missingEvidence.push(key);
+      }
+    }
+
+    if (missingEvidence.length > 0) {
+      overallStatus = "evidence_missing";
+      this.stages.push({
+        stage_id: "stage_evidence_barrier",
+        name: "Evidence Provenance & R2 Storage Verification",
+        status: "evidence_missing",
+        duration_ms: 10,
+        error: `Required evidence artifact(s) missing in R2 (s3a-evidence): ${missingEvidence.join(", ")}`,
+        details: { missing_keys: missingEvidence, bucket: "s3a-evidence" }
+      });
+    } else {
+      this.stages.push({
+        stage_id: "stage_evidence_barrier",
+        name: "Evidence Provenance & R2 Storage Verification",
+        status: "passed",
+        duration_ms: 10,
+        details: {
+          verified_keys: evidenceKeys,
+          bucket: "s3a-evidence",
+          evidence_key: screenshotKey,
+          evidence_url: screenshotUrl,
+        }
+      });
+    }
 
     const totalDuration = Date.now() - startTime;
     this.timings["total_duration_ms"] = totalDuration;
@@ -944,6 +997,9 @@ export class TournamentHarness {
       console_errors: this.consoleErrors,
       failed_api_calls: this.failedApiCalls,
       screenshots: this.screenshots,
+      evidence_keys: evidenceKeys,
+      missing_evidence: missingEvidence.length > 0 ? missingEvidence : undefined,
+      evidence_verified: missingEvidence.length === 0,
       timings_ms: this.timings,
       trace_id: this.runId,
       issues_filed: issuesFiled,

@@ -1757,6 +1757,12 @@ export class RepoCoordinator implements DurableObject {
           });
         }
         if (pathParts[3]) {
+          if (pathParts[4] === "verify-evidence" || pathParts[4] === "verify") {
+            const verification = await this.verifyRehearsalEvidence(pathParts[3]);
+            return new Response(JSON.stringify(verification, null, 2), {
+              headers: { "Content-Type": "application/json" }
+            });
+          }
           const run = await this.getRehearsalRun(pathParts[3]);
           if (!run) return new Response("Rehearsal run not found", { status: 404 });
           return new Response(JSON.stringify(run, null, 2), {
@@ -3548,6 +3554,25 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       );
     }
 
+    // Save dedicated trace step for visual evidence artifact (Requirement 1)
+    const evidenceKey = record.evidence_keys?.[0] || `rehearsal-${record.run_id}.png`;
+    await this.appendTraceStep(
+      record.run_id,
+      "stage_visual_evidence",
+      { id: "tournament-harness", name: "S3A Rehearsal Visual Capture", type: "ai" },
+      record.status === "evidence_missing" ? "http://adlnet.gov/expapi/verbs/failed" : "http://activitystrea.ms/schema/1.0/create",
+      `Visual evidence artifact recorded for tournament run: ${record.run_id}`,
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      undefined,
+      record.missing_evidence ? `Missing evidence in R2: ${record.missing_evidence.join(", ")}` : undefined,
+      {
+        evidence_key: evidenceKey,
+        evidence_url: `/evidence/${evidenceKey}`,
+        bucket: "s3a-evidence",
+        status: record.evidence_verified ? "verified_200_ok" : "evidence_missing",
+      }
+    );
+
     return record;
   }
 
@@ -3563,6 +3588,107 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       if (r) runs.push(r);
     }
     return runs;
+  }
+
+  public async verifyRehearsalEvidence(runId: string): Promise<{
+    run_id: string;
+    all_verified: boolean;
+    evidence_verified: boolean;
+    missing_keys: string[];
+    results: Array<{
+      key: string;
+      url: string;
+      exists: boolean;
+      http_status: number;
+      size_bytes?: number;
+      content_type?: string;
+      etag?: string;
+      error?: string;
+    }>;
+  }> {
+    const run = await this.getRehearsalRun(runId);
+    if (!run) {
+      return {
+        run_id: runId,
+        all_verified: false,
+        evidence_verified: false,
+        missing_keys: [],
+        results: [{ key: "unknown", url: "", exists: false, http_status: 404, error: "Run not found" }]
+      };
+    }
+
+    const keys = run.evidence_keys && run.evidence_keys.length > 0
+      ? [...run.evidence_keys]
+      : (run.screenshots || []).map(s => s.name);
+
+    if (keys.length === 0) {
+      keys.push(`rehearsal-${runId}.png`);
+    }
+
+    const results: Array<any> = [];
+    const missingKeys: string[] = [];
+
+    for (const key of keys) {
+      const url = `/evidence/${key}`;
+      if (!this.env.EVIDENCE_BUCKET) {
+        results.push({ key, url, exists: false, http_status: 503, error: "EVIDENCE_BUCKET not configured" });
+        missingKeys.push(key);
+        continue;
+      }
+      try {
+        const head = await this.env.EVIDENCE_BUCKET.head(key);
+        if (head && head.size > 0) {
+          results.push({
+            key,
+            url,
+            exists: true,
+            http_status: 200,
+            size_bytes: head.size,
+            content_type: head.httpMetadata?.contentType || "image/svg+xml",
+            etag: head.httpEtag,
+          });
+        } else {
+          results.push({
+            key,
+            url,
+            exists: false,
+            http_status: 404,
+            error: "Object missing or 0 bytes in R2 bucket",
+          });
+          missingKeys.push(key);
+        }
+      } catch (err: any) {
+        results.push({
+          key,
+          url,
+          exists: false,
+          http_status: 500,
+          error: err?.message || String(err),
+        });
+        missingKeys.push(key);
+      }
+    }
+
+    const allVerified = missingKeys.length === 0 && results.length > 0;
+
+    // Update run record in DO storage with verified status
+    run.evidence_verified = allVerified;
+    if (!allVerified) {
+      run.missing_evidence = missingKeys;
+      run.status = "evidence_missing";
+    } else if (run.status === "evidence_missing") {
+      run.status = "passed";
+      delete run.missing_evidence;
+    }
+    await this.state.storage.put(`rehearsal_run:${run.run_id}`, run);
+
+    return {
+      run_id: runId,
+      all_verified: allVerified,
+      evidence_verified: allVerified,
+      missing_keys: missingKeys,
+      results,
+    };
   }
 
   private async handleFormats(request: Request, projectId: string, subParts: string[]): Promise<Response> {

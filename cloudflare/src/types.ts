@@ -266,7 +266,7 @@ export type RehearsalScenario =
   | "cant_enter_score"
   | "cant_advance_winner"
   | "cant_resolve_dispute";
-export type RehearsalStageStatus = "passed" | "failed" | "disputed" | "skipped";
+export type RehearsalStageStatus = "passed" | "failed" | "disputed" | "skipped" | "evidence_missing";
 
 export interface RehearsalStage {
   stage_id: string;
@@ -443,7 +443,7 @@ export interface RehearsalRunRecord {
   format_version?: string;
   format_hash?: string;
   format_name?: string;
-  status: "passed" | "failed" | "disputed_resolved";
+  status: "passed" | "failed" | "disputed_resolved" | "evidence_missing";
   started_at: number;
   finished_at: number;
   total_duration_ms: number;
@@ -453,6 +453,9 @@ export interface RehearsalRunRecord {
   console_errors: RehearsalConsoleError[];
   failed_api_calls: RehearsalFailedApi[];
   screenshots: QAEvidenceScreenshot[];
+  evidence_keys?: string[];
+  missing_evidence?: string[];
+  evidence_verified?: boolean;
   timings_ms: Record<string, number>;
   trace_id: string;
   issues_filed: string[];
@@ -611,13 +614,16 @@ export function formatPREvidenceComment(
     : (cr.test_duration_ms ? `${cr.test_duration_ms}ms` : "not run");
 
   const logUrl = cr.test_report?.log_url || cr.build_log_r2_url;
+  const logLinkText = hasLogs
+    ? (logUrl ? `[View Build & Test Log](${logUrl})` : 'evidence missing')
+    : 'not run';
 
   const buildSection = `#### 🧪 Build & Test Verification
 - **Test Command:** \`${cr.test_report?.stage || (hasLogs ? 'npm run build' : 'not run')}\`
 - **Build Exit Code:** \`${buildExitCode}\`
 - **Test Exit Code:** \`${testExitCode}\`
 - **Duration:** \`${duration}\`
-- **Log Link (R2):** ${logUrl ? `[View Build & Test Log](${logUrl})` : 'not run'}
+- **Log Link (R2):** ${logLinkText}
 - **Build Status:** ${hasLogs ? (buildExitCode === "0" ? 'Passed' : 'Failed') : 'not run'}`;
 
   const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
@@ -628,6 +634,9 @@ export function formatPREvidenceComment(
     const allScreenshots = cr.qa_reports!.flatMap(r => r.screenshots || []);
     if (allScreenshots.length > 0) {
       qaScreenshotsSection = allScreenshots.map(s => {
+        if (!s.data_url || (s as any).missing) {
+          return `- **${s.caption || s.name}**: [evidence missing: ${s.name}]`;
+        }
         const url = s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`;
         return `- **${s.caption || s.name}**: ![](${url})\n  - [R2 Artifact Link](${url})`;
       }).join('\n');

@@ -1,5 +1,5 @@
 // cloudflare/src/rehearsal/visualEvidence.ts
-// Synthesizes high-fidelity SVG visual evidence artifacts for simulated tournament rehearsals in R2
+// Synthesizes strictly-valid XML SVG visual evidence artifacts for simulated tournament rehearsals in R2
 
 export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): string {
   const isFailed = key.includes("unexpressible") || key.includes("missing-route") || key.includes("broken") || key.includes("failed") || runRecord?.status === "failed";
@@ -11,25 +11,23 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
   const formatTitle = isSwiss
     ? "Swiss System Pairing (3 Rounds)"
     : isDoubleElim
-    ? "Double Elimination Bracket (Upper & Lower)"
+    ? "Double Elimination Bracket (Upper and Lower)"
     : isGroups
-    ? "Round-Robin Groups → Single Elimination Playoffs"
+    ? "Round-Robin Groups &#8594; Single Elimination Playoffs"
     : "8-Team Single Elimination Bracket";
 
   const statusLabel = isFailed ? "FAILED (CRASH / UNEXPRESSIBLE)" : isDisputed ? "DISPUTE RESOLVED" : "PASSED (100% GREEN)";
   const statusColor = isFailed ? "#f85149" : isDisputed ? "#a371f7" : "#3fb950";
   const statusBg = isFailed ? "rgba(248,81,73,0.15)" : isDisputed ? "rgba(163,113,247,0.15)" : "rgba(63,185,80,0.15)";
-  const runId = runRecord?.run_id || key.replace(/^rehearsal-/, "").replace(/\.png$/, "");
+  const runId = (runRecord?.run_id || key.replace(/^rehearsal-/, "").replace(/\.png$/, "").replace(/\.svg$/, "")).replace(/&/g, "&amp;");
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560">
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0d1117" />
       <stop offset="100%" stop-color="#161b22" />
     </linearGradient>
-    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
-      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.4" />
-    </filter>
   </defs>
 
   <!-- Background Canvas -->
@@ -42,15 +40,15 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
 
   <!-- Brand Title -->
   <text x="36" y="48" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace" font-size="18" font-weight="700" fill="#f0f6fc">
-    🛡️ Brakets Arena Invitational &bull; Rehearsal Evidence
+    &#x1F6E1; Brakets Arena Invitational &#8226; Rehearsal Evidence
   </text>
   <text x="36" y="66" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace" font-size="12" fill="#8b949e">
-    Run: <tspan fill="#58a6ff" font-family="monospace">${runId}</tspan> &bull; Format: <tspan fill="#f0f6fc">${formatTitle}</tspan>
+    Run: <tspan fill="#58a6ff" font-family="monospace">${runId}</tspan> &#8226; Format: <tspan fill="#f0f6fc">${formatTitle}</tspan>
   </text>
 
   <!-- Status Pill -->
-  <rect x="740" y="32" width="180" height="32" rx="16" fill="${statusBg}" stroke="${statusColor}" stroke-width="1.2" />
-  <text x="830" y="53" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace" font-size="12" font-weight="700" fill="${statusColor}" text-anchor="middle">
+  <rect x="710" y="32" width="210" height="32" rx="16" fill="${statusBg}" stroke="${statusColor}" stroke-width="1.2" />
+  <text x="815" y="53" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace" font-size="11" font-weight="700" fill="${statusColor}" text-anchor="middle">
     ${statusLabel}
   </text>
 
@@ -65,37 +63,37 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
       <!-- Stage 1 -->
       <rect x="0" y="0" width="120" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="10" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 1</text>
-      <text x="10" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">✓ Signup &amp; TO</text>
+      <text x="10" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x2713; Signup &amp; TO</text>
 
       <!-- Stage 2 -->
       <rect x="126" y="0" width="120" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="136" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 2</text>
-      <text x="136" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">✓ Fixtures</text>
+      <text x="136" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x2713; Fixtures</text>
 
       <!-- Stage 3 -->
       <rect x="252" y="0" width="120" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="262" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 3</text>
-      <text x="262" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">✓ Check-In</text>
+      <text x="262" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x2713; Check-In</text>
 
       <!-- Stage 4 -->
       <rect x="378" y="0" width="126" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="388" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 4</text>
-      <text x="388" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">✓ Score / Veto</text>
+      <text x="388" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x2713; Score / Veto</text>
 
       <!-- Stage 5 -->
       <rect x="510" y="0" width="120" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="520" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 5</text>
-      <text x="520" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="${isDisputed ? '#a371f7' : '#3fb950'}">⚖️ Disputes</text>
+      <text x="520" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="${isDisputed ? '#a371f7' : '#3fb950'}">${isDisputed ? '&#x2696; Disputes' : '&#x2713; Disputes'}</text>
 
       <!-- Stage 6 -->
       <rect x="636" y="0" width="120" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="646" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 6</text>
-      <text x="646" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">✓ Advancement</text>
+      <text x="646" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x2713; Advancement</text>
 
       <!-- Stage 7 -->
       <rect x="762" y="0" width="126" height="36" rx="4" fill="#0d1117" stroke="#30363d" />
       <text x="772" y="16" font-family="monospace" font-size="10" fill="#8b949e">STAGE 7</text>
-      <text x="772" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">🏆 Standings</text>
+      <text x="772" y="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="600" fill="#3fb950">&#x1F3C6; Standings</text>
     </g>
   </g>
 
@@ -164,7 +162,7 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
 
     <!-- M7 (Grand Finals) -->
     <rect x="560" y="105" width="220" height="52" rx="4" fill="#0d1117" stroke="#f1e05a" stroke-width="1.5" />
-    <text x="568" y="125" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="12" font-weight="700" fill="#f1e05a">👑 #1 CyberViper</text>
+    <text x="568" y="125" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="12" font-weight="700" fill="#f1e05a">&#x1F451; #1 CyberViper</text>
     <text x="755" y="125" font-family="monospace" font-size="12" font-weight="700" fill="#3fb950">2</text>
     <text x="568" y="145" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" fill="#8b949e">#2 ShadowPulse</text>
     <text x="755" y="145" font-family="monospace" font-size="11" fill="#8b949e">1</text>
@@ -172,7 +170,7 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
     <!-- Podium Champion Card -->
     <g transform="translate(560, 180)">
       <rect x="0" y="0" width="220" height="60" rx="6" fill="rgba(241,224,90,0.08)" stroke="#f1e05a" stroke-width="1" />
-      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="700" fill="#f1e05a">🏆 TOURNAMENT CHAMPION</text>
+      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="11" font-weight="700" fill="#f1e05a">&#x1F3C6; TOURNAMENT CHAMPION</text>
       <text x="12" y="44" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto" font-size="16" font-weight="800" fill="#f0f6fc">CyberViper</text>
       <text x="125" y="44" font-family="monospace" font-size="11" fill="#3fb950">3W - 0L (Undefeated)</text>
     </g>
@@ -197,7 +195,7 @@ export function generateRehearsalEvidenceSvg(key: string, runRecord?: any): stri
   <line x1="16" y1="495" x2="944" y2="495" stroke="#30363d" stroke-width="1" />
   <g transform="translate(36, 522)">
     <text x="0" y="0" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace" font-size="11" fill="#8b949e">
-      🛡️ <tspan fill="#3fb950" font-weight="600">STAGING SIMULATION</tspan> &bull; Zero Real Cashier Risk &bull; Test Accounts Only &bull; SHA-256 Provenance &bull; S3A Rehearsal Engine
+      &#x1F6E1; <tspan fill="#3fb950" font-weight="600">STAGING SIMULATION</tspan> &#8226; Zero Real Cashier Risk &#8226; Test Accounts Only &#8226; SHA-256 Provenance &#8226; S3A Rehearsal Engine
     </text>
     <text x="850" y="0" font-family="monospace" font-size="11" fill="#8b949e" text-anchor="end">
       R2 Bucket: s3a-evidence

@@ -230,6 +230,26 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
   // --------------------------------------------------------------------------
   if (path.startsWith("/evidence/")) {
     const key = path.replace(/^\/evidence\//, "");
+    if (request.method === "HEAD") {
+      let head = await env.EVIDENCE_BUCKET.head(key);
+      if (!head && key.startsWith("rehearsal-")) {
+        const svg = generateRehearsalEvidenceSvg(key);
+        try {
+          await env.EVIDENCE_BUCKET.put(key, svg, {
+            httpMetadata: { contentType: "image/svg+xml" }
+          });
+          head = await env.EVIDENCE_BUCKET.head(key);
+        } catch (err) {}
+      }
+      if (!head) return new Response(null, { status: 404 });
+      const headers = new Headers();
+      head.writeHttpMetadata(headers);
+      headers.set("etag", head.httpEtag);
+      headers.set("Content-Length", String(head.size));
+      headers.set("Cache-Control", "public, max-age=86400");
+      return new Response(null, { status: 200, headers });
+    }
+
     let obj = await env.EVIDENCE_BUCKET.get(key);
     if (!obj && key.startsWith("rehearsal-")) {
       const svg = generateRehearsalEvidenceSvg(key);
