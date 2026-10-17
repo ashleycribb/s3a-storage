@@ -3714,6 +3714,7 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       evidence_links: string[];
       tag: string;
       status: string;
+      first_pr_id?: string;
     }>;
   }> {
     const runs = await this.listRehearsalRuns(projectId);
@@ -3838,9 +3839,17 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
         screenshot_url: verifiedEvidenceLinks[0] || undefined
       }, projectId);
 
-      // Fetch task to get current status
+      // Fetch task and associated PRs
       const tasks = await this.getOrInitTasks();
       const t = tasks.find(item => item.id === fileRes.taskId);
+      const changeRequests = (await this.state.storage.get<ChangeRequest[]>("change_requests")) || [];
+      const associatedPrs = changeRequests.filter(cr => cr.task_id === fileRes.taskId || cr.task_id === t?.id);
+      associatedPrs.sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+      const firstPr = associatedPrs[0]?.id || t?.change_request_id;
+      if (t && firstPr && !t.change_request_id) {
+        t.change_request_id = firstPr;
+        await this.state.storage.put("tasks", tasks);
+      }
 
       filedIssues.push({
         fingerprint: fp,
@@ -3852,9 +3861,13 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
         run_ids: group.run_ids,
         evidence_links: verifiedEvidenceLinks,
         tag: group.tag,
-        status: t?.status || "open"
+        status: t?.status || "open",
+        first_pr_id: firstPr,
       });
     }
+
+    // Rank by how many runs hit it (descending count)
+    filedIssues.sort((a, b) => b.repro_count - a.repro_count);
 
     return {
       total_runs_inspected: runs.length,
