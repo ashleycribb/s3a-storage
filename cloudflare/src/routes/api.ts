@@ -194,7 +194,8 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     path === "/control" ||
     path === "/scheduler-tick" ||
     path === "/close-duplicate-prs" ||
-    path === "/triage-duplicates"
+    path === "/triage-duplicates" ||
+    path === "/operations"
   ) {
     if (
       (path === "/control" && request.method === "POST") ||
@@ -202,6 +203,7 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
       path === "/close-duplicate-prs" ||
       path === "/triage-duplicates"
     ) {
+
       const auth = checkAdminAuth(request, env);
       if (!auth.authorized) {
         return new Response(JSON.stringify({

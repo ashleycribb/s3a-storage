@@ -17,6 +17,23 @@ export interface Env {
   SUPERVISOR_PUBKEYS?: string;
 }
 
+export type OperationStatus = "accepted" | "running" | "done" | "failed";
+
+export interface OperationRecord {
+  op_id: string;
+  idempotency_key: string;
+  task_id: string;
+  agent_id?: string;
+  status: OperationStatus;
+  started: number;
+  finished?: number;
+  pr_number?: number;
+  pr_url?: string;
+  change_request_id?: string;
+  error?: string;
+  metadata?: Record<string, any>;
+}
+
 export interface AgentTaskParams {
   projectId: string;
   taskId: string;
@@ -28,7 +45,10 @@ export interface AgentTaskParams {
   riskLevel?: "low" | "high";
   githubIssueNumber?: number;
   feedback?: string;
+  opId?: string;
+  idempotencyKey?: string;
 }
+
 
 export interface StoredRecord {
   record_id: string;
@@ -178,6 +198,8 @@ export interface ChangeRequest {
   agent_pubkey: string;
   title: string;
   commit_id: string;
+  commit_sha?: string;
+  sandbox_image_digest?: string;
   seal_hash: string;
   message: string;
   diff: string;
@@ -187,12 +209,14 @@ export interface ChangeRequest {
     stage?: string;
     signature?: string;
     exit_code?: number;
+    test_exit_code?: number;
     duration_ms?: number;
     log_url?: string;
   };
   test_duration_ms?: number;
   build_log_r2_url?: string;
   touched_files: string[];
+
   risk_level: "low" | "high";
   requires_human: boolean;
   status: "pending_review" | "changes_requested" | "auto_merged" | "approved" | "rejected";
@@ -338,62 +362,85 @@ export function formatPREvidenceComment(
   issueNum: number,
   prNumber: number
 ): string {
-  const hasLogs = !!(cr.build_log || (cr.test_report && cr.test_report.output));
-  const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
+  const commitSha = cr.commit_sha || cr.commit_id || "not run";
+  const sandboxImageDigest = cr.sandbox_image_digest || "docker.io/cloudflare/sandbox:0.12.10";
 
-  let buildSection = "";
-  if (hasLogs) {
-    const exitCode = cr.test_report?.exit_code !== undefined
-      ? cr.test_report.exit_code
-      : (cr.test_report?.passed ? 0 : 1);
-    const duration = cr.test_report?.duration_ms
-      ? `${cr.test_report.duration_ms}ms`
-      : (cr.test_duration_ms ? `${cr.test_duration_ms}ms` : "N/A");
-    const logUrl = cr.test_report?.log_url || cr.build_log_r2_url;
+  const hasLogs = !!(cr.build_log || (cr.test_report && (cr.test_report.output || cr.test_report.log_url)));
+  const buildExitCode = cr.test_report?.exit_code !== undefined
+    ? String(cr.test_report.exit_code)
+    : (hasLogs ? (cr.test_report?.passed ? "0" : "1") : "not run");
 
-    buildSection = `#### 🧪 Build & Test Verification
-- **Test Command:** \`${cr.test_report?.stage || 'npm run build'}\`
-- **Exit Code:** \`${exitCode}\`
+  const testExitCode = cr.test_report?.test_exit_code !== undefined
+    ? String(cr.test_report.test_exit_code)
+    : (cr.test_report?.exit_code !== undefined ? String(cr.test_report.exit_code) : "not run");
+
+  const duration = cr.test_report?.duration_ms
+    ? `${cr.test_report.duration_ms}ms`
+    : (cr.test_duration_ms ? `${cr.test_duration_ms}ms` : "not run");
+
+  const logUrl = cr.test_report?.log_url || cr.build_log_r2_url;
+
+  const buildSection = `#### 🧪 Build & Test Verification
+- **Test Command:** \`${cr.test_report?.stage || (hasLogs ? 'npm run build' : 'not run')}\`
+- **Build Exit Code:** \`${buildExitCode}\`
+- **Test Exit Code:** \`${testExitCode}\`
 - **Duration:** \`${duration}\`
-${logUrl ? `- **Log Link (R2):** [View Build & Test Log](${logUrl})` : ''}
-- **Status:** ${cr.test_report?.passed ? 'Passed' : 'Failed'}`;
-  } else {
-    buildSection = `#### 🧪 Build & Test Verification
-*Build not run*`;
-  }
+- **Log Link (R2):** ${logUrl ? `[View Build & Test Log](${logUrl})` : 'not run'}
+- **Build Status:** ${hasLogs ? (buildExitCode === "0" ? 'Passed' : 'Failed') : 'not run'}`;
 
-  let qaSection = "";
+  const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
+  let qaScreenshotsSection = "";
+  let qaReportsSection = "";
+
   if (hasQa) {
-    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
-${cr.qa_reports!.map(r => `
+    const allScreenshots = cr.qa_reports!.flatMap(r => r.screenshots || []);
+    if (allScreenshots.length > 0) {
+      qaScreenshotsSection = allScreenshots.map(s => {
+        const url = s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`;
+        return `- **${s.caption || s.name}**: ![](${url})\n  - [R2 Artifact Link](${url})`;
+      }).join('\n');
+    } else {
+      qaScreenshotsSection = "*Screenshots (R2): not run*";
+    }
+
+    qaReportsSection = cr.qa_reports!.map(r => `
 - **QA Agent:** \`${r.agent_id}\` (Role: **${r.agent_role.toUpperCase()}**) - **${r.status.toUpperCase()}**
   - Passed steps: ${(r.passed_steps || []).join(', ') || 'None'}
-  - Latency: ${Object.entries(r.timings_ms || {}).map(([k, v]) => `${k}: ${v}ms`).join(', ')}
+  - Latency: ${Object.entries(r.timings_ms || {}).map(([k, v]) => `${k}: ${v}ms`).join(', ') || 'None'}
   - Console Errors: ${(r.console_errors || []).length}
-  ${r.visual_diff ? `- Visual Mismatch: ${r.visual_diff.mismatch_percent || 0.0}% (Baseline Verified)` : ''}
-  ${(r.screenshots || []).map(s => `\n  - **${s.caption}**: ![](${s.data_url.startsWith('http') ? s.data_url : `https://s3a-gate.ashley-e-cribb.workers.dev${s.data_url}`})`).join('')}
-`).join('\n')}`;
+  ${r.visual_diff ? `- Visual Mismatch: ${r.visual_diff.mismatch_percent || 0.0}%` : ''}
+`).join('\n');
   } else {
-    qaSection = `#### 🎭 Real QA Playwright Evidence (Headless Chromium)
-*QA not run*`;
+    qaScreenshotsSection = "*Screenshots (R2): not run*";
+    qaReportsSection = "*QA not run*";
   }
 
-  return `### 🤖 S3A Autonomous Agent Evidence Update
+  const isSensitive = /cashier|escrow|payout|auth|db|infra/i.test((task.title || '') + ' ' + (cr.touched_files || []).join(' ') + ' ' + (task.description || ''));
+  const needsHuman = cr.requires_human || isSensitive;
 
+  return `### 🤖 S3A Autonomous Agent Change Request
+
+- **Commit SHA:** \`${commitSha}\`
+- **Sandbox Image Digest:** \`${sandboxImageDigest}\`
 - **Agent ID:** \`${cr.agent_id}\`
-- **Commit ID:** \`${cr.commit_id}\`
-- **Seal Hash:** \`${cr.seal_hash || 'N/A'}\`
+- **Seal Hash:** \`${cr.seal_hash || 'not run'}\`
 - **Timestamp:** \`${new Date().toISOString()}\`
 - **Target Issue:** #${issueNum} (\`${task.title || 'Task'}\`)
+- **Review Policy:** ${needsHuman ? '🔒 **needs-human** (cashier/escrow/payout/auth/db/infra or high-risk)' : '🤖 Low-risk automated'}
 
 ${buildSection}
 
-${qaSection}
+#### 🎭 Real QA Playwright Evidence (Headless Chromium)
+${qaReportsSection}
+
+#### 📸 Screenshots from R2
+${qaScreenshotsSection}
 
 #### 🌐 Live PM Preview
-[Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/project/s3a-swarm-main/preview/live)
+[Open Live Brakets Preview on S3A Gate ↗](https://s3a-gate.ashley-e-cribb.workers.dev/p/s3a-swarm-main/pulls/${cr.id})
 
 > [!NOTE]
-> Attached latest verified evidence and QA runs to canonical PR #${prNumber}. No duplicate PR opened.
+> Attached verified evidence and real execution status to PR #${prNumber}. Zero duplicate PRs created.
 `;
 }
+

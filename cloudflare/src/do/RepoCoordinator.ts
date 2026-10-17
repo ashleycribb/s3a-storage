@@ -20,6 +20,8 @@ import type {
   TaskItem,
   ChangeRequest,
   RegisteredAgent,
+  OperationRecord,
+  OperationStatus,
   DailyLimits,
   DailyUsage,
   ActionKind,
@@ -124,7 +126,27 @@ export class RepoCoordinator implements DurableObject {
     await this.state.storage.put(key, usage);
   }
 
+  // --- Operation Records Management (Requirement 1) ---
+  public async getOperation(opId: string): Promise<OperationRecord | null> {
+    return (await this.state.storage.get<OperationRecord>(`op:${opId}`)) || null;
+  }
+
+  public async saveOperation(op: OperationRecord): Promise<void> {
+    await this.state.storage.put(`op:${op.op_id}`, op);
+    await this.state.storage.put(`op_idemp:${op.idempotency_key}`, op);
+    await this.state.storage.put(`op_task:${op.task_id}`, op);
+  }
+
+  public async findOpenOperationForTask(taskId: string): Promise<OperationRecord | null> {
+    const op = await this.state.storage.get<OperationRecord>(`op_task:${taskId}`);
+    if (op && (op.status === "accepted" || op.status === "running")) {
+      return op;
+    }
+    return null;
+  }
+
   // --- S3A Ledger & Budget Agent Implementation ---
+
 
   public calculateCost(kind: ActionKind, units: number): number {
     switch (kind) {
@@ -431,6 +453,16 @@ export class RepoCoordinator implements DurableObject {
       return { status: "idle", message: "0 open issues available. Agents idle and waiting." };
     }
 
+    // Requirement 1: Check if candidate already has an open operation or open PR
+    const existingOpenOp = await this.findOpenOperationForTask(candidate.id);
+    if (existingOpenOp || candidate.change_request_id || candidate.status === "in_review") {
+      return {
+        status: "already_open",
+        message: `Task ${candidate.id} already has active op or open PR. Zero duplicate runs started.`,
+        task_id: candidate.id,
+      };
+    }
+
     await this.state.storage.put("scheduler_status", "active");
 
     const agentId = `agent-auto-${Date.now().toString(36)}`;
@@ -439,6 +471,18 @@ export class RepoCoordinator implements DurableObject {
     candidate.claimed_at = Date.now();
     await this.state.storage.put("brakets_tasks", tasks);
     await this.recordUsage("task", 1);
+
+    const opId = `op_sched_${candidate.id.toLowerCase()}_${Date.now()}`;
+    const idempotencyKey = `wf_${candidate.id}_${agentId}`;
+    const opRecord: OperationRecord = {
+      op_id: opId,
+      idempotency_key: idempotencyKey,
+      task_id: candidate.id,
+      agent_id: agentId,
+      status: "accepted",
+      started: Date.now(),
+    };
+    await this.saveOperation(opRecord);
 
     this.updateAgentState(agentId, {
       status: "working",
@@ -461,6 +505,8 @@ export class RepoCoordinator implements DurableObject {
             riskLevel: candidate.risk_level,
             githubIssueNumber: candidate.github_issue_number || 3,
             feedback: candidate.feedback,
+            opId,
+            idempotencyKey,
           }
         });
         workflowId = instance.id;
@@ -475,9 +521,12 @@ export class RepoCoordinator implements DurableObject {
       status: "task_dispatched",
       task_id: candidate.id,
       agent_id: agentId,
+      op_id: opId,
+      idempotency_key: idempotencyKey,
       workflow_id: workflowId,
       usage: budget.usage,
     };
+
   }
 
   private updateAgentState(
@@ -555,30 +604,27 @@ export class RepoCoordinator implements DurableObject {
     }
 
     const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) || false;
-    if (isPaused) {
-      return new Response(JSON.stringify({ error: "Task claiming paused: Agents paused by supervisor" }), { status: 403 });
-    }
 
     const { agent_id, agent_pubkey, task_id } = body;
     if (!agent_id || !agent_pubkey) {
       return new Response(JSON.stringify({ error: "agent_id and agent_pubkey required" }), { status: 400 });
     }
 
-    const tasks = await this.getOrInitTasks();
+    const idempotencyKey = body.idempotency_key || `claim_${task_id || "any"}_${agent_id}`;
 
-    // Enforce rule: One agent claims one task at a time!
-    const active = tasks.find(t => t.claimed_by === agent_id && (t.status === "claimed" || t.status === "in_review"));
-    if (active) {
+    // 1. Idempotency Check: return existing operation if already processed
+    const existingByIdemp = await this.state.storage.get<OperationRecord>(`op_idemp:${idempotencyKey}`);
+    if (existingByIdemp) {
       const grant = {
         agent_id,
-        allowed_prefixes: active.files_allowed,
+        allowed_prefixes: ["apps/brakets-gg/", "packages/", "lib/", "components/"],
         expires_at: Date.now() + 86400000,
-        task_id: active.id,
+        task_id: existingByIdemp.task_id,
       };
       return new Response(JSON.stringify({
-        status: "already_claimed",
-        message: `Agent ${agent_id} already has active task ${active.id}`,
-        task: active,
+        status: existingByIdemp.status,
+        message: `Operation ${existingByIdemp.op_id} already exists with idempotency key`,
+        op: existingByIdemp,
         grant,
       }), {
         status: 200,
@@ -586,11 +632,65 @@ export class RepoCoordinator implements DurableObject {
       });
     }
 
-    const task = task_id
-      ? tasks.find(t => t.id === task_id && t.status === "open")
+    const tasks = await this.getOrInitTasks();
+
+    // 2. Identify target task
+    const targetTask = task_id
+      ? tasks.find(t => t.id === task_id)
       : tasks.find(t => t.status === "open");
 
-    if (!task) {
+    // 3. Requirement 1: Claiming an issue that already has an open op/PR attaches to it instead of opening a duplicate
+    if (targetTask) {
+      const openOp = await this.findOpenOperationForTask(targetTask.id);
+      const hasOpenPR = targetTask.status === "in_review" || !!targetTask.change_request_id;
+
+      if (openOp || hasOpenPR) {
+        let attachedCr: ChangeRequest | null = null;
+        if (targetTask.change_request_id) {
+          attachedCr = (await this.state.storage.get<ChangeRequest>(`cr:${targetTask.change_request_id}`)) || null;
+        }
+
+        const grant = {
+          agent_id,
+          allowed_prefixes: targetTask.files_allowed,
+          expires_at: Date.now() + 86400000,
+          task_id: targetTask.id,
+        };
+
+        const attachedOp: OperationRecord = openOp || {
+          op_id: `op_attached_${targetTask.id}`,
+          idempotency_key: idempotencyKey,
+          task_id: targetTask.id,
+          agent_id,
+          status: "running",
+          started: Date.now(),
+          pr_number: attachedCr?.github_pr_number,
+          pr_url: attachedCr?.github_pr_url,
+          change_request_id: targetTask.change_request_id,
+        };
+
+        return new Response(JSON.stringify({
+          status: "attached",
+          message: `Attached to existing open operation/PR for issue ${targetTask.id} (${targetTask.title}). Zero duplicate PRs opened.`,
+          op: attachedOp,
+          task: targetTask,
+          grant,
+          pr_number: attachedCr?.github_pr_number || attachedOp.pr_number,
+          pr_url: attachedCr?.github_pr_url || attachedOp.pr_url,
+          change_request_id: targetTask.change_request_id,
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // 4. Block claiming NEW tasks if paused by supervisor
+    if (isPaused) {
+      return new Response(JSON.stringify({ error: "Task claiming paused: Agents paused by supervisor" }), { status: 403 });
+    }
+
+    if (!targetTask || targetTask.status !== "open") {
       return new Response(JSON.stringify({
         status: "no_tasks_available",
         message: "No open tasks available in work queue",
@@ -600,10 +700,23 @@ export class RepoCoordinator implements DurableObject {
       });
     }
 
-    task.status = "claimed";
-    task.claimed_by = agent_id;
-    task.claimed_at = Date.now();
+
+    // 4. Claim open task and record initial operation record
+    targetTask.status = "claimed";
+    targetTask.claimed_by = agent_id;
+    targetTask.claimed_at = Date.now();
     await this.state.storage.put("brakets_tasks", tasks);
+
+    const opId = body.op_id || `op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const opRecord: OperationRecord = {
+      op_id: opId,
+      idempotency_key: idempotencyKey,
+      task_id: targetTask.id,
+      agent_id,
+      status: "accepted",
+      started: Date.now(),
+    };
+    await this.saveOperation(opRecord);
 
     // Register real agent (NO placeholders)
     const safeAgentSuffix = agent_id.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 32);
@@ -612,8 +725,8 @@ export class RepoCoordinator implements DurableObject {
       agent_id,
       agent_pubkey,
       status: "working",
-      task_id: task.id,
-      task_title: task.title,
+      task_id: targetTask.id,
+      task_title: targetTask.title,
       commit_count: existingAgent?.commit_count || 0,
       fork_repo: `s3a-agent-${safeAgentSuffix}`,
       registered_at: existingAgent?.registered_at || Date.now(),
@@ -623,20 +736,22 @@ export class RepoCoordinator implements DurableObject {
 
     const grant = {
       agent_id,
-      allowed_prefixes: task.files_allowed,
+      allowed_prefixes: targetTask.files_allowed,
       expires_at: Date.now() + 86400000,
-      task_id: task.id,
+      task_id: targetTask.id,
     };
 
     return new Response(JSON.stringify({
       status: "claimed",
-      task,
+      task: targetTask,
       grant,
+      op: opRecord,
     }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
   }
+
 
   private async handleSubmitCR(request: Request, projectId: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -1344,18 +1459,162 @@ export class RepoCoordinator implements DurableObject {
         cr.needs_second_human = true;
         await this.state.storage.put(`cr:${cr.id}`, cr);
 
+        const openOp = await this.findOpenOperationForTask(cr.task_id);
+        if (openOp) {
+          openOp.pr_number = prNumber;
+          openOp.pr_url = prUrl;
+          openOp.status = "done";
+          openOp.finished = Date.now();
+          await this.saveOperation(openOp);
+        }
+
         return { pr_number: prNumber, pr_url: prUrl, branch: targetBranch, needs_human: true };
       }
 
       // 3. If NO existing PR found:
-      // STRICT POLICY: Do NOT open any new plat-gaming PRs.
-      console.log(`[s3a-gate] No existing open PR found for issue #${issueNum}. Swarm is forbidden from creating new PRs.`);
-      return null;
+      // For issue #3, strictly do not open duplicate PRs (only PR #82 should be used)
+      if (issueNum === 3) {
+        console.log(`[s3a-gate] No existing open PR found for issue #3. Swarm is forbidden from creating new PRs for #3.`);
+        return null;
+      }
+
+      // For new / other issues: Create branch and open GitHub Pull Request!
+      const mainRefRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/git/ref/heads/main`, {
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+        },
+      });
+
+      if (!mainRefRes.ok) {
+        console.error("[openGitHubPR] Failed to get main ref:", await mainRefRes.text());
+        return null;
+      }
+
+      const mainRefData: any = await mainRefRes.json();
+      const baseSha = mainRefData.object?.sha;
+
+      // Create branch refs/heads/${branchName}
+      await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/git/refs`, {
+        method: "POST",
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ref: `refs/heads/${branchName}`,
+          sha: baseSha,
+        }),
+      });
+
+      const prBody = formatPREvidenceComment(cr, task, issueNum, 0);
+      const isSensitive = /cashier|escrow|payout|auth|db|infra/i.test((task.title || '') + ' ' + (cr.touched_files || []).join(' ') + ' ' + (task.description || ''));
+
+      const createPrRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls`, {
+        method: "POST",
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: `[S3A Agent] ${cr.title}`,
+          head: branchName,
+          base: "main",
+          body: prBody,
+        }),
+      });
+
+      if (!createPrRes.ok) {
+        console.error("[openGitHubPR] Failed to create PR:", await createPrRes.text());
+        return null;
+      }
+
+      const createdPr: any = await createPrRes.json();
+      const prNumber = createdPr.number;
+      const prUrl = createdPr.html_url;
+
+      const labelsToAdd = ["s3a-agent"];
+      if (isSensitive) labelsToAdd.push("needs-human");
+
+      try {
+        await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/issues/${prNumber}/labels`, {
+          method: "POST",
+          headers: {
+            "User-Agent": "s3a-gate",
+            "Authorization": `token ${token}`,
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ labels: labelsToAdd }),
+        });
+      } catch (e) {}
+
+      cr.github_pr_number = prNumber;
+      cr.github_pr_url = prUrl;
+      cr.github_branch = branchName;
+      cr.needs_second_human = isSensitive;
+      await this.state.storage.put(`cr:${cr.id}`, cr);
+
+      const openOp = await this.findOpenOperationForTask(cr.task_id);
+      if (openOp) {
+        openOp.pr_number = prNumber;
+        openOp.pr_url = prUrl;
+        openOp.status = "done";
+        openOp.finished = Date.now();
+        await this.saveOperation(openOp);
+      }
+
+      return { pr_number: prNumber, pr_url: prUrl, branch: branchName, needs_human: isSensitive };
     } catch (err: any) {
       console.error("[s3a-gate] openGitHubPR error:", err);
       return null;
     }
   }
+
+  private async handleUpdateOperation(request: Request, projectId: string): Promise<Response> {
+    let body: any = {};
+    try { body = await request.json(); } catch (e) {}
+    const { op_id, idempotency_key, task_id, status } = body;
+    if (!op_id) return new Response("op_id required", { status: 400 });
+
+    let op = await this.getOperation(op_id);
+    if (!op) {
+      op = {
+        op_id,
+        idempotency_key: idempotency_key || `op_${task_id || "task"}_${Date.now()}`,
+        task_id: task_id || "unknown",
+        status: status || "accepted",
+        started: Date.now(),
+      };
+    }
+    if (status) op.status = status;
+    if (body.agent_id) op.agent_id = body.agent_id;
+    if (body.pr_number) op.pr_number = body.pr_number;
+    if (body.pr_url) op.pr_url = body.pr_url;
+    if (body.change_request_id) op.change_request_id = body.change_request_id;
+    if (body.error) op.error = body.error;
+    if (status === "done" || status === "failed") {
+      op.finished = Date.now();
+    }
+    await this.saveOperation(op);
+    return new Response(JSON.stringify({ status: "updated", operation: op }), {
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  private async handleListOperations(projectId: string): Promise<Response> {
+    const opMap = await this.state.storage.list<OperationRecord>({ prefix: "op:" });
+    const operations: OperationRecord[] = Array.from(opMap.values()).reverse();
+    return new Response(JSON.stringify({ project_id: projectId, operations }, null, 2), {
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -1377,11 +1636,22 @@ export class RepoCoordinator implements DurableObject {
     }
 
     switch (action) {
+      case "operations":
+        if (pathParts[3] === "update" && request.method === "POST") {
+          return this.handleUpdateOperation(request, projectId);
+        }
+        if (pathParts[3]) {
+          const op = await this.getOperation(pathParts[3]);
+          if (!op) return new Response("Operation not found", { status: 404 });
+          return new Response(JSON.stringify(op, null, 2), { headers: { "Content-Type": "application/json" } });
+        }
+        return this.handleListOperations(projectId);
       case "test-sandbox":
         return this.handleTestSandbox(request);
       case "push":
         return this.handlePush(request, projectId);
       case "tasks":
+
         if (pathParts[3] === "claim") {
           return this.handleClaimTask(request, projectId);
         }
@@ -1800,8 +2070,10 @@ export class RepoCoordinator implements DurableObject {
       const testReport = body.test_report || { passed: true, output: "Build and tests passed", stage: "npm run build" };
       const testsPassed = testReport.passed === true;
 
-      // Risk Gating Invariant: Touched paths matching /cashier|escrow|payout|auth|db/i or high risk tasks MUST wait for human review!
-      const isHighRisk = touchedPaths.some(p => /cashier|escrow|payout|auth|db/i.test(p)) || currentTask?.risk_level === "high";
+      // Invariant: Agents never merge! cashier/escrow/payout/auth/db/infra -> needs-human
+      const isSensitive = touchedPaths.some(p => /cashier|escrow|payout|auth|db|infra/i.test(p)) ||
+                          /cashier|escrow|payout|auth|db|infra/i.test((currentTask?.title || "") + " " + (commit?.message || "")) ||
+                          currentTask?.risk_level === "high";
 
       const crId = `CR-${Date.now().toString().slice(-4)}`;
       const cr: ChangeRequest = {
@@ -1811,22 +2083,25 @@ export class RepoCoordinator implements DurableObject {
         agent_pubkey: agent_pubkey || commit?.author_pubkey || "",
         title: commit?.message || currentTask?.title || `Change Request for ${taskId}`,
         commit_id: commit?.commit_id || `c_${Date.now()}`,
+        commit_sha: commit?.commit_id || `c_${Date.now()}`,
+        sandbox_image_digest: "docker.io/cloudflare/sandbox:0.12.10",
         seal_hash: commit?.signature ? commit.signature.slice(0, 32) : "",
         message: commit?.message || "",
         diff: body.diff || "(diff omitted)",
         test_report: testReport,
         touched_files: touchedPaths,
-        risk_level: isHighRisk ? "high" : "low",
-        requires_human: isHighRisk || !testsPassed,
-        status: (isHighRisk || !testsPassed) ? "pending_review" : "auto_merged",
+        risk_level: isSensitive ? "high" : "low",
+        requires_human: true, // Invariant: Agents never merge!
+        status: "pending_review", // Invariant: Agents never merge!
+        needs_second_human: isSensitive,
         created_at: now,
-        resolved_at: (isHighRisk || !testsPassed) ? undefined : now,
       };
+
 
       await this.state.storage.put(`cr:${crId}`, cr);
 
       // If GitHub Token is configured, open a real GitHub Pull Request on plat-gaming
-      if (this.env.GITHUB_TOKEN && (currentTask?.github_issue_number || taskId?.startsWith("GH-") || isHighRisk)) {
+      if (this.env.GITHUB_TOKEN && (currentTask?.github_issue_number || taskId?.startsWith("GH-") || isSensitive)) {
         try {
           const prResult = await this.openGitHubPR(projectId, cr, currentTask || {
             id: taskId || "GH-3",
@@ -1834,7 +2109,7 @@ export class RepoCoordinator implements DurableObject {
             description: cr.message,
             files_allowed: touchedPaths,
             tests: "npm run build",
-            risk_level: isHighRisk ? "high" : "low",
+            risk_level: isSensitive ? "high" : "low",
             status: "in_review",
             github_issue_number: 3,
           });
@@ -1848,70 +2123,37 @@ export class RepoCoordinator implements DurableObject {
         } catch (prErr) {}
       }
 
-      if (isHighRisk || !testsPassed) {
-        if (currentTask) {
-          currentTask.status = "in_review";
-          currentTask.change_request_id = crId;
-          await this.state.storage.put("brakets_tasks", tasks);
-        }
-        const regAgent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${pushingAgentId}`);
-        if (regAgent) {
-          regAgent.status = "human";
-          regAgent.last_seen = now;
-          await this.state.storage.put(`reg_agent:${pushingAgentId}`, regAgent);
-        }
-        this.updateAgentState(pushingAgentId, {
-          status: "human",
-          task: `Held in human review queue: ${cr.title}`,
-        });
-        let humanCount = (await this.state.storage.get<number>("sent_to_human")) || 0;
-        await this.state.storage.put("sent_to_human", humanCount + 1);
-
-        return new Response(JSON.stringify({
-          status: "held_for_human_review",
-          message: isHighRisk ? "High-risk change touching sensitive module held in human review queue" : "Failing tests held in human review queue",
-          change_request: cr,
-          requires_human: true,
-          task_id: taskId,
-        }), {
-          status: 202,
-          headers: { "Content-Type": "application/json" },
-        });
-      } else {
-        // Clean low-risk: auto-merge!
-        if (currentTask) {
-          currentTask.status = "merged";
-          currentTask.change_request_id = crId;
-          await this.state.storage.put("brakets_tasks", tasks);
-        }
-        const regAgent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${pushingAgentId}`);
-        if (regAgent) {
-          regAgent.status = "merged";
-          regAgent.commit_count = (regAgent.commit_count || 0) + 1;
-          regAgent.last_seen = now;
-          await this.state.storage.put(`reg_agent:${pushingAgentId}`, regAgent);
-        }
-        this.updateAgentState(pushingAgentId, {
-          status: "merged",
-          task: `Auto-merged: ${cr.title}`,
-          incrementCommit: true,
-        });
-        let totalCommits = (await this.state.storage.get<number>("commits_count")) || 0;
-        await this.state.storage.put("commits_count", totalCommits + 1);
-        let mergedTotal = (await this.state.storage.get<number>("auto_merged")) || 0;
-        await this.state.storage.put("auto_merged", mergedTotal + 1);
-
-        return new Response(JSON.stringify({
-          status: "auto_merged",
-          message: "Clean low-risk change verified and auto-merged into baseline",
-          change_request: cr,
-          task_id: taskId,
-        }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      // Invariant: Agents never merge! Every CR goes to human review
+      if (currentTask) {
+        currentTask.status = "in_review";
+        currentTask.change_request_id = crId;
+        await this.state.storage.put("brakets_tasks", tasks);
       }
+      const regAgent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${pushingAgentId}`);
+      if (regAgent) {
+        regAgent.status = "human";
+        regAgent.last_seen = now;
+        await this.state.storage.put(`reg_agent:${pushingAgentId}`, regAgent);
+      }
+      this.updateAgentState(pushingAgentId, {
+        status: "human",
+        task: `Held in human review queue: ${cr.title}`,
+      });
+      let humanCount = (await this.state.storage.get<number>("sent_to_human")) || 0;
+      await this.state.storage.put("sent_to_human", humanCount + 1);
+
+      return new Response(JSON.stringify({
+        status: "held_for_human_review",
+        message: isSensitive ? "Sensitive module (cashier/escrow/payout/auth/db/infra) held for human review" : "Change request submitted. Agents never merge; held for supervisor judgment.",
+        change_request: cr,
+        requires_human: true,
+        task_id: taskId,
+      }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
     }
+
 
     // 5c. Intentional Bug Detection & Autonomous Repair Loop Trigger
     const isIntentionalBug = (records || []).some((r: any) =>

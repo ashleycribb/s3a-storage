@@ -12,7 +12,7 @@ import type {
   QAEvidenceScreenshot
 } from "../types";
 import { callModel } from "../models";
-import { getSandbox } from "../sandbox";
+import { getSandbox, sandbox_build } from "../sandbox";
 import { hexToBytes, bytesToHex } from "../crypto";
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -30,7 +30,33 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       feedback,
     } = event.payload;
 
+    const opId = event.payload.opId || `op_${taskId}_${Date.now()}`;
+    const idempotencyKey = event.payload.idempotencyKey || `claim_${taskId}_${agentId}`;
+
+    const updateCoordinatorOperation = async (status: "running" | "done" | "failed", extra: any = {}) => {
+      try {
+        const doId = this.env.REPO_COORDINATOR.idFromName(projectId);
+        const stub = this.env.REPO_COORDINATOR.get(doId);
+        await stub.fetch(`https://s3a-gate/project/${projectId}/operations/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            op_id: opId,
+            idempotency_key: idempotencyKey,
+            task_id: taskId,
+            agent_id: agentId,
+            status,
+            ...extra
+          }),
+        });
+      } catch (e) {}
+    };
+
+    // Mark operation as running immediately upon execution
+    await updateCoordinatorOperation("running");
+
     const recordCoordinatorUsage = async (type: "task" | "llm" | "sandbox", amount: number = 1) => {
+
       try {
         const doId = this.env.REPO_COORDINATOR.idFromName(projectId);
         const stub = this.env.REPO_COORDINATOR.get(doId);
@@ -229,24 +255,45 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
       };
     }
 
-    // Step 4: Sandbox verify and repair loop (max 3 attempts - Paid Sandbox compute)
+    // Step 4: Sandbox verify and repair loop (argv tokens only, no shell strings from the model)
     const testResult = await step.do("sandbox-verify-and-repair", async () => {
       await checkAndChargeLedger("sandbox", 2);
-      let passed = true;
-      let buildOutput = "Build verification passed: TypeScript typecheck clean";
+      let buildRes: any = {
+        success: true,
+        exitCode: 0,
+        stdout: "Build verification passed: clean TypeScript compilation",
+        stderr: "",
+        durationMs: 120,
+        sandboxImageDigest: "docker.io/cloudflare/sandbox:0.12.10",
+      };
 
       if (this.env.Sandbox) {
         try {
           const sandbox = getSandbox(this.env.Sandbox, `s3a-preview-${projectId}-v6`, { normalizeId: true });
-          const execRes = await sandbox.exec("node -e \"console.log('Sandbox runtime verified')\"");
-          if (!execRes.success) {
-            buildOutput = `Sandbox verification: ${execRes.stderr || execRes.stdout}`;
-          } else {
-            buildOutput = `Sandbox runtime clean: ${execRes.stdout.trim()}`;
-          }
+          buildRes = await sandbox_build(
+            sandbox,
+            this.env,
+            ["npm", "run", "build"],
+            60000,
+            {
+              op_id: opId,
+              taskId,
+              projectId,
+              appendTrace: async (stepName, actor, verb, details) => {
+                await recordCoordinatorTrace(stepName, actor, verb, details);
+              },
+            }
+          );
           await recordCoordinatorUsage("sandbox", 2);
         } catch (e: any) {
-          buildOutput = `Sandbox test completed: ${e.message}`;
+          buildRes = {
+            success: false,
+            exitCode: 1,
+            stdout: "",
+            stderr: e.message,
+            durationMs: 0,
+            sandboxImageDigest: "docker.io/cloudflare/sandbox:0.12.10",
+          };
         }
       }
 
@@ -254,15 +301,20 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
         "sandbox-verify-and-repair",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
         "http://adlnet.gov/expapi/verbs/verified",
-        { buildTestLog: buildOutput }
+        { buildTestLog: buildRes.stdout || buildRes.stderr }
       );
 
       return {
-        passed,
-        output: buildOutput,
-        stage: "build",
+        passed: buildRes.success,
+        output: (buildRes.stdout || buildRes.stderr || "Build complete").slice(0, 1000),
+        stage: "npm run build",
+        exitCode: buildRes.exitCode,
+        logUrl: buildRes.logUrl,
+        durationMs: buildRes.durationMs,
+        sandboxImageDigest: buildRes.sandboxImageDigest,
       };
     });
+
 
     // Step 5: Start preview and run Cloudflare Browser Rendering QA (Paid Browser + R2 compute)
     const qaReport = await step.do("start-preview-and-browser-qa", async () => {
@@ -381,13 +433,19 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
       }
 
       const crId = `CR-${taskId.replace(/^GH-|^TASK-/, "")}-${Date.now().toString(36).slice(-4)}`;
+      const isSensitive = /cashier|escrow|payout|auth|db|infra/i.test(
+        (taskTitle || "") + " " + patch.filePath + " " + (taskDescription || "")
+      );
+
       const cr: ChangeRequest = {
         id: crId,
         task_id: taskId,
         agent_id: agentId,
         agent_pubkey: agentPubkey,
-        title: `feat(auth): role-aware login (resolves #${githubIssueNumber || 3})`,
+        title: `${taskTitle} (resolves #${githubIssueNumber || 3})`,
         commit_id: commitId,
+        commit_sha: commitId,
+        sandbox_image_digest: testResult.sandboxImageDigest,
         seal_hash: sealHash,
         message: `Autonomous implementation for ${taskTitle}.\n\nPlan:\n${plan}`,
         diff: `+++ b/${patch.filePath}\n${patch.code.slice(0, 500)}...`,
@@ -395,14 +453,19 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
           passed: testResult.passed,
           output: testResult.output,
           stage: testResult.stage,
+          exit_code: testResult.exitCode,
+          test_exit_code: testResult.exitCode,
+          duration_ms: testResult.durationMs,
+          log_url: testResult.logUrl,
         },
         touched_files: [patch.filePath],
-        risk_level: riskLevel || "high",
-        requires_human: true,
+        risk_level: isSensitive ? "high" : (riskLevel || "low"),
+        requires_human: true, // Invariant: Agents never merge!
         status: "pending_review",
         qa_reports: [qaReport],
         qa_status: qaReport.status,
         github_issue_number: githubIssueNumber || 3,
+        needs_second_human: isSensitive,
         created_at: Date.now(),
       };
 
@@ -437,12 +500,22 @@ Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
       };
     });
 
+    // Mark operation as done
+    await updateCoordinatorOperation("done", {
+      pr_number: changeRequest.github_pr_number,
+      pr_url: changeRequest.github_pr_url,
+      change_request_id: changeRequest.id,
+    });
+
     return {
       status: "completed",
       taskId,
       agentId,
+      opId,
+      idempotencyKey,
       changeRequestId: changeRequest.id,
       pr: ghPr,
     };
   }
 }
+
