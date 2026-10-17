@@ -192,6 +192,11 @@ export interface TaskItem {
   error_fingerprint?: string;
   rehearsal_run_id?: string;
   repro_count?: number;
+  tags?: string[]; // e.g. ["needs-page"], ["needs-logic"]
+  journey_step?: string;
+  expected_result?: string;
+  actual_result?: string;
+  screenshot_url?: string;
 }
 
 export interface ChangeRequest {
@@ -240,13 +245,25 @@ export interface ChangeRequest {
   resolved_at?: number;
   before_trace_id?: string;
   after_trace_id?: string;
+  tags?: string[]; // e.g. ["needs-page"], ["needs-logic"]
+  proposed_page_design?: string;
+  proposed_logic_design?: string;
+  journey_step?: string;
 }
 
 // ----------------------------------------------------------------------------
 // S3A Rehearsal: Simulated Tournament Production Readiness Types
 // ----------------------------------------------------------------------------
 export type RehearsalTournamentSize = 4 | 8 | 16;
-export type RehearsalScenario = "happy_path" | "bad_score" | "dispute";
+export type RehearsalScenario =
+  | "happy_path"
+  | "bad_score"
+  | "dispute"
+  | "missing_route"
+  | "broken_control"
+  | "cant_enter_score"
+  | "cant_advance_winner"
+  | "cant_resolve_dispute";
 export type RehearsalStageStatus = "passed" | "failed" | "disputed" | "skipped";
 
 export interface RehearsalStage {

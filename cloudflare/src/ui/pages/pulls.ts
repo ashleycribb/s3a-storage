@@ -92,6 +92,8 @@ export function renderPullsPage(options: PullsPageOptions): string {
                           ${cr.title}
                         </a>
                         ${isApproved ? '<span class="gh-badge gh-badge-purple">Merged</span>' : isRejected ? '<span class="gh-badge gh-badge-danger">Rejected</span>' : '<span class="gh-badge gh-badge-success">Open (Review)</span>'}
+                        ${(cr.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
+                        ${(cr.tags || []).includes("needs-logic") ? '<span class="gh-badge gh-badge-yellow" style="font-size: 11px;">⚙️ needs-logic</span>' : ''}
                         ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
                       </div>
                       <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
@@ -204,6 +206,8 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
               <span class="gh-badge gh-badge-success">Open (Ready for Judgment)</span>
             `}
             <span>Opened by Agent <code>${cr.agent_id}</code> &bull; Task: <a href="/p/${projectId}/issues/${cr.task_id}"><code>${cr.task_id}</code></a> &bull; Commit: <code>${(cr.commit_id || '').slice(0, 10)}</code></span>
+            ${(cr.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
+            ${(cr.tags || []).includes("needs-logic") ? '<span class="gh-badge gh-badge-yellow" style="font-size: 11px;">⚙️ needs-logic</span>' : ''}
             ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
           </div>
         </div>
@@ -230,6 +234,35 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
           </div>
           <div class="gh-card-body" style="font-size: 13.5px; line-height: 1.6; color: var(--gh-text-heading); white-space: pre-wrap;">${cr.message || 'No description provided.'}</div>
         </div>
+
+        <!-- Proposed Design & Architecture Specification Card -->
+        ${(cr.proposed_page_design || cr.proposed_logic_design || (cr.tags || []).some(t => t === 'needs-page' || t === 'needs-logic')) ? `
+          <div class="gh-card" style="border-color: rgba(137,87,229,0.5); margin-bottom: 1rem;">
+            <div class="gh-card-header" style="background: rgba(137,87,229,0.1); display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-weight: 600; color: var(--gh-purple-text); font-size: 13px;">
+                🎨 Proposed Design &amp; Architecture Specification
+              </span>
+              <span class="gh-badge gh-badge-danger">Design Approval Required (Ashley + Ward)</span>
+            </div>
+            <div class="gh-card-body" style="font-size: 13px;">
+              <p style="color: var(--gh-text-muted); margin-bottom: 0.75rem; font-size: 12.5px;">
+                Agent proposed resolution for rehearsal failure: <code>${(cr.tags || []).join(', ') || 'needs-page / needs-logic'}</code>. Ashley and Ward must review and approve the design before merge.
+              </p>
+              ${cr.proposed_page_design ? `
+                <div style="margin-bottom: 0.75rem;">
+                  <strong style="color: var(--gh-text-heading); display: block; margin-bottom: 0.25rem;">Proposed Page UI/UX Spec:</strong>
+                  <pre style="background: #0d1117; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--gh-border); font-family: monospace; font-size: 12px; color: #a5d6ff; white-space: pre-wrap; margin: 0;">${cr.proposed_page_design}</pre>
+                </div>
+              ` : ''}
+              ${cr.proposed_logic_design ? `
+                <div style="margin-bottom: 0.5rem;">
+                  <strong style="color: var(--gh-text-heading); display: block; margin-bottom: 0.25rem;">Proposed Business Logic Ruleset:</strong>
+                  <pre style="background: #0d1117; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--gh-border); font-family: monospace; font-size: 12px; color: #7ee787; white-space: pre-wrap; margin: 0;">${cr.proposed_logic_design}</pre>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        ` : ''}
 
         <!-- Build & Test Verification Card -->
         <div class="gh-card">
@@ -334,6 +367,12 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
             <p style="font-size: 12px; color: var(--gh-text-muted); margin-bottom: 0.85rem; line-height: 1.5;">
               Humans make all final judgments. Approvals are cryptographically signed using your browser's Ed25519 WebCrypto key and verified against <code>SUPERVISOR_PUBKEYS</code>.
             </p>
+
+            ${(cr.tags || []).some(t => t === 'needs-page' || t === 'needs-logic') ? `
+              <div style="background: rgba(137,87,229,0.15); border: 1px solid rgba(137,87,229,0.4); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.85rem; font-size: 12px; color: var(--gh-purple-text);">
+                <strong>🎨 Design Gate Active:</strong> Proposed page/logic design requires explicit approval by <strong>Ashley</strong> or <strong>Ward</strong> (Ed25519 signature required).
+              </div>
+            ` : ''}
 
             ${isApproved ? `
               <div style="background: var(--gh-purple-bg); border: 1px solid rgba(163,113,247,0.4); border-radius: 6px; padding: 0.85rem; text-align: center;">

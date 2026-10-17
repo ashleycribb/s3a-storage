@@ -38,6 +38,7 @@ import {
   verifyCommitSignature,
   checkAdminAuth,
   isSupervisorKeyAllowed,
+  getSupervisorName,
 } from "../crypto";
 import { formatPREvidenceComment } from "../types";
 import { renderBraketsPreviewHtml } from "../ui/preview";
@@ -766,15 +767,33 @@ export class RepoCoordinator implements DurableObject {
     const cr: ChangeRequest = body.change_request || body;
     if (!cr || !cr.id) return new Response(JSON.stringify({ error: "Missing change_request" }), { status: 400 });
 
-    await this.state.storage.put(`cr:${cr.id}`, cr);
-
     const tasks = await this.getOrInitTasks();
     const task = tasks.find(t => t.id === cr.task_id);
     if (task) {
       task.status = "in_review";
       task.change_request_id = cr.id;
+      if (task.tags && task.tags.length > 0) {
+        cr.tags = Array.from(new Set([...(cr.tags || []), ...task.tags]));
+      }
+      if (task.journey_step && !cr.journey_step) {
+        cr.journey_step = task.journey_step;
+      }
       await this.state.storage.put("brakets_tasks", tasks);
     }
+
+    if (body.proposed_page_design || (body.change_request && body.change_request.proposed_page_design)) {
+      cr.proposed_page_design = body.proposed_page_design || body.change_request.proposed_page_design;
+    }
+    if (body.proposed_logic_design || (body.change_request && body.change_request.proposed_logic_design)) {
+      cr.proposed_logic_design = body.proposed_logic_design || body.change_request.proposed_logic_design;
+    }
+
+    if (cr.tags && (cr.tags.includes("needs-page") || cr.tags.includes("needs-logic"))) {
+      cr.requires_human = true;
+      cr.risk_level = "high";
+    }
+
+    await this.state.storage.put(`cr:${cr.id}`, cr);
 
     let ghPrResult: any = null;
     if (this.env.GITHUB_TOKEN) {
@@ -905,8 +924,9 @@ export class RepoCoordinator implements DurableObject {
 
     // Auto-registration REMOVED: reviewer_pubkey must be in SUPERVISOR_PUBKEYS secret
 
+    const supervisorName = getSupervisorName(reviewer_pubkey);
     cr.status = "approved";
-    cr.human_rationale = rationale || "Human supervisor signed and approved change";
+    cr.human_rationale = rationale || `Design and code approved by ${supervisorName}`;
     cr.reviewer_pubkey = reviewer_pubkey || "";
     cr.resolved_at = Date.now();
     await this.state.storage.put(`cr:${crId}`, cr);
@@ -924,9 +944,11 @@ export class RepoCoordinator implements DurableObject {
       "human-approval",
       {
         type: "human",
-        supervisor_id: "human-supervisor",
+        id: reviewer_pubkey,
+        name: supervisorName,
+        supervisor_id: supervisorName,
         reviewer_pubkey: reviewer_pubkey || "",
-        rationale: rationale || "Human supervisor signed and approved change",
+        rationale: cr.human_rationale,
       },
       "http://adlnet.gov/expapi/verbs/approved",
       undefined,
@@ -3390,47 +3412,86 @@ fi
     fingerprint: string;
     run_id: string;
     risk_level?: string;
+    tags?: string[];
+    journey_step?: string;
+    expected_result?: string;
+    actual_result?: string;
+    screenshot_url?: string;
   }, projectId: string): Promise<{ action: string; taskId: string }> {
     const tasks = await this.getOrInitTasks();
     const existing = tasks.find(t => t.error_fingerprint === failure.fingerprint);
 
+    const tags = (failure.tags && failure.tags.length > 0)
+      ? failure.tags
+      : (failure.error_text.includes("404") || failure.error_text.toLowerCase().includes("route") || failure.error_text.toLowerCase().includes("control")
+          ? ["needs-page"]
+          : ["needs-logic"]);
+
+    const screenshotUrl = failure.screenshot_url || `/evidence/rehearsal-${failure.run_id}.png`;
+
     if (existing) {
       existing.repro_count = (existing.repro_count || 1) + 1;
       existing.description += `\n\n> [!WARNING]\n> **Recurrence in Rehearsal Run:** \`${failure.run_id}\` (${new Date().toISOString()})\n> Evidence: [Run Details](/p/${projectId}/rehearsals/${failure.run_id}) &bull; [Trace](/project/${projectId}/trace/${failure.run_id})`;
+      if (!existing.tags || existing.tags.length === 0) {
+        existing.tags = tags;
+      }
+      if (!existing.screenshot_url) {
+        existing.screenshot_url = screenshotUrl;
+      }
       await this.state.storage.put("brakets_tasks", tasks);
       return { action: "attached", taskId: existing.id };
     }
 
     const taskId = `TASK-REHEARSAL-${failure.fingerprint.slice(3, 11)}`;
-    const desc = `## Bug Description
-Automated tournament rehearsal detected an unhandled crash during staging simulation.
+    const desc = `## Journey Blocker Description
+Automated tournament rehearsal detected an unhandled failure during staging simulation.
 
-## Reproduction Steps
+### Journey Step
+${failure.journey_step || "Tournament Match Progression"}
+
+### Expected Result
+${failure.expected_result || "Action completes successfully and advances tournament state."}
+
+### Actual Result
+${failure.actual_result || failure.error_text}
+
+### Evidence & Screenshot
+- **Screenshot:** ![Rehearsal Evidence](${screenshotUrl})
+- **Screenshot URL:** [${screenshotUrl}](${screenshotUrl})
+- **Rehearsal Run:** [/p/${projectId}/rehearsals/${failure.run_id}](/p/${projectId}/rehearsals/${failure.run_id})
+- **xAPI Trace Record:** [/project/${projectId}/trace/${failure.run_id}](/project/${projectId}/trace/${failure.run_id})
+- **Fingerprint:** \`${failure.fingerprint}\`
+- **Tags:** ${tags.map(t => `\`${t}\``).join(", ")}
+
+### Reproduction Steps
 ${failure.repro_steps.join("\n")}
 
-## Error Log & Stack Trace
+### Error Log & Stack Trace
 \`\`\`
 ${failure.error_text}
 \`\`\`
 
-## Evidence Links
-- **Rehearsal Run:** [/p/${projectId}/rehearsals/${failure.run_id}](/p/${projectId}/rehearsals/${failure.run_id})
-- **xAPI Trace Record:** [/project/${projectId}/trace/${failure.run_id}](/project/${projectId}/trace/${failure.run_id})
-- **Fingerprint:** \`${failure.fingerprint}\`
+### Proposed Resolution Path
+Agents may propose the page or business logic in a Change Request (PR). Human supervisors (Ashley + Ward) must review and approve the design before merge.
 `;
 
     const newTask: TaskItem = {
       id: taskId,
-      title: `[Rehearsal Bug] ${failure.title}`,
+      title: `[Rehearsal Bug] [${tags.join(", ")}] ${failure.title}`,
       description: desc,
-      files_allowed: ["apps/brakets-gg/app/api/tournaments/", "apps/brakets-gg/", "packages/"],
+      files_allowed: ["apps/brakets-gg/app/", "apps/brakets-gg/app/api/tournaments/", "packages/"],
       tests: "npm run build",
-      risk_level: failure.risk_level === "high" ? "high" : "low",
+      risk_level: "high", // Human gated: Ashley + Ward approve design
       status: "open",
       is_bug: true,
       error_fingerprint: failure.fingerprint,
       rehearsal_run_id: failure.run_id,
       repro_count: 1,
+      tags,
+      journey_step: failure.journey_step,
+      expected_result: failure.expected_result,
+      actual_result: failure.actual_result,
+      screenshot_url: screenshotUrl,
     };
 
     tasks.unshift(newTask);

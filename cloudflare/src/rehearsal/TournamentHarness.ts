@@ -306,11 +306,127 @@ export class TournamentHarness {
     const t3 = Date.now();
     let scoreStageFailed = false;
 
-    if (this.scenario === "bad_score") {
+    if (this.scenario === "missing_route") {
+      const simulatedRoute = `/tournaments/tourn_${this.runId}/matches/m1/score`;
+      const simulatedErrorMsg = `RouteNotFoundException: GET ${simulatedRoute} returned 404 Not Found (Missing route handler for match score entry page)`;
+      const screenshotKey = `rehearsal-${this.runId}-missing-route.png`;
+      const screenshotUrl = `/evidence/${screenshotKey}`;
+
+      this.logError(simulatedErrorMsg, "router.ts");
+      this.logApiFailure(simulatedRoute, "GET", 404, null, { error: "Not Found", message: simulatedErrorMsg }, 88);
+
+      this.screenshots.push({
+        name: screenshotKey,
+        caption: `Rehearsal Evidence: Missing route 404 for match score entry page`,
+        data_url: screenshotUrl,
+        timestamp: Date.now(),
+      });
+
+      const fingerprint = TournamentHarness.computeFingerprint("RouteNotFoundException", simulatedErrorMsg, "router.ts:404");
+
+      if (coordinator) {
+        const filedResult = await coordinator.autoFileRehearsalIssue({
+          title: "Missing route: match score entry interface (/tournaments/:id/matches/:matchId/score) returns 404",
+          repro_steps: [
+            "1. Scripted players sign up and join 8-team single elimination bracket.",
+            "2. Match 1 (CyberViper vs QuantumDrift) is ready.",
+            `3. Client attempts to navigate to ${simulatedRoute}.`,
+            "4. Router responds with 404 Not Found: missing page component.",
+          ],
+          error_text: simulatedErrorMsg,
+          fingerprint,
+          run_id: this.runId,
+          risk_level: "high",
+          tags: ["needs-page"],
+          journey_step: "Match Score Reporting Page Navigation",
+          expected_result: "HTTP 200 OK: Match score interface renders interactive player score inputs and submit button",
+          actual_result: `HTTP 404 Not Found: Page route ${simulatedRoute} does not exist in routing manifest`,
+          screenshot_url: screenshotUrl,
+        }, projectId);
+
+        if (filedResult && filedResult.taskId) issuesFiled.push(filedResult.taskId);
+      }
+
+      this.stages.push({
+        stage_id: "stage_score_report",
+        name: "Score Reporting & Input Validation",
+        status: "failed",
+        duration_ms: Date.now() - t3,
+        error: simulatedErrorMsg,
+        stack: `Error: ${simulatedErrorMsg}\n    at matchRoute (apps/brakets-gg/app/routes/router.ts:88:12)\n    at handleRequest (apps/brakets-gg/app/entry.server.ts:45:10)`,
+        details: {
+          attempted_route: simulatedRoute,
+          repro_fingerprint: fingerprint,
+          auto_filed_issue: issuesFiled[0] || "TASK-AUTO-FILED",
+          tag: "needs-page",
+        },
+      });
+
+      scoreStageFailed = true;
+      overallStatus = "failed";
+    } else if (this.scenario === "broken_control") {
+      const simulatedControl = "button#btn-submit-match-score";
+      const simulatedErrorMsg = `BrokenControlError: Button ${simulatedControl} is disabled with pointer-events: none and fails to dispatch score payload`;
+      const screenshotKey = `rehearsal-${this.runId}-broken-control.png`;
+      const screenshotUrl = `/evidence/${screenshotKey}`;
+
+      this.logError(simulatedErrorMsg, "MatchScoreForm.tsx");
+      this.screenshots.push({
+        name: screenshotKey,
+        caption: `Rehearsal Evidence: Button #btn-submit-match-score disabled and unresponsive`,
+        data_url: screenshotUrl,
+        timestamp: Date.now(),
+      });
+
+      const fingerprint = TournamentHarness.computeFingerprint("BrokenControlError", simulatedErrorMsg, "MatchScoreForm.tsx:102");
+
+      if (coordinator) {
+        const filedResult = await coordinator.autoFileRehearsalIssue({
+          title: "Broken control: score submit button (#btn-submit-match-score) disabled and unresponsive",
+          repro_steps: [
+            "1. Scripted players open Match 1 score reporting form.",
+            "2. Valid game scores entered: CyberViper=2, QuantumDrift=1.",
+            "3. Player clicks 'Submit Official Match Score' button.",
+            "4. Button fails to dispatch: disabled attribute persisted with pointer-events: none.",
+          ],
+          error_text: simulatedErrorMsg,
+          fingerprint,
+          run_id: this.runId,
+          risk_level: "high",
+          tags: ["needs-page"],
+          journey_step: "Player Score Submission Form Controls",
+          expected_result: "Button #btn-submit-match-score activates upon score entry and dispatches score payload",
+          actual_result: "Button #btn-submit-match-score remains disabled with pointer-events: none; score submission is blocked",
+          screenshot_url: screenshotUrl,
+        }, projectId);
+
+        if (filedResult && filedResult.taskId) issuesFiled.push(filedResult.taskId);
+      }
+
+      this.stages.push({
+        stage_id: "stage_score_report",
+        name: "Score Reporting & Input Validation",
+        status: "failed",
+        duration_ms: Date.now() - t3,
+        error: simulatedErrorMsg,
+        stack: `Error: ${simulatedErrorMsg}\n    at validateSubmitButton (apps/brakets-gg/components/MatchScoreForm.tsx:102:9)`,
+        details: {
+          control: simulatedControl,
+          repro_fingerprint: fingerprint,
+          auto_filed_issue: issuesFiled[0] || "TASK-AUTO-FILED",
+          tag: "needs-page",
+        },
+      });
+
+      scoreStageFailed = true;
+      overallStatus = "failed";
+    } else if (this.scenario === "bad_score" || this.scenario === "cant_enter_score") {
       // Intentionally simulate bad score submission & unhandled edge-case failure
       const badScorePayload = { match_id: "m1", team1_score: 2, team2_score: 2, format: "single_elimination" };
       const simulatedErrorMsg = "UnhandledScoreException: Single-elimination match cannot resolve draw (2-2) without sudden-death tiebreaker in apps/brakets-gg/app/api/tournaments/score.ts:42";
-      
+      const screenshotKey = `rehearsal-${this.runId}-score-logic.png`;
+      const screenshotUrl = `/evidence/${screenshotKey}`;
+
       this.logError(simulatedErrorMsg, "apps/brakets-gg/app/api/tournaments/score.ts");
       this.logApiFailure(
         "/api/tournaments/matches/m1/score",
@@ -320,6 +436,13 @@ export class TournamentHarness {
         { error: "Internal Server Error", message: simulatedErrorMsg },
         312
       );
+
+      this.screenshots.push({
+        name: screenshotKey,
+        caption: `Rehearsal Evidence: Draw score rejected by single-elimination logic`,
+        data_url: screenshotUrl,
+        timestamp: Date.now(),
+      });
 
       const fingerprint = TournamentHarness.computeFingerprint(
         "UnhandledScoreException",
@@ -341,6 +464,11 @@ export class TournamentHarness {
           fingerprint,
           run_id: this.runId,
           risk_level: "high", // Affects tournament rules & bracket integrity!
+          tags: ["needs-logic"],
+          journey_step: "Score Reporting & Input Validation",
+          expected_result: "Score engine validates inputs, rejects invalid draws, and initiates sudden-death tiebreaker match",
+          actual_result: simulatedErrorMsg,
+          screenshot_url: screenshotUrl,
         }, projectId);
 
         if (filedResult && filedResult.taskId) {
@@ -359,12 +487,13 @@ export class TournamentHarness {
           attempted_score: badScorePayload,
           repro_fingerprint: fingerprint,
           auto_filed_issue: issuesFiled[0] || "TASK-AUTO-FILED",
+          tag: "needs-logic",
         },
       });
 
       scoreStageFailed = true;
       overallStatus = "failed";
-    } else if (this.scenario === "dispute") {
+    } else if (this.scenario === "dispute" || this.scenario === "cant_resolve_dispute") {
       // Conflicting scores submitted for Match 1
       const m1 = this.matches[0];
       m1.status = "disputed";
@@ -414,7 +543,7 @@ export class TournamentHarness {
         },
       });
     } else {
-      // Happy Path: clean scores reported for all Round 1 matches
+      // Happy Path or other scenarios: clean scores reported for all Round 1 matches
       this.matches.forEach((m, idx) => {
         if (m.round === 1) {
           m.status = "final";
@@ -442,7 +571,64 @@ export class TournamentHarness {
     // Stage 5: Dispute Resolution (TO Human/Scripted Ruling)
     // ------------------------------------------------------------------------
     const t4 = Date.now();
-    if (this.scenario === "dispute") {
+    let disputeStageFailed = false;
+
+    if (this.scenario === "cant_resolve_dispute") {
+      const simulatedErrorMsg = "DisputeArbitrationBlocked: Conflicting claims (CyberViper 2-1 vs QuantumDrift 0-2) rejected without resolution handler in apps/brakets-gg/app/api/tournaments/arbitration.ts:68";
+      const screenshotKey = `rehearsal-${this.runId}-dispute-logic.png`;
+      const screenshotUrl = `/evidence/${screenshotKey}`;
+
+      this.logError(simulatedErrorMsg, "arbitration.ts");
+      this.screenshots.push({
+        name: screenshotKey,
+        caption: `Rehearsal Evidence: Dispute arbitration blocked on conflicting match claims`,
+        data_url: screenshotUrl,
+        timestamp: Date.now(),
+      });
+
+      const fingerprint = TournamentHarness.computeFingerprint("DisputeArbitrationBlocked", simulatedErrorMsg, "arbitration.ts:68");
+
+      if (coordinator) {
+        const filedResult = await coordinator.autoFileRehearsalIssue({
+          title: "Dispute arbitration blocked: unhandled conflicting match claims cannot be resolved by ruleset",
+          repro_steps: [
+            "1. Match 1 logs dispute: CyberViper claims 2-1, QuantumDrift claims 0-2.",
+            "2. TO invokes automated arbitration endpoint /api/tournaments/disputes/resolve.",
+            "3. Arbitration engine encounters unhandled conflicting telemetry without fallback ruleset.",
+            "4. Tournament progression stalls indefinitely.",
+          ],
+          error_text: simulatedErrorMsg,
+          fingerprint,
+          run_id: this.runId,
+          risk_level: "high",
+          tags: ["needs-logic"],
+          journey_step: "TO Dispute Arbitration & Score Reconciliation",
+          expected_result: "Arbitration ruleset evaluates player evidence replays and awards victory or schedules mandatory rematch",
+          actual_result: "DisputeArbitrationBlocked: Conflicting claims rejected without resolution handler; tournament cannot advance",
+          screenshot_url: screenshotUrl,
+        }, projectId);
+
+        if (filedResult && filedResult.taskId) issuesFiled.push(filedResult.taskId);
+      }
+
+      this.stages.push({
+        stage_id: "stage_dispute_resolve",
+        name: "TO Evidence Review & Dispute Resolution",
+        status: "failed",
+        duration_ms: Date.now() - t4,
+        error: simulatedErrorMsg,
+        stack: `Error: ${simulatedErrorMsg}\n    at arbitrateDispute (apps/brakets-gg/app/api/tournaments/arbitration.ts:68:14)`,
+        details: {
+          disputed_match: "m1",
+          repro_fingerprint: fingerprint,
+          auto_filed_issue: issuesFiled[issuesFiled.length - 1] || "TASK-AUTO-FILED",
+          tag: "needs-logic",
+        },
+      });
+
+      disputeStageFailed = true;
+      overallStatus = "failed";
+    } else if (this.scenario === "dispute") {
       const m1 = this.matches[0];
       m1.status = "final";
       m1.winner_id = m1.team1.id; // CyberViper
@@ -479,7 +665,63 @@ export class TournamentHarness {
     // Stage 6: Round Advancement (Semifinals & Finals)
     // ------------------------------------------------------------------------
     const t5 = Date.now();
-    if (!scoreStageFailed) {
+    let advancementFailed = false;
+
+    if (this.scenario === "cant_advance_winner") {
+      const simulatedErrorMsg = "AdvancementDeadlockException: Bracket calculator failed to advance slot m5.team1 (null reference on match outcome in apps/brakets-gg/app/api/tournaments/bracket.ts:114)";
+      const screenshotKey = `rehearsal-${this.runId}-advancement-logic.png`;
+      const screenshotUrl = `/evidence/${screenshotKey}`;
+
+      this.logError(simulatedErrorMsg, "bracket.ts");
+      this.screenshots.push({
+        name: screenshotKey,
+        caption: `Rehearsal Evidence: Bracket calculator failed to advance winner to semifinals`,
+        data_url: screenshotUrl,
+        timestamp: Date.now(),
+      });
+
+      const fingerprint = TournamentHarness.computeFingerprint("AdvancementDeadlockException", simulatedErrorMsg, "bracket.ts:114");
+
+      if (coordinator) {
+        const filedResult = await coordinator.autoFileRehearsalIssue({
+          title: "Bracket progression deadlock: winner cannot be advanced to semifinals bracket slot",
+          repro_steps: [
+            "1. All Quarterfinals matches conclude with final scores.",
+            "2. Tournament director attempts round progression trigger.",
+            "3. Bracket calculator throws AdvancementDeadlockException when binding slot m5.team1.",
+            "4. Semifinals matches remain unpopulated.",
+          ],
+          error_text: simulatedErrorMsg,
+          fingerprint,
+          run_id: this.runId,
+          risk_level: "high",
+          tags: ["needs-logic"],
+          journey_step: "Round Progression & Winner Advancement",
+          expected_result: "Winner of Quarterfinals Match 1 (CyberViper) automatically seeds into Semifinals Match 5 slot",
+          actual_result: "AdvancementDeadlockException: Bracket calculator failed to advance slot m5.team1 (null reference on match outcome in bracket.ts:114)",
+          screenshot_url: screenshotUrl,
+        }, projectId);
+
+        if (filedResult && filedResult.taskId) issuesFiled.push(filedResult.taskId);
+      }
+
+      this.stages.push({
+        stage_id: "stage_advancement",
+        name: "Round Progression & Semifinals Play",
+        status: "failed",
+        duration_ms: Date.now() - t5,
+        error: simulatedErrorMsg,
+        stack: `Error: ${simulatedErrorMsg}\n    at advanceBracketWinners (apps/brakets-gg/app/api/tournaments/bracket.ts:114:19)`,
+        details: {
+          repro_fingerprint: fingerprint,
+          auto_filed_issue: issuesFiled[issuesFiled.length - 1] || "TASK-AUTO-FILED",
+          tag: "needs-logic",
+        },
+      });
+
+      advancementFailed = true;
+      overallStatus = "failed";
+    } else if (!scoreStageFailed && !disputeStageFailed) {
       if (this.size === 8) {
         // M5: CyberViper vs SolarFlare
         const m5 = this.matches[4];
@@ -525,7 +767,7 @@ export class TournamentHarness {
         name: "Round Progression & Semifinals Play",
         status: "skipped",
         duration_ms: Date.now() - t5,
-        details: { reason: "Halted due to score calculation failure in Stage 4" },
+        details: { reason: "Halted due to prior stage failure" },
       });
     }
     this.timings["stage_advancement_ms"] = Date.now() - t5;
@@ -534,7 +776,7 @@ export class TournamentHarness {
     // Stage 7: Finals & Final Standings
     // ------------------------------------------------------------------------
     const t6 = Date.now();
-    if (!scoreStageFailed) {
+    if (!scoreStageFailed && !disputeStageFailed && !advancementFailed) {
       this.standings = [
         { rank: 1, team_id: teams[0].id, team_name: teams[0].name, record: "3 - 0", prize_points: 500 },
         { rank: 2, team_id: teams[1].id, team_name: teams[1].name, record: "2 - 1", prize_points: 300 },

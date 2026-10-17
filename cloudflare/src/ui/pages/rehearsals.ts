@@ -182,7 +182,11 @@ export function renderRehearsalsPage(
             <select id="modal-rehearsal-scenario" class="gh-select">
               <option value="happy_path" selected>1. Happy Path (Clean check-in, valid scores, clean advancement)</option>
               <option value="dispute">2. Dispute Case (Conflicting scores, DISPUTED state, TO official ruling)</option>
-              <option value="bad_score">3. Bad Score Fuzzing (Chaos test, unhandled draw score auto-files bug)</option>
+              <option value="missing_route">3. Missing Route / Page (404 score route &bull; auto-files needs-page)</option>
+              <option value="broken_control">4. Broken Control (Disabled submit button &bull; auto-files needs-page)</option>
+              <option value="cant_enter_score">5. Can't Enter Score (Draw deadlock &bull; auto-files needs-logic)</option>
+              <option value="cant_advance_winner">6. Can't Advance Winner (Advancement deadlock &bull; auto-files needs-logic)</option>
+              <option value="cant_resolve_dispute">7. Can't Resolve Dispute (Arbitration blocked &bull; auto-files needs-logic)</option>
             </select>
           </div>
 

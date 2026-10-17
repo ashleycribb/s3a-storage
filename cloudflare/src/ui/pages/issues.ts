@@ -86,6 +86,8 @@ export function renderIssuesPage(options: IssuesPageOptions): string {
                     <a href="/p/${projectId}/issues/${task.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
                       ${task.title}
                     </a>
+                    ${(task.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
+                    ${(task.tags || []).includes("needs-logic") ? '<span class="gh-badge gh-badge-yellow" style="font-size: 11px;">⚙️ needs-logic</span>' : ''}
                     ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
                     ${task.status === "changes_requested" ? '<span class="gh-badge gh-badge-yellow">Changes Requested</span>' : ''}
                     ${task.status === "deferred_budget" ? '<span class="gh-badge gh-badge-yellow">Deferred Budget</span>' : ''}
@@ -261,6 +263,8 @@ export function renderIssueDetailPage(options: IssueDetailPageOptions): string {
               <span class="gh-badge gh-badge-success">Open</span>
             `}
             <span>Opened by <strong>PM</strong> &bull; Status: <code>${task.status}</code></span>
+            ${(task.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
+            ${(task.tags || []).includes("needs-logic") ? '<span class="gh-badge gh-badge-yellow" style="font-size: 11px;">⚙️ needs-logic</span>' : ''}
             ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
           </div>
         </div>
@@ -279,6 +283,41 @@ export function renderIssueDetailPage(options: IssueDetailPageOptions): string {
     <!-- Main Content & Sidebar -->
     <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
       <div style="flex: 1; min-width: 320px;">
+        ${(task.journey_step || task.expected_result || task.actual_result || task.screenshot_url) ? `
+          <div class="gh-card" style="border-color: rgba(137,87,229,0.5); margin-bottom: 1.25rem;">
+            <div class="gh-card-header" style="background: rgba(137,87,229,0.1); display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-weight: 600; color: var(--gh-purple-text); font-size: 13px;">
+                🔍 Simulated Journey Blocker (${(task.tags || []).join(', ') || 'needs-page / needs-logic'})
+              </span>
+              <span class="gh-badge gh-badge-danger">Design Approval Required (Ashley + Ward)</span>
+            </div>
+            <div class="gh-card-body" style="font-size: 13px;">
+              <div style="margin-bottom: 0.85rem;">
+                <span style="color: var(--gh-text-muted); font-size: 11px; text-transform: uppercase; font-weight: 600; display: block;">Journey Step</span>
+                <strong style="color: var(--gh-text-heading); font-size: 14px;">${task.journey_step || 'Simulated Tournament Step'}</strong>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <div style="background: rgba(35,134,54,0.1); border: 1px solid rgba(46,160,67,0.3); border-radius: 6px; padding: 0.75rem;">
+                  <span style="color: var(--gh-green-text); font-weight: 600; font-size: 12px; display: block; margin-bottom: 0.35rem;">✓ Expected Result</span>
+                  <div style="color: var(--gh-text); font-size: 12px;">${task.expected_result || 'N/A'}</div>
+                </div>
+                <div style="background: rgba(218,54,51,0.1); border: 1px solid rgba(248,81,73,0.3); border-radius: 6px; padding: 0.75rem;">
+                  <span style="color: var(--gh-red-text); font-weight: 600; font-size: 12px; display: block; margin-bottom: 0.35rem;">✗ Actual Result</span>
+                  <div style="color: var(--gh-red-text); font-size: 12px;">${task.actual_result || 'N/A'}</div>
+                </div>
+              </div>
+              ${task.screenshot_url ? `
+                <div>
+                  <span style="color: var(--gh-text-muted); font-size: 11px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 0.35rem;">Evidence &amp; Rehearsal Screenshot</span>
+                  <a href="${task.screenshot_url}" target="_blank">
+                    <img src="${task.screenshot_url}" alt="Rehearsal failure evidence" style="max-width: 100%; max-height: 280px; border-radius: 6px; border: 1px solid var(--gh-border);" />
+                  </a>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        ` : ''}
+
         <div class="gh-card">
           <div class="gh-card-header">
             <span style="font-weight: 600; color: var(--gh-text-heading); font-size: 13px;">Task Description</span>
