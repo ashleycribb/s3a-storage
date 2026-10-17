@@ -15,6 +15,7 @@ import type {
   QAEvidenceScreenshot,
 } from "../types";
 import { TournamentHarness } from "./TournamentHarness";
+import { generateRehearsalEvidenceSvg } from "./visualEvidence";
 
 export interface Participant {
   id: string;
@@ -51,6 +52,7 @@ export class GenericTournamentEngine {
   private runId: string;
   private coordinator: any;
   private projectId: string;
+  private env?: any;
 
   constructor(params: {
     format: TournamentFormatConfig;
@@ -60,6 +62,7 @@ export class GenericTournamentEngine {
     runId: string;
     coordinator: any;
     projectId: string;
+    env?: any;
   }) {
     this.format = params.format;
     this.pack = params.pack;
@@ -68,6 +71,7 @@ export class GenericTournamentEngine {
     this.runId = params.runId;
     this.coordinator = params.coordinator;
     this.projectId = params.projectId;
+    this.env = params.env;
   }
 
   public async runEvent(participantList: Participant[]): Promise<EngineExecutionResult> {
@@ -751,6 +755,14 @@ export class GenericTournamentEngine {
     // Screenshot evidence
     const screenshotKey = `rehearsal-${this.runId}-${this.format.id}.png`;
     const screenshotUrl = `/evidence/${screenshotKey}`;
+    if (this.env?.EVIDENCE_BUCKET) {
+      try {
+        const svg = generateRehearsalEvidenceSvg(screenshotKey, { run_id: this.runId, status: overallStatus });
+        await this.env.EVIDENCE_BUCKET.put(screenshotKey, svg, {
+          httpMetadata: { contentType: "image/svg+xml" }
+        });
+      } catch (err) {}
+    }
     screenshots.push({
       name: screenshotKey,
       caption: `Format Rehearsal Evidence: ${this.format.name} (${this.pack?.name || 'Custom'}) - Status: PASSED`,

@@ -18,6 +18,7 @@ import type {
 } from "../types";
 import { FormatRegistry } from "./FormatRegistry";
 import { GenericTournamentEngine, type Participant } from "./GenericTournamentEngine";
+import { generateRehearsalEvidenceSvg } from "./visualEvidence";
 
 export interface RehearsalExecuteOptions {
   size?: RehearsalTournamentSize;
@@ -177,6 +178,7 @@ export class TournamentHarness {
         runId: this.runId,
         coordinator,
         projectId,
+        env: this.env,
       });
 
       const result = await engine.runEvent(participants);
@@ -908,6 +910,14 @@ export class TournamentHarness {
     // ------------------------------------------------------------------------
     const screenshotKey = `rehearsal-${this.runId}.png`;
     const screenshotUrl = `/evidence/${screenshotKey}`;
+    if (this.env?.EVIDENCE_BUCKET) {
+      try {
+        const svg = generateRehearsalEvidenceSvg(screenshotKey, { run_id: this.runId, status: overallStatus });
+        await this.env.EVIDENCE_BUCKET.put(screenshotKey, svg, {
+          httpMetadata: { contentType: "image/svg+xml" }
+        });
+      } catch (err) {}
+    }
     this.screenshots.push({
       name: screenshotKey,
       caption: `Brakets Tournament Rehearsal Evidence (${this.size}-Team ${this.scenario}) - Status: ${overallStatus.toUpperCase()}`,

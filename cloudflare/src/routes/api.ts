@@ -4,6 +4,7 @@
 import type { Env } from "../types";
 import { checkAdminAuth, isSupervisorKeyAllowed } from "../crypto";
 import { getSandbox } from "../sandbox";
+import { generateRehearsalEvidenceSvg } from "../rehearsal/visualEvidence";
 
 const DEFAULT_PROJECT_ID = "s3a-swarm-main";
 
@@ -229,7 +230,24 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
   // --------------------------------------------------------------------------
   if (path.startsWith("/evidence/")) {
     const key = path.replace(/^\/evidence\//, "");
-    const obj = await env.EVIDENCE_BUCKET.get(key);
+    let obj = await env.EVIDENCE_BUCKET.get(key);
+    if (!obj && key.startsWith("rehearsal-")) {
+      const svg = generateRehearsalEvidenceSvg(key);
+      try {
+        await env.EVIDENCE_BUCKET.put(key, svg, {
+          httpMetadata: { contentType: "image/svg+xml" }
+        });
+        obj = await env.EVIDENCE_BUCKET.get(key);
+      } catch (err) {
+        // Fallback to direct SVG response if R2 put encountered error
+        return new Response(svg, {
+          headers: {
+            "Content-Type": "image/svg+xml",
+            "Cache-Control": "public, max-age=86400",
+          }
+        });
+      }
+    }
     if (!obj) return new Response("Evidence artifact not found in R2", { status: 404 });
     const headers = new Headers();
     obj.writeHttpMetadata(headers);
