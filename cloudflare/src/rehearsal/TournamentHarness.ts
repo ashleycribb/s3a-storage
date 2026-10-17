@@ -14,12 +14,18 @@ import type {
   RehearsalRunRecord,
   QAEvidenceScreenshot,
   TaskItem,
+  EventOptions,
 } from "../types";
+import { FormatRegistry } from "./FormatRegistry";
+import { GenericTournamentEngine, type Participant } from "./GenericTournamentEngine";
 
 export interface RehearsalExecuteOptions {
   size?: RehearsalTournamentSize;
   scenario?: RehearsalScenario;
   simulatedError?: string;
+  format_id?: string;
+  game_pack_id?: string;
+  event_options?: Partial<EventOptions>;
 }
 
 export class TournamentHarness {
@@ -27,6 +33,7 @@ export class TournamentHarness {
   private size: RehearsalTournamentSize;
   private scenario: RehearsalScenario;
   private env: Env;
+  private options?: RehearsalExecuteOptions;
   private consoleErrors: RehearsalConsoleError[] = [];
   private failedApiCalls: RehearsalFailedApi[] = [];
   private timings: Record<string, number> = {};
@@ -37,9 +44,11 @@ export class TournamentHarness {
 
   constructor(env: Env, options?: RehearsalExecuteOptions) {
     this.env = env;
+    this.options = options;
     this.size = options?.size || 8;
     this.scenario = options?.scenario || "happy_path";
-    this.runId = `rehearsal_${this.size}team_${this.scenario}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const prefix = options?.format_id ? `rehearsal_${options.format_id}` : `rehearsal_${this.size}team_${this.scenario}`;
+    this.runId = `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   }
 
   public getRunId(): string {
@@ -119,6 +128,88 @@ export class TournamentHarness {
    */
   public async execute(coordinator: any, projectId: string): Promise<RehearsalRunRecord> {
     const startTime = Date.now();
+
+    // ------------------------------------------------------------------------
+    // Format Registry & Generic Data-Driven Engine Delegation
+    // ------------------------------------------------------------------------
+    if (this.options?.format_id || this.options?.game_pack_id) {
+      const registry = new FormatRegistry();
+      let formatId = this.options.format_id;
+      const packId = this.options.game_pack_id;
+      const pack = packId ? registry.getGamePack(packId) : undefined;
+      if (!formatId && pack) {
+        formatId = pack.default_format_id;
+      }
+      formatId = formatId || "single_elimination";
+      const format = registry.getFormat(formatId);
+      if (!format) {
+        throw new Error(`Format '${formatId}' not registered in Tournament Format Registry.`);
+      }
+
+      let actualSize = this.size;
+      if (!this.options.size) {
+        if (formatId === "double_elimination") actualSize = 16;
+        else if (formatId === "swiss" || formatId === "groups_playoffs" || formatId === "single_elimination") actualSize = 8;
+      }
+      this.size = actualSize;
+
+      const eventOptions = registry.composeEventOptions(packId, this.options.event_options);
+      const seedTeams = this.getSeedTeams(this.size);
+      const participants: Participant[] = seedTeams.map(t => ({
+        id: t.id,
+        name: t.name,
+        seed: t.seed,
+        role: "player",
+        is_test_account: true,
+        match_wins: 0,
+        match_losses: 0,
+        game_wins: 0,
+        game_losses: 0,
+        opponents_played: [],
+        buchholz_score: 0,
+      }));
+
+      const engine = new GenericTournamentEngine({
+        format,
+        pack,
+        options: eventOptions,
+        scenario: this.scenario,
+        runId: this.runId,
+        coordinator,
+        projectId,
+      });
+
+      const result = await engine.runEvent(participants);
+
+      const record: RehearsalRunRecord = {
+        run_id: this.runId,
+        tournament_id: `tourn_${this.runId}`,
+        tournament_name: `Brakets Arena [${format.name}${pack ? ` - ${pack.name}` : ''}]`,
+        bracket_size: this.size,
+        scenario: this.scenario,
+        format_id: format.id,
+        game_pack_id: pack?.id,
+        format_version: format.version,
+        format_hash: format.content_hash,
+        format_name: format.name,
+        status: result.status,
+        started_at: startTime,
+        finished_at: Date.now(),
+        total_duration_ms: result.timings["total_duration_ms"] || (Date.now() - startTime),
+        stages: result.stages,
+        matches: result.matches,
+        standings: result.standings,
+        console_errors: result.consoleErrors,
+        failed_api_calls: result.failedApiCalls,
+        screenshots: result.screenshots,
+        timings_ms: result.timings,
+        trace_id: this.runId,
+        issues_filed: result.issuesFiled,
+      };
+
+      return record;
+    }
+
     let overallStatus: "passed" | "failed" | "disputed_resolved" = "passed";
     const issuesFiled: string[] = [];
 

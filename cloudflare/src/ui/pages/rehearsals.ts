@@ -70,10 +70,12 @@ export function renderRehearsalsPage(
                 </a>
                 ${statusBadge}
                 ${scenarioBadge}
-                <span class="gh-badge gh-badge-muted">${run.bracket_size}-Team</span>
+                ${run.format_name ? `<span class="gh-badge gh-badge-blue" title="Content Hash: ${run.format_hash || 'none'}">${run.format_name}</span>` : `<span class="gh-badge gh-badge-muted">${run.bracket_size}-Team</span>`}
+                ${run.game_pack_id ? `<span class="gh-badge gh-badge-purple">${run.game_pack_id}</span>` : ''}
               </div>
               <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 12px; color: var(--gh-text-muted);">
                 <span>${run.tournament_name}</span>
+                ${run.format_hash ? `<span>&bull;</span><span style="font-family: monospace; font-size: 11px;">#${run.format_hash}</span>` : ''}
                 <span>&bull;</span>
                 <span>Stages: ${stagePills}</span>
               </div>
@@ -169,11 +171,32 @@ export function renderRehearsalsPage(
         </div>
         <div style="padding: 1.25rem; font-size: 13px;">
           <div style="margin-bottom: 1rem;">
-            <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Bracket Size:</label>
+            <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Tournament Format (Data-Driven):</label>
+            <select id="modal-rehearsal-format" class="gh-select">
+              <option value="single_elimination" selected>Single Elimination (Dynamic bracket)</option>
+              <option value="double_elimination">Double Elimination (Upper + Lower + Grand Finals)</option>
+              <option value="swiss">Swiss System (Buchholz tiebreaks &amp; rematch rules)</option>
+              <option value="groups_playoffs">Round-Robin Groups &rarr; Playoffs</option>
+              <option value="battle_royale">Battle Royale Lobby (Points Leaderboard)</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Game Pack (Rules &amp; Overrides):</label>
+            <select id="modal-rehearsal-pack" class="gh-select">
+              <option value="esports_tactical" selected>Esports Tactical (Valorant/CS2 Bo3 &bull; Map Veto Pool)</option>
+              <option value="fighting_games">Fighting Games (FT3 Bo5 &bull; Double Elim Reset)</option>
+              <option value="tabletop_swiss">Tabletop Swiss (MtG / Chess &bull; Buchholz Tiebreaks)</option>
+              <option value="sports_sim">Sports Sim (Rocket League / EA FC Bo5)</option>
+            </select>
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <label style="display: block; font-weight: 600; margin-bottom: 0.35rem; color: var(--gh-text-heading);">Bracket / Lobby Size:</label>
             <select id="modal-rehearsal-size" class="gh-select">
-              <option value="8" selected>8 Teams (Standard Bracket)</option>
-              <option value="4">4 Teams (Mini Invitational)</option>
-              <option value="16">16 Teams (Major Championship)</option>
+              <option value="8" selected>8 Teams / Players</option>
+              <option value="4">4 Teams / Players</option>
+              <option value="16">16 Teams (Championship)</option>
             </select>
           </div>
 
@@ -182,11 +205,12 @@ export function renderRehearsalsPage(
             <select id="modal-rehearsal-scenario" class="gh-select">
               <option value="happy_path" selected>1. Happy Path (Clean check-in, valid scores, clean advancement)</option>
               <option value="dispute">2. Dispute Case (Conflicting scores, DISPUTED state, TO official ruling)</option>
-              <option value="missing_route">3. Missing Route / Page (404 score route &bull; auto-files needs-page)</option>
-              <option value="broken_control">4. Broken Control (Disabled submit button &bull; auto-files needs-page)</option>
-              <option value="cant_enter_score">5. Can't Enter Score (Draw deadlock &bull; auto-files needs-logic)</option>
-              <option value="cant_advance_winner">6. Can't Advance Winner (Advancement deadlock &bull; auto-files needs-logic)</option>
-              <option value="cant_resolve_dispute">7. Can't Resolve Dispute (Arbitration blocked &bull; auto-files needs-logic)</option>
+              <option value="unexpressible_step">3. Unexpressible Step (Engine can't express &bull; auto-files needs-logic)</option>
+              <option value="missing_route">4. Missing Route / Page (404 score route &bull; auto-files needs-page)</option>
+              <option value="broken_control">5. Broken Control (Disabled submit button &bull; auto-files needs-page)</option>
+              <option value="cant_enter_score">6. Can't Enter Score (Draw deadlock &bull; auto-files needs-logic)</option>
+              <option value="cant_advance_winner">7. Can't Advance Winner (Advancement deadlock &bull; auto-files needs-logic)</option>
+              <option value="cant_resolve_dispute">8. Can't Resolve Dispute (Arbitration blocked &bull; auto-files needs-logic)</option>
             </select>
           </div>
 
@@ -217,7 +241,7 @@ export function renderRehearsalsPage(
         if (modal) modal.style.display = 'none';
       }
 
-      async function triggerRehearsal(scenario, size) {
+      async function triggerRehearsal(scenario, size, format_id, game_pack_id) {
         const btn = event?.target;
         if (btn) { btn.disabled = true; btn.textContent = '⏳ Running Rehearsal...'; }
 
@@ -225,7 +249,12 @@ export function renderRehearsalsPage(
           const res = await fetch('/project/${projectId}/rehearsals/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ scenario, size: parseInt(size, 10) })
+            body: JSON.stringify({
+              scenario,
+              size: parseInt(size, 10),
+              format_id,
+              game_pack_id,
+            })
           });
           if (res.ok) {
             const data = await res.json();
@@ -243,9 +272,11 @@ export function renderRehearsalsPage(
       function executeModalRehearsal() {
         const size = document.getElementById('modal-rehearsal-size').value;
         const scenario = document.getElementById('modal-rehearsal-scenario').value;
+        const format_id = document.getElementById('modal-rehearsal-format').value;
+        const game_pack_id = document.getElementById('modal-rehearsal-pack').value;
         const btn = document.getElementById('btn-submit-rehearsal');
         if (btn) { btn.disabled = true; btn.textContent = '⏳ Executing...'; }
-        triggerRehearsal(scenario, size);
+        triggerRehearsal(scenario, size, format_id, game_pack_id);
       }
     </script>
   `;
@@ -436,6 +467,29 @@ export function renderRehearsalDetailPage(
     </div>
 
     ${issuesBanner}
+
+    ${run.format_id ? `
+      <div class="gh-card" style="margin-bottom: 1.5rem; background: #0d1117;">
+        <div class="gh-card-header">
+          <strong style="color: var(--gh-text-heading); font-size: 13px;">⚙️ Tournament Format Specification (Signed Data)</strong>
+          <span class="gh-badge gh-badge-blue">v${run.format_version || '1.0.0'}</span>
+        </div>
+        <div style="padding: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; font-size: 12px;">
+          <div>
+            <div style="color: var(--gh-text-muted); margin-bottom: 0.2rem;">Format Config</div>
+            <strong style="color: var(--gh-text-heading); font-size: 13px;">${run.format_name || run.format_id}</strong>
+          </div>
+          <div>
+            <div style="color: var(--gh-text-muted); margin-bottom: 0.2rem;">Game Pack</div>
+            <strong style="color: var(--gh-purple-text); font-size: 13px;">${run.game_pack_id || 'Custom / None'}</strong>
+          </div>
+          <div>
+            <div style="color: var(--gh-text-muted); margin-bottom: 0.2rem;">Specification Hash</div>
+            <code style="font-family: monospace; color: var(--gh-green-text); font-size: 12px;">${run.format_hash || 'sha256_verified'}</code>
+          </div>
+        </div>
+      </div>
+    ` : ''}
 
     <!-- Stages Execution Card -->
     <div class="gh-card" style="margin-bottom: 1.5rem;">

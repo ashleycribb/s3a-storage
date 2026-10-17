@@ -261,7 +261,11 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     path === "/triage-duplicates" ||
     path === "/operations" ||
     path === "/rehearsals" ||
-    path.startsWith("/rehearsals/")
+    path.startsWith("/rehearsals/") ||
+    path === "/formats" ||
+    path.startsWith("/formats/") ||
+    path === "/game-packs" ||
+    path.startsWith("/game-packs/")
   ) {
     if (
       (path === "/control" && request.method === "POST") ||

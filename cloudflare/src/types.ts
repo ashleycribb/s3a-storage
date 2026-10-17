@@ -254,11 +254,13 @@ export interface ChangeRequest {
 // ----------------------------------------------------------------------------
 // S3A Rehearsal: Simulated Tournament Production Readiness Types
 // ----------------------------------------------------------------------------
-export type RehearsalTournamentSize = 4 | 8 | 16;
+export type RehearsalTournamentSize = 4 | 8 | 16 | number;
 export type RehearsalScenario =
   | "happy_path"
   | "bad_score"
   | "dispute"
+  | "unexpressible_step"
+  | "missing_logic"
   | "missing_route"
   | "broken_control"
   | "cant_enter_score"
@@ -283,6 +285,109 @@ export interface RehearsalConsoleError {
   source?: string;
 }
 
+// ----------------------------------------------------------------------------
+// S3A Rehearsal: Tournament Format Registry & Configurable Event Options
+// ----------------------------------------------------------------------------
+export type TournamentFormatType =
+  | "single_elimination"
+  | "double_elimination"
+  | "round_robin"
+  | "swiss"
+  | "groups_playoffs"
+  | "battle_royale"
+  | "custom";
+
+export interface FormatWinCondition {
+  type: "first_to_n" | "points_threshold" | "most_wins" | "placement_score";
+  target?: number;
+}
+
+export type FormatTieBreaker =
+  | "head_to_head"
+  | "buchholz"
+  | "sonneborn_berger"
+  | "point_differential"
+  | "game_win_pct"
+  | "most_wins"
+  | "points"
+  | "rematch";
+
+export interface FormatAdvancement {
+  structure: "bracket" | "swiss_rounds" | "groups_to_bracket" | "lobby_elimination";
+  rounds?: number;
+  qualifiers_per_group?: number;
+  losers_bracket?: boolean;
+  grand_finals_reset?: boolean;
+}
+
+export interface TournamentFormatConfig {
+  id: string;
+  name: string;
+  version: string;
+  author: string;
+  content_hash: string;
+  signature?: string;
+  teams_per_match: number;
+  players_per_team: number;
+  seeding: "standard_bracket" | "snake" | "random" | "rating";
+  win_condition: FormatWinCondition;
+  tie_breakers: FormatTieBreaker[];
+  advancement: FormatAdvancement;
+  rematch_rules: "allowed" | "forbidden" | "playoffs_only";
+}
+
+export interface EventOptions {
+  match_rules: {
+    best_of_n: number;
+    per_game_scoring: boolean;
+    bans_picks?: {
+      enabled: boolean;
+      pool_size: number;
+      bans_per_team: number;
+      system: string;
+    };
+  };
+  check_in: {
+    window_minutes: number;
+    auto_dq_no_show: boolean;
+  };
+  score_reporting: {
+    mode: "both_players" | "to_only" | "auto_verified";
+    dispute_grace_period_mins: number;
+    allow_disputes: boolean;
+  };
+  roster_rules: {
+    substitutes_allowed: number;
+    coach_slots: number;
+    roster_lock: boolean;
+  };
+  multi_stage?: boolean;
+  stages?: Array<{
+    stage_num: number;
+    name: string;
+    format_id: string;
+    teams_count: number;
+    advance_count: number;
+  }>;
+}
+
+export interface GamePack {
+  id: string;
+  name: string;
+  version: string;
+  genre: "esports" | "fighting" | "tabletop" | "sports" | "battle_royale";
+  default_format_id: string;
+  event_options: Partial<EventOptions>;
+  game_metadata: {
+    titles: string[];
+    map_pool?: string[];
+    overtime_rule?: string;
+    match_term: string;
+  };
+  content_hash: string;
+  signature?: string;
+}
+
 export interface RehearsalFailedApi {
   endpoint: string;
   method: string;
@@ -297,6 +402,8 @@ export interface RehearsalMatch {
   round: number;
   match_num: number;
   round_name: string;
+  group_name?: string;
+  bracket_type?: "upper" | "lower" | "grand_finals" | "group" | "swiss";
   team1: { id: string; name: string; seed: number; score?: number };
   team2: { id: string; name: string; seed: number; score?: number };
   winner_id?: string;
@@ -308,6 +415,11 @@ export interface RehearsalMatch {
     resolved_by?: string;
     resolution?: string;
   };
+  map_veto?: {
+    pool: string[];
+    banned: string[];
+    picked: string;
+  };
 }
 
 export interface RehearsalStanding {
@@ -316,14 +428,21 @@ export interface RehearsalStanding {
   team_name: string;
   record: string;
   prize_points: number;
+  tiebreak_score?: number;
+  buchholz_score?: number;
 }
 
 export interface RehearsalRunRecord {
   run_id: string;
   tournament_id: string;
   tournament_name: string;
-  bracket_size: RehearsalTournamentSize;
+  bracket_size: number;
   scenario: RehearsalScenario;
+  format_id?: string;
+  game_pack_id?: string;
+  format_version?: string;
+  format_hash?: string;
+  format_name?: string;
   status: "passed" | "failed" | "disputed_resolved";
   started_at: number;
   finished_at: number;
@@ -342,9 +461,12 @@ export interface RehearsalRunRecord {
 }
 
 export interface RehearsalOptions {
-  size?: RehearsalTournamentSize;
+  size?: number;
   scenario?: RehearsalScenario;
   simulatedError?: string;
+  format_id?: string;
+  game_pack_id?: string;
+  event_options?: Partial<EventOptions>;
 }
 
 export interface RegisteredAgent {

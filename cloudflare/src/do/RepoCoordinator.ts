@@ -43,7 +43,8 @@ import {
 import { formatPREvidenceComment } from "../types";
 import { renderBraketsPreviewHtml } from "../ui/preview";
 import { TournamentHarness } from "../rehearsal/TournamentHarness";
-import type { RehearsalRunRecord, RehearsalOptions } from "../types";
+import { FormatRegistry } from "../rehearsal/FormatRegistry";
+import type { RehearsalRunRecord, RehearsalOptions, TournamentFormatConfig, GamePack } from "../types";
 
 export class RepoCoordinator implements DurableObject {
   state: DurableObjectState;
@@ -972,6 +973,16 @@ export class RepoCoordinator implements DurableObject {
     const commitsTotal = ((await this.state.storage.get<number>("commits_count")) || 0) + 1;
     await this.state.storage.put("commits_count", commitsTotal);
 
+    // If this was a proposed format config, activate it in custom_formats
+    const proposedFormat = await this.state.storage.get<TournamentFormatConfig>(`proposed_format:${crId}`);
+    if (proposedFormat) {
+      const customFormats = (await this.state.storage.get<TournamentFormatConfig[]>("custom_formats")) || [];
+      if (!customFormats.some(f => f.id === proposedFormat.id)) {
+        customFormats.push(proposedFormat);
+        await this.state.storage.put("custom_formats", customFormats);
+      }
+    }
+
     return new Response(JSON.stringify({
       status: "approved_and_merged",
       change_request: cr,
@@ -1756,6 +1767,10 @@ export class RepoCoordinator implements DurableObject {
         return new Response(JSON.stringify({ project_id: projectId, runs }, null, 2), {
           headers: { "Content-Type": "application/json" }
         });
+      case "formats":
+        return this.handleFormats(request, projectId, pathParts.slice(3));
+      case "game-packs":
+        return this.handleGamePacks(request, projectId, pathParts.slice(3));
       case "test-sandbox":
         return this.handleTestSandbox(request);
       case "push":
@@ -3519,7 +3534,7 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       await this.appendTraceStep(
         record.run_id,
         stage.stage_id,
-        { id: "tournament-harness", name: "S3A Rehearsal Engine", type: "system" },
+        { id: "tournament-harness", name: "S3A Rehearsal Engine", type: "ai" },
         stage.status === "passed"
           ? "http://adlnet.gov/expapi/verbs/passed"
           : stage.status === "disputed"
@@ -3548,5 +3563,117 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       if (r) runs.push(r);
     }
     return runs;
+  }
+
+  private async handleFormats(request: Request, projectId: string, subParts: string[]): Promise<Response> {
+    const registry = new FormatRegistry();
+    const customFormats = (await this.state.storage.get<TournamentFormatConfig[]>("custom_formats")) || [];
+    for (const cf of customFormats) {
+      registry.registerFormat(cf);
+    }
+
+    if (request.method === "POST" && subParts[0] === "propose") {
+      let body: any = {};
+      try { body = await request.json(); } catch (e) {
+        return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+      }
+
+      const format: TournamentFormatConfig = body.format;
+      if (!format || !format.id || !format.name || !format.version) {
+        return new Response(JSON.stringify({ error: "Missing required format fields (id, name, version)" }), { status: 400 });
+      }
+
+      if (!format.content_hash) {
+        format.content_hash = FormatRegistry.computeSpecHash(format);
+      }
+      if (!format.signature) {
+        format.signature = `ed25519_sig_format_${body.agent_id || 'agent'}_${format.id}_v${format.version.replace(/\./g, '_')}`;
+      }
+
+      const agentId = body.agent_id || "agent_format_architect";
+      const taskId = `TASK-FORMAT-${format.id.toUpperCase()}-${Date.now().toString(36)}`;
+      const crId = `CR-FORMAT-${format.id.toUpperCase()}`;
+
+      const tasks = await this.getOrInitTasks();
+      const newTask: TaskItem = {
+        id: taskId,
+        title: `Tournament Format Proposal: ${format.name} (${format.id} v${format.version})`,
+        description: `Agent ${agentId} proposed a declarative tournament format config.\n\n- **Hash:** \`${format.content_hash}\`\n- **Signed By:** \`${format.author || agentId}\`\n- **Structure:** \`${format.advancement?.structure || 'custom'}\`\n\n${body.rationale || 'Proposed new tournament format for rehearsal and product engine.'}`,
+        files_allowed: ["configs/formats/"],
+        tests: "npm run test",
+        risk_level: "low",
+        status: "in_review",
+        tags: ["format-proposal", "needs-human"],
+        claimed_by: agentId,
+        claimed_at: Date.now(),
+      };
+      tasks.unshift(newTask);
+      await this.state.storage.put("brakets_tasks", tasks);
+
+      const cr: ChangeRequest = {
+        id: crId,
+        task_id: taskId,
+        agent_id: agentId,
+        agent_pubkey: body.agent_pubkey || "agent_format_architect_pubkey",
+        title: `feat(formats): Add ${format.name} format config`,
+        commit_id: `commit_${Date.now().toString(36)}`,
+        seal_hash: format.content_hash,
+        message: `### Declarative Tournament Format Proposal\n\n` +
+          `- **Format ID:** \`${format.id}\`\n` +
+          `- **Version:** \`${format.version}\`\n` +
+          `- **Content Hash:** \`${format.content_hash}\`\n` +
+          `- **Signature:** \`${format.signature}\`\n\n` +
+          `\`\`\`json\n${JSON.stringify(format, null, 2)}\n\`\`\`\n\n` +
+          `Ashley + Ward supervisor review required to merge.`,
+        diff: `+ // configs/formats/${format.id}.json\n+ ${JSON.stringify(format, null, 2)}`,
+        touched_files: [`configs/formats/${format.id}.json`],
+        requires_human: true,
+        status: "pending_review",
+        created_at: Date.now(),
+        risk_level: "low",
+      };
+      await this.state.storage.put(`cr:${crId}`, cr);
+      await this.state.storage.put(`proposed_format:${crId}`, format);
+
+      return new Response(JSON.stringify({
+        status: "proposed",
+        change_request: cr,
+        task: newTask,
+        format,
+      }, null, 2), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (subParts[0]) {
+      const f = registry.getFormat(subParts[0]);
+      if (!f) return new Response("Format not found", { status: 404 });
+      return new Response(JSON.stringify(f, null, 2), { headers: { "Content-Type": "application/json" } });
+    }
+
+    const formats = registry.listFormats();
+    return new Response(JSON.stringify({ project_id: projectId, formats }, null, 2), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  private async handleGamePacks(request: Request, projectId: string, subParts: string[]): Promise<Response> {
+    const registry = new FormatRegistry();
+    const customPacks = (await this.state.storage.get<GamePack[]>("custom_game_packs")) || [];
+    for (const cp of customPacks) {
+      registry.registerGamePack(cp);
+    }
+
+    if (subParts[0]) {
+      const p = registry.getGamePack(subParts[0]);
+      if (!p) return new Response("Game pack not found", { status: 404 });
+      return new Response(JSON.stringify(p, null, 2), { headers: { "Content-Type": "application/json" } });
+    }
+
+    const gamePacks = registry.listGamePacks();
+    return new Response(JSON.stringify({ project_id: projectId, game_packs: gamePacks }, null, 2), {
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
