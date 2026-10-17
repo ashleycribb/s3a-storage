@@ -124,7 +124,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     // Step 1: Fetch repository / baseline code
     const repoContext = await step.do("fetch-repo", async () => {
       const token = this.env.GITHUB_TOKEN;
-      const targetFile = (filesAllowed && filesAllowed.length > 0) ? filesAllowed[0] : "apps/brakets-gg/app/api/auth/roles.ts";
+      const targetFile = (filesAllowed && filesAllowed.length > 0) ? filesAllowed[0] : "docs/CONTRIBUTING.md";
       let existingContent = "";
       if (token) {
         try {
@@ -205,29 +205,19 @@ Provide a concise, 3-step technical implementation plan. No conversational fille
         };
       }
 
-      const prompt = `You are an expert TypeScript engineer implementing a task for plat-gaming (Brakets).
+      const prompt = `You are an expert software engineer implementing a task for plat-gaming (Brakets).
 Task: ${taskTitle}
 Description: ${taskDescription}
 Target File: ${repoContext.targetFile}
 Plan: ${plan}
 
-Write the complete TypeScript code for ${repoContext.targetFile}.
-Requirements:
-1. Define PlatformRole = "player" | "coach" | "team_manager" | "streamer" | "organizer"
-2. Define interface UserRoleRecord
-3. Implement evaluatePlatformPermissions(role: PlatformRole) returning:
-   - canCreateTournament: boolean (true only for organizer)
-   - canReportScores: boolean (true for organizer, player, coach)
-   - canManageRoster: boolean (true for team_manager, coach)
-   - canStreamMatch: boolean (true for streamer, player)
-4. Export all types and functions with clean comments.
-
-Return ONLY the code within a single \`\`\`typescript ... \`\`\` codeblock.`;
+Write the complete implementation for ${repoContext.targetFile} that satisfies all task requirements and clean coding standards.
+Return ONLY the code/content within a single codeblock.`;
 
       const response = await callModel(this.env, prompt);
       await recordCoordinatorUsage("llm", 1);
 
-      const match = response.match(/\`\`\`(?:typescript|ts)?\s*([\s\S]*?)\`\`\`/i);
+      const match = response.match(/```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```/i);
       const code = match ? match[1].trim() : response.trim();
 
       // Trace: Append code authoring step

@@ -129,6 +129,70 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
   }
 
   // --------------------------------------------------------------------------
+  // 3. Admin Create GitHub Issue on plat-gaming
+  // --------------------------------------------------------------------------
+  if (path === "/admin/create-issue" && request.method === "POST") {
+    const auth = checkAdminAuth(request, env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({ error: "Unauthorized: Admin authentication required.", reason: auth.reason }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    const token = env.GITHUB_TOKEN;
+    if (!token) {
+      return new Response(JSON.stringify({ error: "GITHUB_TOKEN not configured" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    try {
+      const body = await request.json() as any;
+      const { title, description, labels } = body;
+      if (!title) {
+        return new Response(JSON.stringify({ error: "title is required" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const ghRes = await fetch("https://api.github.com/repos/ashleycribb/plat-gaming/issues", {
+        method: "POST",
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title,
+          body: description || title,
+          labels: labels || ["enhancement"],
+        }),
+      });
+      if (!ghRes.ok) {
+        const errText = await ghRes.text();
+        return new Response(JSON.stringify({ error: "GitHub API error", details: errText }), {
+          status: ghRes.status,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      const issue = await ghRes.json() as any;
+      const doId = env.REPO_COORDINATOR.idFromName(DEFAULT_PROJECT_ID);
+      const stub = env.REPO_COORDINATOR.get(doId);
+      await stub.fetch("https://internal/project/" + DEFAULT_PROJECT_ID + "/tasks/sync", { method: "POST" });
+      return new Response(JSON.stringify({ ok: true, issue: { id: issue.id, number: issue.number, title: issue.title, html_url: issue.html_url } }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err?.message || String(err) }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // 3. Direct Sandbox Diagnostics Endpoint
   // --------------------------------------------------------------------------
   if (path === "/test-sandbox") {

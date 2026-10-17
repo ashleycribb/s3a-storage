@@ -396,8 +396,9 @@ export class RepoCoordinator implements DurableObject {
       }
       let body: any = {};
       try { body = await request.json(); } catch (e) {}
-      const action = body.action || "pause";
-      const isPaused = action === "pause";
+      const isPaused = body.paused !== undefined
+        ? Boolean(body.paused)
+        : (body.action ? body.action === "pause" : true);
       await this.state.storage.put("autonomous_paused", isPaused);
       if (!isPaused) {
         await this.state.storage.setAlarm(Date.now() + 5 * 60 * 1000);
@@ -1215,13 +1216,22 @@ export class RepoCoordinator implements DurableObject {
         const isAuthOrRole = /auth|role|login|sso/i.test(issue.title + " " + (issue.body || ""));
         const isCashierOrEscrow = /cashier|escrow|payout|wallet|stripe/i.test(issue.title + " " + (issue.body || ""));
         const isDbOrInfra = /db|d1|database|infra|schema|cloudflare/i.test(issue.title + " " + (issue.body || ""));
+        const isDocs = /doc|contributing|readme|guide/i.test(issue.title + " " + (issue.body || ""));
+        const isFooter = /footer/i.test(issue.title + " " + (issue.body || ""));
+        const isBadge = /badge|contrast/i.test(issue.title + " " + (issue.body || ""));
         const isSensitive = isAuthOrRole || isCashierOrEscrow || isDbOrInfra;
 
-        const filesAllowed = isAuthOrRole
-          ? ["apps/brakets-gg/app/api/auth/", "packages/auth/", "components/", "lib/mock-api.ts"]
+        const filesAllowed = isDocs
+          ? ["docs/CONTRIBUTING.md", "README.md"]
+          : isFooter
+          ? ["components/Footer.tsx"]
+          : isBadge
+          ? ["components/Badge.tsx"]
+          : isAuthOrRole
+          ? ["apps/brakets-gg/app/api/auth/roles.ts", "packages/auth/"]
           : isCashierOrEscrow
-          ? ["apps/brakets-gg/cashier/", "lib/escrow.ts", "packages/"]
-          : ["apps/brakets-gg/", "packages/", "lib/", "components/"];
+          ? ["apps/brakets-gg/cashier/index.ts", "lib/escrow.ts"]
+          : ["apps/brakets-gg/index.ts", "components/"];
 
         const newTask: TaskItem = {
           id: taskId,
@@ -1509,6 +1519,61 @@ export class RepoCoordinator implements DurableObject {
           sha: baseSha,
         }),
       });
+
+      // Commit changed file to branch refs/heads/${branchName}
+      const targetFilePath = (cr.touched_files && cr.touched_files[0]) || "docs/CONTRIBUTING.md";
+      let fileContent = cr.diff || `// S3A Agent contribution for ${cr.title}\n`;
+      if (fileContent.startsWith("+++ b/")) {
+        const lines = fileContent.split("\n");
+        fileContent = lines.slice(1).join("\n");
+      }
+
+      // Check if file exists on main to provide sha
+      let existingFileSha: string | undefined;
+      try {
+        const fileRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${targetFilePath}?ref=main`, {
+          headers: {
+            "User-Agent": "s3a-gate",
+            "Authorization": `token ${token}`,
+            "Accept": "application/vnd.github.v3+json",
+          },
+        });
+        if (fileRes.ok) {
+          const fileData: any = await fileRes.json();
+          existingFileSha = fileData.sha;
+        }
+      } catch (e) {}
+
+      // Put content on branch
+      const putFileBody: any = {
+        message: `${cr.title}\n\nSigned-off-by: S3A Agent <agent@s3a.local>`,
+        content: btoa(unescape(encodeURIComponent(fileContent))),
+        branch: branchName,
+      };
+      if (existingFileSha) {
+        putFileBody.sha = existingFileSha;
+      }
+
+      const putRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${targetFilePath}`, {
+        method: "PUT",
+        headers: {
+          "User-Agent": "s3a-gate",
+          "Authorization": `token ${token}`,
+          "Accept": "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(putFileBody),
+      });
+
+      if (putRes.ok) {
+        const putData: any = await putRes.json();
+        if (putData.commit?.sha) {
+          cr.commit_sha = putData.commit.sha;
+          cr.commit_id = putData.commit.sha;
+        }
+      } else {
+        console.error("[openGitHubPR] Failed to commit file to branch:", await putRes.text());
+      }
 
       const prBody = formatPREvidenceComment(cr, task, issueNum, 0);
       const isSensitive = /cashier|escrow|payout|auth|db|infra/i.test((task.title || '') + ' ' + (cr.touched_files || []).join(' ') + ' ' + (task.description || ''));
