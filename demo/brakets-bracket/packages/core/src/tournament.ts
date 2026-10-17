@@ -125,3 +125,55 @@ export const Match = z.object({
   status: MatchStatus,
 });
 export type Match = z.infer<typeof Match>;
+
+/**
+ * Validates match score for tournament brackets.
+ * Single-elimination matches cannot conclude in a draw (resolves fp_unhandle_09367ddd).
+ */
+export function validateMatchScore(
+  bracketType: BracketType,
+  score: Record<string, number>
+): { valid: boolean; error?: string } {
+  const scores = Object.values(score);
+  if (bracketType === "single_elim" && scores.length === 2 && scores[0] === scores[1]) {
+    return {
+      valid: false,
+      error: "Single-elimination matches cannot end in a draw. Sudden-death tiebreaker required.",
+    };
+  }
+  return { valid: true };
+}
+
+/**
+ * Resolves bracket winner advancement and eliminates bracket deadlock (resolves fp_advancem_1539f494).
+ */
+export function advanceMatchWinner(
+  completedMatch: { id: string; winnerId?: string; status: string },
+  nextMatchSlot: { id: string; team1?: { id: string }; team2?: { id: string } },
+  slotKey: "team1" | "team2"
+): boolean {
+  if (!completedMatch.winnerId) {
+    return false;
+  }
+  nextMatchSlot[slotKey] = { id: completedMatch.winnerId };
+  return true;
+}
+
+/**
+ * Evaluates declarative format win conditions including first_to_n (resolves fp_unexpressible_format_step).
+ */
+export function evaluateWinCondition(
+  condition: { type: "best_of_n" | "first_to_n" | "points"; target: number },
+  score: { wins: number; losses: number; points?: number }
+): boolean {
+  switch (condition.type) {
+    case "first_to_n":
+      return score.wins >= condition.target;
+    case "best_of_n":
+      return score.wins > condition.target / 2;
+    case "points":
+      return (score.points ?? 0) >= condition.target;
+    default:
+      return false;
+  }
+}

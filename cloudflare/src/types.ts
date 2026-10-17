@@ -483,6 +483,7 @@ export interface RegisteredAgent {
   fork_repo?: string;
   registered_at: number;
   last_seen: number;
+  files_allowed?: string[];
 }
 
 export interface DailyLimits {

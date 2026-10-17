@@ -96,6 +96,15 @@ class MockApiStore {
     lobby.standings = standings;
     lobby.status = "final";
 
+    // Advance match winner to next round lobby to prevent deadlock (resolves fp_advancem_1539f494)
+    if (standings.length > 0) {
+      const winnerId = standings[0];
+      const nextLobby = this.snapshot.lobbies.find(l => l.id !== lobbyId && l.teamIds.length < 4);
+      if (nextLobby && !nextLobby.teamIds.includes(winnerId)) {
+        nextLobby.teamIds.push(winnerId);
+      }
+    }
+
     const evt: MockReportEvent = {
       id: `evt_${Date.now()}`,
       lobbyId,

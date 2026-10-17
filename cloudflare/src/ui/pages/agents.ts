@@ -80,6 +80,7 @@ export function renderAgentsPage(options: AgentsPageOptions): string {
                     </div>
                     <div style="font-size: 12px; color: var(--gh-text-muted);">
                       Role: <strong>${roleName}</strong> &bull; Pubkey: <code>${pubkey.slice(0, 14)}...</code>
+                      ${(a as any).files_allowed && (a as any).files_allowed.length ? `&bull; Scopes: <code style="font-size: 11px; color: var(--gh-text);">${(a as any).files_allowed.join(", ")}</code>` : ""}
                     </div>
                   </div>
                 </div>

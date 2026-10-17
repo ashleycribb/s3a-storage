@@ -729,11 +729,13 @@ export class RepoCoordinator implements DurableObject {
     const agentRecord: RegisteredAgent = {
       agent_id,
       agent_pubkey,
+      agent_role: existingAgent?.agent_role || body.role || "builder",
       status: "working",
       task_id: targetTask.id,
       task_title: targetTask.title,
       commit_count: existingAgent?.commit_count || 0,
       fork_repo: `s3a-agent-${safeAgentSuffix}`,
+      files_allowed: existingAgent?.files_allowed || targetTask.files_allowed,
       registered_at: existingAgent?.registered_at || Date.now(),
       last_seen: Date.now(),
     };
@@ -1838,6 +1840,9 @@ export class RepoCoordinator implements DurableObject {
       case "status":
         return this.handleStatus(projectId);
       case "agents":
+        if (pathParts[3] === "register" || request.method === "POST") {
+          return this.handleRegisterAgent(request, projectId);
+        }
         return this.handleAgents(projectId);
       case "human-queue":
         return this.handleHumanQueue();
@@ -3256,6 +3261,51 @@ fi
   }
 
   // --------------------------------------------------------------------------
+  // Register Agent Handler (POST /project/:id/agents/register)
+  // --------------------------------------------------------------------------
+  private async handleRegisterAgent(request: Request, projectId: string): Promise<Response> {
+    try {
+      const body: any = await request.json();
+      const { agent_id, agent_pubkey, role, files_allowed, fork_repo } = body;
+      if (!agent_id || !agent_pubkey) {
+        return new Response(JSON.stringify({ error: "agent_id and agent_pubkey required" }), { status: 400 });
+      }
+
+      const safeAgentSuffix = agent_id.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 32);
+      const existingAgent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${agent_id}`);
+      const agentRecord: RegisteredAgent = {
+        agent_id,
+        agent_pubkey,
+        agent_role: role || existingAgent?.agent_role || "builder",
+        status: existingAgent?.status || "idle",
+        task_id: existingAgent?.task_id,
+        task_title: existingAgent?.task_title,
+        commit_count: existingAgent?.commit_count || 0,
+        fork_repo: fork_repo || existingAgent?.fork_repo || `s3a-agent-${safeAgentSuffix}`,
+        files_allowed: files_allowed || existingAgent?.files_allowed || [
+          "demo/brakets-bracket/",
+          "apps/brakets-gg/",
+          "packages/",
+          "cloudflare/"
+        ],
+        registered_at: existingAgent?.registered_at || Date.now(),
+        last_seen: Date.now(),
+      };
+      await this.state.storage.put(`reg_agent:${agent_id}`, agentRecord);
+
+      return new Response(JSON.stringify({
+        status: "registered",
+        agent: agentRecord,
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Agent Map Handler (GET /project/:id/agents)
   // --------------------------------------------------------------------------
   private async handleAgents(projectId: string): Promise<Response> {
@@ -3276,11 +3326,16 @@ fi
     for (const [key, agent] of regList) {
       agentsObj[agent.agent_id] = {
         agentId: agent.agent_id,
+        agent_id: agent.agent_id,
         status: agent.status,
         task: agent.task_title || agent.task_id || "Active Task",
+        task_id: agent.task_id,
         commits: agent.commit_count || 0,
         lastTs: agent.last_seen || agent.registered_at,
         forkRepo: agent.fork_repo,
+        agent_role: agent.agent_role || "builder",
+        agent_pubkey: agent.agent_pubkey,
+        files_allowed: agent.files_allowed || [],
       };
       totalCommits += (agent.commit_count || 0);
       counts[agent.status] = (counts[agent.status] || 0) + 1;
