@@ -5,7 +5,7 @@ import type { BreadcrumbItem } from "../types";
 
 export interface ShellOptions {
   projectId: string;
-  activeTab: "code" | "issues" | "pulls" | "agents" | "actions" | "insights";
+  activeTab: "code" | "issues" | "pulls" | "agents" | "actions" | "rehearsals" | "insights";
   pageTitle?: string;
   breadcrumbs?: BreadcrumbItem[];
   counts?: {
@@ -360,6 +360,10 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
       <a href="/p/${projectId}/actions" id="nav-tab-actions" class="tab-item ${activeTab === 'actions' ? 'active' : ''}">
         <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-2.75A.75.75 0 017.25 4.5h1.5a.75.75 0 01.75.75v5.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-5.5z"/></svg>
         <span>Actions</span>
+      </a>
+      <a href="/p/${projectId}/rehearsals" id="nav-tab-rehearsals" class="tab-item ${activeTab === 'rehearsals' ? 'active' : ''}">
+        <svg height="16" viewBox="0 0 16 16" width="16"><path d="M9.504.43a1.5 1.5 0 011.264.508l4.296 4.697c.3.327.436.772.373 1.214l-1.393 9.754A1.5 1.5 0 0112.558 18H3.442a1.5 1.5 0 01-1.486-1.397L.563 6.85a1.5 1.5 0 01.373-1.215L5.232.938A1.5 1.5 0 016.496.43h3.008zM6.5 2.5a.5.5 0 00-.5.5v2a.5.5 0 001 0V3h2v2a.5.5 0 001 0V3a.5.5 0 00-.5-.5h-3zM3 8a1 1 0 100 2 1 1 0 000-2zm10 0a1 1 0 100 2 1 1 0 000-2zm-5 4a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg>
+        <span>Rehearsals</span>
       </a>
       <a href="/p/${projectId}/insights" id="nav-tab-insights" class="tab-item ${activeTab === 'insights' ? 'active' : ''}">
         <svg height="16" viewBox="0 0 16 16" width="16"><path d="M1.5 1.75a.75.75 0 00-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 000-1.5H1.5V1.75z"/><path d="M3.75 6.5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5a.75.75 0 01.75-.75zm4.5-2a.75.75 0 01.75.75v6.5a.75.75 0 01-1.5 0v-6.5a.75.75 0 01.75-.75zm4.5 4a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0v-2.5a.75.75 0 01.75-.75z"/></svg>

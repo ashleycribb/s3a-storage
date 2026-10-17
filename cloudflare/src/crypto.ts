@@ -125,10 +125,27 @@ export function checkAdminAuth(request: Request, env: Env): { authorized: boolea
 export function isSupervisorKeyAllowed(reviewerPubkey: string | undefined, env: Env): boolean {
   if (!reviewerPubkey || typeof reviewerPubkey !== "string") return false;
   const rawAllowed = (env.SUPERVISOR_PUBKEYS || "").trim();
-  if (!rawAllowed) return false;
   const allowedKeys = rawAllowed
     .split(",")
     .map(k => k.trim().toLowerCase())
     .filter(Boolean);
-  return allowedKeys.includes(reviewerPubkey.trim().toLowerCase());
+
+  // Default authorized human supervisors (Ashley + Ward)
+  const defaultSupervisors = [
+    "7988cfd62ed07a64c967ad9b3355e431f8665e69c89c7faa60f7bf772d6644ea", // Ashley
+    "00a1ab125c12ea13effe9daaf336782b8f5aae8acce72af8fb7c5e668ce59850", // Ward
+    "91f13001fb9d1a60b6c0dbc5343174be5a5de64bff6a157e5e3de46606ec177c", // Ashley (alt)
+    "15eb471d263df56c04c7eb8720edfb21569b6e457cb4e6a8f9e7078da2ca65a4", // Ward (alt)
+  ];
+
+  const allAllowed = new Set([...allowedKeys, ...defaultSupervisors]);
+  return allAllowed.has(reviewerPubkey.trim().toLowerCase());
+}
+
+export function getSupervisorName(reviewerPubkey: string | undefined): string {
+  if (!reviewerPubkey) return "Human Supervisor";
+  const norm = reviewerPubkey.trim().toLowerCase();
+  if (norm.startsWith("7988cfd6") || norm.startsWith("91f13001")) return "Ashley (Supervisor)";
+  if (norm.startsWith("00a1ab12") || norm.startsWith("15eb471d")) return "Ward (Supervisor)";
+  return `Supervisor (${reviewerPubkey.slice(0, 8)})`;
 }

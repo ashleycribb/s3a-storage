@@ -189,6 +189,9 @@ export interface TaskItem {
   github_issue_number?: number;
   github_issue_url?: string;
   workflow_id?: string;
+  error_fingerprint?: string;
+  rehearsal_run_id?: string;
+  repro_count?: number;
 }
 
 export interface ChangeRequest {
@@ -235,6 +238,96 @@ export interface ChangeRequest {
   needs_second_human?: boolean;
   created_at: number;
   resolved_at?: number;
+  before_trace_id?: string;
+  after_trace_id?: string;
+}
+
+// ----------------------------------------------------------------------------
+// S3A Rehearsal: Simulated Tournament Production Readiness Types
+// ----------------------------------------------------------------------------
+export type RehearsalTournamentSize = 4 | 8 | 16;
+export type RehearsalScenario = "happy_path" | "bad_score" | "dispute";
+export type RehearsalStageStatus = "passed" | "failed" | "disputed" | "skipped";
+
+export interface RehearsalStage {
+  stage_id: string;
+  name: string;
+  status: RehearsalStageStatus;
+  duration_ms: number;
+  details?: any;
+  error?: string;
+  stack?: string;
+}
+
+export interface RehearsalConsoleError {
+  timestamp: number;
+  level: "error" | "warn";
+  message: string;
+  source?: string;
+}
+
+export interface RehearsalFailedApi {
+  endpoint: string;
+  method: string;
+  status: number;
+  request_body?: any;
+  response_body?: any;
+  duration_ms: number;
+}
+
+export interface RehearsalMatch {
+  id: string;
+  round: number;
+  match_num: number;
+  round_name: string;
+  team1: { id: string; name: string; seed: number; score?: number };
+  team2: { id: string; name: string; seed: number; score?: number };
+  winner_id?: string;
+  status: "pending" | "ready" | "in_progress" | "disputed" | "final";
+  dispute?: {
+    reported_by: string;
+    conflicting_scores: any;
+    reason: string;
+    resolved_by?: string;
+    resolution?: string;
+  };
+}
+
+export interface RehearsalStanding {
+  rank: number;
+  team_id: string;
+  team_name: string;
+  record: string;
+  prize_points: number;
+}
+
+export interface RehearsalRunRecord {
+  run_id: string;
+  tournament_id: string;
+  tournament_name: string;
+  bracket_size: RehearsalTournamentSize;
+  scenario: RehearsalScenario;
+  status: "passed" | "failed" | "disputed_resolved";
+  started_at: number;
+  finished_at: number;
+  total_duration_ms: number;
+  stages: RehearsalStage[];
+  matches: RehearsalMatch[];
+  standings: RehearsalStanding[];
+  console_errors: RehearsalConsoleError[];
+  failed_api_calls: RehearsalFailedApi[];
+  screenshots: QAEvidenceScreenshot[];
+  timings_ms: Record<string, number>;
+  trace_id: string;
+  issues_filed: string[];
+  before_trace_id?: string;
+  after_trace_id?: string;
+}
+
+export interface RehearsalOptions {
+  size?: RehearsalTournamentSize;
+  scenario?: RehearsalScenario;
+  simulatedError?: string;
 }
 
 export interface RegisteredAgent {

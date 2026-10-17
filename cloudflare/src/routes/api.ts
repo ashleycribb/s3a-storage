@@ -259,7 +259,9 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     path === "/scheduler-tick" ||
     path === "/close-duplicate-prs" ||
     path === "/triage-duplicates" ||
-    path === "/operations"
+    path === "/operations" ||
+    path === "/rehearsals" ||
+    path.startsWith("/rehearsals/")
   ) {
     if (
       (path === "/control" && request.method === "POST") ||

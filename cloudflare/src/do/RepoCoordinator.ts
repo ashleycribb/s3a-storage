@@ -41,6 +41,8 @@ import {
 } from "../crypto";
 import { formatPREvidenceComment } from "../types";
 import { renderBraketsPreviewHtml } from "../ui/preview";
+import { TournamentHarness } from "../rehearsal/TournamentHarness";
+import type { RehearsalRunRecord, RehearsalOptions } from "../types";
 
 export class RepoCoordinator implements DurableObject {
   state: DurableObjectState;
@@ -1711,6 +1713,27 @@ export class RepoCoordinator implements DurableObject {
           return new Response(JSON.stringify(op, null, 2), { headers: { "Content-Type": "application/json" } });
         }
         return this.handleListOperations(projectId);
+      case "rehearsals":
+        if (pathParts[3] === "run" && request.method === "POST") {
+          let body: any = {};
+          try { body = await request.json(); } catch (e) {}
+          const record = await this.runRehearsal(projectId, body);
+          return new Response(JSON.stringify(record, null, 2), {
+            status: 201,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        if (pathParts[3]) {
+          const run = await this.getRehearsalRun(pathParts[3]);
+          if (!run) return new Response("Rehearsal run not found", { status: 404 });
+          return new Response(JSON.stringify(run, null, 2), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        const runs = await this.listRehearsalRuns(projectId);
+        return new Response(JSON.stringify({ project_id: projectId, runs }, null, 2), {
+          headers: { "Content-Type": "application/json" }
+        });
       case "test-sandbox":
         return this.handleTestSandbox(request);
       case "push":
@@ -3355,5 +3378,114 @@ fi
       status: 202,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // S3A Rehearsal Engine Coordinator Methods
+  // --------------------------------------------------------------------------
+  public async autoFileRehearsalIssue(failure: {
+    title: string;
+    repro_steps: string[];
+    error_text: string;
+    fingerprint: string;
+    run_id: string;
+    risk_level?: string;
+  }, projectId: string): Promise<{ action: string; taskId: string }> {
+    const tasks = await this.getOrInitTasks();
+    const existing = tasks.find(t => t.error_fingerprint === failure.fingerprint);
+
+    if (existing) {
+      existing.repro_count = (existing.repro_count || 1) + 1;
+      existing.description += `\n\n> [!WARNING]\n> **Recurrence in Rehearsal Run:** \`${failure.run_id}\` (${new Date().toISOString()})\n> Evidence: [Run Details](/p/${projectId}/rehearsals/${failure.run_id}) &bull; [Trace](/project/${projectId}/trace/${failure.run_id})`;
+      await this.state.storage.put("brakets_tasks", tasks);
+      return { action: "attached", taskId: existing.id };
+    }
+
+    const taskId = `TASK-REHEARSAL-${failure.fingerprint.slice(3, 11)}`;
+    const desc = `## Bug Description
+Automated tournament rehearsal detected an unhandled crash during staging simulation.
+
+## Reproduction Steps
+${failure.repro_steps.join("\n")}
+
+## Error Log & Stack Trace
+\`\`\`
+${failure.error_text}
+\`\`\`
+
+## Evidence Links
+- **Rehearsal Run:** [/p/${projectId}/rehearsals/${failure.run_id}](/p/${projectId}/rehearsals/${failure.run_id})
+- **xAPI Trace Record:** [/project/${projectId}/trace/${failure.run_id}](/project/${projectId}/trace/${failure.run_id})
+- **Fingerprint:** \`${failure.fingerprint}\`
+`;
+
+    const newTask: TaskItem = {
+      id: taskId,
+      title: `[Rehearsal Bug] ${failure.title}`,
+      description: desc,
+      files_allowed: ["apps/brakets-gg/app/api/tournaments/", "apps/brakets-gg/", "packages/"],
+      tests: "npm run build",
+      risk_level: failure.risk_level === "high" ? "high" : "low",
+      status: "open",
+      is_bug: true,
+      error_fingerprint: failure.fingerprint,
+      rehearsal_run_id: failure.run_id,
+      repro_count: 1,
+    };
+
+    tasks.unshift(newTask);
+    await this.state.storage.put("brakets_tasks", tasks);
+
+    return { action: "created", taskId };
+  }
+
+  public async runRehearsal(projectId: string, options?: RehearsalOptions): Promise<RehearsalRunRecord> {
+    const harness = new TournamentHarness(this.env, options);
+    const record = await harness.execute(this, projectId);
+
+    // Save run record to DO storage
+    await this.state.storage.put(`rehearsal_run:${record.run_id}`, record);
+
+    // Update index
+    const runsIndex = (await this.state.storage.get<string[]>("rehearsal_runs_index")) || [];
+    if (!runsIndex.includes(record.run_id)) {
+      runsIndex.unshift(record.run_id);
+      await this.state.storage.put("rehearsal_runs_index", runsIndex);
+    }
+
+    // Save xAPI trace steps for every stage
+    for (const stage of record.stages) {
+      await this.appendTraceStep(
+        record.run_id,
+        stage.stage_id,
+        { id: "tournament-harness", name: "S3A Rehearsal Engine", type: "system" },
+        stage.status === "passed"
+          ? "http://adlnet.gov/expapi/verbs/passed"
+          : stage.status === "disputed"
+          ? "http://activitystrea.ms/schema/1.0/flag"
+          : "http://adlnet.gov/expapi/verbs/failed",
+        `Simulated tournament stage: ${stage.name}`,
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        undefined,
+        stage.error ? `${stage.error}\n${stage.stack || ""}` : undefined,
+        stage.details
+      );
+    }
+
+    return record;
+  }
+
+  public async getRehearsalRun(runId: string): Promise<RehearsalRunRecord | null> {
+    return (await this.state.storage.get<RehearsalRunRecord>(`rehearsal_run:${runId}`)) || null;
+  }
+
+  public async listRehearsalRuns(projectId: string): Promise<RehearsalRunRecord[]> {
+    const index = (await this.state.storage.get<string[]>("rehearsal_runs_index")) || [];
+    const runs: RehearsalRunRecord[] = [];
+    for (const id of index) {
+      const r = await this.getRehearsalRun(id);
+      if (r) runs.push(r);
+    }
+    return runs;
   }
 }

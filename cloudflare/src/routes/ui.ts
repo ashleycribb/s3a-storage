@@ -9,6 +9,7 @@ import { renderPullsPage, renderPullDetailPage } from "../ui/pages/pulls";
 import { renderAgentsPage } from "../ui/pages/agents";
 import { renderActionsPage, renderActionDetailPage } from "../ui/pages/actions";
 import { renderInsightsPage } from "../ui/pages/insights";
+import { renderRehearsalsPage, renderRehearsalDetailPage } from "../ui/pages/rehearsals";
 
 const DEFAULT_PROJECT_ID = "s3a-swarm-main";
 
@@ -24,7 +25,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     const rawTab = url.searchParams.get("tab") || "code";
     let targetTab = rawTab;
     if (["pull-requests", "pr", "prs"].includes(targetTab)) targetTab = "pulls";
-    if (!["code", "issues", "pulls", "agents", "actions", "insights"].includes(targetTab)) {
+    if (!["code", "issues", "pulls", "agents", "actions", "rehearsals", "insights"].includes(targetTab)) {
       targetTab = "code";
     }
 
@@ -87,6 +88,10 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     const dest = pathParts[1] ? `/p/${DEFAULT_PROJECT_ID}/actions/${pathParts[1]}` : `/p/${DEFAULT_PROJECT_ID}/actions`;
     return new Response(null, { status: 301, headers: { Location: dest } });
   }
+  if (pathParts[0] === "rehearsals") {
+    const dest = pathParts[1] ? `/p/${DEFAULT_PROJECT_ID}/rehearsals/${pathParts[1]}` : `/p/${DEFAULT_PROJECT_ID}/rehearsals`;
+    return new Response(null, { status: 301, headers: { Location: dest } });
+  }
   if (pathParts[0] === "insights") {
     return new Response(null, { status: 301, headers: { Location: `/p/${DEFAULT_PROJECT_ID}/insights` } });
   }
@@ -95,7 +100,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   if (pathParts[0] === "project" && pathParts.length >= 2) {
     const proj = pathParts[1];
     const sub = pathParts[2];
-    if (sub && ["code", "issues", "pulls", "agents", "actions", "insights"].includes(sub)) {
+    if (sub && ["code", "issues", "pulls", "agents", "actions", "rehearsals", "insights"].includes(sub)) {
       const rest = pathParts.slice(3).join("/");
       const dest = rest ? `/p/${proj}/${sub}/${rest}` : `/p/${proj}/${sub}`;
       return new Response(null, { status: 301, headers: { Location: dest } });
@@ -125,7 +130,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   // Validate section name
-  if (!["code", "issues", "pulls", "agents", "actions", "insights"].includes(section)) {
+  if (!["code", "issues", "pulls", "agents", "actions", "rehearsals", "insights"].includes(section)) {
     return null;
   }
 
@@ -252,6 +257,41 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
         pageTitle = "Actions";
         breadcrumbs = [{ label: "Actions" }];
         pageHtml = renderActionsPage({ projectId, tasks, changeRequests: crs });
+      }
+      break;
+    }
+
+    case "rehearsals": {
+      if (detailId) {
+        let selectedRun = null;
+        try {
+          const runRes = await stub.fetch(new Request(`https://internal/project/${projectId}/rehearsals/${detailId}`));
+          if (runRes.ok) selectedRun = await runRes.json();
+        } catch (e) {}
+        pageTitle = selectedRun ? `Rehearsal Run · ${(selectedRun as any).run_id}` : `Rehearsal Not Found · ${detailId}`;
+        breadcrumbs = [
+          { label: "Rehearsals", url: `/p/${projectId}/rehearsals` },
+          { label: detailId }
+        ];
+        pageHtml = selectedRun ? renderRehearsalDetailPage(projectId, selectedRun as any) : `
+          <div style="text-align: center; padding: 3rem 1rem;">
+            <h2 style="color: var(--gh-text-heading); font-size: 1.2rem; margin-bottom: 0.5rem;">Rehearsal Run Not Found</h2>
+            <p style="color: var(--gh-text-muted); font-size: 13px;">The requested rehearsal run <code>${detailId}</code> could not be located in storage.</p>
+            <a href="/p/${projectId}/rehearsals" class="gh-btn" style="margin-top: 1rem;">Back to Rehearsals List</a>
+          </div>
+        `;
+      } else {
+        let runsList: any[] = [];
+        try {
+          const runsRes = await stub.fetch(new Request(`https://internal/project/${projectId}/rehearsals`));
+          if (runsRes.ok) {
+            const data: any = await runsRes.json();
+            runsList = data.runs || [];
+          }
+        } catch (e) {}
+        pageTitle = "Rehearsals";
+        breadcrumbs = [{ label: "Rehearsals" }];
+        pageHtml = renderRehearsalsPage(projectId, runsList, { isPaused });
       }
       break;
     }
