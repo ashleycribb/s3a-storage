@@ -10,7 +10,7 @@ This directory contains the formal OWL 2 DL ontologies, xAPI profiles (W3C/ADL c
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Base Scholar** | `:HumanActor` / `:AIAgent` | [`scholar-xapi-profile.jsonld`](scholar-xapi-profile.jsonld) | [`scholar.ttl`](scholar.ttl) | — | Base scientific research & review verbs | Disjointness of HumanActor & AIAgent | Scientific Claim / Citation |
 | **`pm`** | `:PMAgent` | [`pm-xapi-profile.jsonld`](pm-xapi-profile.jsonld) | [`pm.ttl`](pm.ttl) | [`pm-manifest.json`](pm-manifest.json) | `planned`, `assigned`, `prioritized`, `scheduled`, `requested-human-review`, `experienced` | No judgment verbs; no code patches | `PMExecutionPlan` (`steps`, `files_allowed`, `tests`) |
-| **`builder`** | `:BuilderAgent` | [`builder-xapi-profile.jsonld`](builder-xapi-profile.jsonld) | [`builder.ttl`](builder.ttl) | [`builder-manifest.json`](builder-manifest.json) | `edited`, `authored-diff`, `built`, `tested`, `committed`, `submitted-change-request`, `requested-human-review` | No judgment verbs; no unscoped edits; no direct main merge | `BuilderPatchOutput` (`diff`, `touched_files`, `commit_sha`) |
+| **`builder`** | `:BuilderAgent` | [`builder-xapi-profile.jsonld`](builder-xapi-profile.jsonld) | [`builder.ttl`](builder.ttl) | [`builder-manifest.json`](builder-manifest.json) | `edited`, `authored-diff`, `built`, `tested`, `committed`, `submitted-change-request`, `requested-human-review`, `assigned` | No judgment verbs; no unscoped edits; no direct main merge | `BuilderPatchOutput` (`diff`, `touched_files`, `commit_sha`) |
 | **`qa`** | `:QAAgent` | [`qa-xapi-profile.jsonld`](qa-xapi-profile.jsonld) | [`qa.ttl`](qa.ttl) | [`qa-manifest.json`](qa-manifest.json) | `tested`, `verified-claim`, `flagged-discrepancy`, `captured-screenshot`, `exported-snapshot`, `requested-human-review` | Read & test only; no code patches; no commits | `QAEvidenceReport` (`run_id`, `evidence_verified`, `screenshots`) |
 | **`budget`** | `:BudgetAgent` | [`budget-xapi-profile.jsonld`](budget-xapi-profile.jsonld) | [`budget.ttl`](budget.ttl) | [`budget-manifest.json`](budget-manifest.json) | `metered`, `audited-ledger`, `deferred-action`, `reconciled`, `flagged-discrepancy` | Money agent counts only; no financial transfers; no patches | `LedgerEntryOutput` (`kind`, `units`, `est_cost`, `cumulative`) |
 | **`librarian`** | `:LibrarianAgent` | [`librarian-xapi-profile.jsonld`](librarian-xapi-profile.jsonld) | [`librarian.ttl`](librarian.ttl) | [`librarian-manifest.json`](librarian-manifest.json) | `indexed`, `searched`, `retrieved`, `cited`, `exported-snapshot`, `flagged-discrepancy` | No production code patches; no judgment verbs | `LibrarianKnowledgeArtifact` (`doi`, `quote`, `sha256`) |
@@ -67,3 +67,12 @@ The S3A development swarm differentiates between autonomous code authoring, peer
    - Strictly prohibited from authoring code patches (`no_code_patches`).
 4. **Swarm Visual Review Canvas (`/project/:projectId/visual-review.svg`)**:
    - Live vector canvas for the swarm to visually inspect code for reviews (AST component hierarchy), inspect visual aspects of design (wireframe layout, typography, contrast), view errors anchored to exact `file:line` locations, verify whether errors have been repaired, and issue the final review check.
+5. **Dynamic Helper Agent Spawning & Coordination (Scale-Aware Delegation)**:
+   - Depending on the scale and complexity of the project, project refinement, or code repair, the **PM** (Project Coordinator) and **Builder** (Senior Dev) dynamically spawn specialized helper agents.
+   - **Coordination Contract**:
+     - **Specific Task**: Detailed, concrete work assignment (`specific_task`).
+     - **Goal**: Clear objective and definition of done (`goal`).
+     - **Bounded Scope**: Explicit list of files permitted to be touched (`files_allowed`).
+     - **Verifiable Test**: Required test execution command (`tests_required`).
+     - **xAPI Provenance**: Trace statement logged via `https://ashecribb.dev/xapi/verbs/assigned` linking parent agent, helper agent, specific task, and goal.
+     - **Constraint Inheritance**: Helper agents inherit parent role prohibitions (e.g. read-only helpers cannot emit code patches; builder helpers cannot approve Change Requests or execute `:Judgment`).

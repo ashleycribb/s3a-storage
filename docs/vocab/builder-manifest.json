@@ -35,6 +35,7 @@
     "committed",
     "submitted-change-request",
     "requested-human-review",
+    "assigned",
     "ai-answered",
     "viewed",
     "flagged-discrepancy",

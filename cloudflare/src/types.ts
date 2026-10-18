@@ -491,6 +491,40 @@ export interface RegisteredAgent {
   agent_name?: string;
   public_key_hex?: string;
   capabilities?: string[];
+  parent_agent_id?: string;
+  specific_task?: string;
+  goal?: string;
+  is_spawned_helper?: boolean;
+}
+
+export interface SpawnedHelperAgent {
+  id: string; // e.g. "agent-sec-guard-01"
+  name: string; // e.g. "Escrow Multi-Sig Specialist"
+  role: "builder" | "qa" | "reviewer" | "researcher";
+  parent_agent_id: string; // "pm" or "gate-agent"
+  parent_agent_role: "pm" | "builder";
+  project_id: string; // e.g. "brakets"
+  task_id: string; // e.g. "TASK-283"
+  specific_task: string; // Concrete task description
+  goal: string; // Clear objective and definition of done
+  files_allowed: string[]; // Bounded file list
+  tests_required?: string; // Command to verify completion
+  status: "assigned" | "working" | "done" | "failed";
+  created_at: number;
+  completed_at?: number;
+  result_summary?: string;
+  xapi_provenance: string; // e.g. "https://ashecribb.dev/xapi/verbs/assigned"
+}
+
+export interface AgentCoordinationPlan {
+  id: string;
+  project_id: string;
+  parent_agent_id: string;
+  parent_agent_role: "pm" | "builder";
+  scope_level: "small" | "medium" | "large" | "epic";
+  rationale: string;
+  spawned_agents: SpawnedHelperAgent[];
+  created_at: number;
 }
 
 export interface DailyLimits {

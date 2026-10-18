@@ -43,6 +43,8 @@ import type {
   ArchitectureComponent,
   ProjectAnalysis,
   ProjectRegistryItem,
+  SpawnedHelperAgent,
+  AgentCoordinationPlan,
 } from "../types";
 import {
   hexToBytes,
@@ -2632,7 +2634,13 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       case "status":
         return this.handleStatus(projectId);
       case "agents":
-        if (pathParts[3] === "register" || request.method === "POST") {
+        if (pathParts[3] === "coordinate" || pathParts[3] === "spawn") {
+          return this.handleCoordinateAgents(request, projectId);
+        }
+        if (pathParts[3] === "coordination") {
+          return this.handleGetAgentCoordination(projectId);
+        }
+        if (pathParts[3] === "register" || (request.method === "POST" && !pathParts[3])) {
           return this.handleRegisterAgent(request, projectId);
         }
         return this.handleAgents(projectId);
@@ -4381,6 +4389,7 @@ fi
       agentsObj[agent.agent_id] = {
         agentId: agent.agent_id,
         agent_id: agent.agent_id,
+        agent_name: agent.agent_name || agent.agent_id,
         status: agent.status,
         task: agent.task_title || agent.task_id || "Active Task",
         task_id: agent.task_id,
@@ -4390,6 +4399,10 @@ fi
         agent_role: agent.agent_role || "builder",
         agent_pubkey: agent.agent_pubkey,
         files_allowed: agent.files_allowed || [],
+        parent_agent_id: agent.parent_agent_id,
+        specific_task: agent.specific_task,
+        goal: agent.goal,
+        is_spawned_helper: agent.is_spawned_helper,
       };
       totalCommits += (agent.commit_count || 0);
       counts[agent.status] = (counts[agent.status] || 0) + 1;
@@ -6527,5 +6540,223 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Dynamic Agent Spawning & Task Coordination (PM / Builder)
+  // --------------------------------------------------------------------------
+  public async getSpawnedAgents(projectId: string): Promise<SpawnedHelperAgent[]> {
+    const list = await this.state.storage.get<SpawnedHelperAgent[]>(`spawned_agents:${projectId}`);
+    return list || [];
+  }
+
+  public async saveSpawnedAgent(projectId: string, agent: SpawnedHelperAgent): Promise<void> {
+    const list = await this.getSpawnedAgents(projectId);
+    const existingIdx = list.findIndex(a => a.id === agent.id);
+    if (existingIdx >= 0) {
+      list[existingIdx] = agent;
+    } else {
+      list.push(agent);
+    }
+    await this.state.storage.put(`spawned_agents:${projectId}`, list);
+  }
+
+  private async handleGetAgentCoordination(projectId: string): Promise<Response> {
+    const plan = await this.state.storage.get<AgentCoordinationPlan>(`agent_coordination_plan:${projectId}`);
+    const spawned = await this.getSpawnedAgents(projectId);
+    return new Response(JSON.stringify({
+      status: "ok",
+      project_id: projectId,
+      plan: plan || null,
+      spawned_agents: spawned
+    }, null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  private async handleCoordinateAgents(request: Request, projectId: string): Promise<Response> {
+    try {
+      let body: any = {};
+      try { body = await request.json(); } catch(e) {}
+
+    const parentAgentId = body.parent_agent_id || "gate-agent";
+    const parentAgentRole = (body.parent_agent_role || (parentAgentId === "pm" ? "pm" : "builder")) as "pm" | "builder";
+    const taskId = body.task_id || "TASK-283";
+    const rationale = body.rationale || `Decomposed large task ${taskId} into specialized helper agents to ensure bounded scopes and clear deliverables.`;
+
+    let subagentsList: SpawnedHelperAgent[] = [];
+
+    if (Array.isArray(body.subagents) && body.subagents.length > 0) {
+      subagentsList = body.subagents.map((s: any, idx: number) => ({
+        id: s.id || `helper-${parentAgentId}-${idx + 1}`,
+        name: s.name || `Helper Agent ${idx + 1}`,
+        role: s.role || "builder",
+        parent_agent_id: parentAgentId,
+        parent_agent_role: parentAgentRole,
+        project_id: projectId,
+        task_id: taskId,
+        specific_task: s.specific_task || "Execute scoped subtask",
+        goal: s.goal || "Achieve verified completion without regression",
+        files_allowed: Array.isArray(s.files_allowed) ? s.files_allowed : [],
+        tests_required: s.tests_required || "npm test",
+        status: s.status || "assigned",
+        created_at: Date.now(),
+        xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+      }));
+    } else {
+      // Automatic task decomposition based on task scope and code repair dimensions
+      subagentsList = [
+        {
+          id: `helper-sec-guard-${Date.now().toString(36).slice(2, 6)}`,
+          name: "Escrow Security Specialist",
+          role: "builder",
+          parent_agent_id: parentAgentId,
+          parent_agent_role: parentAgentRole,
+          project_id: projectId,
+          task_id: taskId,
+          specific_task: "Implement cryptographic Ed25519 signature verification in validateEscrowRelease",
+          goal: "Verify that all releases require 2 valid cryptographic signatures and cannot be bypassed",
+          files_allowed: ["demo/brakets-bracket/lib/escrow.ts"],
+          tests_required: "npm test demo/brakets-bracket/tests/escrow.test.ts",
+          status: "assigned",
+          created_at: Date.now(),
+          xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+        },
+        {
+          id: `helper-tournament-core-${Date.now().toString(36).slice(2, 6)}`,
+          name: "Tournament Core Logic Specialist",
+          role: "builder",
+          parent_agent_id: parentAgentId,
+          parent_agent_role: parentAgentRole,
+          project_id: projectId,
+          task_id: taskId,
+          specific_task: "Format-aware draw validation and tie-breaker enforcement",
+          goal: "Reject draws in single_elim while allowing valid scores in round_robin/swiss",
+          files_allowed: ["demo/brakets-bracket/packages/core/src/tournament.ts"],
+          tests_required: "npm test demo/brakets-bracket/tests/tournament.test.ts",
+          status: "assigned",
+          created_at: Date.now(),
+          xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+        },
+        {
+          id: `helper-a11y-ui-${Date.now().toString(36).slice(2, 6)}`,
+          name: "UI & Accessibility Specialist",
+          role: "builder",
+          parent_agent_id: parentAgentId,
+          parent_agent_role: parentAgentRole,
+          project_id: projectId,
+          task_id: taskId,
+          specific_task: "Score input form accessibility and live draw announcer aria-live tags",
+          goal: "Provide accessible draw feedback for screen readers and prevent invalid submissions",
+          files_allowed: ["demo/brakets-bracket/components/MatchScoreForm.tsx"],
+          tests_required: "npm test demo/brakets-bracket/tests/MatchScoreForm.test.tsx",
+          status: "assigned",
+          created_at: Date.now(),
+          xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+        },
+        {
+          id: `helper-perf-lobby-${Date.now().toString(36).slice(2, 6)}`,
+          name: "Performance & Scaling Specialist",
+          role: "builder",
+          parent_agent_id: parentAgentId,
+          parent_agent_role: parentAgentRole,
+          project_id: projectId,
+          task_id: taskId,
+          specific_task: "Replace hardcoded 4-team lobby limit with dynamic capacity",
+          goal: "Support 8, 16, and 32-team tournaments with O(1) lobby indexing",
+          files_allowed: ["demo/brakets-bracket/lib/mock-api.ts"],
+          tests_required: "npm test demo/brakets-bracket/tests/lobby.test.ts",
+          status: "assigned",
+          created_at: Date.now(),
+          xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+        },
+        {
+          id: `helper-qa-auditor-${Date.now().toString(36).slice(2, 6)}`,
+          name: "Schema Guard & QA Auditor",
+          role: "qa",
+          parent_agent_id: parentAgentId,
+          parent_agent_role: parentAgentRole,
+          project_id: projectId,
+          task_id: taskId,
+          specific_task: "Prevent duplicate team IDs in LobbyReport standings schema and verify test exit codes",
+          goal: "Ensure 100% schema integrity and zero exit code failures",
+          files_allowed: ["demo/brakets-bracket/packages/core/src/finals.ts"],
+          tests_required: "npm test demo/brakets-bracket/tests/finals.test.ts",
+          status: "assigned",
+          created_at: Date.now(),
+          xapi_provenance: "https://ashecribb.dev/xapi/verbs/assigned"
+        }
+      ];
+    }
+
+    const coordinationPlan: AgentCoordinationPlan = {
+      id: `coord_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      project_id: projectId,
+      parent_agent_id: parentAgentId,
+      parent_agent_role: parentAgentRole,
+      scope_level: body.scope_level || (subagentsList.length >= 4 ? "large" : "medium"),
+      rationale,
+      spawned_agents: subagentsList,
+      created_at: Date.now()
+    };
+
+    // Save coordination plan and register each spawned helper agent
+    await this.state.storage.put(`agent_coordination_plan:${projectId}`, coordinationPlan);
+    await this.state.storage.put(`spawned_agents:${projectId}`, subagentsList);
+
+    for (const sub of subagentsList) {
+      const regAgent: RegisteredAgent = {
+        agent_id: sub.id,
+        agent_name: sub.name,
+        agent_pubkey: "ed25519_spawned_" + sub.id,
+        agent_role: sub.role as AgentRole,
+        status: "working",
+        task_id: sub.task_id,
+        task_title: `${sub.name}: ${sub.specific_task}`,
+        commit_count: 0,
+        registered_at: sub.created_at,
+        last_seen: Date.now(),
+        files_allowed: sub.files_allowed,
+        parent_agent_id: sub.parent_agent_id,
+        specific_task: sub.specific_task,
+        goal: sub.goal,
+        is_spawned_helper: true,
+        capabilities: [sub.role, "scoped_execution"]
+      };
+      await this.state.storage.put(`reg_agent:${sub.id}`, regAgent);
+
+      // Record xAPI trace step for dynamic agent assignment
+      try {
+        await this.appendTraceStep(
+          sub.task_id,
+          `assign-helper-${sub.id}`,
+          { id: parentAgentId, name: `${parentAgentId} (${parentAgentRole})`, type: "ai", role: parentAgentRole } as any,
+          "https://ashecribb.dev/xapi/verbs/assigned",
+          `Assigned ${sub.name} (${sub.id}) specific task: "${sub.specific_task}" with goal: "${sub.goal}"`,
+          undefined,
+          undefined,
+          `Scope: ${sub.files_allowed.join(', ')} | Tests: ${sub.tests_required || 'npm test'}`
+        );
+      } catch (err: any) {
+        console.warn(`[handleCoordinateAgents] appendTraceStep warning for ${sub.id}: ${err?.message || err}`);
+      }
+    }
+
+      return new Response(JSON.stringify({
+        success: true,
+        message: `${parentAgentId} successfully coordinated and spawned ${subagentsList.length} helper agents for ${taskId}.`,
+        coordination_plan: coordinationPlan
+      }, null, 2), {
+        status: 201,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (err: any) {
+      console.error("[handleCoordinateAgents ERROR]", err);
+      return new Response(JSON.stringify({ error: err?.message || String(err), stack: err?.stack }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
   }
 }

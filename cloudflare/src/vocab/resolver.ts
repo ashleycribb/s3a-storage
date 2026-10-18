@@ -199,6 +199,8 @@ export const FINDING_AND_REPORT_VERBS = new Set<string>([
   "viewed",
   "searched",
   "exported-snapshot",
+  "assigned",
+  "planned",
 ]);
 
 export function isFindingOrReportVerb(verbOrIri: string): boolean {

@@ -302,38 +302,72 @@ function renderAgentsSection(agents: RegisteredAgent[]): string {
           <strong style="color: var(--gh-text-heading); font-size: 13px;">Active Swarm Agents (${agents.length})</strong>
         </div>
         <div style="display: flex; flex-direction: column;">
-          ${(agents.length > 0 ? agents : [
+          ${((agents.length > 0 ? agents : [
             {
               agent_id: "gate-agent",
-              agent_name: "Gate Agent (Autonomous PM/Builder)",
-              agent_role: "builder",
+              agent_name: "Gate Agent (Senior Dev / Builder)",
+              agent_pubkey: "d4e2a8...3b1c",
               public_key_hex: "d4e2a8...3b1c",
+              agent_role: "builder" as const,
+              status: "working" as const,
+              commit_count: 14,
               registered_at: Date.now() - 86400000,
+              last_seen: Date.now(),
               capabilities: ["plan", "code_patch", "test_sandbox", "browser_qa"]
             },
             {
               agent_id: "antigravity",
-              agent_name: "Antigravity Assistant",
-              agent_role: "pm",
+              agent_name: "Antigravity (Junior Dev / Reviewer)",
+              agent_pubkey: "8f1671...0d82",
               public_key_hex: "8f1671...0d82",
+              agent_role: "reviewer" as any,
+              status: "working" as const,
+              commit_count: 6,
               registered_at: Date.now() - 172800000,
-              capabilities: ["triage", "plan", "evidence_audit"]
+              last_seen: Date.now(),
+              capabilities: ["triage", "review", "visual_svg", "suggestions"]
             }
-          ]).map(a => `
-            <div class="gh-row" style="padding: 1rem 1.25rem;">
-              <div>
-                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+          ]) as RegisteredAgent[]).map(a => `
+            <div class="gh-row" style="padding: 1rem 1.25rem; flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
                   <strong style="color: var(--gh-text-heading); font-size: 14px;">${a.agent_name || a.agent_id}</strong>
                   <span class="gh-badge gh-badge-purple">${a.agent_role || 'agent'}</span>
-                  <span class="gh-badge gh-badge-blue">Ed25519</span>
+                  ${a.is_spawned_helper ? `<span class="gh-badge gh-badge-blue">Spawned Helper</span>` : `<span class="gh-badge gh-badge-success">Primary Coordinator</span>`}
+                  <span class="gh-badge gh-badge-muted">Ed25519</span>
                 </div>
+                <div>
+                  <span class="gh-badge ${a.status === 'working' ? 'gh-badge-yellow' : 'gh-badge-success'}">${a.status || 'Registered'}</span>
+                </div>
+              </div>
+
+              ${a.is_spawned_helper || a.parent_agent_id ? `
+                <div style="background: rgba(88, 166, 255, 0.06); border-left: 3px solid #58a6ff; padding: 0.5rem 0.75rem; border-radius: 0 4px 4px 0; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 0.3rem;">
+                  <div style="display: flex; justify-content: space-between; font-size: 11.5px; color: var(--gh-text-muted);">
+                    <span><strong>Parent Coordinator:</strong> <code style="color: #38bdf8;">${a.parent_agent_id || 'pm'}</code></span>
+                    <span><strong>Task ID:</strong> <code style="color: #e3b341;">${a.task_id || 'TASK-283'}</code></span>
+                  </div>
+                  ${a.specific_task ? `
+                    <div style="font-size: 12px; color: var(--gh-text-heading);">
+                      <strong style="color: #58a6ff;">🎯 Specific Task:</strong> ${a.specific_task}
+                    </div>
+                  ` : ''}
+                  ${a.goal ? `
+                    <div style="font-size: 12px; color: var(--gh-text-heading);">
+                      <strong style="color: #3fb950;">🏁 Goal:</strong> ${a.goal}
+                    </div>
+                  ` : ''}
+                  ${a.files_allowed && a.files_allowed.length > 0 ? `
+                    <div style="font-size: 11.5px; font-family: monospace; color: var(--gh-text-muted);">
+                      📁 Scope: ${a.files_allowed.join(', ')}
+                    </div>
+                  ` : ''}
+                </div>
+              ` : `
                 <div style="font-size: 12px; color: var(--gh-text-muted); font-family: monospace;">
-                  ID: ${a.agent_id} &bull; Key: ${(a.public_key_hex || '').slice(0, 20)}...
+                  ID: ${a.agent_id} &bull; Key: ${(a.public_key_hex || a.agent_pubkey || '').slice(0, 20)}... &bull; Role: Coordinates autonomous workflow &amp; delegates tasks
                 </div>
-              </div>
-              <div>
-                <span class="gh-badge gh-badge-success">Registered</span>
-              </div>
+              `}
             </div>
           `).join('')}
         </div>

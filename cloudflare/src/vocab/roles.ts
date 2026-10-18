@@ -210,6 +210,7 @@ export const BUILDER_MANIFEST: RoleManifest = {
     "committed",
     "submitted-change-request",
     "requested-human-review",
+    "assigned",
     "ai-answered",
     "viewed",
     "flagged-discrepancy",

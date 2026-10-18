@@ -54,8 +54,7 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
     <text x="96" y="32" fill="#f0f6fc" font-size="14" font-weight="700">Visual Code &amp; Design Review Canvas</text>
     <text x="375" y="32" fill="#8b949e" font-size="12">•</text>
     <text x="390" y="32" fill="#58a6ff" font-size="12" font-weight="600">Project: ${projectId}</text>
-    <text x="510" y="32" fill="#8b949e" font-size="12">•</text>
-    <text x="525" y="32" fill="#e3b341" font-size="12" font-weight="600">Senior Dev (gate-agent) &bull; Junior Dev (antigravity)</text>
+    <text x="440" y="32" fill="#e3b341" font-size="11" font-weight="600">Senior Dev (gate-agent) &bull; Junior Dev (antigravity) &bull; Coordinated Helpers</text>
 
     <!-- Inspection Pass Badge -->
     <rect x="830" y="12" width="126" height="28" rx="14" fill="${allRepaired ? 'rgba(35,134,54,0.2)' : 'rgba(218,54,51,0.2)'}" stroke="${allRepaired ? '#2ea043' : '#da3633'}"/>
@@ -68,14 +67,15 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
   <g transform="translate(24, 88)">
     <rect x="0" y="0" width="310" height="410" rx="6" fill="#161b22" stroke="#30363d" filter="url(#cardShadow)"/>
     <rect x="0" y="0" width="310" height="34" rx="6" fill="#0d1117" stroke="#30363d"/>
-    <text x="14" y="22" fill="#f0f6fc" font-size="12.5" font-weight="700">1. Code AST &amp; Dependency Graph</text>
+    <text x="14" y="22" fill="#f0f6fc" font-size="12.5" font-weight="700">1. Coordinated Helper Agents &amp; Tasks</text>
 
     <!-- Component 1: Tournament State Machine -->
     <g transform="translate(14, 48)">
       <rect x="0" y="0" width="282" height="60" rx="4" fill="#0d1117" stroke="#30363d"/>
       <circle cx="16" cy="18" r="5" fill="#3fb950"/>
       <text x="28" y="22" fill="#f0f6fc" font-size="12" font-weight="600">tournament.ts (Bracket State)</text>
-      <text x="28" y="40" fill="#8b949e" font-size="10.5">packages/core/src/tournament.ts</text>
+      <text x="28" y="38" fill="#58a6ff" font-size="9.5">Agent: helper-tournament-core</text>
+      <text x="28" y="50" fill="#8b949e" font-size="9">Goal: Format-aware draw rejection</text>
       <rect x="220" y="10" width="52" height="18" rx="9" fill="rgba(63,185,80,0.15)" stroke="#238636"/>
       <text x="246" y="23" fill="#3fb950" font-size="9.5" font-weight="700" text-anchor="middle">REPAIRED</text>
     </g>
@@ -88,7 +88,8 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
       <rect x="0" y="0" width="282" height="60" rx="4" fill="#0d1117" stroke="#30363d"/>
       <circle cx="16" cy="18" r="5" fill="#3fb950"/>
       <text x="28" y="22" fill="#f0f6fc" font-size="12" font-weight="600">MatchCard.tsx (Round Display)</text>
-      <text x="28" y="40" fill="#8b949e" font-size="10.5">components/MatchCard.tsx</text>
+      <text x="28" y="38" fill="#58a6ff" font-size="9.5">Agent: helper-a11y-ui</text>
+      <text x="28" y="50" fill="#8b949e" font-size="9">Goal: Contrast, A11y &amp; correct round labels</text>
       <rect x="220" y="10" width="52" height="18" rx="9" fill="rgba(63,185,80,0.15)" stroke="#238636"/>
       <text x="246" y="23" fill="#3fb950" font-size="9.5" font-weight="700" text-anchor="middle">REPAIRED</text>
     </g>
@@ -101,7 +102,8 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
       <rect x="0" y="0" width="282" height="60" rx="4" fill="#0d1117" stroke="#30363d"/>
       <circle cx="16" cy="18" r="5" fill="#3fb950"/>
       <text x="28" y="22" fill="#f0f6fc" font-size="12" font-weight="600">MatchScoreForm.tsx (Validation)</text>
-      <text x="28" y="40" fill="#8b949e" font-size="10.5">components/MatchScoreForm.tsx</text>
+      <text x="28" y="38" fill="#58a6ff" font-size="9.5">Agent: helper-a11y-ui</text>
+      <text x="28" y="50" fill="#8b949e" font-size="9">Goal: Live aria draw validation announcer</text>
       <rect x="220" y="10" width="52" height="18" rx="9" fill="rgba(63,185,80,0.15)" stroke="#238636"/>
       <text x="246" y="23" fill="#3fb950" font-size="9.5" font-weight="700" text-anchor="middle">REPAIRED</text>
     </g>
@@ -114,7 +116,8 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
       <rect x="0" y="0" width="282" height="60" rx="4" fill="#0d1117" stroke="#30363d"/>
       <circle cx="16" cy="18" r="5" fill="#3fb950"/>
       <text x="28" y="22" fill="#f0f6fc" font-size="12" font-weight="600">escrow.ts (Multi-sig Gating)</text>
-      <text x="28" y="40" fill="#8b949e" font-size="10.5">lib/escrow.ts &bull; 2 Humans Required</text>
+      <text x="28" y="38" fill="#58a6ff" font-size="9.5">Agent: helper-sec-guard</text>
+      <text x="28" y="50" fill="#8b949e" font-size="9">Goal: Ed25519 2-human multisig required</text>
       <rect x="220" y="10" width="52" height="18" rx="9" fill="rgba(63,185,80,0.15)" stroke="#238636"/>
       <text x="246" y="23" fill="#3fb950" font-size="9.5" font-weight="700" text-anchor="middle">REPAIRED</text>
     </g>
@@ -127,7 +130,8 @@ export function generateVisualReviewSvg(projectId: string = "brakets", findingsL
       <rect x="0" y="0" width="282" height="60" rx="4" fill="#0d1117" stroke="#30363d"/>
       <circle cx="16" cy="18" r="5" fill="#3fb950"/>
       <text x="28" y="22" fill="#f0f6fc" font-size="12" font-weight="600">finals.ts (Standings Schema)</text>
-      <text x="28" y="40" fill="#8b949e" font-size="10.5">packages/core/src/finals.ts</text>
+      <text x="28" y="38" fill="#58a6ff" font-size="9.5">Agent: helper-qa-auditor</text>
+      <text x="28" y="50" fill="#8b949e" font-size="9">Goal: Duplicate team ID guard &amp; test pass</text>
       <rect x="220" y="10" width="52" height="18" rx="9" fill="rgba(63,185,80,0.15)" stroke="#238636"/>
       <text x="246" y="23" fill="#3fb950" font-size="9.5" font-weight="700" text-anchor="middle">REPAIRED</text>
     </g>
