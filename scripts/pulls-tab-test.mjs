@@ -24,7 +24,7 @@ async function main() {
   const expectedNeedsJudgment = allCRs.filter(c => c.status === "pending_review" || c.status === "changes_requested");
   const expectedOpen = allCRs.filter(c => c.status === "pending_review" || c.status === "changes_requested");
   const expectedMerged = allCRs.filter(c => c.status === "auto_merged" || c.status === "approved");
-  const expectedClosed = allCRs.filter(c => c.status === "rejected");
+  const expectedClosed = allCRs.filter(c => c.status === "rejected" || c.status === "failed_verification");
 
   console.log(`Ground truth Change Requests:`);
   console.log(`- Total:            ${allCRs.length}`);

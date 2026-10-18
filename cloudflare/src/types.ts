@@ -179,8 +179,8 @@ export interface TaskItem {
   description: string;
   files_allowed: string[];
   tests: string;
-  risk_level: "low" | "high";
-  status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed" | "deferred_budget";
+  risk_level: "low" | "high" | "review";
+  status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed" | "deferred_budget" | "done";
   claimed_by?: string;
   claimed_at?: number;
   change_request_id?: string;
@@ -226,9 +226,9 @@ export interface ChangeRequest {
   build_log_r2_url?: string;
   touched_files: string[];
 
-  risk_level: "low" | "high";
+  risk_level: "low" | "high" | "review";
   requires_human: boolean;
-  status: "pending_review" | "changes_requested" | "auto_merged" | "approved" | "rejected";
+  status: "pending_review" | "changes_requested" | "auto_merged" | "approved" | "rejected" | "failed_verification";
   human_rationale?: string;
   reviewer_pubkey?: string;
   pm_feedback?: string;

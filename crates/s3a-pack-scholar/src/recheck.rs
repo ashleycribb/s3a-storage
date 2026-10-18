@@ -512,8 +512,21 @@ impl MockScholarServer {
             while !shutdown_clone.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                         let mut buf = [0u8; 2048];
-                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let mut n = 0;
+                        while n < buf.len() {
+                            match stream.read(&mut buf[n..]) {
+                                Ok(0) => break,
+                                Ok(bytes_read) => {
+                                    n += bytes_read;
+                                    if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         let req = String::from_utf8_lossy(&buf[..n]);
 
                         let (status_line, content_type, body) = if req.contains("GET /paper_ok.pdf") {

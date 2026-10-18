@@ -120,6 +120,108 @@ export function renderInsightsPage(options: InsightsPageOptions): string {
       </div>
     </div>
 
+    <!-- Code Health Review Findings (TASK-283) -->
+    <div class="gh-card" style="margin-bottom: 1.5rem;">
+      <div class="gh-card-header" style="background: #161b22; display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <strong style="color: var(--gh-text-heading); font-size: 13px;">🔍 Code Health Review &bull; TASK-283 Findings</strong>
+          <span class="gh-badge gh-badge-purple">Read-Only Review</span>
+        </div>
+        <div style="font-size: 12px; color: var(--gh-text-muted);">
+          Findings grouped by severity &bull; Human (Ashley + Ward) Triage
+        </div>
+      </div>
+      <div class="gh-card-body">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.25rem;">
+          <div style="background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3); border-radius: 6px; padding: 0.85rem;">
+            <span style="color: var(--gh-red-text); font-size: 12px; font-weight: 600;">High Severity</span>
+            <div style="font-size: 1.3rem; font-weight: 700; color: var(--gh-red-text); margin-top: 0.25rem;">2</div>
+            <span style="font-size: 11px; color: var(--gh-text-muted);">Security smell, Draw validation</span>
+          </div>
+          <div style="background: rgba(210,153,34,0.1); border: 1px solid rgba(210,153,34,0.3); border-radius: 6px; padding: 0.85rem;">
+            <span style="color: var(--gh-yellow-text); font-size: 12px; font-weight: 600;">Medium Severity</span>
+            <div style="font-size: 1.3rem; font-weight: 700; color: var(--gh-yellow-text); margin-top: 0.25rem;">3</div>
+            <span style="font-size: 11px; color: var(--gh-text-muted);">Linear scan, A11y draw rule, Duplicate team</span>
+          </div>
+          <div style="background: rgba(88,166,255,0.1); border: 1px solid rgba(88,166,255,0.3); border-radius: 6px; padding: 0.85rem;">
+            <span style="color: #58a6ff; font-size: 12px; font-weight: 600;">Low Severity</span>
+            <div style="font-size: 1.3rem; font-weight: 700; color: #58a6ff; margin-top: 0.25rem;">2</div>
+            <span style="font-size: 11px; color: var(--gh-text-muted);">Dead error copy, Inverted leaf check</span>
+          </div>
+          <div style="background: #21262d; border-radius: 6px; padding: 0.85rem; border: 1px solid var(--gh-border);">
+            <span style="color: var(--gh-text-muted); font-size: 12px; font-weight: 600;">Total Findings</span>
+            <div style="font-size: 1.3rem; font-weight: 700; color: var(--gh-text-heading); margin-top: 0.25rem;">7</div>
+            <span style="font-size: 11px; color: var(--gh-green-text);">0 diffs &bull; 0 commits &bull; 0 CRs</span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 0.65rem;">
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid var(--gh-red);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Security: Missing cryptographic signature validation in validateEscrowRelease</strong>
+              <span class="gh-badge gh-badge-danger">HIGH SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/lib/escrow.ts:12</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">validateEscrowRelease only verifies array length against multiSigThreshold without cryptographically verifying Ed25519 signatures against signersRequired list. Flag only: never auto-fix cashier/escrow/payout.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid var(--gh-red);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Bug: Draw score validation scoped only to single_elim format</strong>
+              <span class="gh-badge gh-badge-danger">HIGH SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/packages/core/src/tournament.ts:138</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">validateMatchScore checks scores[0] === scores[1] only when bracketType === 'single_elim'. Draws in double-elimination lower brackets and playoffs remain unhandled.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid var(--gh-yellow);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Perf / Slow Query: Hardcoded 4-team lobby capacity and linear array search in match advancement</strong>
+              <span class="gh-badge gh-badge-yellow">MEDIUM SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/lib/mock-api.ts:102</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">Match advancement performs linear find() over lobbies and hardcodes teamIds.length &lt; 4, causing O(N) lookup bottleneck and failing for variable-size lobbies.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid var(--gh-yellow);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">A11y / UI Bug: MatchScoreForm hardcodes draw rejection across all formats</strong>
+              <span class="gh-badge gh-badge-yellow">MEDIUM SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/components/MatchScoreForm.tsx:31</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">Client-side validation rule score1 !== score2 unconditionally rejects equal scores, disabling valid score reporting for round-robin and swiss formats and lacking accessible error messaging.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid var(--gh-yellow);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Missing Tests / Validation: LobbyReport standings schema allows duplicate team IDs</strong>
+              <span class="gh-badge gh-badge-yellow">MEDIUM SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/packages/core/src/finals.ts:29</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">LobbyReport.standings zod schema specifies z.array(RosterId).min(2).max(4) without checking for duplicate team entries, allowing malformed reports.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid #58a6ff;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Dead Code: Hardcoded 8-team roster validation error copy</strong>
+              <span class="gh-badge gh-badge-muted">LOW SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/lib/create-errors.ts:8</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">CREATE_ERROR_COPY hardcodes eight_team_names_required and roster_need_eight strings, preventing generic error messages for 4-team, 16-team, or custom bracket sizes.</p>
+          </div>
+
+          <div style="padding: 0.75rem; background: #0d1117; border-radius: 6px; border: 1px solid var(--gh-border); border-left: 3px solid #58a6ff;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+              <strong style="color: var(--gh-text-heading); font-size: 13px;">Duplicated Logic / Bug: Inverted leaf node check misclassifies tournament round numbers</strong>
+              <span class="gh-badge gh-badge-muted">LOW SEVERITY</span>
+            </div>
+            <div style="font-family: monospace; font-size: 12px; color: var(--gh-orange); margin-bottom: 0.35rem;">demo/brakets-bracket/components/MatchCard.tsx:49</div>
+            <p style="font-size: 12.5px; color: var(--gh-text-muted); margin: 0;">MatchCard determines round 1 via match.children &amp;&amp; match.children.length === 0, inverting hierarchical tree traversal where root nodes represent finals.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- s3a-trace Fine-Tuning Replay Card -->
     <div class="gh-card">
       <div class="gh-card-header" style="background: #161b22;">

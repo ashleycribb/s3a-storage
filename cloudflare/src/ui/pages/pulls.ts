@@ -52,7 +52,7 @@ export function renderPullsPage(options: PullsPageOptions): string {
     c.status === "auto_merged" || c.status === "approved"
   );
   const closedCRs = changeRequests.filter(c =>
-    c.status === "rejected"
+    c.status === "rejected" || c.status === "failed_verification"
   );
 
   const needsJudgmentCount = needsJudgmentCRs.length;
@@ -180,6 +180,7 @@ export function renderPullsPage(options: PullsPageOptions): string {
           : displayedCRs.map(cr => {
             const isApproved = cr.status === "approved" || cr.status === "auto_merged";
             const isRejected = cr.status === "rejected";
+            const isFailedVerification = cr.status === "failed_verification";
             const isChangesRequested = cr.status === "changes_requested";
             const isHighRisk = cr.risk_level === "high" || cr.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((cr.title || "") + " " + (cr.touched_files || []).join(" "));
 
@@ -188,7 +189,7 @@ export function renderPullsPage(options: PullsPageOptions): string {
             const qaFailed = cr.qa_status === "failed" || (cr.qa_reports && cr.qa_reports.some(q => q.status === "failed"));
             const checksPassed = buildPassed && !qaFailed;
 
-            const timeWaitingStr = formatTimeWaiting(cr.created_at, isApproved || isRejected ? cr.resolved_at : undefined);
+            const timeWaitingStr = formatTimeWaiting(cr.created_at, isApproved || isRejected || isFailedVerification ? cr.resolved_at : undefined);
 
             return `
               <div class="gh-row" style="flex-direction: column; gap: 0.65rem; align-items: stretch; border-left: ${isHighRisk ? '3px solid var(--gh-red)' : '3px solid transparent'};">
@@ -197,7 +198,7 @@ export function renderPullsPage(options: PullsPageOptions): string {
                     <div style="margin-top: 3px;">
                       ${isApproved ? `
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-                      ` : isRejected ? `
+                      ` : (isRejected || isFailedVerification) ? `
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
                       ` : `
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
@@ -211,6 +212,8 @@ export function renderPullsPage(options: PullsPageOptions): string {
                         <!-- Requirement 2: Status Badge -->
                         ${isApproved
                           ? '<span class="gh-badge gh-badge-purple" style="font-weight: 600;">🟣 Merged</span>'
+                          : isFailedVerification
+                          ? '<span class="gh-badge gh-badge-danger" style="font-weight: 600;">🚫 Failed Verification</span>'
                           : isRejected
                           ? '<span class="gh-badge gh-badge-danger" style="font-weight: 600;">🔴 Rejected</span>'
                           : isChangesRequested
@@ -344,6 +347,8 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
           <div style="display: flex; gap: 0.6rem; align-items: center; font-size: 13px; color: var(--gh-text-muted); flex-wrap: wrap;">
             ${isApproved ? `
               <span class="gh-badge gh-badge-purple">✓ Merged</span>
+            ` : cr.status === "failed_verification" ? `
+              <span class="gh-badge gh-badge-danger">🚫 Failed Verification</span>
             ` : isRejected ? `
               <span class="gh-badge gh-badge-danger">✗ Rejected</span>
             ` : `
@@ -518,7 +523,12 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
               </div>
             ` : ''}
 
-            ${isApproved ? `
+            ${cr.status === "failed_verification" ? `
+              <div style="background: var(--gh-red-bg); border: 1px solid rgba(248,81,73,0.4); border-radius: 6px; padding: 0.85rem; text-align: center;">
+                <div style="color: var(--gh-red-text); font-weight: 600; font-size: 13px; margin-bottom: 0.35rem;">🚫 Blocked: Failed Verification</div>
+                <div style="font-size: 12px; color: var(--gh-text-muted); font-style: italic;">"${cr.human_rationale || 'Verification failed: non-zero test exit code or reused commit SHA.'}"</div>
+              </div>
+            ` : isApproved ? `
               <div style="background: var(--gh-purple-bg); border: 1px solid rgba(163,113,247,0.4); border-radius: 6px; padding: 0.85rem; text-align: center;">
                 <div style="color: var(--gh-purple-text); font-weight: 600; font-size: 13px; margin-bottom: 0.35rem;">✓ Merged into Baseline</div>
                 <div style="font-size: 12px; color: var(--gh-text-muted); font-style: italic;">"${cr.human_rationale || 'Approved by human supervisor'}"</div>
