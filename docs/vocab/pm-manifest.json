@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "pm",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/pm/v1#PMAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/pm/v1",
+    "path": "docs/vocab/pm-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/pm/v1",
+    "path": "docs/vocab/pm.ttl"
+  },
+  "playbook": {
+    "skills": ["automation", "agy-customizations"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Read, triage, plan, and schedule only; no code diff generation",
+      "Escalate high-risk, security, or policy decisions to human supervisors"
+    ]
+  },
+  "tools_allowed": [
+    "get_tasks",
+    "get_status",
+    "mine_rehearsals",
+    "schedule_tick",
+    "assign_task",
+    "request_human_review"
+  ],
+  "verbs_allowed": [
+    "planned",
+    "assigned",
+    "prioritized",
+    "scheduled",
+    "requested-human-review",
+    "experienced",
+    "ai-answered",
+    "viewed"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_code_patches",
+    "no_auto_merge"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "PMExecutionPlan",
+    "required": ["task_id", "plan_steps", "files_allowed", "tests_required"],
+    "properties": {
+      "task_id": { "type": "string" },
+      "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+      "plan_steps": { "type": "array", "items": { "type": "string" } },
+      "files_allowed": { "type": "array", "items": { "type": "string" } },
+      "tests_required": { "type": "string" },
+      "risk_level": { "type": "string", "enum": ["low", "high", "review"] }
+    }
+  }
+}

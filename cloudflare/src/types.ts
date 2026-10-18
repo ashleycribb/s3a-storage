@@ -135,7 +135,7 @@ export type AgentStatus =
   | "qa_failed"
   | "deferred_budget";
 
-export type AgentRole = "builder" | "qa_journey" | "visual" | "chaos";
+export type AgentRole = "builder" | "qa_journey" | "visual" | "chaos" | "pm" | "qa" | "budget" | "librarian" | "scrum";
 
 export interface QAEvidenceScreenshot {
   name: string;
@@ -542,6 +542,7 @@ export interface ActorProvenance {
   type: "human" | "ai";
   id?: string;
   name?: string;
+  role?: string;
   supervisor_id?: string;
   reviewer_pubkey?: string;
   rationale?: string;

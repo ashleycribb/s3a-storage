@@ -1,0 +1,98 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/qa/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A QA & Browser Verification Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for autonomous QA & verification agents in S3A Gate: journey testing, visual screenshot capture, R2 evidence verification, and discrepancy reporting. Read and test only."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/qa/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/tested",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "tested"
+      },
+      "definition": {
+        "en": "Executed an end-to-end user journey or tournament scenario in headless browser."
+      },
+      "broadMatch": ["http://adlnet.gov/expapi/verbs/attempted"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/verified-claim",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "verified-claim"
+      },
+      "definition": {
+        "en": "Confirmed visual rendering, HTTP 200 evidence in R2, or tournament progression matches specifications."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/verified-claim"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "flagged-discrepancy"
+      },
+      "definition": {
+        "en": "Detected a visual regression, console error, 404 missing evidence, broken control, or bracket progression deadlock."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/flagged-discrepancy"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/captured-screenshot",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "captured-screenshot"
+      },
+      "definition": {
+        "en": "Captured browser viewport screenshot and uploaded directly to R2 bucket s3a-evidence."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/captured-screenshot"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/exported-snapshot",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "exported-snapshot"
+      },
+      "definition": {
+        "en": "Compiled and exported QA test report, console error logs, and screenshot manifests."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/save"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/qa/v1",
+      "prefLabel": {
+        "en": "requested-human-review"
+      },
+      "definition": {
+        "en": "Submitted failing journey or unhandled defect to human supervisor queue for triage."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/request-friend"]
+    }
+  ]
+}

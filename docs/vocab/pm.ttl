@@ -1,0 +1,51 @@
+@prefix : <https://ashecribb.dev/ontologies/scholar/pm/v1#> .
+@prefix base: <https://ashecribb.dev/ontologies/scholar/v1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+<https://ashecribb.dev/ontologies/scholar/pm/v1> a owl:Ontology ;
+    rdfs:label "S3A Project Manager Agent Domain Ontology"@en ;
+    rdfs:comment "Formal OWL 2 DL ontology extending Scholar Ontology for autonomous PM Agent role, task planning, and human-in-the-loop escalation."@en ;
+    owl:imports <https://ashecribb.dev/ontologies/scholar/v1> ;
+    owl:versionInfo "1.0.0" .
+
+#################################################################
+#    Class Definitions
+#################################################################
+
+:PMAgent a owl:Class ;
+    rdfs:subClassOf base:AIAgent ;
+    owl:disjointWith base:HumanActor ;
+    rdfs:label "PMAgent"@en ;
+    rdfs:comment "Autonomous project manager agent responsible for task triage, planning, scheduling, and risk escalation."@en .
+
+:PlanExecutionActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "PlanExecutionActivity"@en ;
+    rdfs:comment "Activity where PMAgent plans steps, scopes files, and defines tests for an assigned task."@en .
+
+#################################################################
+#    Object Properties & Axioms
+#################################################################
+
+:producesPlan a owl:ObjectProperty ;
+    rdfs:label "producesPlan"@en ;
+    rdfs:domain :PMAgent ;
+    rdfs:range prov:Entity .
+
+#################################################################
+#    Prohibitions & Axioms
+#################################################################
+
+# Invariant 1: PMAgent is an AIAgent, hence disjoint with HumanActor
+# Invariant 2: PMAgent must NEVER perform :Judgment activities (approved, rejected, promoted)
+# Invariant 3: PMAgent must NOT produce code patches or diffs (Planning & Triage only)
+:PMAgent owl:disjointWith [
+    a owl:Restriction ;
+    owl:onProperty prov:wasAssociatedWith ;
+    owl:someValuesFrom base:Judgment
+] .

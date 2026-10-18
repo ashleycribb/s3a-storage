@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "scrum",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/scrum/v1#ScrumAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+    "path": "docs/vocab/scrum-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/scrum/v1",
+    "path": "docs/vocab/scrum.ttl"
+  },
+  "playbook": {
+    "skills": ["automation"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Coordinate standups, report blockers, and synchronize task states",
+      "No code patch generation"
+    ]
+  },
+  "tools_allowed": [
+    "list_agents",
+    "get_conflicts",
+    "sync_github_issues",
+    "summarize_swarm",
+    "request_human_review"
+  ],
+  "verbs_allowed": [
+    "facilitated-standup",
+    "reported-blocker",
+    "synchronized-state",
+    "summarized",
+    "requested-human-review",
+    "ai-answered"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_code_patches",
+    "no_direct_baseline_merges"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "ScrumStandupReport",
+    "required": ["timestamp", "active_agents_count", "blocked_tasks", "conflicts_pending"],
+    "properties": {
+      "timestamp": { "type": "number" },
+      "active_agents_count": { "type": "integer" },
+      "blocked_tasks": { "type": "array", "items": { "type": "string" } },
+      "conflicts_pending": { "type": "integer" },
+      "total_commits": { "type": "integer" },
+      "summary_text": { "type": "string" }
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/budget/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A Budget & Ledger Metering Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for the autonomous Budget Agent in S3A Gate: ledger recording, token and compute metering, daily spending audit, and action deferral. Counts compute units only; does not execute financial transactions."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/budget/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/metered",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "prefLabel": {
+        "en": "metered"
+      },
+      "definition": {
+        "en": "Calculated and recorded estimated cost for LLM tokens, sandbox compute seconds, browser run minutes, or R2 operations."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/metered"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/audited-ledger",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "prefLabel": {
+        "en": "audited-ledger"
+      },
+      "definition": {
+        "en": "Evaluated cumulative daily spend against the configured daily budget cap and verified ledger entries."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/audited-ledger"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/deferred-action",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "prefLabel": {
+        "en": "deferred-action"
+      },
+      "definition": {
+        "en": "Enqueued an action into deferred_queue when daily budget cap is reached, allowing free triage to continue."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/deferred-action"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/reconciled",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "prefLabel": {
+        "en": "reconciled"
+      },
+      "definition": {
+        "en": "Reset daily spending ledger at 00:00 UTC and drained deferred tasks back into the active backlog."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/update"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/budget/v1",
+      "prefLabel": {
+        "en": "flagged-discrepancy"
+      },
+      "definition": {
+        "en": "Emitted budget alert when daily spend exceeded 80% threshold or reached cap."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/flagged-discrepancy"]
+    }
+  ]
+}

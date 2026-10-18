@@ -1,0 +1,61 @@
+@prefix : <https://ashecribb.dev/ontologies/scholar/builder/v1#> .
+@prefix base: <https://ashecribb.dev/ontologies/scholar/v1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+<https://ashecribb.dev/ontologies/scholar/builder/v1> a owl:Ontology ;
+    rdfs:label "S3A Builder Agent Domain Ontology"@en ;
+    rdfs:comment "Formal OWL 2 DL ontology extending Scholar Ontology for autonomous Builder Agent role, code patch generation, sandbox execution, and Change Request submission."@en ;
+    owl:imports <https://ashecribb.dev/ontologies/scholar/v1> ;
+    owl:versionInfo "1.0.0" .
+
+#################################################################
+#    Class Definitions
+#################################################################
+
+:BuilderAgent a owl:Class ;
+    rdfs:subClassOf base:AIAgent ;
+    owl:disjointWith base:HumanActor ;
+    rdfs:label "BuilderAgent"@en ;
+    rdfs:comment "Autonomous software engineering agent responsible for drafting patches, compiling, testing, and submitting Change Requests."@en .
+
+:CodeGenerationActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "CodeGenerationActivity"@en ;
+    rdfs:comment "Activity where BuilderAgent generates code patches restricted to files_allowed."@en .
+
+:SandboxBuildActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "SandboxBuildActivity"@en ;
+    rdfs:comment "Activity executing test and build commands in Cloudflare Sandbox container."@en .
+
+#################################################################
+#    Object & Data Properties
+#################################################################
+
+:scopedToFiles a owl:ObjectProperty ;
+    rdfs:label "scopedToFiles"@en ;
+    rdfs:domain :CodeGenerationActivity ;
+    rdfs:range prov:Entity .
+
+:hasExitCode a owl:DatatypeProperty ;
+    rdfs:label "hasExitCode"@en ;
+    rdfs:domain :SandboxBuildActivity ;
+    rdfs:range xsd:integer .
+
+#################################################################
+#    Prohibitions & Axioms
+#################################################################
+
+# Invariant 1: BuilderAgent is an AIAgent, strictly disjoint with HumanActor
+# Invariant 2: BuilderAgent must NEVER perform :Judgment activities (approve, reject, merge)
+# Invariant 3: BuilderAgent cannot directly merge into production baseline without supervisor approval
+# Invariant 4: BuilderAgent cannot edit outside files_allowed
+:BuilderAgent owl:disjointWith [
+    a owl:Restriction ;
+    owl:onProperty prov:wasAssociatedWith ;
+    owl:someValuesFrom base:Judgment
+] .

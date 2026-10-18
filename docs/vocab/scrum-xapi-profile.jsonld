@@ -1,0 +1,86 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A Scrum & Swarm Coordination Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for the autonomous Scrum Agent in S3A Gate: standup facilitation, agent heartbeat tracking, blocker resolution, issue synchronization, and throughput summary."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/scrum/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/facilitated-standup",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "prefLabel": {
+        "en": "facilitated-standup"
+      },
+      "definition": {
+        "en": "Conducted automated standup across active swarm agents, inspecting claimed tasks and heartbeats."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/facilitated-standup"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/reported-blocker",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "prefLabel": {
+        "en": "reported-blocker"
+      },
+      "definition": {
+        "en": "Surfaced a deadlock, duplicate PR conflict, test failure loop, or stalled task."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/reported-blocker"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/synchronized-state",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "prefLabel": {
+        "en": "synchronized-state"
+      },
+      "definition": {
+        "en": "Synchronized task status, labels, and PR links between Durable Object storage and GitHub Issues."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/synchronized-state"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/summarized",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "prefLabel": {
+        "en": "summarized"
+      },
+      "definition": {
+        "en": "Compiled sprint metrics, commit throughput, auto-merge counts, and open defect fingerprints."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/save"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/scrum/v1",
+      "prefLabel": {
+        "en": "requested-human-review"
+      },
+      "definition": {
+        "en": "Escalated unresolved standup conflicts or unassigned critical issues to human supervisors."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/request-friend"]
+    }
+  ]
+}

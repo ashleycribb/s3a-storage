@@ -1,0 +1,110 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/builder/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A Builder Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for the autonomous Builder Agent in S3A Gate: patch drafting, sandbox build/test verification, Ed25519 commit signing, and Change Request submission."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/builder/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/edited",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "edited"
+      },
+      "definition": {
+        "en": "Drafted or edited source code files strictly limited to the task's files_allowed scope."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/update"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/authored-diff",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "authored-diff"
+      },
+      "definition": {
+        "en": "Synthesized a contiguous unified git diff for an assigned task."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/authored-diff"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/built",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "built"
+      },
+      "definition": {
+        "en": "Executed sandbox build and compilation commands (e.g. npm run build, npx tsc)."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/make_friend"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/tested",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "tested"
+      },
+      "definition": {
+        "en": "Executed automated test suites in Cloudflare Sandbox and recorded stdout, stderr, and exit codes."
+      },
+      "broadMatch": ["http://adlnet.gov/expapi/verbs/attempted"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/committed",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "committed"
+      },
+      "definition": {
+        "en": "Created a cryptographically signed git commit using Ed25519 private key."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/committed"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/submitted-change-request",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "submitted-change-request"
+      },
+      "definition": {
+        "en": "Submitted a formal Change Request (PR) to the S3A Gate with verified build logs, exit codes, and evidence links."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/submitted-change-request"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/builder/v1",
+      "prefLabel": {
+        "en": "requested-human-review"
+      },
+      "definition": {
+        "en": "Requested supervisor approval from Ashley or Ward for a submitted Change Request."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/request-friend"]
+    }
+  ]
+}

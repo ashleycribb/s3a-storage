@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "budget",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/budget/v1#BudgetAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/budget/v1",
+    "path": "docs/vocab/budget-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/budget/v1",
+    "path": "docs/vocab/budget.ttl"
+  },
+  "playbook": {
+    "skills": ["automation"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Money agent counts only; never executes financial transfers or payouts",
+      "Enforce $5.00 daily spend limit; defer paid work when cap reached",
+      "Free triage continues regardless of spend limit"
+    ]
+  },
+  "tools_allowed": [
+    "check_spend",
+    "record_ledger_action",
+    "get_budget_status",
+    "reset_budget_today",
+    "drain_deferred_queue"
+  ],
+  "verbs_allowed": [
+    "metered",
+    "audited-ledger",
+    "deferred-action",
+    "reconciled",
+    "flagged-discrepancy",
+    "ai-answered"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_code_patches",
+    "no_financial_transactions_money_counts_only",
+    "no_direct_baseline_merges"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "LedgerEntryOutput",
+    "required": ["id", "task_id", "agent_id", "kind", "units", "est_cost", "cumulative_spent"],
+    "properties": {
+      "id": { "type": "string" },
+      "task_id": { "type": "string" },
+      "agent_id": { "type": "string" },
+      "kind": { "type": "string", "enum": ["free", "llm", "sandbox", "browser", "r2"] },
+      "units": { "type": "number" },
+      "est_cost": { "type": "number" },
+      "is_free": { "type": "boolean" },
+      "cumulative_spent": { "type": "number" }
+    }
+  }
+}

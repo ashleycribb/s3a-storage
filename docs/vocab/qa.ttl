@@ -1,0 +1,46 @@
+@prefix : <https://ashecribb.dev/ontologies/scholar/qa/v1#> .
+@prefix base: <https://ashecribb.dev/ontologies/scholar/v1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+<https://ashecribb.dev/ontologies/scholar/qa/v1> a owl:Ontology ;
+    rdfs:label "S3A QA & Verification Agent Domain Ontology"@en ;
+    rdfs:comment "Formal OWL 2 DL ontology extending Scholar Ontology for autonomous QA & Browser Verification Agent role, evidence capture, and defect detection. Strictly read/test only."@en ;
+    owl:imports <https://ashecribb.dev/ontologies/scholar/v1> ;
+    owl:versionInfo "1.0.0" .
+
+#################################################################
+#    Class Definitions
+#################################################################
+
+:QAAgent a owl:Class ;
+    rdfs:subClassOf base:AIAgent ;
+    owl:disjointWith base:HumanActor ;
+    rdfs:label "QAAgent"@en ;
+    rdfs:comment "Autonomous quality assurance and browser testing agent responsible for verifying user journeys and storing visual evidence."@en .
+
+:BrowserJourneyActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "BrowserJourneyActivity"@en ;
+    rdfs:comment "Activity running puppeteer browser scenarios against tournament routes."@en .
+
+:EvidenceCaptureActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "EvidenceCaptureActivity"@en ;
+    rdfs:comment "Activity taking viewport screenshot and uploading to R2 bucket."@en .
+
+#################################################################
+#    Prohibitions & Axioms
+#################################################################
+
+# Invariant 1: QAAgent is an AIAgent, disjoint with HumanActor
+# Invariant 2: QAAgent must NEVER emit judgment verbs (approved, rejected, promoted)
+# Invariant 3: QAAgent must NOT produce code patches or diffs (Testing & Evidence capture only)
+:QAAgent owl:disjointWith [
+    a owl:Restriction ;
+    owl:onProperty prov:wasAssociatedWith ;
+    owl:someValuesFrom base:Judgment
+] .

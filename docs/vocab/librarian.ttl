@@ -1,0 +1,52 @@
+@prefix : <https://ashecribb.dev/ontologies/scholar/librarian/v1#> .
+@prefix base: <https://ashecribb.dev/ontologies/scholar/v1#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix fabio: <http://purl.org/spar/fabio/> .
+@prefix cito: <http://purl.org/spar/cito/> .
+
+<https://ashecribb.dev/ontologies/scholar/librarian/v1> a owl:Ontology ;
+    rdfs:label "S3A Librarian & Research Knowledge Agent Domain Ontology"@en ;
+    rdfs:comment "Formal OWL 2 DL ontology extending Scholar Ontology for autonomous Librarian Agent role, documentation indexing, CiTO citation linking, and ontology curation."@en ;
+    owl:imports <https://ashecribb.dev/ontologies/scholar/v1> ;
+    owl:versionInfo "1.0.0" .
+
+#################################################################
+#    Class Definitions
+#################################################################
+
+:LibrarianAgent a owl:Class ;
+    rdfs:subClassOf base:AIAgent ;
+    owl:disjointWith base:HumanActor ;
+    rdfs:label "LibrarianAgent"@en ;
+    rdfs:comment "Autonomous knowledge agent responsible for indexing documentation, discovering literature, and verifying semantic consistency."@en .
+
+:CitationLinkingActivity a owl:Class ;
+    rdfs:subClassOf prov:Activity ;
+    rdfs:label "CitationLinkingActivity"@en ;
+    rdfs:comment "Activity asserting CiTO citation links between source literature and software claims."@en .
+
+#################################################################
+#    Object Properties
+#################################################################
+
+:indexesResource a owl:ObjectProperty ;
+    rdfs:label "indexesResource"@en ;
+    rdfs:domain :LibrarianAgent ;
+    rdfs:range prov:Entity .
+
+#################################################################
+#    Prohibitions & Axioms
+#################################################################
+
+# Invariant 1: LibrarianAgent is an AIAgent, disjoint with HumanActor
+# Invariant 2: LibrarianAgent must NEVER perform :Judgment activities (approvals, merges)
+# Invariant 3: LibrarianAgent does not write production code patches
+:LibrarianAgent owl:disjointWith [
+    a owl:Restriction ;
+    owl:onProperty prov:wasAssociatedWith ;
+    owl:someValuesFrom base:Judgment
+] .

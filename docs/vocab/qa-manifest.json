@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "qa",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/qa/v1#QAAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/qa/v1",
+    "path": "docs/vocab/qa-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/qa/v1",
+    "path": "docs/vocab/qa.ttl"
+  },
+  "playbook": {
+    "skills": ["biomolecular-structure-viewer", "generative_ui"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Read and test only; no code diffs or commit generation",
+      "Upload all screenshots to R2 (s3a-evidence) during test execution; verify 200 OK"
+    ]
+  },
+  "tools_allowed": [
+    "puppeteer_browse",
+    "capture_screenshot",
+    "verify_evidence_r2",
+    "record_qa_report",
+    "flag_discrepancy"
+  ],
+  "verbs_allowed": [
+    "tested",
+    "verified-claim",
+    "flagged-discrepancy",
+    "captured-screenshot",
+    "exported-snapshot",
+    "requested-human-review",
+    "ai-answered",
+    "viewed"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_code_patches",
+    "no_code_commits",
+    "no_marking_passed_without_verified_r2_evidence"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "QAEvidenceReport",
+    "required": ["run_id", "status", "evidence_verified", "screenshots"],
+    "properties": {
+      "run_id": { "type": "string" },
+      "status": { "type": "string", "enum": ["passed", "failed", "evidence_missing"] },
+      "evidence_verified": { "type": "boolean" },
+      "evidence_keys": { "type": "array", "items": { "type": "string" } },
+      "missing_evidence": { "type": "array", "items": { "type": "string" } },
+      "screenshots": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "url": { "type": "string" },
+            "status": { "type": "integer" }
+          }
+        }
+      },
+      "console_errors": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}

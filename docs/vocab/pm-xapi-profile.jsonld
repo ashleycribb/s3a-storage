@@ -1,0 +1,98 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/pm/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A Project Manager Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for the autonomous PM Agent in S3A Gate: task planning, issue prioritization, backlog management, scheduling, and human escalation."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/pm/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/planned",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "planned"
+      },
+      "definition": {
+        "en": "Synthesized a structured plan of execution, breakdown of files allowed, and tests required for an open task without executing patches."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/planned"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/assigned",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "assigned"
+      },
+      "definition": {
+        "en": "Allocated a task or ticket to an autonomous builder agent or queued it for human review."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/assign"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/prioritized",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "prioritized"
+      },
+      "definition": {
+        "en": "Ranked open tasks or rehearsal failure fingerprints by severity, repro count, or format impact."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/prioritized"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/scheduled",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "scheduled"
+      },
+      "definition": {
+        "en": "Programmed or triggered an autonomous background tick, rehearsal iteration, or cron evaluation."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/schedule"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "requested-human-review"
+      },
+      "definition": {
+        "en": "Escalated a high-risk task, review summary, budget limit, or promotion decision to human supervisors."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/request-friend"]
+    },
+    {
+      "id": "http://adlnet.gov/expapi/verbs/experienced",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/pm/v1",
+      "prefLabel": {
+        "en": "experienced"
+      },
+      "definition": {
+        "en": "Observed or acknowledged system state, project metrics, or alarm triggers."
+      },
+      "exactMatch": ["http://adlnet.gov/expapi/verbs/experienced"]
+    }
+  ]
+}

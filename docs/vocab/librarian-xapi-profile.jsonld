@@ -1,0 +1,98 @@
+{
+  "@context": "https://w3id.org/xapi/profiles/context",
+  "id": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+  "type": "Profile",
+  "conformsTo": "https://w3id.org/xapi/profiles#1.0",
+  "prefLabel": {
+    "en": "S3A Librarian & Research Knowledge Agent xAPI Profile"
+  },
+  "definition": {
+    "en": "Formal xAPI profile for the autonomous Librarian Agent in S3A Gate: documentation indexing, ontology vocabulary alignment, citation graph linkage via CiTO, and scholarly retrieval."
+  },
+  "seeAlso": "https://ashecribb.dev/ontologies/scholar/librarian/v1",
+  "versions": [
+    {
+      "id": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "wasRevisionOf": []
+    }
+  ],
+  "author": {
+    "type": "Organization",
+    "name": "S3A Architecture Contributors",
+    "url": "https://github.com/ashleycribb/s3a-storage"
+  },
+  "concepts": [
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/indexed",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "indexed"
+      },
+      "definition": {
+        "en": "Scanned, categorized, and indexed documentation, ontologies, schemas, or research papers."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/indexed"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/searched",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "searched"
+      },
+      "definition": {
+        "en": "Queried academic databases, literature archives, or codebase repositories."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/search"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/retrieved",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "retrieved"
+      },
+      "definition": {
+        "en": "Fetched a full-text paper, ontology schema, or API documentation asset."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/open"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/cited",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "cited"
+      },
+      "definition": {
+        "en": "Linked an explicit scientific claim or software specification to a DOI citation passage via CiTO."
+      },
+      "broadMatch": ["http://purl.org/spar/cito/cites"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/exported-snapshot",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "exported-snapshot"
+      },
+      "definition": {
+        "en": "Packaged and published a validated ontology distribution or scholarly knowledge export."
+      },
+      "broadMatch": ["http://activitystrea.ms/schema/1.0/save"]
+    },
+    {
+      "id": "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+      "type": "Verb",
+      "inScheme": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+      "prefLabel": {
+        "en": "flagged-discrepancy"
+      },
+      "definition": {
+        "en": "Surfaced schema drift, missing definitions, or ungrounded vocabulary usage."
+      },
+      "exactMatch": ["https://ashecribb.dev/xapi/verbs/flagged-discrepancy"]
+    }
+  ]
+}

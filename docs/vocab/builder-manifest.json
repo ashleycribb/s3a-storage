@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "builder",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/builder/v1#BuilderAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/builder/v1",
+    "path": "docs/vocab/builder-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/builder/v1",
+    "path": "docs/vocab/builder.ttl"
+  },
+  "playbook": {
+    "skills": ["alphafold-database-fetch-and-analyze", "agy-customizations"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Code generation strictly bounded to task files_allowed scopes",
+      "Sandbox build and test execution required before CR submission",
+      "Sign commits with Ed25519; never push directly to main without CR"
+    ]
+  },
+  "tools_allowed": [
+    "read_file",
+    "sandbox_build",
+    "generate_code_patch",
+    "sign_commit_ed25519",
+    "submit_change_request",
+    "request_human_review"
+  ],
+  "verbs_allowed": [
+    "edited",
+    "authored-diff",
+    "built",
+    "tested",
+    "committed",
+    "submitted-change-request",
+    "requested-human-review",
+    "ai-answered",
+    "viewed",
+    "flagged-discrepancy",
+    "verified-claim"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_unscoped_file_writes",
+    "no_direct_baseline_merges",
+    "no_touching_sensitive_paths_without_draft_escalation"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "BuilderPatchOutput",
+    "required": ["task_id", "diff", "touched_files", "commit_sha", "exit_code"],
+    "properties": {
+      "task_id": { "type": "string" },
+      "diff": { "type": "string" },
+      "touched_files": { "type": "array", "items": { "type": "string" } },
+      "commit_sha": { "type": "string" },
+      "exit_code": { "type": "integer" },
+      "build_log_url": { "type": "string" },
+      "sandbox_image_digest": { "type": "string" }
+    }
+  }
+}

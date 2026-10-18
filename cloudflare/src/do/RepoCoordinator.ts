@@ -65,6 +65,9 @@ import {
   SCHOLAR_XAPI_PROFILE_JSON,
   SCHOLAR_ONTOLOGY_TTL,
   PROFILE_VERB_CONCEPTS,
+  getAllRolePacks,
+  getRolePack,
+  ROLE_PACKS,
 } from "../vocab";
 
 export class RepoCoordinator implements DurableObject {
@@ -353,14 +356,23 @@ export class RepoCoordinator implements DurableObject {
       )
     );
 
-    // Grounding in S3A Ontology + Scholar xAPI Profile:
+    // Grounding in S3A Ontology + Scholar xAPI Profile + Role Profiles:
     // 1. Verbs must exist in profile.
     // 2. Judgment verbs require human actor; AI agents must NEVER emit them.
     // 3. Review tasks emit only finding/report verbs, never patches.
-    // 4. Trace entries validate against the profile before write; invalid entries fail the step.
+    // 4. Per-role validations and prohibitions enforced before trace write.
+    let actorRole = (actor as any).role || (actor as any).agent_role;
+    if (!actorRole && actor.agent_id) {
+      const regAgent = await this.state.storage.get<RegisteredAgent>(`reg_agent:${actor.agent_id}`);
+      if (regAgent?.agent_role) {
+        actorRole = regAgent.agent_role;
+      }
+    }
+
     const validation = validateTraceEntry({
       actor,
       verb,
+      role: actorRole,
       taskId,
       patch,
       isReviewTask,
@@ -2852,21 +2864,74 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
             headers: { "Content-Type": "text/turtle" }
           });
         }
+        if (pathParts[3] === "roles") {
+          const roleId = pathParts[4];
+          if (roleId) {
+            const rolePack = getRolePack(roleId);
+            if (!rolePack) {
+              return new Response(JSON.stringify({ error: `Unknown role '${roleId}'` }), {
+                status: 404,
+                headers: { "Content-Type": "application/json" }
+              });
+            }
+            const fmt = url.searchParams.get("format") || "";
+            if (fmt === "jsonld" || fmt === "profile") {
+              return new Response(JSON.stringify(rolePack.profileJsonld, null, 2), {
+                headers: { "Content-Type": "application/ld+json" }
+              });
+            }
+            if (fmt === "ttl" || fmt === "ontology") {
+              return new Response(rolePack.ontologyTtl, {
+                headers: { "Content-Type": "text/turtle" }
+              });
+            }
+            return new Response(JSON.stringify({
+              role: rolePack.role,
+              manifest: rolePack.manifest,
+              allowed_verbs: Array.from(rolePack.allowedVerbs),
+              prohibitions: Array.from(rolePack.prohibitions),
+            }, null, 2), {
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+
+          // List all 6 roles
+          const allRoles = getAllRolePacks().map(rp => ({
+            role: rp.role,
+            actor_class: rp.manifest.actor_class,
+            profile_id: rp.manifest.profile.id,
+            ontology_id: rp.manifest.ontology.id,
+            allowed_verbs: Array.from(rp.allowedVerbs),
+            prohibitions: Array.from(rp.prohibitions),
+            tools_allowed: rp.manifest.tools_allowed,
+          }));
+          return new Response(JSON.stringify({ roles: allRoles }, null, 2), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
         if (pathParts[3] === "resolve") {
           const iriParam = url.searchParams.get("iri");
           const verbParam = url.searchParams.get("verb");
+          const roleParam = url.searchParams.get("role");
           const q = iriParam || verbParam || "";
           const resolvedVerbId = verb_id_for_iri(q);
           const resolvedIri = iri_for_verb_id(q);
           const isJudgment = resolvedVerbId ? isJudgmentVerb(resolvedVerbId) : false;
           const isFindingReport = resolvedVerbId ? isFindingOrReportVerb(resolvedVerbId) : false;
+          let isAllowedForRole: boolean | undefined = undefined;
+          if (roleParam && resolvedVerbId) {
+            const rolePack = getRolePack(roleParam);
+            isAllowedForRole = rolePack ? rolePack.allowedVerbs.has(resolvedVerbId) : false;
+          }
           return new Response(JSON.stringify({
             query: q,
             verb_id: resolvedVerbId,
             iri: resolvedIri,
             is_profile_verb: resolvedVerbId !== undefined,
             is_judgment: isJudgment,
-            is_finding_or_report: isFindingReport
+            is_finding_or_report: isFindingReport,
+            role: roleParam || undefined,
+            is_allowed_for_role: isAllowedForRole,
           }, null, 2), {
             headers: { "Content-Type": "application/json" }
           });
@@ -2875,10 +2940,13 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
           profile_id: SCHOLAR_XAPI_PROFILE_JSON.id,
           ontology_iri: "https://ashecribb.dev/ontologies/scholar/v1",
           verbs_count: PROFILE_VERB_CONCEPTS.length,
+          roles_count: getAllRolePacks().length,
           endpoints: [
             `/project/${projectId}/vocab/profile`,
             `/project/${projectId}/vocab/ontology`,
-            `/project/${projectId}/vocab/resolve?iri=<iri_or_verb>`
+            `/project/${projectId}/vocab/roles`,
+            `/project/${projectId}/vocab/roles/:role`,
+            `/project/${projectId}/vocab/resolve?iri=<iri_or_verb>&role=<role>`
           ]
         }, null, 2), { headers: { "Content-Type": "application/json" } });
 

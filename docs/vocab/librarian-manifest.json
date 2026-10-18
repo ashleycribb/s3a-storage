@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "role": "librarian",
+  "actor_class": "https://ashecribb.dev/ontologies/scholar/librarian/v1#LibrarianAgent",
+  "profile": {
+    "id": "https://ashecribb.dev/xapi/profiles/librarian/v1",
+    "path": "docs/vocab/librarian-xapi-profile.jsonld"
+  },
+  "ontology": {
+    "id": "https://ashecribb.dev/ontologies/scholar/librarian/v1",
+    "path": "docs/vocab/librarian.ttl"
+  },
+  "playbook": {
+    "skills": ["literature-search-arxiv", "literature-search-openalex", "embl-ebi-ols"],
+    "rules": [
+      "No judgment verbs for AI agents (:HumanActor disjointWith :AIAgent)",
+      "Curate and link citations with DOIs and passage quotes",
+      "No code patches to production software packages"
+    ]
+  },
+  "tools_allowed": [
+    "search_literature",
+    "resolve_doi",
+    "read_ontology_schema",
+    "index_documentation",
+    "validate_vocab_drift"
+  ],
+  "verbs_allowed": [
+    "indexed",
+    "searched",
+    "retrieved",
+    "cited",
+    "exported-snapshot",
+    "flagged-discrepancy",
+    "ai-answered",
+    "viewed"
+  ],
+  "prohibitions": [
+    "no_judgment_verbs",
+    "no_production_code_patches",
+    "no_direct_baseline_merges"
+  ],
+  "output_schema": {
+    "type": "object",
+    "title": "LibrarianKnowledgeArtifact",
+    "required": ["artifact_id", "doi", "passage_quote", "sha256_fingerprint"],
+    "properties": {
+      "artifact_id": { "type": "string" },
+      "doi": { "type": "string" },
+      "passage_quote": { "type": "string" },
+      "sha256_fingerprint": { "type": "string" },
+      "concepts": { "type": "array", "items": { "type": "string" } },
+      "cito_relation": { "type": "string" }
+    }
+  }
+}

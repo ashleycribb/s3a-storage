@@ -3,8 +3,11 @@
 // Grounded in docs/vocab/scholar-xapi-profile.jsonld and docs/vocab/scholar.ttl
 
 import { SCHOLAR_XAPI_PROFILE_JSON, SCHOLAR_ONTOLOGY_TTL } from "./raw";
+import { ROLE_PACKS, getAllRolePacks, getRolePack, RolePack, RoleManifest } from "./roles";
 
 export { SCHOLAR_XAPI_PROFILE_JSON, SCHOLAR_ONTOLOGY_TTL };
+export { ROLE_PACKS, getAllRolePacks, getRolePack };
+export type { RolePack, RoleManifest };
 
 export interface ProfileVerbConcept {
   id: string;
@@ -15,10 +18,22 @@ export interface ProfileVerbConcept {
   closeMatch?: readonly string[] | string[];
 }
 
-// Extract all verbs from the Scholar xAPI Profile
-export const PROFILE_VERB_CONCEPTS: ProfileVerbConcept[] = (
+// Extract verbs from Scholar xAPI Profile and all Role Profiles
+const scholarVerbs = (
   (SCHOLAR_XAPI_PROFILE_JSON.concepts || []).filter((c: any) => c.type === "Verb") as unknown
 ) as ProfileVerbConcept[];
+
+const roleVerbs: ProfileVerbConcept[] = [];
+for (const pack of getAllRolePacks()) {
+  const concepts = pack.profileJsonld?.concepts || [];
+  for (const c of concepts) {
+    if (c.type === "Verb") {
+      roleVerbs.push(c as ProfileVerbConcept);
+    }
+  }
+}
+
+export const PROFILE_VERB_CONCEPTS: ProfileVerbConcept[] = [...scholarVerbs, ...roleVerbs];
 
 // Canonical IRI -> verb_id mapping
 const IRI_TO_VERB_ID = new Map<string, string>();
@@ -27,8 +42,12 @@ const VERB_ID_TO_IRI = new Map<string, string>();
 
 for (const v of PROFILE_VERB_CONCEPTS) {
   const canonicalId = v.prefLabel?.en || v.id.split("/").pop()!;
-  VERB_ID_TO_IRI.set(canonicalId, v.id);
-  IRI_TO_VERB_ID.set(v.id, canonicalId);
+  if (!VERB_ID_TO_IRI.has(canonicalId)) {
+    VERB_ID_TO_IRI.set(canonicalId, v.id);
+  }
+  if (!IRI_TO_VERB_ID.has(v.id)) {
+    IRI_TO_VERB_ID.set(v.id, canonicalId);
+  }
 
   // Also register match aliases
   const aliases = [
@@ -191,24 +210,26 @@ export function isFindingOrReportVerb(verbOrIri: string): boolean {
 export interface TraceValidationOptions {
   actor: any;
   verb: string;
+  role?: string;
   taskId?: string;
   patch?: string;
   isReviewTask?: boolean;
 }
 
 /**
- * Validates a trace statement against the Scholar xAPI profile and ontology axioms:
- * 1. Verb must exist in the profile.
+ * Validates a trace statement against the Scholar xAPI profile, per-role profiles, and ontology axioms:
+ * 1. Verb must exist in the profile (Scholar or role profile).
  * 2. Judgment verbs require HumanActor; AIAgent is strictly forbidden.
- * 3. Review tasks may only emit finding/report verbs, never patches.
+ * 3. Role-specific validation: allowed verbs and prohibitions (e.g. no patches for QA/PM/Budget/Scrum/Librarian).
+ * 4. Review tasks may only emit finding/report verbs, never patches.
  */
 export function validateTraceEntry(entry: TraceValidationOptions): { valid: boolean; error?: string } {
-  const { actor, verb, taskId = "unknown", patch, isReviewTask = false } = entry;
+  const { actor, verb, role, taskId = "unknown", patch, isReviewTask = false } = entry;
 
-  // 1. Check if verb is recognized in the Scholar xAPI Profile
+  // 1. Check if verb is recognized in Scholar or Role xAPI Profiles
   const verbId = verb_id_for_iri(verb);
   if (!verbId) {
-    const errMsg = `Unknown xAPI verb '${verb}': Not recognized in Scholar xAPI profile (https://ashecribb.dev/xapi/profiles/scholar-explorer/v1).`;
+    const errMsg = `Unknown xAPI verb '${verb}': Not recognized in Scholar xAPI profile or any S3A Role profile.`;
     return { valid: false, error: errMsg };
   }
 
@@ -229,7 +250,42 @@ export function validateTraceEntry(entry: TraceValidationOptions): { valid: bool
     return { valid: false, error: `Ontology violation: Verb 'ai-answered' is restricted to AIAgent actors; human actors cannot emit it.` };
   }
 
-  // 3. Review Task Invariants
+  // 3. Per-Role Profile & Invariant Validation
+  const effectiveRole = (role || actor?.role || actor?.agent_role)?.toLowerCase().trim();
+  if (effectiveRole) {
+    const rolePack = getRolePack(effectiveRole);
+    if (rolePack) {
+      // Role Allowed Verbs Check
+      if (!rolePack.allowedVerbs.has(verbId)) {
+        const errMsg = `Profile violation: Role '${effectiveRole}' is not permitted to emit verb '${verbId}'. Allowed verbs for '${effectiveRole}': ${Array.from(rolePack.allowedVerbs).join(", ")}.`;
+        return { valid: false, error: errMsg };
+      }
+
+      // Prohibitions: No Code Patches (QA, PM, Scrum, Librarian, Budget)
+      if (rolePack.prohibitions.has("no_code_patches") || effectiveRole !== "builder") {
+        if (patch && patch.trim().length > 0) {
+          const errMsg = `Ontology/Profile violation: Role '${effectiveRole}' is prohibited from producing code patches or diffs. Only 'builder' agents may produce code patches.`;
+          return { valid: false, error: errMsg };
+        }
+      }
+
+      // Prohibitions: No Judgment Verbs
+      if (rolePack.prohibitions.has("no_judgment_verbs") && isJudgmentVerb(verbId)) {
+        const errMsg = `Ontology violation: Role '${effectiveRole}' is prohibited from emitting judgment verbs (:HumanActor disjointWith :AIAgent).`;
+        return { valid: false, error: errMsg };
+      }
+
+      // Prohibitions: Money agent counts only
+      if (effectiveRole === "budget" && patch && patch.trim().length > 0) {
+        return {
+          valid: false,
+          error: `Ontology violation: BudgetAgent is a metering agent that counts compute and tokens only; cannot generate code patches.`,
+        };
+      }
+    }
+  }
+
+  // 4. Review Task Invariants
   if (isReviewTask) {
     if (patch && patch.trim().length > 0) {
       const errMsg = `Invariant violation: Review task '${taskId}' must not produce patches or diffs (read-only review).`;
@@ -242,4 +298,16 @@ export function validateTraceEntry(entry: TraceValidationOptions): { valid: bool
   }
 
   return { valid: true };
+}
+
+/**
+ * Convenience helper to validate an action performed by a specific agent role.
+ */
+export function validateRoleAction(role: string, verb: string, patch?: string): { valid: boolean; error?: string } {
+  return validateTraceEntry({
+    actor: { id: `agent-${role}`, role, type: "ai" },
+    verb,
+    role,
+    patch,
+  });
 }
