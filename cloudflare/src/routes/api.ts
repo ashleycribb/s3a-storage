@@ -351,11 +351,12 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     return stub.fetch(request);
   }
 
-  // /p/:projectId/api/... forward to RepoCoordinator DO
-  if (pathParts[0] === "p" && pathParts[2] === "api") {
+  // /p/:projectId/api/... or /p/:projectId/plan/... forward to RepoCoordinator DO
+  if (pathParts[0] === "p" && (pathParts[2] === "api" || pathParts[2] === "plan")) {
     const projectId = pathParts[1];
     const targetUrl = new URL(request.url);
-    targetUrl.pathname = `/project/${projectId}/${pathParts.slice(3).join("/")}`;
+    const subPath = pathParts[2] === "api" ? pathParts.slice(3).join("/") : pathParts.slice(2).join("/");
+    targetUrl.pathname = `/project/${projectId}/${subPath}`;
     const doId = env.REPO_COORDINATOR.idFromName(projectId);
     const stub = env.REPO_COORDINATOR.get(doId);
     return stub.fetch(new Request(targetUrl.toString(), request));

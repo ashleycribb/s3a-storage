@@ -724,3 +724,107 @@ export interface PromotionRecord {
   timestamp: number;
 }
 
+// --------------------------------------------------------------------------
+// Code Analysis View Data Models (/p/:project/code)
+// --------------------------------------------------------------------------
+
+export interface CodeHealthFinding {
+  id: string;
+  title: string;
+  file_line: string;
+  category: "security" | "bugs" | "slow_queries" | "accessibility" | "missing_tests" | "dead_code" | "duplicated_logic";
+  severity: "high" | "medium" | "low";
+  description: string;
+  suggested_fix: string;
+  status: "open" | "in_review" | "resolved";
+  xapi_verb: string;
+  actor_class: string;
+}
+
+export interface PlanOfAttackStep {
+  step_number: number;
+  title: string;
+  description: string;
+  target_files: string[];
+  tests_required: string;
+}
+
+export interface PlanOfAttack {
+  id: string;
+  task_id: string;
+  title: string;
+  created_at: number;
+  status: "pending_human_approval" | "approved" | "rejected";
+  steps: PlanOfAttackStep[];
+  files_to_touch: string[];
+  tests_required: string;
+  risk_level: "low" | "high" | "review";
+  approved_by?: string;
+  approved_at?: number;
+  supervisor_pubkey?: string;
+  rationale?: string;
+  xapi_verb: string;
+  actor_class: string;
+  approval_verb?: string;
+}
+
+export interface PackageSpec {
+  is_new_project: boolean;
+  package_name: string;
+  description: string;
+  target_environment: "demo" | "test" | "production";
+  stack: {
+    runtime: string;
+    framework: string;
+    language: string;
+    styling: string;
+    testing: string;
+    storage: string;
+  };
+  features: Array<{
+    name: string;
+    description: string;
+    status: "planned" | "in_progress" | "implemented" | "verified";
+  }>;
+  milestones: Array<{
+    id: string;
+    title: string;
+    target_date: string;
+    status: "pending" | "in_progress" | "completed";
+    deliverables: string[];
+  }>;
+}
+
+export interface RepoTreeItem {
+  path: string;
+  name: string;
+  type: "file" | "directory";
+  size?: string;
+  language?: string;
+  children?: RepoTreeItem[];
+}
+
+export interface ArchitectureComponent {
+  layer: "Frontend & UI" | "Edge Compute & API" | "Verification & Sandbox" | "Storage & Evidence" | "Governance & Roles";
+  name: string;
+  tech: string;
+  role_description: string;
+  invariants: string[];
+}
+
+export interface ProjectAnalysis {
+  project_id: string;
+  readme_summary: {
+    title: string;
+    tagline: string;
+    purpose: string;
+    core_workflows: string[];
+    governance_model: string;
+  };
+  repo_tree: RepoTreeItem[];
+  architecture_map: ArchitectureComponent[];
+  findings: CodeHealthFinding[];
+  plan_of_attack: PlanOfAttack;
+  package_spec: PackageSpec;
+}
+

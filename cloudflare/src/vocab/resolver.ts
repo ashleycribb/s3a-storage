@@ -285,8 +285,8 @@ export function validateTraceEntry(entry: TraceValidationOptions): { valid: bool
     }
   }
 
-  // 4. Review Task Invariants
-  if (isReviewTask) {
+  // 4. Review Task Invariants: gate-agent / AI agents may only emit finding/report verbs, never patches
+  if (isReviewTask && !isHumanActor(actor)) {
     if (patch && patch.trim().length > 0) {
       const errMsg = `Invariant violation: Review task '${taskId}' must not produce patches or diffs (read-only review).`;
       return { valid: false, error: errMsg };

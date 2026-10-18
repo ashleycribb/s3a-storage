@@ -1,7 +1,7 @@
 // cloudflare/src/routes/ui.ts
 // Server-Rendered UI Routes & Redirects
 
-import type { Env, TaskItem, ChangeRequest, RegisteredAgent, BudgetStatus, BreadcrumbItem } from "../types";
+import type { Env, TaskItem, ChangeRequest, RegisteredAgent, BudgetStatus, BreadcrumbItem, ProjectAnalysis } from "../types";
 import { renderShell } from "../ui/shell";
 import { renderCodePage } from "../ui/pages/code";
 import { renderIssuesPage, renderIssueDetailPage } from "../ui/pages/issues";
@@ -144,14 +144,16 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   let crs: ChangeRequest[] = [];
   let registeredAgentsList: RegisteredAgent[] = [];
   let budgetData: BudgetStatus | undefined = undefined;
+  let analysisData: ProjectAnalysis | undefined = undefined;
 
-  const [resStatus, resControl, resBudget, resTasks, resCRs, resAgents] = await Promise.allSettled([
+  const [resStatus, resControl, resBudget, resTasks, resCRs, resAgents, resAnalysis] = await Promise.allSettled([
     stub.fetch(new Request(`https://internal/project/${projectId}/status`)),
     stub.fetch(new Request(`https://internal/project/${projectId}/control`)),
     stub.fetch(new Request(`https://internal/project/${projectId}/ledger`)),
     stub.fetch(new Request(`https://internal/project/${projectId}/tasks`)),
     stub.fetch(new Request(`https://internal/project/${projectId}/change-requests`)),
     stub.fetch(new Request(`https://internal/project/${projectId}/agents`)),
+    stub.fetch(new Request(`https://internal/project/${projectId}/analysis`)),
   ]);
 
   if (resStatus.status === "fulfilled" && resStatus.value.ok) {
@@ -182,6 +184,11 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
       registeredAgentsList = Object.values(rawMap);
     } catch (e) {}
   }
+  if (resAnalysis.status === "fulfilled" && resAnalysis.value.ok) {
+    try {
+      analysisData = await resAnalysis.value.json() as ProjectAnalysis;
+    } catch (e) {}
+  }
 
   const counts = {
     issues: tasks.filter(t => t.status !== "merged").length,
@@ -196,9 +203,9 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
 
   switch (section) {
     case "code": {
-      pageTitle = "Code";
-      breadcrumbs = [{ label: "Code" }];
-      pageHtml = renderCodePage({ projectId, statusData });
+      pageTitle = "Code Analysis";
+      breadcrumbs = [{ label: "Code Analysis" }];
+      pageHtml = renderCodePage({ projectId, statusData, analysisData });
       break;
     }
 
