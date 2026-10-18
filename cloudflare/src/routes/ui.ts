@@ -305,6 +305,8 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     }
   }
 
+  const braketsEnv = (statusData.brakets_env as any) || "demo";
+
   const fullHtml = renderShell(pageHtml, {
     projectId,
     activeTab: section as any,
@@ -312,6 +314,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     breadcrumbs,
     counts,
     isPaused,
+    braketsEnv,
   });
 
   return new Response(fullHtml, {

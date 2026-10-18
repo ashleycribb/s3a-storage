@@ -1,7 +1,7 @@
 // cloudflare/src/ui/shell.ts
 // Shared Application Shell: Common Layout, Navigation, Breadcrumbs, Modals, and Client Scripts
 
-import type { BreadcrumbItem } from "../types";
+import type { BreadcrumbItem, BraketsEnv } from "../types";
 
 export interface ShellOptions {
   projectId: string;
@@ -14,10 +14,11 @@ export interface ShellOptions {
     agents?: number;
   };
   isPaused?: boolean;
+  braketsEnv?: BraketsEnv;
 }
 
 export function renderShell(contentHtml: string, options: ShellOptions): string {
-  const { projectId, activeTab, breadcrumbs = [], counts = {}, isPaused = false } = options;
+  const { projectId, activeTab, breadcrumbs = [], counts = {}, isPaused = false, braketsEnv = "demo" } = options;
 
   const titlePrefix = options.pageTitle ? `${options.pageTitle} · ` : "";
   const fullTitle = `${titlePrefix}ashleycribb/plat-gaming · S3A Gate`;
@@ -113,6 +114,22 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
       border-radius: 2em;
       border: 1px solid var(--gh-border);
       color: var(--gh-text-muted);
+    }
+
+    .env-badge-demo {
+      background: rgba(210, 153, 34, 0.18) !important;
+      color: #e3b341 !important;
+      border: 1px solid rgba(210, 153, 34, 0.5) !important;
+    }
+    .env-badge-test {
+      background: rgba(56, 139, 253, 0.18) !important;
+      color: #58a6ff !important;
+      border: 1px solid rgba(56, 139, 253, 0.5) !important;
+    }
+    .env-badge-production {
+      background: rgba(46, 160, 67, 0.2) !important;
+      color: #3fb950 !important;
+      border: 1px solid rgba(46, 160, 67, 0.6) !important;
     }
 
     /* Buttons */
@@ -320,10 +337,16 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
         ${breadcrumbsHtml}
         <span class="repo-pill">Private</span>
         <span class="repo-pill" style="border-color: rgba(243,128,32,0.4); color: var(--gh-orange);">Autonomous Swarm</span>
+        <span id="env-badge" class="repo-pill env-badge env-badge-${braketsEnv}" onclick="openPromotionModal()" style="cursor: pointer; font-weight: 700; text-transform: uppercase;" title="Brakets Environment: ${braketsEnv.toUpperCase()}. Click to view promotion status & checklist.">
+          ${braketsEnv === 'production' ? '🛡️' : (braketsEnv === 'test' ? '🧪' : '🎮')} ENV: ${braketsEnv.toUpperCase()}
+        </span>
       </div>
 
       <!-- Action buttons -->
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <button id="btn-promote-env" class="gh-btn" onclick="openPromotionModal()" title="View environment lifecycle & promotion checklist">
+          🚀 Promote (${braketsEnv})
+        </button>
         <button id="engine-toggle-btn" class="gh-btn ${isPaused ? 'gh-btn-primary' : 'gh-btn-danger'}" onclick="toggleAutonomousEngine('${isPaused ? 'resume' : 'pause'}')">
           ${isPaused ? '▶ Resume Swarm' : '⏸ Pause Swarm'}
         </button>
@@ -416,6 +439,60 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
 
         <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
           <button class="gh-btn" onclick="closeEnrollmentModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Promotion & Environment Lifecycle Modal -->
+  <div id="promotion-modal" class="modal-overlay" onclick="if(event.target === this) closePromotionModal()">
+    <div style="background: var(--gh-card-bg); border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 680px; box-shadow: 0 12px 28px rgba(0,0,0,0.5); overflow: hidden; max-height: 90vh; display: flex; flex-direction: column;">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
+        <h3 style="font-size: 15px; font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.5rem;">
+          <span>🚀 Brakets Environment Promotion</span>
+        </h3>
+        <button onclick="closePromotionModal()" style="background: none; border: none; color: var(--gh-text-muted); font-size: 18px; cursor: pointer;">✕</button>
+      </div>
+
+      <div style="padding: 1.25rem; overflow-y: auto; flex: 1;">
+        <!-- Lifecycle Pipeline -->
+        <div style="display: flex; align-items: center; justify-content: space-around; background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 0.85rem 1rem; margin-bottom: 1.25rem;">
+          <div style="text-align: center; opacity: ${braketsEnv === 'demo' ? '1' : '0.55'};">
+            <span class="gh-badge env-badge-demo" style="font-size: 12px; padding: 0.25rem 0.65rem;">🎮 DEMO</span>
+            <div style="font-size: 11px; color: var(--gh-text-muted); margin-top: 0.25rem;">Synthetic Rehearsal</div>
+          </div>
+          <span style="color: var(--gh-border); font-size: 18px; font-weight: bold;">──▶</span>
+          <div style="text-align: center; opacity: ${braketsEnv === 'test' ? '1' : '0.55'};">
+            <span class="gh-badge env-badge-test" style="font-size: 12px; padding: 0.25rem 0.65rem;">🧪 TEST</span>
+            <div style="font-size: 11px; color: var(--gh-text-muted); margin-top: 0.25rem;">Staging & Verified QA</div>
+          </div>
+          <span style="color: var(--gh-border); font-size: 18px; font-weight: bold;">──▶</span>
+          <div style="text-align: center; opacity: ${braketsEnv === 'production' ? '1' : '0.55'};">
+            <span class="gh-badge env-badge-production" style="font-size: 12px; padding: 0.25rem 0.65rem;">🛡️ PRODUCTION</span>
+            <div style="font-size: 11px; color: var(--gh-text-muted); margin-top: 0.25rem;">Human-Gated Main</div>
+          </div>
+        </div>
+
+        <!-- Live Checklist Container -->
+        <div id="promotion-checklist-container">
+          <div style="text-align: center; padding: 2rem; color: var(--gh-text-muted);">
+            ⏳ Loading environment checklist and verification status...
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 1rem 1.25rem; border-top: 1px solid var(--gh-border); background: #0d1117; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+        <button id="btn-rollback" class="gh-btn gh-btn-danger" onclick="rollbackEnvironment()" style="display: ${braketsEnv !== 'demo' ? 'inline-flex' : 'none'};">
+          ⏪ Rollback
+        </button>
+        <div style="display: flex; gap: 0.5rem; margin-left: auto;">
+          <button class="gh-btn" onclick="closePromotionModal()">Close</button>
+          <button id="btn-request-promote" class="gh-btn" onclick="requestPromotion()" style="display: none;">
+            📋 Request Promotion
+          </button>
+          <button id="btn-approve-promote" class="gh-btn gh-btn-primary" onclick="approvePromotion()" style="display: none;">
+            ✍️ Supervisor Approve
+          </button>
         </div>
       </div>
     </div>
@@ -590,6 +667,217 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
         };
         req.onerror = () => reject(req.error);
       });
+    }
+
+    // ------------------------------------------------------------------------
+    // Environment Lifecycle & Promotion Modal Client Scripts
+    // ------------------------------------------------------------------------
+    let currentPromotionData = null;
+
+    async function openPromotionModal() {
+      const modal = document.getElementById("promotion-modal");
+      if (!modal) return;
+      modal.style.display = "flex";
+      await fetchPromotionStatus();
+    }
+
+    function closePromotionModal() {
+      const modal = document.getElementById("promotion-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    async function fetchPromotionStatus() {
+      const container = document.getElementById("promotion-checklist-container");
+      if (!container) return;
+      container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--gh-text-muted);">⏳ Checking promotion checklist & verification status...</div>';
+      try {
+        const res = await fetch('/project/' + currentProjectId + '/env');
+        if (!res.ok) {
+          container.innerHTML = '<div style="color: var(--gh-red); padding: 1rem;">Failed to fetch promotion status: ' + await res.text() + '</div>';
+          return;
+        }
+        const data = await res.json();
+        currentPromotionData = data;
+        renderPromotionChecklist(data);
+      } catch (e) {
+        container.innerHTML = '<div style="color: var(--gh-red); padding: 1rem;">Error: ' + e.message + '</div>';
+      }
+    }
+
+    function renderPromotionChecklist(data) {
+      const container = document.getElementById("promotion-checklist-container");
+      const btnRequest = document.getElementById("btn-request-promote");
+      const btnApprove = document.getElementById("btn-approve-promote");
+      const btnRollback = document.getElementById("btn-rollback");
+      if (!container) return;
+
+      const currentEnv = data.brakets_env || "demo";
+      const nextEnv = currentEnv === "demo" ? "test" : (currentEnv === "test" ? "production" : null);
+      const activeChecklist = currentEnv === "demo" ? data.test_checklist : data.production_checklist;
+
+      if (btnRollback) {
+        btnRollback.style.display = currentEnv !== "demo" ? "inline-flex" : "none";
+        btnRollback.textContent = currentEnv === "production" ? "⏪ Rollback to Test" : "⏪ Rollback to Demo";
+      }
+
+      if (!nextEnv) {
+        container.innerHTML = '<div style="background: rgba(46, 160, 67, 0.15); border: 1px solid rgba(46, 160, 67, 0.4); border-radius: 6px; padding: 1.25rem; text-align: center;"><h4 style="color: #3fb950; margin-bottom: 0.5rem; font-size: 15px;">🛡️ Production Active</h4><p style="color: var(--gh-text); font-size: 13px; line-height: 1.5; margin: 0;">Brakets is running in <strong>Production</strong> under human gate enforcement (Ashley + Ward signed keys).<br><strong>Auto-merge is disabled</strong> for all production updates.</p></div>';
+        if (btnRequest) btnRequest.style.display = "none";
+        if (btnApprove) btnApprove.style.display = "none";
+        return;
+      }
+
+      let html = '<div style="margin-bottom: 1rem;">' +
+        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">' +
+        '<div style="font-weight: 600; font-size: 14px; color: var(--gh-text-heading);">' +
+        'Gate Checklist: Promoting <code>' + currentEnv.toUpperCase() + '</code> ➔ <code>' + nextEnv.toUpperCase() + '</code>' +
+        '</div>' +
+        '<span class="gh-badge ' + (activeChecklist && activeChecklist.ready ? 'gh-badge-success' : 'gh-badge-yellow') + '">' +
+        (activeChecklist && activeChecklist.ready ? '✅ Requirements Met' : '⚠️ ' + ((activeChecklist && activeChecklist.blockers) ? activeChecklist.blockers.length : 0) + ' Blockers') +
+        '</span></div>' +
+        '<div style="display: flex; flex-direction: column; gap: 0.5rem;">';
+
+      if (activeChecklist && activeChecklist.checklist) {
+        for (const item of activeChecklist.checklist) {
+          html += '<div style="background: #161b22; border: 1px solid ' + (item.passed ? 'rgba(46, 160, 67, 0.4)' : 'rgba(248, 81, 73, 0.4)') + '; border-radius: 6px; padding: 0.65rem 0.85rem; display: flex; align-items: flex-start; gap: 0.75rem;">' +
+            '<span style="font-size: 15px;">' + (item.passed ? '✅' : '❌') + '</span>' +
+            '<div style="flex: 1;">' +
+            '<div style="font-size: 13px; font-weight: 600; color: ' + (item.passed ? 'var(--gh-text-heading)' : 'var(--gh-red)') + ';">' + item.title + '</div>' +
+            '<div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.2rem; font-family: monospace;">' + item.details + '</div>' +
+            '</div></div>';
+        }
+      }
+
+      html += '</div></div>';
+
+      if (data.pending_promotion) {
+        html += '<div style="background: rgba(56, 139, 253, 0.15); border: 1px solid rgba(56, 139, 253, 0.4); border-radius: 6px; padding: 0.85rem 1rem; margin-top: 1rem;">' +
+          '<div style="font-weight: 600; color: #58a6ff; font-size: 13px;">📋 Promotion Pending Human Approval</div>' +
+          '<div style="font-size: 12px; color: var(--gh-text); margin-top: 0.25rem;">' +
+          'Requested by: <code>' + data.pending_promotion.requester_id + '</code> (' + data.pending_promotion.requester_type + ')<br>' +
+          'Target: <strong>' + data.pending_promotion.target_env.toUpperCase() + '</strong>' +
+          '</div></div>';
+      }
+
+      container.innerHTML = html;
+
+      const isReady = activeChecklist && activeChecklist.ready;
+      if (btnRequest) {
+        btnRequest.style.display = "inline-flex";
+        btnRequest.textContent = "📋 Request Promotion (" + nextEnv.toUpperCase() + ")";
+        btnRequest.disabled = !isReady;
+      }
+      if (btnApprove) {
+        btnApprove.style.display = "inline-flex";
+        btnApprove.textContent = "✍️ Supervisor Approve (" + nextEnv.toUpperCase() + ")";
+        btnApprove.disabled = !isReady;
+      }
+    }
+
+    async function requestPromotion() {
+      if (!currentPromotionData) return;
+      const currentEnv = currentPromotionData.brakets_env || "demo";
+      const targetEnv = currentEnv === "demo" ? "test" : "production";
+      const rationale = prompt("Enter promotion request rationale:", "Rehearsal and verification checklist verified green.");
+      if (rationale === null) return;
+
+      const rollbackPlan = targetEnv === "production" 
+        ? prompt("Enter production rollback plan:", "Immediate revert to previous deployment hash and switch brakets_env to test.") 
+        : "Revert environment to demo.";
+      if (rollbackPlan === null) return;
+
+      try {
+        const res = await fetch('/project/' + currentProjectId + '/env/request-promotion', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+          body: JSON.stringify({
+            target_env: targetEnv,
+            requester_id: "antigravity",
+            requester_type: "ai",
+            rationale,
+            rollback_plan: rollbackPlan
+          })
+        });
+        const respData = await res.json();
+        if (res.ok) {
+          alert("Promotion requested successfully! Pending supervisor approval.");
+          await fetchPromotionStatus();
+        } else {
+          alert("Failed to request promotion: " + (respData.error || JSON.stringify(respData)));
+        }
+      } catch (e) {
+        alert("Request error: " + e.message);
+      }
+    }
+
+    async function approvePromotion() {
+      if (!currentPromotionData) return;
+      const currentEnv = currentPromotionData.brakets_env || "demo";
+      const targetEnv = currentEnv === "demo" ? "test" : "production";
+
+      const rationale = prompt("Enter supervisor approval rationale (Ashley/Ward):", "Verified checklist and QA traces green. Approved promotion to " + targetEnv + ".");
+      if (rationale === null) return;
+
+      const rollbackPlan = targetEnv === "production"
+        ? (prompt("Confirm rollback plan:", "Immediate revert commit and demote env to test.") || "Demote to test")
+        : "Revert to demo";
+
+      try {
+        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
+        const tsSecs = Math.floor(Date.now() / 1000);
+        const signPayload = new TextEncoder().encode("APPROVE_ENV_PROMOTION:" + targetEnv + ":" + tsSecs + ":" + rationale);
+        const sigBuffer = await window.crypto.subtle.sign({ name: "Ed25519" }, keyPair.privateKey, signPayload);
+        const sigHex = Array.from(new Uint8Array(sigBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const res = await fetch('/project/' + currentProjectId + '/env/approve-promotion', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+          body: JSON.stringify({
+            target_env: targetEnv,
+            reviewer_pubkey: pubHex,
+            signature: sigHex,
+            rationale,
+            rollback_plan: rollbackPlan,
+            timestamp: tsSecs
+          })
+        });
+        const respData = await res.json();
+        if (res.ok) {
+          alert("🎉 Environment promoted to " + targetEnv.toUpperCase() + "!");
+          location.reload();
+        } else {
+          alert("Approval failed: " + (respData.error || JSON.stringify(respData)));
+        }
+      } catch (e) {
+        alert("Approval error: " + e.message);
+      }
+    }
+
+    async function rollbackEnvironment() {
+      if (!confirm("Are you sure you want to rollback the environment?")) return;
+      const rationale = prompt("Enter rollback rationale:", "Issues discovered in staging/production, reverting to previous stage.");
+      if (rationale === null) return;
+
+      try {
+        const { keyPair, pubHex } = await getOrGenerateReviewerKey();
+        const res = await fetch('/project/' + currentProjectId + '/env/rollback', {
+          method: 'POST',
+          headers: getAdminAuthHeaders(),
+          body: JSON.stringify({
+            reviewer_pubkey: pubHex,
+            rationale
+          })
+        });
+        const respData = await res.json();
+        if (res.ok) {
+          alert("Environment rolled back to " + respData.brakets_env.toUpperCase() + ".");
+          location.reload();
+        } else {
+          alert("Rollback failed: " + (respData.error || JSON.stringify(respData)));
+        }
+      } catch (e) {
+        alert("Rollback error: " + e.message);
+      }
     }
   </script>
 </body>

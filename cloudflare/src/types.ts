@@ -689,3 +689,37 @@ ${qaScreenshotsSection}
 `;
 }
 
+// --------------------------------------------------------------------------
+// Brakets Environment Lifecycle & Promotion Types
+// --------------------------------------------------------------------------
+export type BraketsEnv = "demo" | "test" | "production";
+
+export interface PromotionChecklistItem {
+  id: string;
+  title: string;
+  passed: boolean;
+  details: string;
+}
+
+export interface PromotionChecklist {
+  target_env: BraketsEnv;
+  current_env: BraketsEnv;
+  ready: boolean;
+  checklist: PromotionChecklistItem[];
+  blockers: string[];
+}
+
+export interface PromotionRecord {
+  id: string;
+  from_env: BraketsEnv;
+  to_env: BraketsEnv;
+  requester_id: string;
+  requester_type: "ai" | "human";
+  approved_by: string;
+  supervisor_pubkey: string;
+  rationale: string;
+  rollback_plan: string;
+  auto_merge: boolean;
+  timestamp: number;
+}
+

@@ -304,6 +304,8 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     path.startsWith("/formats/") ||
     path === "/vocab" ||
     path.startsWith("/vocab/") ||
+    path === "/env" ||
+    path.startsWith("/env/") ||
     path === "/game-packs" ||
     path.startsWith("/game-packs/")
   ) {

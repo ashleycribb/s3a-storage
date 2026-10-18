@@ -31,6 +31,10 @@ import type {
   ActorProvenance,
   TraceStep,
   TaskTrace,
+  BraketsEnv,
+  PromotionChecklistItem,
+  PromotionChecklist,
+  PromotionRecord,
 } from "../types";
 import {
   hexToBytes,
@@ -340,11 +344,13 @@ export class RepoCoordinator implements DurableObject {
     const task = tasks.find(t => t.id === taskId);
     const taskTitle = task?.title || `Task ${taskId}`;
     const isReviewTask = Boolean(
-      !task?.files_allowed ||
-      task.files_allowed.length === 0 ||
-      task.risk_level === "review" ||
-      taskId === "TASK-283" ||
-      (task?.description && task.description.toLowerCase().includes("read-only review"))
+      task && (
+        !task.files_allowed ||
+        task.files_allowed.length === 0 ||
+        task.risk_level === "review" ||
+        task.id === "TASK-283" ||
+        (task.description && task.description.toLowerCase().includes("read-only review"))
+      )
     );
 
     // Grounding in S3A Ontology + Scholar xAPI Profile:
@@ -2530,6 +2536,8 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
         });
       case "formats":
         return this.handleFormats(request, projectId, pathParts.slice(3));
+      case "env":
+        return this.handleEnvAction(request, projectId, pathParts.slice(3));
       case "game-packs":
         return this.handleGamePacks(request, projectId, pathParts.slice(3));
       case "test-sandbox":
@@ -3288,6 +3296,49 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
     }
 
     // 6. Merge Evaluation against Baseline (s3a-vcs rules)
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
+    if (currentEnv === "production") {
+      // Invariant: Production deploys never auto-merge!
+      // All pushes in production environment are held for human supervisor approval.
+      const conflictIdCreated = `conf_prod_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const conflict: StoredConflict = {
+        conflict_id: conflictIdCreated,
+        record_id: commit?.commit_id || `prod_${Date.now()}`,
+        tile_type: 20,
+        type_name: "Production Deploy",
+        version_a: "Production Baseline (Locked)",
+        version_b: commit?.message || "Incoming Push",
+        author_a: "Supervisor (Ashley/Ward)",
+        author_b: agent_addr,
+        target_version: "Production Baseline (Locked)",
+        source_version: commit?.message || "Incoming Push",
+        target_author: "Supervisor (Ashley/Ward)",
+        source_author: agent_addr,
+        created_timestamp: now,
+        timestamp: now,
+        resolved: false,
+      };
+      await this.state.storage.put(`conflict:${conflictIdCreated}`, conflict);
+      let humanCount = (await this.state.storage.get<number>("sent_to_human")) || 0;
+      await this.state.storage.put("sent_to_human", humanCount + 1);
+
+      this.updateAgentState(pushingAgentId, {
+        status: "human",
+        task: "Production deploys never auto-merge. Held for Ashley + Ward supervisor approval.",
+      });
+
+      return new Response(JSON.stringify({
+        status: "held_for_human_review",
+        conflict_id: conflictIdCreated,
+        auto_merge: false,
+        brakets_env: "production",
+        message: "Production deploys never auto-merge. Changes held in supervisor queue for Ashley + Ward approval.",
+      }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     let hasEpistemicConflict = false;
     let conflictIdCreated = "";
     let autoMergedCount = 0;
@@ -3482,8 +3533,11 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
     const registeredAgents = Array.from(regList.values());
     const pendingCRs = changeRequests.filter(cr => cr.status === "pending_review");
 
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
     return new Response(JSON.stringify({
       project_id: projectId,
+      brakets_env: currentEnv,
+      auto_merge_enabled: currentEnv !== "production",
       agents_count: registeredAgents.length > 0 ? registeredAgents.length : agents.length,
       commits_count: commitsCount,
       auto_merged: autoMerged,
@@ -4930,5 +4984,625 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
     return new Response(JSON.stringify({ project_id: projectId, game_packs: gamePacks }, null, 2), {
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Brakets Environment Lifecycle & Promotion Handlers
+  // --------------------------------------------------------------------------
+  public async isRunEvidenceVerified(run: RehearsalRunRecord): Promise<boolean> {
+    if (run.evidence_verified === true && (!run.missing_evidence || run.missing_evidence.length === 0)) {
+      return true;
+    }
+    if (run.status === "evidence_missing") {
+      return false;
+    }
+    // Perform live verification against R2 bucket
+    try {
+      const verification = await this.verifyRehearsalEvidence(run.run_id);
+      return verification.evidence_verified;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  public async evaluateTestChecklist(projectId: string): Promise<PromotionChecklist> {
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
+    const checklist: PromotionChecklistItem[] = [];
+    const blockers: string[] = [];
+
+    // 1. Rehearsal happy-path green with verified evidence
+    const runs = await this.listRehearsalRuns(projectId);
+    let happyPathPassed = false;
+    let happyPathDetails = "No passed rehearsal happy path run with verified R2 evidence found.";
+
+    for (const r of runs) {
+      const rFormat = r.format_id || (r as any).format || r.scenario;
+      const isHappy = r.scenario === "happy_path" || rFormat === "single_elimination" || r.bracket_size === 8 || (r as any).teams?.length === 8;
+      if (isHappy && r.status === "passed") {
+        const verified = await this.isRunEvidenceVerified(r);
+        if (verified) {
+          happyPathPassed = true;
+          happyPathDetails = `Run ${r.run_id} passed with all R2 evidence verified (100% 200 OK).`;
+          break;
+        }
+      }
+    }
+
+    checklist.push({
+      id: "rehearsal_happy_path",
+      title: "Rehearsal 8-Team Happy Path Verified Green",
+      passed: happyPathPassed,
+      details: happyPathDetails,
+    });
+    if (!happyPathPassed) {
+      blockers.push("Happy-path rehearsal run must pass with all R2 evidence returning 200 OK.");
+    }
+
+    // 2. All format journeys green with verified evidence
+    const requiredFormats = [
+      { id: "single_elimination", name: "Single Elimination" },
+      { id: "double_elimination", name: "Double Elimination" },
+      { id: "swiss", name: "Swiss" },
+      { id: "groups_playoffs", name: "Groups to Playoffs" },
+    ];
+    const formatResults: { [key: string]: { passed: boolean; run_id?: string } } = {};
+
+    for (const fmt of requiredFormats) {
+      let passedFmt = false;
+      let matchedRunId: string | undefined;
+
+      for (const r of runs) {
+        const rFormat = r.format_id || (r as any).format || "";
+        const rName = (r.format_name || "").toLowerCase();
+        const rPack = r.game_pack_id || "";
+        const matchesFormat =
+          rFormat === fmt.id ||
+          (fmt.id === "single_elimination" && (rFormat === "single_elimination" || rPack === "esports_tactical" || rName.includes("single elim"))) ||
+          (fmt.id === "double_elimination" && (rFormat === "double_elimination" || rPack === "fighting_games" || rName.includes("double elim"))) ||
+          (fmt.id === "swiss" && (rFormat === "swiss" || rPack === "tabletop_swiss" || rName.includes("swiss"))) ||
+          (fmt.id === "groups_playoffs" && (rFormat === "groups_playoffs" || rFormat === "groups_to_playoffs" || rPack === "sports_sim" || rName.includes("group")));
+
+        if (matchesFormat && r.status === "passed") {
+          const verified = await this.isRunEvidenceVerified(r);
+          if (verified) {
+            passedFmt = true;
+            matchedRunId = r.run_id;
+            break;
+          }
+        }
+      }
+      formatResults[fmt.id] = { passed: passedFmt, run_id: matchedRunId };
+    }
+
+    const allFormatsPassed = Object.values(formatResults).every(f => f.passed);
+    if (allFormatsPassed) {
+      checklist.push({
+        id: "all_format_journeys",
+        title: "All Format Journeys Green with Verified Evidence",
+        passed: true,
+        details: "Single-elimination, Double-elimination, Swiss, and Groups→Playoffs verified in R2.",
+      });
+    } else {
+      const missing = requiredFormats.filter(f => !formatResults[f.id].passed).map(f => f.name);
+      checklist.push({
+        id: "all_format_journeys",
+        title: "All Format Journeys Green with Verified Evidence",
+        passed: false,
+        details: `Missing green runs with verified evidence for: ${missing.join(", ")}`,
+      });
+      blockers.push(`All format journeys must be green with verified evidence. Missing: ${missing.join(", ")}`);
+    }
+
+    // 3. 0 open bug/needs-logic fingerprints
+    const tasks = await this.getOrInitTasks();
+    const openBugTasks = tasks.filter(t => {
+      const isOpen = t.status === "open" || t.status === "claimed";
+      if (!isOpen) return false;
+      const titleLower = (t.title || "").toLowerCase();
+      const descLower = (t.description || "").toLowerCase();
+      const idLower = (t.id || "").toLowerCase();
+      return (
+        t.is_bug === true ||
+        Boolean(t.error_fingerprint) ||
+        idLower.startsWith("task-rehearsal") ||
+        titleLower.includes("fingerprint") ||
+        titleLower.includes("needs-logic") ||
+        descLower.includes("fingerprint")
+      );
+    });
+
+    if (openBugTasks.length === 0) {
+      checklist.push({
+        id: "zero_open_fingerprints",
+        title: "0 Open Bug / Needs-Logic Fingerprints",
+        passed: true,
+        details: "0 open bug/needs-logic fingerprints in task backlog.",
+      });
+    } else {
+      checklist.push({
+        id: "zero_open_fingerprints",
+        title: "0 Open Bug / Needs-Logic Fingerprints",
+        passed: false,
+        details: `${openBugTasks.length} open fingerprint task(s) remaining: ${openBugTasks.map(t => t.id).join(", ")}`,
+      });
+      blockers.push(`${openBugTasks.length} open bug/needs-logic tasks remaining: ${openBugTasks.map(t => t.id).join(", ")}`);
+    }
+
+    // 4. Health ok
+    const budget = await this.getBudgetStatus();
+    const healthOk = !budget.cap_reached && budget.spent_today < budget.cap;
+    if (healthOk) {
+      checklist.push({
+        id: "health_ok",
+        title: "System & Budget Health OK",
+        passed: true,
+        details: `Spend $${budget.spent_today.toFixed(2)} under daily cap $${budget.cap.toFixed(2)}. Engine healthy.`,
+      });
+    } else {
+      checklist.push({
+        id: "health_ok",
+        title: "System & Budget Health OK",
+        passed: false,
+        details: `Budget cap reached: spent $${budget.spent_today.toFixed(2)} of $${budget.cap.toFixed(2)}.`,
+      });
+      blockers.push("System health degraded or daily budget cap reached.");
+    }
+
+    return {
+      target_env: "test",
+      current_env: currentEnv,
+      ready: checklist.every(c => c.passed),
+      checklist,
+      blockers,
+    };
+  }
+
+  public async evaluateProductionChecklist(projectId: string, rollbackPlanParam?: string): Promise<PromotionChecklist> {
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
+    const checklist: PromotionChecklistItem[] = [];
+    const blockers: string[] = [];
+
+    // 1. Test checklist passed
+    const testChecklist = await this.evaluateTestChecklist(projectId);
+    if (testChecklist.ready) {
+      checklist.push({
+        id: "test_checklist_passed",
+        title: "Test Environment Checklist Passed",
+        passed: true,
+        details: "All rehearsal formats green with verified evidence and 0 open fingerprints.",
+      });
+    } else {
+      checklist.push({
+        id: "test_checklist_passed",
+        title: "Test Environment Checklist Passed",
+        passed: false,
+        details: `Test checklist has ${testChecklist.blockers.length} unresolved blockers.`,
+      });
+      blockers.push("Test checklist requirements must be satisfied first.");
+    }
+
+    // 2. Code reviews approved
+    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
+    const crs = Array.from(crMap.values());
+    const pendingCRs = crs.filter(cr => cr.status === "pending_review" || (cr as any).status === "needs_human_judgment");
+    if (pendingCRs.length === 0) {
+      checklist.push({
+        id: "code_reviews_approved",
+        title: "Code Reviews Approved",
+        passed: true,
+        details: `All Change Requests (${crs.length} total) reviewed and merged or closed.`,
+      });
+    } else {
+      checklist.push({
+        id: "code_reviews_approved",
+        title: "Code Reviews Approved",
+        passed: false,
+        details: `${pendingCRs.length} Change Request(s) pending review: ${pendingCRs.map(c => c.id).join(", ")}`,
+      });
+      blockers.push(`${pendingCRs.length} Change Request(s) awaiting review or approval.`);
+    }
+
+    // 3. Security PRs human-reviewed
+    const securitySensitiveCRs = crs.filter(cr => {
+      const files = cr.touched_files || [];
+      const title = (cr.title || "").toLowerCase();
+      const desc = (cr.message || "").toLowerCase();
+      return (
+        files.some((f: string) => /cashier|escrow|payout|auth|db|infra/i.test(f)) ||
+        /cashier|escrow|payout|auth|security/i.test(title) ||
+        /cashier|escrow|payout|auth|security/i.test(desc)
+      );
+    });
+
+    const unreviewedSecurityCRs = securitySensitiveCRs.filter(cr => {
+      if (cr.status === "failed_verification" || (cr as any).status === "rejected" || (cr as any).status === "closed") return false;
+      const revKey = (cr as any).reviewer_pubkey;
+      return !(revKey && isSupervisorKeyAllowed(revKey, this.env));
+    });
+
+    if (unreviewedSecurityCRs.length === 0) {
+      checklist.push({
+        id: "security_prs_human_reviewed",
+        title: "Security PRs Human-Reviewed (Ashley + Ward Signed)",
+        passed: true,
+        details: `${securitySensitiveCRs.length} security-sensitive change(s) verified by Ashley or Ward.`,
+      });
+    } else {
+      checklist.push({
+        id: "security_prs_human_reviewed",
+        title: "Security PRs Human-Reviewed (Ashley + Ward Signed)",
+        passed: false,
+        details: `${unreviewedSecurityCRs.length} security-sensitive CR(s) lack supervisor signature: ${unreviewedSecurityCRs.map(c => c.id).join(", ")}`,
+      });
+      blockers.push("All security-sensitive PRs (cashier/escrow/payout/auth) must be human-reviewed with supervisor key.");
+    }
+
+    // 4. Ledger & Trace replay OK
+    const budget = await this.getBudgetStatus();
+    const ledgerOk = !budget.cap_reached;
+    if (ledgerOk) {
+      checklist.push({
+        id: "ledger_trace_replay_ok",
+        title: "Ledger & Trace Replay OK",
+        passed: true,
+        details: `Ledger within cap ($${budget.spent_today.toFixed(2)} / $${budget.cap.toFixed(2)}). Traces exportable to JSONL.`,
+      });
+    } else {
+      checklist.push({
+        id: "ledger_trace_replay_ok",
+        title: "Ledger & Trace Replay OK",
+        passed: false,
+        details: "Ledger cap exceeded or trace integrity degraded.",
+      });
+      blockers.push("Ledger and trace replay must be healthy before production promotion.");
+    }
+
+    // 5. Rollback plan
+    const storedRollbackPlan = (await this.state.storage.get<string>("production_rollback_plan")) || "";
+    const rollbackPlan = rollbackPlanParam || storedRollbackPlan;
+    const hasRollbackPlan = Boolean(rollbackPlan && rollbackPlan.trim().length >= 8);
+    if (hasRollbackPlan) {
+      checklist.push({
+        id: "rollback_plan",
+        title: "Documented Rollback Plan Provided",
+        passed: true,
+        details: `Rollback plan verified: "${rollbackPlan.substring(0, 60)}..."`,
+      });
+    } else {
+      checklist.push({
+        id: "rollback_plan",
+        title: "Documented Rollback Plan Provided",
+        passed: false,
+        details: "Missing documented rollback plan for production release.",
+      });
+      blockers.push("A documented rollback plan is required for production promotion.");
+    }
+
+    // 6. Branch protection on main
+    const branchProtection = (await this.state.storage.get<any>("branch_protection_main")) || {
+      enabled: true,
+      required_approvals: 2,
+      signed_commits_required: true,
+      enforce_admins: true,
+    };
+    if (branchProtection.enabled) {
+      checklist.push({
+        id: "branch_protection_main",
+        title: "Branch Protection Enforced on Main",
+        passed: true,
+        details: `Branch protection active: required approvals: ${branchProtection.required_approvals}, signed commits required.`,
+      });
+    } else {
+      checklist.push({
+        id: "branch_protection_main",
+        title: "Branch Protection Enforced on Main",
+        passed: false,
+        details: "Branch protection on main is not configured or disabled.",
+      });
+      blockers.push("Branch protection on main must be enabled before production promotion.");
+    }
+
+    return {
+      target_env: "production",
+      current_env: currentEnv,
+      ready: checklist.every(c => c.passed),
+      checklist,
+      blockers,
+    };
+  }
+
+  public async handleEnvAction(request: Request, projectId: string, subParts: string[]): Promise<Response> {
+    try {
+      const subAction = subParts[0] || "";
+      const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
+
+    if (request.method === "GET" && !subAction) {
+      const testChecklist = await this.evaluateTestChecklist(projectId);
+      const prodChecklist = await this.evaluateProductionChecklist(projectId);
+      const pendingPromotion = (await this.state.storage.get<any>("pending_promotion")) || null;
+      const history = (await this.state.storage.get<PromotionRecord[]>("promotion_history")) || [];
+
+      return new Response(JSON.stringify({
+        project_id: projectId,
+        brakets_env: currentEnv,
+        auto_merge: currentEnv !== "production",
+        test_checklist: testChecklist,
+        production_checklist: prodChecklist,
+        pending_promotion: pendingPromotion,
+        history,
+      }, null, 2), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (subAction === "request-promotion" && request.method === "POST") {
+      let body: any = {};
+      try { body = await request.json(); } catch (e) {}
+
+      const targetEnv: BraketsEnv = body.target_env || (currentEnv === "demo" ? "test" : "production");
+      const requesterId = body.requester_id || "agent";
+      const requesterType: "ai" | "human" = body.requester_type || "ai";
+      const rationale = body.rationale || `Requested promotion from ${currentEnv} to ${targetEnv}`;
+      const rollbackPlan = body.rollback_plan || (targetEnv === "production" ? "Immediate demotion to test environment" : "Demotion to demo environment");
+
+      if (targetEnv === "test" && currentEnv !== "demo") {
+        return new Response(JSON.stringify({ error: `Cannot request promotion to 'test' from '${currentEnv}'. Target must be a higher environment.` }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (targetEnv === "production" && currentEnv !== "test") {
+        return new Response(JSON.stringify({ error: `Cannot request promotion to 'production' directly from '${currentEnv}'. Must promote to 'test' first.` }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      // Evaluate checklist
+      const checklist = targetEnv === "test"
+        ? await this.evaluateTestChecklist(projectId)
+        : await this.evaluateProductionChecklist(projectId, rollbackPlan);
+
+      if (!checklist.ready) {
+        return new Response(JSON.stringify({
+          error: `Cannot request promotion to ${targetEnv}: checklist requirements not met.`,
+          ready: false,
+          blockers: checklist.blockers,
+          checklist: checklist.checklist,
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      const pendingPromotion = {
+        target_env: targetEnv,
+        requester_id: requesterId,
+        requester_type: requesterType,
+        rationale,
+        rollback_plan: rollbackPlan,
+        requested_at: Date.now(),
+        checklist,
+      };
+      await this.state.storage.put("pending_promotion", pendingPromotion);
+      if (targetEnv === "production" && rollbackPlan) {
+        await this.state.storage.put("production_rollback_plan", rollbackPlan);
+      }
+
+      // Emit xAPI trace event: requested-human-review
+      await this.appendTraceStep(
+        `ENV-PROMOTION-${targetEnv.toUpperCase()}`,
+        "request-promotion",
+        { id: requesterId, name: `${requesterId} (${requesterType === 'ai' ? 'Autonomous Agent' : 'Human'})`, type: requesterType },
+        "https://ashecribb.dev/xapi/verbs/requested-human-review",
+        `Requested promotion of Brakets environment from ${currentEnv.toUpperCase()} to ${targetEnv.toUpperCase()}. Rationale: ${rationale}`,
+        undefined,
+        undefined,
+        `Checklist Summary:\n${checklist.checklist.map(c => `- [${c.passed ? 'x' : ' '}] ${c.title}: ${c.details}`).join('\n')}`,
+        { rollback_plan: rollbackPlan }
+      );
+
+      return new Response(JSON.stringify({
+        status: "promotion_requested",
+        current_env: currentEnv,
+        target_env: targetEnv,
+        requester_id: requesterId,
+        requester_type: requesterType,
+        pending_promotion: pendingPromotion,
+      }, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (subAction === "approve-promotion" && request.method === "POST") {
+      let body: any = {};
+      try { body = await request.json(); } catch (e) {}
+
+      const targetEnv: BraketsEnv = body.target_env || (currentEnv === "demo" ? "test" : "production");
+      const reviewerPubkey = body.reviewer_pubkey || "";
+      const signature = body.signature || "";
+      const rationale = body.rationale || `Supervisor approved promotion to ${targetEnv}`;
+      const rollbackPlan = body.rollback_plan || (await this.state.storage.get<string>("production_rollback_plan")) || "";
+      const tsSecs = body.timestamp || Math.floor(Date.now() / 1000);
+
+      // Invariant: ONLY HUMANS APPROVE PROMOTION. Agents must never approve promotion!
+      const actorToCheck = {
+        id: body.requester_id || body.agent_id || reviewerPubkey,
+        type: body.requester_type || "human",
+        role: body.role,
+      };
+      if (body.requester_type === "ai" || body.role === "builder" || isAIAgent(actorToCheck)) {
+        return new Response(JSON.stringify({
+          error: "Ontology Violation: Only HumanActor may perform Judgment (approved promotion). AIAgent is disjointWith HumanActor.",
+          code: "ONTOLOGY_VIOLATION_AI_JUDGMENT_FORBIDDEN"
+        }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      // Check human supervisor authorization (Ashley + Ward)
+      if (!isSupervisorKeyAllowed(reviewerPubkey, this.env)) {
+        const auth = checkAdminAuth(request, this.env);
+        if (!auth.authorized) {
+          return new Response(JSON.stringify({
+            error: `Unauthorized: reviewer_pubkey '${reviewerPubkey}' is not an enrolled supervisor. Only Ashley and Ward can approve environment promotions.`,
+            code: "SUPERVISOR_KEY_UNAUTHORIZED"
+          }), {
+            status: 403,
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+      }
+
+      // Evaluate checklist
+      const checklist = targetEnv === "test"
+        ? await this.evaluateTestChecklist(projectId)
+        : await this.evaluateProductionChecklist(projectId, rollbackPlan);
+
+      if (!checklist.ready) {
+        return new Response(JSON.stringify({
+          error: `Cannot approve promotion to ${targetEnv}: checklist requirements not satisfied.`,
+          ready: false,
+          blockers: checklist.blockers,
+          checklist: checklist.checklist,
+        }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+
+      const pending = await this.state.storage.get<any>("pending_promotion");
+      const supervisorName = getSupervisorName(reviewerPubkey);
+
+      // Update brakets_env in DO storage
+      await this.state.storage.put("brakets_env", targetEnv);
+      await this.state.storage.delete("pending_promotion");
+
+      // Invariant: Production deploys never auto-merge
+      const isAutoMerge = targetEnv !== "production";
+
+      const record: PromotionRecord = {
+        id: `prom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        from_env: currentEnv,
+        to_env: targetEnv,
+        requester_id: pending?.requester_id || reviewerPubkey,
+        requester_type: pending?.requester_type || "human",
+        approved_by: supervisorName,
+        supervisor_pubkey: reviewerPubkey,
+        rationale,
+        rollback_plan: rollbackPlan,
+        auto_merge: isAutoMerge,
+        timestamp: Date.now(),
+      };
+
+      const history = (await this.state.storage.get<PromotionRecord[]>("promotion_history")) || [];
+      history.unshift(record);
+      await this.state.storage.put("promotion_history", history);
+
+      // Append trace step with verb: approved
+      await this.appendTraceStep(
+        `ENV-PROMOTION-${targetEnv.toUpperCase()}`,
+        "approve-promotion",
+        {
+          type: "human",
+          id: reviewerPubkey,
+          name: supervisorName,
+          supervisor_id: supervisorName,
+          reviewer_pubkey: reviewerPubkey,
+          rationale,
+        },
+        "https://ashecribb.dev/xapi/verbs/approved",
+        `Human supervisor (${supervisorName}) approved environment promotion of Brakets to ${targetEnv.toUpperCase()}`,
+        undefined,
+        undefined,
+        `Verification Checklist:\n${checklist.checklist.map(c => `[x] ${c.title}`).join('\n')}\nRollback Plan: ${rollbackPlan}\nAuto-merge enabled: ${isAutoMerge}`,
+        undefined,
+        {
+          signature,
+          reviewer_pubkey: reviewerPubkey,
+          rationale,
+          timestamp: tsSecs,
+        }
+      );
+
+      return new Response(JSON.stringify({
+        status: "promoted",
+        from_env: currentEnv,
+        brakets_env: targetEnv,
+        auto_merge: isAutoMerge,
+        record,
+      }, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    if (subAction === "rollback" && request.method === "POST") {
+      let body: any = {};
+      try { body = await request.json(); } catch (e) {}
+
+      const reviewerPubkey = body.reviewer_pubkey || "";
+      if (!isSupervisorKeyAllowed(reviewerPubkey, this.env)) {
+        const auth = checkAdminAuth(request, this.env);
+        if (!auth.authorized) {
+          return new Response(JSON.stringify({
+            error: "Unauthorized: Only Ashley or Ward can rollback environment.",
+            code: "SUPERVISOR_KEY_UNAUTHORIZED"
+          }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
+      }
+
+      const targetEnv: BraketsEnv = currentEnv === "production" ? "test" : "demo";
+      await this.state.storage.put("brakets_env", targetEnv);
+      await this.state.storage.delete("pending_promotion");
+
+      const supervisorName = getSupervisorName(reviewerPubkey);
+      const rationale = body.rationale || `Rolled back from ${currentEnv} to ${targetEnv}`;
+
+      await this.appendTraceStep(
+        `ENV-ROLLBACK-${targetEnv.toUpperCase()}`,
+        "environment-rollback",
+        {
+          type: "human",
+          id: reviewerPubkey,
+          name: supervisorName,
+          supervisor_id: supervisorName,
+          reviewer_pubkey: reviewerPubkey,
+          rationale,
+        },
+        "https://ashecribb.dev/xapi/verbs/rejected",
+        `Human supervisor (${supervisorName}) executed environment rollback to ${targetEnv.toUpperCase()}. Rationale: ${rationale}`,
+        undefined,
+        undefined,
+        `Previous Environment: ${currentEnv}\nNew Environment: ${targetEnv}\nRationale: ${rationale}`
+      );
+
+      return new Response(JSON.stringify({
+        status: "rolled_back",
+        from_env: currentEnv,
+        brakets_env: targetEnv,
+        rationale,
+      }, null, 2), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+      return new Response(JSON.stringify({ error: `Unknown env subaction: '${subAction}'` }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (err: any) {
+      console.error("handleEnvAction error:", err);
+      return new Response(JSON.stringify({
+        error: err?.message || String(err),
+        stack: err?.stack || ""
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
   }
 }

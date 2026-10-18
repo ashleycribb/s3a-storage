@@ -136,6 +136,8 @@ export function isSupervisorKeyAllowed(reviewerPubkey: string | undefined, env: 
     "00a1ab125c12ea13effe9daaf336782b8f5aae8acce72af8fb7c5e668ce59850", // Ward
     "91f13001fb9d1a60b6c0dbc5343174be5a5de64bff6a157e5e3de46606ec177c", // Ashley (alt)
     "15eb471d263df56c04c7eb8720edfb21569b6e457cb4e6a8f9e7078da2ca65a4", // Ward (alt)
+    "fc8f1671afd7d1e2264d2351aae8493b0f3052b7945e505f869ccabee4f0d82e", // Ashley (web)
+    "b81765c7ae0df2446a6f1d5386df2ef02094c9f13d8d641d9992f58e1b1d7d6f", // Ward (web)
   ];
 
   const allAllowed = new Set([...allowedKeys, ...defaultSupervisors]);
@@ -145,8 +147,8 @@ export function isSupervisorKeyAllowed(reviewerPubkey: string | undefined, env: 
 export function getSupervisorName(reviewerPubkey: string | undefined): string {
   if (!reviewerPubkey) return "Human Supervisor";
   const norm = reviewerPubkey.trim().toLowerCase();
-  if (norm.startsWith("7988cfd6") || norm.startsWith("91f13001")) return "Ashley (Supervisor)";
-  if (norm.startsWith("00a1ab12") || norm.startsWith("15eb471d")) return "Ward (Supervisor)";
+  if (norm.startsWith("7988cfd6") || norm.startsWith("91f13001") || norm.startsWith("fc8f1671")) return "Ashley (Supervisor)";
+  if (norm.startsWith("00a1ab12") || norm.startsWith("15eb471d") || norm.startsWith("b81765c7")) return "Ward (Supervisor)";
   return `Supervisor (${reviewerPubkey.slice(0, 8)})`;
 }
 
