@@ -47,12 +47,12 @@ export async function callModel(
     }
   }
 
-  // Option 2: Workers AI (Coding model: Meta Llama 3.3 70B Instruct or Llama 3.1 8B Instruct)
+  // Option 2: Workers AI (Primary: Qwen2.5-Coder 32B Instruct, Fallback: Llama 3.3 70B Instruct)
   if (!env.AI) {
     throw new Error("Neither Workers AI (env.AI) nor OLLAMA_BASE_URL is available in environment");
   }
 
-  const model = options?.model || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const model = options?.model || "@cf/qwen/qwen2.5-coder-32b-instruct";
   try {
     const aiRes: any = await env.AI.run(model, {
       messages: normMessages.map(m => ({ role: m.role, content: m.content })),
@@ -61,9 +61,9 @@ export async function callModel(
     });
     return aiRes.response || aiRes.content || (typeof aiRes === "string" ? aiRes : JSON.stringify(aiRes));
   } catch (err: any) {
-    // Graceful fallback to Qwen2.5-Coder or Llama-3.1-8B-FP8
+    // Graceful fallback to Llama-3.3-70B-FP8 or Llama-3.1-8B-FP8
     try {
-      const fallbackRes: any = await env.AI.run("@cf/qwen/qwen2.5-coder-32b-instruct", {
+      const fallbackRes: any = await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
         messages: normMessages.map(m => ({ role: m.role, content: m.content })),
         temperature: options?.temperature ?? 0.2,
         max_tokens: options?.max_tokens ?? 2048,

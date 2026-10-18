@@ -15,6 +15,7 @@ export interface Env {
   CUSTOM_MODEL_URL?: string;
   ADMIN_SECRET?: string;
   SUPERVISOR_PUBKEYS?: string;
+  GATE_AGENT_ED25519_SECRET?: string;
 }
 
 export type OperationStatus = "accepted" | "running" | "done" | "failed";
@@ -249,6 +250,8 @@ export interface ChangeRequest {
   proposed_page_design?: string;
   proposed_logic_design?: string;
   journey_step?: string;
+  screenshot_url?: string;
+  evidence_urls?: string[];
 }
 
 // ----------------------------------------------------------------------------

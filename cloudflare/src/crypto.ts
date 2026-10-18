@@ -149,3 +149,26 @@ export function getSupervisorName(reviewerPubkey: string | undefined): string {
   if (norm.startsWith("00a1ab12") || norm.startsWith("15eb471d")) return "Ward (Supervisor)";
   return `Supervisor (${reviewerPubkey.slice(0, 8)})`;
 }
+
+export async function generateEd25519Keypair(): Promise<{ pubkey: string; privHex: string }> {
+  const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  const pubRaw = (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer;
+  const privPkcs8 = (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer;
+  return {
+    pubkey: bytesToHex(new Uint8Array(pubRaw)),
+    privHex: bytesToHex(new Uint8Array(privPkcs8)),
+  };
+}
+
+export async function signWithEd25519(privateKeyPkcs8Hex: string, data: Uint8Array): Promise<string> {
+  const privKey = await crypto.subtle.importKey(
+    "pkcs8",
+    hexToBytes(privateKeyPkcs8Hex),
+    { name: "Ed25519" },
+    false,
+    ["sign"]
+  );
+  const sigBuf = await crypto.subtle.sign({ name: "Ed25519" }, privKey, data);
+  return bytesToHex(new Uint8Array(sigBuf));
+}
+
