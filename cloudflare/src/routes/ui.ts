@@ -5,7 +5,7 @@ import type { Env, TaskItem, ChangeRequest, RegisteredAgent, BudgetStatus, Bread
 import { renderShell } from "../ui/shell";
 import { renderCodePage } from "../ui/pages/code";
 import { renderIssuesPage, renderIssueDetailPage } from "../ui/pages/issues";
-import { renderPullsPage, renderPullDetailPage } from "../ui/pages/pulls";
+import { renderPullsPage, renderPullDetailPage, isEligibleForNeedsJudgment } from "../ui/pages/pulls";
 import { renderAgentsPage } from "../ui/pages/agents";
 import { renderActionsPage, renderActionDetailPage } from "../ui/pages/actions";
 import { renderInsightsPage } from "../ui/pages/insights";
@@ -295,7 +295,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
 
   const counts = {
     issues: tasks.filter(t => t.status !== "merged").length,
-    pulls: crs.filter(c => c.status === "pending_review" || c.status === "changes_requested").length,
+    pulls: crs.filter(c => isEligibleForNeedsJudgment(c, crs)).length,
     agents: registeredAgentsList.length,
   };
   const isPaused = controlData.paused ?? false;

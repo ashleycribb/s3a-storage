@@ -30,6 +30,39 @@ function formatTimeWaiting(createdMs?: number, resolvedMs?: number): string {
   return "waiting < 1m";
 }
 
+export function isEligibleForNeedsJudgment(c: ChangeRequest, allCRs: ChangeRequest[]): boolean {
+  if (c.status !== "pending_review" && c.status !== "changes_requested") return false;
+
+  // 1. Never list a CR if checks failed (build / QA)
+  const testExitCode = c.test_report?.test_exit_code ?? c.test_report?.exit_code;
+  const buildFailed = c.build_failed === true || (c.test_report?.passed === false) || (testExitCode !== undefined && testExitCode !== 0);
+  if (buildFailed) return false;
+
+  const qaFailed = c.qa_status === "failed" || (c.qa_reports && c.qa_reports.some(q => q.status === "failed"));
+  if (qaFailed) return false;
+
+  // 2. Commit sha must be fresh (never reused)
+  const currentSha = (c.commit_sha || c.commit_id || "").trim();
+  if (!currentSha || currentSha === "not run") return false;
+
+  for (const other of allCRs) {
+    if (other.id === c.id) continue;
+    const otherSha = (other.commit_sha || other.commit_id || "").trim();
+    if (!otherSha || otherSha === "not run") continue;
+    if (otherSha.toLowerCase() === currentSha.toLowerCase()) {
+      if (other.task_id !== c.task_id || (other.created_at || 0) < (c.created_at || 0)) {
+        return false;
+      }
+    }
+  }
+
+  // 3. Must have a real diff
+  const diff = (c.diff || "").trim();
+  if (!diff || diff.length === 0 || diff.includes("(No file changes diff attached)")) return false;
+
+  return true;
+}
+
 export function renderPullsPage(options: PullsPageOptions): string {
   const { projectId, changeRequests = [], filter } = options;
 
@@ -42,17 +75,13 @@ export function renderPullsPage(options: PullsPageOptions): string {
   else activeTab = "needs-judgment";
 
   // Group definitions
-  const needsJudgmentCRs = changeRequests.filter(c =>
-    c.status === "pending_review" || c.status === "changes_requested"
-  );
-  const openCRs = changeRequests.filter(c =>
-    c.status === "pending_review" || c.status === "changes_requested"
-  );
+  const needsJudgmentCRs = changeRequests.filter(c => isEligibleForNeedsJudgment(c, changeRequests));
+  const openCRs = changeRequests.filter(c => isEligibleForNeedsJudgment(c, changeRequests));
   const mergedCRs = changeRequests.filter(c =>
     c.status === "auto_merged" || c.status === "approved"
   );
   const closedCRs = changeRequests.filter(c =>
-    c.status === "rejected" || c.status === "failed_verification"
+    c.status === "rejected" || c.status === "failed_verification" || (!isEligibleForNeedsJudgment(c, changeRequests) && c.status !== "auto_merged" && c.status !== "approved")
   );
 
   const needsJudgmentCount = needsJudgmentCRs.length;
@@ -225,9 +254,11 @@ export function renderPullsPage(options: PullsPageOptions): string {
                           🤖 agent: <strong>${cr.agent_id || "builder"}</strong>
                         </span>
 
-                        <!-- Requirement 2: Risk (high = needs second human) -->
+                        <!-- Requirement 2: Risk (high = needs second human: Ashley + ward) -->
                         ${isHighRisk
-                          ? '<span class="gh-badge gh-badge-danger" style="font-weight: 600;">⚠️ Risk: High (needs second human)</span>'
+                          ? (cr.first_human_approval
+                            ? `<span class="gh-badge gh-badge-yellow" style="font-weight: 600;">⚠️ Risk: High (1/2 signed by ${cr.first_human_approval.supervisor_name} &bull; needs second human: Ashley + ward)</span>`
+                            : `<span class="gh-badge gh-badge-danger" style="font-weight: 600;">⚠️ Risk: High (needs second human: Ashley + ward)</span>`)
                           : '<span class="gh-badge gh-badge-muted" style="font-size: 11.5px;">🛡️ Risk: Low</span>'}
 
                         ${(cr.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
@@ -333,9 +364,11 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
 
   const isApproved = cr.status === "approved" || cr.status === "auto_merged";
   const isRejected = cr.status === "rejected";
-  const isHighRisk = cr.risk_level === "high" || cr.requires_human;
+  const isHighRisk = cr.risk_level === "high" || cr.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((cr.title || "") + " " + (cr.touched_files || []).join(" ")) || (cr.tags || []).some(t => t === 'needs-page' || t === 'needs-logic');
   const hasLogs = !!(cr.build_log || (cr.test_report && cr.test_report.output));
   const hasQa = !!(cr.qa_reports && cr.qa_reports.length > 0);
+  const hasAshleySigned = !!((cr.first_human_approval?.supervisor_name?.includes("Ashley")) || (cr.second_human_approval?.supervisor_name?.includes("Ashley")));
+  const hasWardSigned = !!((cr.first_human_approval?.supervisor_name?.includes("Ward")) || (cr.second_human_approval?.supervisor_name?.includes("Ward")));
 
   return `
     <div style="margin-bottom: 1.5rem;">
@@ -517,6 +550,19 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
               Humans make all final judgments. Approvals are cryptographically signed using your browser's Ed25519 WebCrypto key and verified against <code>SUPERVISOR_PUBKEYS</code>.
             </p>
 
+            ${isHighRisk ? `
+              <div style="background: rgba(218,54,51,0.12); border: 1px solid rgba(248,81,73,0.4); border-radius: 6px; padding: 0.75rem; margin-bottom: 0.85rem; font-size: 12px;">
+                <strong style="color: var(--gh-red-text); display: block; margin-bottom: 0.35rem;">⚠️ High Risk (needs second human: Ashley + ward)</strong>
+                <span style="color: var(--gh-text-muted); font-size: 11.5px; line-height: 1.4; display: block; margin-bottom: 0.5rem;">
+                  High-risk changes touch critical flows and require independent cryptographic signatures from two human supervisors before merging into baseline.
+                </span>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                  <span class="gh-badge ${hasAshleySigned ? 'gh-badge-success' : 'gh-badge-yellow'}">Ashley: ${hasAshleySigned ? '✓ Signed' : '⏳ Pending'}</span>
+                  <span class="gh-badge ${hasWardSigned ? 'gh-badge-success' : 'gh-badge-yellow'}">Ward: ${hasWardSigned ? '✓ Signed' : '⏳ Pending'}</span>
+                </div>
+              </div>
+            ` : ''}
+
             ${(cr.tags || []).some(t => t === 'needs-page' || t === 'needs-logic') ? `
               <div style="background: rgba(137,87,229,0.15); border: 1px solid rgba(137,87,229,0.4); border-radius: 6px; padding: 0.6rem; margin-bottom: 0.85rem; font-size: 12px; color: var(--gh-purple-text);">
                 <strong>🎨 Design Gate Active:</strong> Proposed page/logic design requires explicit approval by <strong>Ashley</strong> or <strong>Ward</strong> (Ed25519 signature required).
@@ -526,7 +572,7 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
             ${cr.status === "failed_verification" ? `
               <div style="background: var(--gh-red-bg); border: 1px solid rgba(248,81,73,0.4); border-radius: 6px; padding: 0.85rem; text-align: center;">
                 <div style="color: var(--gh-red-text); font-weight: 600; font-size: 13px; margin-bottom: 0.35rem;">🚫 Blocked: Failed Verification</div>
-                <div style="font-size: 12px; color: var(--gh-text-muted); font-style: italic;">"${cr.human_rationale || 'Verification failed: non-zero test exit code or reused commit SHA.'}"</div>
+                <div style="font-size: 12px; color: var(--gh-text-muted); font-style: italic;">"${cr.human_rationale || 'Verification failed: non-zero test exit code, reused commit SHA, or failed QA checks.'}"</div>
               </div>
             ` : isApproved ? `
               <div style="background: var(--gh-purple-bg); border: 1px solid rgba(163,113,247,0.4); border-radius: 6px; padding: 0.85rem; text-align: center;">
@@ -546,7 +592,7 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
 
               <div style="display: flex; flex-direction: column; gap: 0.5rem;">
                 <button id="btn-approve-cr" class="gh-btn gh-btn-primary" style="justify-content: center;" onclick="approveCR('${cr.id}')">
-                  ✓ Sign &amp; Approve (Ed25519)
+                  ${isHighRisk && cr.first_human_approval ? '✓ Sign Second Approval (Ed25519)' : '✓ Sign &amp; Approve (Ed25519)'}
                 </button>
                 <button id="btn-request-changes" class="gh-btn gh-btn-warning" style="justify-content: center;" onclick="requestChanges('${cr.id}')">
                   📝 Request Changes
@@ -604,7 +650,12 @@ export function renderPullDetailPage(options: PullDetailPageOptions): string {
             })
           });
           if (res.ok) {
-            alert("Change request approved with verified Ed25519 human signature and merged into baseline!");
+            const resData = await res.json().catch(() => ({}));
+            if (resData.status === "partial_approval") {
+              alert("First supervisor signature recorded (" + (resData.change_request?.first_human_approval?.supervisor_name || 'Supervisor') + ")!\\n\\nHigh-risk change requests require a second human signature (Ashley + Ward) before merging into baseline.");
+            } else {
+              alert("Change request approved with verified Ed25519 human signature and merged into baseline!");
+            }
             location.reload();
           } else if (res.status === 401) {
             if (btn) { btn.disabled = false; btn.textContent = '✓ Sign & Approve (Ed25519)'; }

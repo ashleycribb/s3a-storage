@@ -1273,6 +1273,15 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       await this.state.storage.put("cr:CR-283-17jw", cr283);
     }
 
+    // Remediation: Clean queue - move CR-FINDING-CREATEERRORS-8-cui5 to failed_verification
+    const crCreateErrors = await this.state.storage.get<ChangeRequest>("cr:CR-FINDING-CREATEERRORS-8-cui5");
+    if (crCreateErrors && crCreateErrors.status !== "failed_verification") {
+      crCreateErrors.status = "failed_verification";
+      crCreateErrors.resolved_at = crCreateErrors.resolved_at || Date.now();
+      crCreateErrors.human_rationale = "Failed Verification: build checks failed (exit code 254) and commit_sha 3df6448db2 is reused from another task.";
+      await this.state.storage.put("cr:CR-FINDING-CREATEERRORS-8-cui5", crCreateErrors);
+    }
+
     if (tasks && tasks.length > 0) {
       const task283 = tasks.find(t => t.id === "TASK-283");
       if (task283 && (task283.status === "merged" || task283.change_request_id === "CR-283-17jw" || task283.files_allowed.length > 0)) {
@@ -1284,6 +1293,15 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
           task283.claimed_by = undefined;
           task283.claimed_at = undefined;
         }
+        await this.state.storage.put("brakets_tasks", tasks);
+      }
+
+      const taskCreateErrors = tasks.find(t => t.id === "TASK-FINDING-CREATEERRORS-8");
+      if (taskCreateErrors && (taskCreateErrors.status === "in_review" || taskCreateErrors.change_request_id === "CR-FINDING-CREATEERRORS-8-cui5")) {
+        taskCreateErrors.status = "open";
+        taskCreateErrors.change_request_id = undefined;
+        taskCreateErrors.claimed_by = undefined;
+        taskCreateErrors.claimed_at = undefined;
         await this.state.storage.put("brakets_tasks", tasks);
       }
     }
@@ -1458,6 +1476,127 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
   }
 
 
+  private verifyCRQuality(cr: ChangeRequest, allCrs: ChangeRequest[]): { valid: boolean; failureReason?: string } {
+    // 1. Check build
+    const testExitCode = cr.test_report?.test_exit_code ?? cr.test_report?.exit_code;
+    const buildFailed = cr.build_failed === true || (cr.test_report?.passed === false) || (testExitCode !== undefined && testExitCode !== 0);
+    if (buildFailed) {
+      return {
+        valid: false,
+        failureReason: `Build checks failed: test_exit_code is ${testExitCode ?? 'non-zero'} (passed: ${cr.test_report?.passed})`,
+      };
+    }
+
+    // 2. Check QA
+    const qaFailed = cr.qa_status === "failed" || (cr.qa_reports && cr.qa_reports.some(q => q.status === "failed"));
+    if (qaFailed) {
+      return {
+        valid: false,
+        failureReason: "QA checks failed: Playwright journey reported failure",
+      };
+    }
+
+    // 3. Check commit_sha reuse
+    const currentSha = (cr.commit_sha || cr.commit_id || "").trim();
+    if (!currentSha || currentSha === "not run") {
+      return {
+        valid: false,
+        failureReason: "Commit SHA missing or not run",
+      };
+    }
+
+    for (const other of allCrs) {
+      if (other.id === cr.id) continue;
+      const otherSha = (other.commit_sha || other.commit_id || "").trim();
+      if (!otherSha || otherSha === "not run") continue;
+
+      if (otherSha.toLowerCase() === currentSha.toLowerCase()) {
+        if (other.task_id !== cr.task_id || (other.created_at || 0) < (cr.created_at || 0)) {
+          return {
+            valid: false,
+            failureReason: `commit_sha ${currentSha.slice(0, 10)} is reused from task ${other.task_id} (#${other.id})`,
+          };
+        }
+      }
+    }
+
+    // 4. Real diff required
+    const diff = (cr.diff || "").trim();
+    if (!diff || diff.length === 0 || diff.includes("(No file changes diff attached)")) {
+      return {
+        valid: false,
+        failureReason: "No real file changes diff attached",
+      };
+    }
+
+    return { valid: true };
+  }
+
+  private async sanitizeAndVerifyCRs(projectId?: string): Promise<ChangeRequest[]> {
+    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
+    const demoTaskIds = new Set(["TASK-101", "TASK-102", "TASK-103", "TASK-104"]);
+    const allCrs: ChangeRequest[] = [];
+
+    for (const [key, cr] of crMap.entries()) {
+      if (demoTaskIds.has(cr.task_id) || key.includes("101") || key.includes("102") || key.includes("103") || key.includes("104")) {
+        await this.state.storage.delete(key);
+      } else {
+        allCrs.push(cr);
+      }
+    }
+
+    let tasksUpdated = false;
+    let tasks: TaskItem[] | null = null;
+
+    for (const cr of allCrs) {
+      const isTargetSpecific = cr.id === "CR-FINDING-CREATEERRORS-8-cui5";
+      if (cr.status === "pending_review" || cr.status === "changes_requested" || isTargetSpecific) {
+        const quality = this.verifyCRQuality(cr, allCrs);
+        if (!quality.valid || isTargetSpecific) {
+          const failureReason = isTargetSpecific && quality.valid
+            ? "Build checks failed (exit code 254) and commit_sha is reused."
+            : quality.failureReason || "Checks failed or commit_sha reused.";
+
+          cr.status = "failed_verification";
+          cr.human_rationale = `Failed Verification: ${failureReason}`;
+          cr.resolved_at = cr.resolved_at || Date.now();
+          await this.state.storage.put(`cr:${cr.id}`, cr);
+
+          if (!tasks) tasks = await this.getOrInitTasks();
+          const task = tasks.find(t => t.id === cr.task_id);
+          if (task && task.status === "in_review" && task.change_request_id === cr.id) {
+            task.status = "open";
+            task.change_request_id = undefined;
+            task.claimed_by = undefined;
+            task.claimed_at = undefined;
+            tasksUpdated = true;
+          }
+
+          try {
+            await this.appendTraceStep(
+              cr.task_id,
+              "auto-failed-verification",
+              { id: "verification-engine", name: "Automatic Verification Barrier", type: "ai", role: "qa" },
+              "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+              `Automatically moved to Failed Verification: ${failureReason}`,
+              undefined,
+              undefined,
+              failureReason
+            );
+          } catch (e) {
+            console.warn(`[Verification Trace] Failed to log step for ${cr.task_id}:`, e);
+          }
+        }
+      }
+    }
+
+    if (tasksUpdated && tasks) {
+      await this.state.storage.put("brakets_tasks", tasks);
+    }
+
+    return allCrs;
+  }
+
   private async handleSubmitCR(request: Request, projectId: string): Promise<Response> {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
     let body: any = {};
@@ -1467,6 +1606,40 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
 
     const cr: ChangeRequest = body.change_request || body;
     if (!cr || !cr.id) return new Response(JSON.stringify({ error: "Missing change_request" }), { status: 400 });
+
+    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
+    const existingCrs = Array.from(crMap.values());
+    const quality = this.verifyCRQuality(cr, existingCrs);
+    if (!quality.valid) {
+      cr.status = "failed_verification";
+      cr.human_rationale = `Failed Verification: ${quality.failureReason}`;
+      cr.resolved_at = Date.now();
+      await this.state.storage.put(`cr:${cr.id}`, cr);
+
+      try {
+        await this.appendTraceStep(
+          cr.task_id,
+          "verification-blocked",
+          { id: "verification-engine", name: "Verification Barrier", type: "ai", role: "qa" },
+          "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+          `Submission blocked: ${quality.failureReason}`,
+          undefined,
+          undefined,
+          quality.failureReason
+        );
+      } catch (e) {
+        console.warn(`[Verification Trace] Failed to log step for ${cr.task_id}:`, e);
+      }
+
+      return new Response(JSON.stringify({
+        status: "failed_verification",
+        error: `Change Request failed verification automatically: ${quality.failureReason}`,
+        change_request: cr,
+      }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     const tasks = await this.getOrInitTasks();
     const task = tasks.find(t => t.id === cr.task_id);
@@ -1528,17 +1701,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
   }
 
   private async handleListCRs(projectId: string): Promise<Response> {
-    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
-    const demoTaskIds = new Set(["TASK-101", "TASK-102", "TASK-103", "TASK-104"]);
-    const change_requests: ChangeRequest[] = [];
-    for (const [key, cr] of crMap.entries()) {
-      if (demoTaskIds.has(cr.task_id) || key.includes("101") || key.includes("102") || key.includes("103") || key.includes("104")) {
-        await this.state.storage.delete(key);
-      } else {
-        change_requests.push(cr);
-      }
-    }
-    change_requests.reverse();
+    const change_requests = (await this.sanitizeAndVerifyCRs(projectId)).reverse();
     return new Response(JSON.stringify({ project_id: projectId, change_requests }, null, 2), {
       status: 200,
       headers: { "Content-Type": "application/json", "Cache-Control": "no-cache" },
@@ -1671,9 +1834,82 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
     // Auto-registration REMOVED: reviewer_pubkey must be in SUPERVISOR_PUBKEYS secret
 
     const supervisorName = getSupervisorName(reviewer_pubkey);
+    const isHighRisk = cr.risk_level === "high" || cr.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((cr.title || "") + " " + (cr.touched_files || []).join(" ")) || (cr.tags || []).some(t => t === 'needs-page' || t === 'needs-logic');
+
+    if (isHighRisk) {
+      if (!cr.first_human_approval) {
+        // Record first human approval
+        cr.first_human_approval = {
+          reviewer_pubkey: reviewer_pubkey || "",
+          supervisor_name: supervisorName,
+          rationale: rationale || `First signature recorded by ${supervisorName}`,
+          signature,
+          timestamp: tsSecs,
+        };
+        cr.status = "pending_review";
+        cr.human_rationale = `1 of 2 signatures recorded (${supervisorName}). Second human supervisor (Ashley + Ward) required to merge.`;
+        await this.state.storage.put(`cr:${crId}`, cr);
+
+        await this.appendTraceStep(
+          cr.task_id,
+          "human-first-approval",
+          {
+            type: "human",
+            id: reviewer_pubkey,
+            name: supervisorName,
+            supervisor_id: supervisorName,
+            reviewer_pubkey: reviewer_pubkey || "",
+            rationale: cr.human_rationale,
+          },
+          "https://ashecribb.dev/xapi/verbs/approved",
+          `First approval recorded by ${supervisorName}. Awaiting second human supervisor.`,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { signature, reviewer_pubkey, rationale, timestamp: tsSecs, step: 1 }
+        );
+
+        return new Response(JSON.stringify({
+          status: "partial_approval",
+          message: `First signature recorded by ${supervisorName}. High-risk change requests require a second human supervisor (Ashley + Ward) to approve.`,
+          change_request: cr,
+          task_id: cr.task_id,
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      } else {
+        // Second signature validation
+        const firstPubkey = (cr.first_human_approval.reviewer_pubkey || "").toLowerCase();
+        const firstSupervisor = (cr.first_human_approval.supervisor_name || "").toLowerCase();
+        const currentPubkey = (reviewer_pubkey || "").toLowerCase();
+        const currentSupervisor = (supervisorName || "").toLowerCase();
+
+        if (currentPubkey === firstPubkey ||
+            (firstSupervisor.includes("ashley") && currentSupervisor.includes("ashley")) ||
+            (firstSupervisor.includes("ward") && currentSupervisor.includes("ward"))) {
+          return new Response(JSON.stringify({
+            error: `High-risk change requests require two distinct human supervisors (Ashley + Ward). ${cr.first_human_approval.supervisor_name} has already signed. The second signature must be from the other supervisor.`,
+            first_signer: cr.first_human_approval.supervisor_name,
+          }), { status: 400, headers: { "Content-Type": "application/json" } });
+        }
+
+        cr.second_human_approval = {
+          reviewer_pubkey: reviewer_pubkey || "",
+          supervisor_name: supervisorName,
+          rationale: rationale || `Second signature recorded by ${supervisorName}`,
+          signature,
+          timestamp: tsSecs,
+        };
+      }
+    }
+
     cr.status = "approved";
-    cr.human_rationale = rationale || `Design and code approved by ${supervisorName}`;
-    cr.reviewer_pubkey = reviewer_pubkey || "";
+    cr.human_rationale = isHighRisk && cr.first_human_approval
+      ? `Design and code approved by Ashley + Ward (dual signed: ${cr.first_human_approval.supervisor_name} & ${supervisorName})`
+      : rationale || `Design and code approved by ${supervisorName}`;
+    cr.reviewer_pubkey = cr.first_human_approval ? `${cr.first_human_approval.reviewer_pubkey}, ${reviewer_pubkey}` : (reviewer_pubkey || "");
     cr.resolved_at = Date.now();
     await this.state.storage.put(`cr:${crId}`, cr);
 
@@ -2002,6 +2238,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
   }
 
   private async handleGetCR(crId: string, projectId: string): Promise<Response> {
+    await this.sanitizeAndVerifyCRs(projectId);
     const cr = await this.state.storage.get<ChangeRequest>(`cr:${crId}`);
     if (!cr) return new Response(JSON.stringify({ error: "Change request not found" }), { status: 404 });
     return new Response(JSON.stringify({ project_id: projectId, change_request: cr }, null, 2), {
@@ -2612,7 +2849,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
         }
         return new Response("Not Found", { status: 404 });
       case "change-requests":
-        if (pathParts[3] === "submit") {
+        if (pathParts[3] === "submit" || (request.method === "POST" && !pathParts[3])) {
           return this.handleSubmitCR(request, projectId);
         }
         if (pathParts[4] === "approve") {
@@ -3034,6 +3271,48 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       task: commit?.message || "Submitting signed commit",
     });
 
+    // Invariant: Production deploys never auto-merge!
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
+    if (currentEnv === "production") {
+      const conflictIdCreated = `conf_prod_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const conflict: StoredConflict = {
+        conflict_id: conflictIdCreated,
+        record_id: commit?.commit_id || `prod_${Date.now()}`,
+        tile_type: 20,
+        type_name: "Production Deploy",
+        version_a: "Production Baseline (Locked)",
+        version_b: commit?.message || "Incoming Push",
+        author_a: "Supervisor (Ashley/Ward)",
+        author_b: agent_addr,
+        target_version: "Production Baseline (Locked)",
+        source_version: commit?.message || "Incoming Push",
+        target_author: "Supervisor (Ashley/Ward)",
+        source_author: agent_addr,
+        created_timestamp: now,
+        timestamp: now,
+        resolved: false,
+      };
+      await this.state.storage.put(`conflict:${conflictIdCreated}`, conflict);
+      let humanCount = (await this.state.storage.get<number>("sent_to_human")) || 0;
+      await this.state.storage.put("sent_to_human", humanCount + 1);
+
+      this.updateAgentState(pushingAgentId, {
+        status: "human",
+        task: "Production deploys never auto-merge. Held for Ashley + Ward supervisor approval.",
+      });
+
+      return new Response(JSON.stringify({
+        status: "held_for_human_review",
+        conflict_id: conflictIdCreated,
+        auto_merge: false,
+        brakets_env: "production",
+        message: "Production deploys never auto-merge. Changes held in supervisor queue for Ashley + Ward approval.",
+      }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // 1. Verify every push's Ed25519 signature in the DO with crypto.subtle
     const isSigValid = await verifyCommitSignature(commit);
     if (!isSigValid) {
@@ -3415,48 +3694,6 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
     }
 
     // 6. Merge Evaluation against Baseline (s3a-vcs rules)
-    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "demo";
-    if (currentEnv === "production") {
-      // Invariant: Production deploys never auto-merge!
-      // All pushes in production environment are held for human supervisor approval.
-      const conflictIdCreated = `conf_prod_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const conflict: StoredConflict = {
-        conflict_id: conflictIdCreated,
-        record_id: commit?.commit_id || `prod_${Date.now()}`,
-        tile_type: 20,
-        type_name: "Production Deploy",
-        version_a: "Production Baseline (Locked)",
-        version_b: commit?.message || "Incoming Push",
-        author_a: "Supervisor (Ashley/Ward)",
-        author_b: agent_addr,
-        target_version: "Production Baseline (Locked)",
-        source_version: commit?.message || "Incoming Push",
-        target_author: "Supervisor (Ashley/Ward)",
-        source_author: agent_addr,
-        created_timestamp: now,
-        timestamp: now,
-        resolved: false,
-      };
-      await this.state.storage.put(`conflict:${conflictIdCreated}`, conflict);
-      let humanCount = (await this.state.storage.get<number>("sent_to_human")) || 0;
-      await this.state.storage.put("sent_to_human", humanCount + 1);
-
-      this.updateAgentState(pushingAgentId, {
-        status: "human",
-        task: "Production deploys never auto-merge. Held for Ashley + Ward supervisor approval.",
-      });
-
-      return new Response(JSON.stringify({
-        status: "held_for_human_review",
-        conflict_id: conflictIdCreated,
-        auto_merge: false,
-        brakets_env: "production",
-        message: "Production deploys never auto-merge. Changes held in supervisor queue for Ashley + Ward approval.",
-      }), {
-        status: 202,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
 
     let hasEpistemicConflict = false;
     let conflictIdCreated = "";
@@ -3646,8 +3883,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
     }
 
     const tasks = await this.getOrInitTasks();
-    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
-    const changeRequests = Array.from(crMap.values()).reverse();
+    const changeRequests = (await this.sanitizeAndVerifyCRs(projectId)).reverse();
     const regList = await this.state.storage.list<RegisteredAgent>({ prefix: "reg_agent:" });
     const registeredAgents = Array.from(regList.values());
     const pendingCRs = changeRequests.filter(cr => cr.status === "pending_review");

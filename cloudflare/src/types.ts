@@ -253,6 +253,16 @@ export interface ChangeRequest {
   journey_step?: string;
   screenshot_url?: string;
   evidence_urls?: string[];
+  first_human_approval?: SupervisorApproval;
+  second_human_approval?: SupervisorApproval;
+}
+
+export interface SupervisorApproval {
+  reviewer_pubkey: string;
+  supervisor_name: string;
+  rationale: string;
+  signature?: string;
+  timestamp: number;
 }
 
 // ----------------------------------------------------------------------------
