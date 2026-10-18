@@ -16,12 +16,70 @@ export interface PullDetailPageOptions {
   error?: string;
 }
 
-export function renderPullsPage(options: PullsPageOptions): string {
-  const { projectId, changeRequests = [] } = options;
+function formatTimeWaiting(createdMs?: number, resolvedMs?: number): string {
+  if (!createdMs) return "waiting < 1m";
+  const endTime = resolvedMs || Date.now();
+  const diffMs = Math.max(0, endTime - createdMs);
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
 
-  const openCount = changeRequests.filter(c => c.status === "pending_review" || c.status === "changes_requested").length;
-  const mergedCount = changeRequests.filter(c => c.status === "auto_merged" || c.status === "approved").length;
-  const rejectedCount = changeRequests.filter(c => c.status === "rejected").length;
+  if (diffDays > 0) return `waiting ${diffDays}d ${diffHours % 24}h`;
+  if (diffHours > 0) return `waiting ${diffHours}h ${diffMins % 60}m`;
+  if (diffMins > 0) return `waiting ${diffMins}m`;
+  return "waiting < 1m";
+}
+
+export function renderPullsPage(options: PullsPageOptions): string {
+  const { projectId, changeRequests = [], filter } = options;
+
+  // Determine active tab: default is strictly "needs-judgment"
+  const rawTab = (filter || "").toLowerCase().trim();
+  let activeTab: "needs-judgment" | "open" | "merged" | "closed" = "needs-judgment";
+  if (rawTab === "open") activeTab = "open";
+  else if (rawTab === "merged") activeTab = "merged";
+  else if (rawTab === "closed" || rawTab === "rejected") activeTab = "closed";
+  else activeTab = "needs-judgment";
+
+  // Group definitions
+  const needsJudgmentCRs = changeRequests.filter(c =>
+    c.status === "pending_review" || c.status === "changes_requested"
+  );
+  const openCRs = changeRequests.filter(c =>
+    c.status === "pending_review" || c.status === "changes_requested"
+  );
+  const mergedCRs = changeRequests.filter(c =>
+    c.status === "auto_merged" || c.status === "approved"
+  );
+  const closedCRs = changeRequests.filter(c =>
+    c.status === "rejected"
+  );
+
+  const needsJudgmentCount = needsJudgmentCRs.length;
+  const openCount = openCRs.length;
+  const mergedCount = mergedCRs.length;
+  const closedCount = closedCRs.length;
+
+  // Filter and sort for the active tab
+  let displayedCRs: ChangeRequest[] = [];
+  if (activeTab === "needs-judgment") {
+    // Requirement 1 & 5: Merged, closed, and rejected CRs NEVER clutter the default!
+    // Requirement 3: Sort Needs-judgment by high risk first, then oldest first.
+    displayedCRs = [...needsJudgmentCRs].sort((a, b) => {
+      const aHigh = (a.risk_level === "high" || a.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((a.title || "") + " " + (a.touched_files || []).join(" "))) ? 1 : 0;
+      const bHigh = (b.risk_level === "high" || b.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((b.title || "") + " " + (b.touched_files || []).join(" "))) ? 1 : 0;
+      if (aHigh !== bHigh) {
+        return bHigh - aHigh; // High risk first (1 before 0)
+      }
+      return (a.created_at || 0) - (b.created_at || 0); // Oldest first (ascending timestamp)
+    });
+  } else if (activeTab === "open") {
+    displayedCRs = [...openCRs].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  } else if (activeTab === "merged") {
+    displayedCRs = [...mergedCRs].sort((a, b) => (b.resolved_at || b.created_at || 0) - (a.resolved_at || a.created_at || 0));
+  } else {
+    displayedCRs = [...closedCRs].sort((a, b) => (b.resolved_at || b.created_at || 0) - (a.resolved_at || a.created_at || 0));
+  }
 
   return `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap;">
@@ -39,45 +97,104 @@ export function renderPullsPage(options: PullsPageOptions): string {
       </div>
     </div>
 
+    <!-- Tabs Header with Counts -->
+    <div style="display: flex; gap: 0.5rem; align-items: center; border-bottom: 1px solid var(--gh-border); margin-bottom: 1rem; padding-bottom: 0.5rem; flex-wrap: wrap;">
+      <a href="/p/${projectId}/pulls?tab=needs-judgment"
+         class="gh-tab-btn ${activeTab === 'needs-judgment' ? 'active' : ''}"
+         style="${activeTab === 'needs-judgment' ? 'background: #21262d; color: var(--gh-yellow-text); font-weight: 600; border-color: rgba(210,153,34,0.4);' : 'color: var(--gh-text-muted);'} padding: 6px 12px; border-radius: 6px; border: 1px solid ${activeTab === 'needs-judgment' ? 'rgba(210,153,34,0.4)' : 'transparent'}; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; font-size: 13.5px;">
+        <svg height="16" viewBox="0 0 16 16" width="16" fill="currentColor"><path fill-rule="evenodd" d="M8.22 1.754a.25.25 0 00-.44 0L1.68 12.246a.25.25 0 00.22.379h12.2a.25.25 0 00.22-.379L8.22 1.754zm-1.763-.707c.659-1.234 2.427-1.234 3.086 0l6.1 11.492A1.75 1.75 0 0114.1 15.125H1.9a1.75 1.75 0 01-1.543-2.586L6.457 1.047zM9 11a1 1 0 11-2 0 1 1 0 012 0zm-.25-5.25a.75.75 0 00-1.5 0v2.5a.75.75 0 001.5 0v-2.5z"/></svg>
+        Needs judgment (${needsJudgmentCount})
+      </a>
+
+      <a href="/p/${projectId}/pulls?tab=open"
+         class="gh-tab-btn ${activeTab === 'open' ? 'active' : ''}"
+         style="${activeTab === 'open' ? 'background: #21262d; color: var(--gh-text-heading); font-weight: 600; border-color: var(--gh-border);' : 'color: var(--gh-text-muted);'} padding: 6px 12px; border-radius: 6px; border: 1px solid ${activeTab === 'open' ? 'var(--gh-border)' : 'transparent'}; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; font-size: 13.5px;">
+        <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+        Open (${openCount})
+      </a>
+
+      <a href="/p/${projectId}/pulls?tab=merged"
+         class="gh-tab-btn ${activeTab === 'merged' ? 'active' : ''}"
+         style="${activeTab === 'merged' ? 'background: #21262d; color: var(--gh-purple-text); font-weight: 600; border-color: rgba(137,87,229,0.4);' : 'color: var(--gh-text-muted);'} padding: 6px 12px; border-radius: 6px; border: 1px solid ${activeTab === 'merged' ? 'rgba(137,87,229,0.4)' : 'transparent'}; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; font-size: 13.5px;">
+        <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+        Merged (${mergedCount})
+      </a>
+
+      <a href="/p/${projectId}/pulls?tab=closed"
+         class="gh-tab-btn ${activeTab === 'closed' ? 'active' : ''}"
+         style="${activeTab === 'closed' ? 'background: #21262d; color: var(--gh-red-text); font-weight: 600; border-color: rgba(218,54,51,0.4);' : 'color: var(--gh-text-muted);'} padding: 6px 12px; border-radius: 6px; border: 1px solid ${activeTab === 'closed' ? 'rgba(218,54,51,0.4)' : 'transparent'}; text-decoration: none; display: flex; align-items: center; gap: 0.4rem; font-size: 13.5px;">
+        <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+        Closed (${closedCount})
+      </a>
+    </div>
+
     <!-- Pull Requests Card List -->
     <div class="gh-card">
-      <div class="gh-card-header" style="background: #161b22;">
-        <div style="display: flex; gap: 1rem; align-items: center; font-size: 13px;">
-          <a href="/p/${projectId}/pulls" style="font-weight: 600; color: var(--gh-text-heading); display: flex; align-items: center; gap: 0.35rem;">
-            <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-green-text)"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
-            ${openCount} Open
-          </a>
-          <span style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.35rem;">
-            <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
-            ${mergedCount} Merged
-          </span>
-          <span style="color: var(--gh-text-muted); display: flex; align-items: center; gap: 0.35rem;">
-            <svg height="16" viewBox="0 0 16 16" width="16" fill="var(--gh-red-text)"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
-            ${rejectedCount} Rejected
-          </span>
+      <div class="gh-card-header" style="background: #161b22; display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 13px; font-weight: 600;">
+          ${activeTab === "needs-judgment" ? `
+            <span style="color: var(--gh-yellow-text); display: flex; align-items: center; gap: 0.35rem;">
+              ⚠️ ${displayedCRs.length} Change Requests Awaiting Supervisor Action
+            </span>
+          ` : activeTab === "open" ? `
+            <span style="color: var(--gh-green-text); display: flex; align-items: center; gap: 0.35rem;">
+              🌿 ${displayedCRs.length} Open Pull Requests
+            </span>
+          ` : activeTab === "merged" ? `
+            <span style="color: var(--gh-purple-text); display: flex; align-items: center; gap: 0.35rem;">
+              🟣 ${displayedCRs.length} Merged Pull Requests
+            </span>
+          ` : `
+            <span style="color: var(--gh-red-text); display: flex; align-items: center; gap: 0.35rem;">
+              🔴 ${displayedCRs.length} Closed / Rejected Pull Requests
+            </span>
+          `}
+        </div>
+        <div style="font-size: 12px; color: var(--gh-text-muted);">
+          ${activeTab === "needs-judgment" ? "Sorted: High risk first, then oldest waiting" : "Sorted: Newest first"}
         </div>
       </div>
 
       <div style="display: flex; flex-direction: column;">
-        ${changeRequests.length === 0
+        ${displayedCRs.length === 0
           ? `
             <div class="gh-blankslate">
-              <div class="gh-blankslate-icon">🔀</div>
-              <h3>No pull requests found</h3>
-              <p>Autonomous agents have not opened any change requests yet. When agents complete work, their change requests appear here for human supervisor review.</p>
+              <div class="gh-blankslate-icon">
+                ${activeTab === "needs-judgment" ? "🎉" : activeTab === "merged" ? "🟣" : activeTab === "closed" ? "🔴" : "🔀"}
+              </div>
+              <h3>
+                ${activeTab === "needs-judgment" ? "Zero pull requests awaiting human judgment"
+                  : activeTab === "merged" ? "No merged pull requests found"
+                  : activeTab === "closed" ? "No closed pull requests found"
+                  : "No open pull requests found"}
+              </h3>
+              <p>
+                ${activeTab === "needs-judgment"
+                  ? "All autonomous agent proposals have been reviewed or merged. Check the <b>Merged</b> or <b>Closed</b> tabs above to inspect historical change requests."
+                  : activeTab === "merged"
+                  ? "Approved change requests will appear here after supervisor sign-off."
+                  : "Change requests will appear here once submitted by agents."}
+              </p>
             </div>
           `
-          : changeRequests.map(cr => {
+          : displayedCRs.map(cr => {
             const isApproved = cr.status === "approved" || cr.status === "auto_merged";
             const isRejected = cr.status === "rejected";
-            const isHighRisk = cr.risk_level === "high" || cr.requires_human;
-            const hasRealQA = cr.qa_reports && cr.qa_reports.length > 0;
+            const isChangesRequested = cr.status === "changes_requested";
+            const isHighRisk = cr.risk_level === "high" || cr.needs_second_human || /cashier|escrow|payout|auth|db|infra/i.test((cr.title || "") + " " + (cr.touched_files || []).join(" "));
+
+            const buildPassed = cr.test_report?.passed ?? (!cr.build_failed);
+            const hasQa = (cr.qa_reports && cr.qa_reports.length > 0) || cr.qa_status === "passed";
+            const qaFailed = cr.qa_status === "failed" || (cr.qa_reports && cr.qa_reports.some(q => q.status === "failed"));
+            const checksPassed = buildPassed && !qaFailed;
+
+            const timeWaitingStr = formatTimeWaiting(cr.created_at, isApproved || isRejected ? cr.resolved_at : undefined);
 
             return `
-              <div class="gh-row" style="flex-direction: column; gap: 0.65rem; align-items: stretch;">
+              <div class="gh-row" style="flex-direction: column; gap: 0.65rem; align-items: stretch; border-left: ${isHighRisk ? '3px solid var(--gh-red)' : '3px solid transparent'};">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; gap: 1rem; flex-wrap: wrap;">
-                  <div style="display: flex; align-items: flex-start; gap: 0.65rem;">
-                    <div style="margin-top: 2px;">
+                  <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex: 1; min-width: 280px;">
+                    <div style="margin-top: 3px;">
                       ${isApproved ? `
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="var(--gh-purple-text)"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
                       ` : isRejected ? `
@@ -91,13 +208,35 @@ export function renderPullsPage(options: PullsPageOptions): string {
                         <a href="/p/${projectId}/pulls/${cr.id}" style="font-weight: 600; font-size: 14.5px; color: var(--gh-text-heading);">
                           ${cr.title}
                         </a>
-                        ${isApproved ? '<span class="gh-badge gh-badge-purple">Merged</span>' : isRejected ? '<span class="gh-badge gh-badge-danger">Rejected</span>' : '<span class="gh-badge gh-badge-success">Open (Review)</span>'}
+                        <!-- Requirement 2: Status Badge -->
+                        ${isApproved
+                          ? '<span class="gh-badge gh-badge-purple" style="font-weight: 600;">🟣 Merged</span>'
+                          : isRejected
+                          ? '<span class="gh-badge gh-badge-danger" style="font-weight: 600;">🔴 Rejected</span>'
+                          : isChangesRequested
+                          ? '<span class="gh-badge gh-badge-yellow" style="font-weight: 600;">🔄 Changes Requested</span>'
+                          : '<span class="gh-badge gh-badge-yellow" style="font-weight: 600;">⚠️ Needs Review</span>'}
+
+                        <!-- Requirement 2: Agent -->
+                        <span class="gh-badge gh-badge-muted" style="font-family: monospace; font-size: 12px;">
+                          🤖 agent: <strong>${cr.agent_id || "builder"}</strong>
+                        </span>
+
+                        <!-- Requirement 2: Risk (high = needs second human) -->
+                        ${isHighRisk
+                          ? '<span class="gh-badge gh-badge-danger" style="font-weight: 600;">⚠️ Risk: High (needs second human)</span>'
+                          : '<span class="gh-badge gh-badge-muted" style="font-size: 11.5px;">🛡️ Risk: Low</span>'}
+
                         ${(cr.tags || []).includes("needs-page") ? '<span class="gh-badge gh-badge-purple" style="font-size: 11px;">📄 needs-page</span>' : ''}
                         ${(cr.tags || []).includes("needs-logic") ? '<span class="gh-badge gh-badge-yellow" style="font-size: 11px;">⚙️ needs-logic</span>' : ''}
-                        ${isHighRisk ? '<span class="gh-badge gh-badge-danger">needs-human</span>' : ''}
                       </div>
-                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.25rem;">
-                        #${cr.id} opened by agent <code>${cr.agent_id}</code> &bull; Task: <code>${cr.task_id}</code> &bull; Commit: <code>${(cr.commit_id || '').slice(0, 10)}</code> &bull; Touched: <code>${(cr.touched_files || []).join(', ')}</code>
+
+                      <div style="font-size: 12px; color: var(--gh-text-muted); margin-top: 0.35rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                        <span>#${cr.id}</span>
+                        <span>Task: <a href="/p/${projectId}/issues/${cr.task_id}"><code>${cr.task_id}</code></a></span>
+                        <span>Commit: <code>${(cr.commit_sha || cr.commit_id || '').slice(0, 10)}</code></span>
+                        <span>Touched: <code>${(cr.touched_files || []).join(', ') || 'N/A'}</code></span>
+                        ${cr.github_pr_url ? `<a href="${cr.github_pr_url}" target="_blank" style="color: var(--gh-link);">GitHub PR #${cr.github_pr_number || ''} ↗</a>` : ''}
                       </div>
                     </div>
                   </div>
@@ -107,26 +246,31 @@ export function renderPullsPage(options: PullsPageOptions): string {
                     <a href="/project/${projectId}/preview/live" target="_blank" class="gh-btn gh-btn-sm" style="color: var(--gh-orange); border-color: rgba(243,128,32,0.4);">
                       🌐 Open preview ↗
                     </a>
-                    <a href="/p/${projectId}/pulls/${cr.id}" class="gh-btn gh-btn-sm gh-btn-primary">
-                      ⚖️ Review &amp; Judge ↗
-                    </a>
-                    ${cr.github_pr_url ? `
-                      <a href="${cr.github_pr_url}" target="_blank" class="gh-btn gh-btn-sm">
-                        GitHub PR #${cr.github_pr_number || ''} ↗
+                    ${!isApproved && !isRejected ? `
+                      <a href="/p/${projectId}/pulls/${cr.id}" class="gh-btn gh-btn-sm gh-btn-primary">
+                        ⚖️ Review &amp; Judge ↗
                       </a>
-                    ` : ''}
+                    ` : `
+                      <a href="/p/${projectId}/pulls/${cr.id}" class="gh-btn gh-btn-sm">
+                        View details ↗
+                      </a>
+                    `}
                   </div>
                 </div>
 
-                <!-- Checks Summary -->
-                <div style="display: flex; gap: 0.65rem; align-items: center; padding-left: 1.65rem; font-size: 12px; flex-wrap: wrap;">
-                  <span style="color: var(--gh-text-muted);">Checks:</span>
-                  <span class="gh-badge ${cr.test_report?.passed ? 'gh-badge-success' : 'gh-badge-danger'}">
-                    ${cr.test_report?.passed ? '✓ Sandbox build passed' : '✗ Build failed'}
+                <!-- Requirement 2: Checks Passed/Failed & Time Waiting -->
+                <div style="display: flex; gap: 0.75rem; align-items: center; padding-left: 1.85rem; font-size: 12px; flex-wrap: wrap; margin-top: 0.25rem;">
+                  <!-- Checks passed / failed badge -->
+                  <span class="gh-badge ${checksPassed ? 'gh-badge-success' : 'gh-badge-danger'}" style="font-weight: 500;">
+                    ${checksPassed ? '✓ Checks: Passed' : '✗ Checks: Failed'}
+                    <span style="font-weight: 400; opacity: 0.85;">(${buildPassed ? 'build pass' : 'build fail'}${hasQa ? ', QA pass' : qaFailed ? ', QA fail' : ''})</span>
                   </span>
-                  <span class="gh-badge ${hasRealQA ? 'gh-badge-success' : 'gh-badge-muted'}">
-                    ${hasRealQA ? `✓ Browser QA passed (${cr.qa_reports?.length || 0} run)` : 'QA not run'}
+
+                  <!-- Time waiting badge -->
+                  <span class="gh-badge gh-badge-yellow" style="font-size: 11.5px; font-weight: 500;">
+                    ⏱️ ${timeWaitingStr}
                   </span>
+
                   ${cr.human_rationale ? `
                     <span style="color: var(--gh-yellow-text); font-style: italic;">
                       Supervisor: "${cr.human_rationale}"

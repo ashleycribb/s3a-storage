@@ -19,9 +19,9 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   const pathParts = path.split("/").filter(Boolean);
 
   // --------------------------------------------------------------------------
-  // 1. Retire ?tab= query parameter (301 Redirect)
+  // 1. Retire ?tab= query parameter (301 Redirect) for top-level navigation
   // --------------------------------------------------------------------------
-  if (url.searchParams.has("tab")) {
+  if (url.searchParams.has("tab") && pathParts.length < 3) {
     const rawTab = url.searchParams.get("tab") || "code";
     let targetTab = rawTab;
     if (["pull-requests", "pr", "prs"].includes(targetTab)) targetTab = "pulls";
@@ -231,7 +231,8 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
       } else {
         pageTitle = "Pull requests";
         breadcrumbs = [{ label: "Pull requests" }];
-        pageHtml = renderPullsPage({ projectId, changeRequests: crs });
+        const activeFilter = url.searchParams.get("tab") || url.searchParams.get("filter") || "needs-judgment";
+        pageHtml = renderPullsPage({ projectId, changeRequests: crs, filter: activeFilter });
       }
       break;
     }
