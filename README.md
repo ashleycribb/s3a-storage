@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-stable-brightgreen.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-42%20passed-success.svg)]()
+[![Tests](https://img.shields.io/badge/tests-417%20passed-success.svg)]()
 
 **S3A** is a high-performance, crash-resilient, multi-modal columnar database and storage engine. It replaces traditional row-based databases and flat vector indexes with **bounded, self-indexing geometric manifolds** called **Hyper-Tiles**. 
 
@@ -10,15 +10,41 @@ High-dimensional states, spatiotemporal points, robotics kinematics, and continu
 
 ---
 
-## Workspace Crates
+## Workspace Crates & Architecture
 
+### Core Storage & Execution Engine
 | Crate | Description |
 | :--- | :--- |
 | **[`s3a-core`](crates/s3a-core)** | Zero-copy byte layouts (`bytemuck::Pod`), record formats, 512B Hyper-Tile headers, coordinate addressing (`L<lvl>:T<tile>:R<offset>`), and `no_std` geometry. |
 | **[`s3a-simd`](crates/s3a-simd)** | SIMD acceleration (AVX2/NEON): cosine similarity, Int8 & 4-bit vector quantization, 960-bit Blocked-Bloom filtering, learned index interpolation, and "alive-before-scoring" pruning. |
 | **[`s3a-engine`](crates/s3a-engine)** | Zero-copy `MmapReader`, `TileWriter` with dual-slot A/B atomic commits, `L0RingBuffer` real-time streaming, background compactor daemon, native S3A-QL parser/executor, and `S3AP` binary TCP wire protocol. |
+| **[`s3a-edge`](crates/s3a-edge)** | Ultra-low-latency edge ingestion and streaming query engine for distributed sensor and edge nodes. |
 | **[`s3a-cabi`](crates/s3a-cabi)** | C Foreign Function Interface (`libs3a.so` / `s3a.dll` / `s3a.h`) for Python, C, C++, and Go integrations. |
 | **[`s3a-cli`](crates/s3a-cli)** | CLI command-line tool, interactive SQL shell (`s3a-cli shell`), TCP daemon (`serve-tcp`), MCP server (`mcp-server`), web dashboard (`serve`), and comprehensive benchmark suites. |
+
+### Autonomous Agent Swarms & Edge Coordination
+| Crate / Subsystem | Description |
+| :--- | :--- |
+| **[`s3a-gate` (Cloudflare)](cloudflare/)** | Edge routing worker + `RepoCoordinator` Durable Object per project. Provides GitHub-style UI shell, WebCrypto Ed25519 commit and supervisor authorization, automated in-gate PM/builder agent (`gate-agent`), R2 screenshot evidence verification barrier, and rehearsal simulation dashboard. |
+| **[`s3a-swarm`](crates/s3a-swarm)** | High-concurrency agent swarm coordination CLI (`s3a-swarm run --remote`), deterministic LWW merge rules, signature tie-breaking, shadow-mode evaluation, and epistemic conflict detection. |
+| **[`s3a-harness`](crates/s3a-harness)** | Open-source Model Context Protocol (MCP 2024-11-05) research-agent harness, path-confinement sandbox, and supervisor clearance gates (`ask_human`). |
+| **[`s3a-ledger`](crates/s3a-ledger)** | Granular micro-billing, budget caps, ledger records, and tamper-evident token expenditure accounting for agent swarms. |
+| **[`s3a-trace`](crates/s3a-trace)** | Agent trajectory capture, replay harness, and fine-tuning export in ShareGPT and ChatML formats. |
+| **[`s3a-vcs`](crates/s3a-vcs)** | Cryptographic version control for S3A archives (branching, commits, Merkle seals, deterministic union merges, and read-only Git repo export). |
+| **[`s3a-vault`](crates/s3a-vault)** | Decentralized Ed25519 identity, `gate://` addressing, scoped capability delegations, and key rotations. |
+| **[`s3a-lrs-server`](crates/s3a-lrs-server)** | Standards-compliant IEEE P2997 ELR projection, deterministic rules engine, and batch synchronization server (`POST /xapi/s3a/batch`). |
+| **[`s3a-wasm-snapshot`](crates/s3a-wasm-snapshot)** | Additive in-memory WebAssembly snapshot engine for browser-side research, vector search, and agent executions with zero panics across the WASM boundary. |
+
+### Domain Packs & Conformance
+| Crate | Description |
+| :--- | :--- |
+| **[`s3a-pack-scholar`](crates/s3a-pack-scholar)** | Literature graph, academic papers, claims, evidence, dual-trace provenance, and citation recheck. |
+| **[`s3a-pack-ontology`](crates/s3a-pack-ontology)** | Formal ontology concepts, axioms, analogy bridges, and pedagogical rules. |
+| **[`s3a-pack-da`](crates/s3a-pack-da)** | Blockchain and AI Data Availability block commitment pack with KZG polynomial verification. |
+| **[`s3a-pack-gis`](crates/s3a-pack-gis)** | 3D GIS, LiDAR, and subsurface topographic mesh geometry pack. |
+| **[`s3a-pack-robotics`](crates/s3a-pack-robotics)** | 1 kHz continuous 3D kinematic trajectory ring-buffering pack. |
+| **[`s3a-pack-wearable`](crates/s3a-pack-wearable)** | Zero-heap 4KB Flash page wearable biosensor pack. |
+| **[`s3a-spec-vectors`](crates/s3a-spec-vectors)** | Conformance test vectors and validation suites. |
 
 ---
 
@@ -170,6 +196,9 @@ cargo run -p s3a-cli -- benchmark-bvh
 
 ## Documentation & Specifications
 
+- **[Autonomous Platform Engineering Pattern (Rehearsal Loop)](docs/PLATFORM-PATTERN.md)**: Generic rehearsal-driven simulation loop, declarative tournament formats, game packs, auto-filing of missing pages/logic, and real R2 visual evidence verification barriers.
+- **[S3A Batched Synchronization Contract](docs/sync.md)**: Client-to-server batched synchronization contract between Scholar Explorer WebAssembly client, Google AI Studio agents, and the S3A LRS server.
+- **[Formal Research Traceability Profile & Ontology](docs/vocab/scholar-xapi-profile.jsonld)**: W3C PROV-O aligned xAPI Profile (JSON-LD) and OWL Ontology (Turtle: `docs/vocab/scholar.ttl`) establishing human epistemic judgment invariants.
 - **[S3A-QL v1 Language Specification & Query Contract](docs/s3a-ql-v1.md)**: Frozen grammar, statements (`FETCH`, `SIFT`, `INSERT`, `DELETE`, `COMPACT`, `FUSE`), pack domain handoff, and machine-readable error models.
 - **[Production Operations Manual & DBA Runbook](docs/ops.md)**: Administrator operations (`inspect`, `verify`, `status`, `doctor`, `recover`, `compact`, `fuse`, `addon`, `snapshot`), machine-readable `--json` output, and recovery runbooks.
 - **[S3A Pack Contract](docs/pack-contract.md)**: Modular domain pack architecture, wire tile ID allocation, and capability mask (`addon_mask`) fail-closed write gates.
@@ -178,6 +207,7 @@ cargo run -p s3a-cli -- benchmark-bvh
 - **[Scholar Ingestion & Snapshot Specification](docs/scholar-ingest.md)**: Ingestion of external literature corpora into Scholar Hyper-Tiles and portable SRS snapshot containers.
 - **[Commercial Vision & Business Architecture](docs/VISION-BUSINESS.md)**: Autonomous agent data cleaning, problem scoping, human-in-the-loop governance, and commercial engagement flow.
 - **[Pull Request Triage & Human Governance Checklist](docs/PR-TRIAGE.md)**: Swarm duplicate PR closure, canonical PR identification, Playwright QA evaluation, and sensitive subsystem review policies.
+- **[End-to-End Walkthrough & Architecture Log](walkthrough.md)**: Comprehensive architectural walkthrough covering all 32 development phases, IEEE P2997 ELR projection, VCS engine, Cloudflare Workers gate, and full 417-test suite verification.
 
 ---
 

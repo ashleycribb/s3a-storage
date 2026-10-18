@@ -143,13 +143,17 @@ The entire S3A storage and version control workspace is **100% green**:
 | **`s3a-swarm`** (concurrency, merge, grants, eval, bad sig) | **6** | Pass |
 | **`s3a-vcs`** (commit DAG, branches, union merge, git export) | **13** | Pass |
 | **`s3a-vault`** (identities, gate addresses, delegation, rotation) | **9** | Pass |
-| **`s3a-harness`** (decision layer, ask_human pause/resume, eval) | **55** | Pass |
-| **`s3a-engine`** (hyper-tile read/write, RS parity, compactor, sealed) | **83** | Pass |
+| **`s3a-harness`** (decision layer, ask_human pause/resume, eval) | **58** | Pass |
+| **`s3a-engine`** (hyper-tile read/write, RS parity, compactor, sealed) | **140** | Pass |
+| **`s3a-ledger`** (micro-billing, budget caps, deferral) | **4** | Pass |
+| **`s3a-trace`** (trajectory capture, replay harness, fine-tuning export) | **1** | Pass |
+| **`s3a-lrs-server`** (IEEE P2997 ELR projection, rules engine, batch sync) | **25** | Pass |
 | **`s3a-spec-vectors`** (conformance test vectors) | **32** | Pass |
 | **`s3a-simd`** (SIMD filtering, metric distance, DOP14) | **13** | Pass |
-| **`s3a-wasm-snapshot`** (WASM delta export, xAPI verb registry) | **10** | Pass |
-| **`s3a-pack-scholar`, `da`, `gis`, `robotics`, `wearable`, `ontology`** | **180** | Pass |
-| **Total Workspace Tests** | **401** | **ALL PASSED (0 Failed)** |
+| **`s3a-wasm-snapshot`** (WASM delta export, xAPI verb registry, roundtrip) | **11** | Pass |
+| **`s3a-pack-scholar`, `da`, `gis`, `robotics`, `wearable`, `ontology`** | **55** | Pass |
+| **`s3a-core`, `s3a-edge`, `s3a-cabi`, `s3a-cli`** | **50** | Pass |
+| **Total Workspace Tests** | **417** | **ALL PASSED (0 Failed, 2 Ignored)** |
 
 ---
 
