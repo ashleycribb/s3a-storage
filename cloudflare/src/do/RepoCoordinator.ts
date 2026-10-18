@@ -42,6 +42,7 @@ import type {
   RepoTreeItem,
   ArchitectureComponent,
   ProjectAnalysis,
+  ProjectRegistryItem,
 } from "../types";
 import {
   hexToBytes,
@@ -2985,6 +2986,15 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
 
       case "repairs":
         return this.handleRepairs(projectId);
+
+      case "projects":
+        if (request.method === "POST") {
+          return this.handleCreateProject(request);
+        }
+        return this.handleGetProjects();
+
+      case "init-project":
+        return this.handleInitProject(request);
       default:
         return new Response(`Not Found: action='${action}' projectId='${projectId}' pathname='${url.pathname}' parts='${JSON.stringify(pathParts)}'`, {
           status: 404,
@@ -5904,32 +5914,36 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
         type: "directory",
         children: [
           { path: "packages/auth/permissions.ts", name: "permissions.ts", type: "file", size: "3.2 KB", language: "typescript" },
+          { path: "packages/auth/roles.ts", name: "roles.ts", type: "file", size: "2.4 KB", language: "typescript" },
         ],
       },
       {
-        path: "docs/vocab",
-        name: "docs/vocab",
+        path: "fixtures",
+        name: "fixtures",
         type: "directory",
         children: [
-          { path: "docs/vocab/scholar-xapi-profile.jsonld", name: "scholar-xapi-profile.jsonld", type: "file", size: "12.8 KB", language: "jsonld" },
-          { path: "docs/vocab/scholar.ttl", name: "scholar.ttl", type: "file", size: "5.5 KB", language: "turtle" },
-          { path: "docs/vocab/pm-xapi-profile.jsonld", name: "pm-xapi-profile.jsonld", type: "file", size: "3.2 KB", language: "jsonld" },
-          { path: "docs/vocab/builder-xapi-profile.jsonld", name: "builder-xapi-profile.jsonld", type: "file", size: "3.8 KB", language: "jsonld" },
-          { path: "docs/vocab/qa-xapi-profile.jsonld", name: "qa-xapi-profile.jsonld", type: "file", size: "3.5 KB", language: "jsonld" },
-          { path: "docs/vocab/budget-xapi-profile.jsonld", name: "budget-xapi-profile.jsonld", type: "file", size: "3.1 KB", language: "jsonld" },
-          { path: "docs/vocab/librarian-xapi-profile.jsonld", name: "librarian-xapi-profile.jsonld", type: "file", size: "3.3 KB", language: "jsonld" },
-          { path: "docs/vocab/scrum-xapi-profile.jsonld", name: "scrum-xapi-profile.jsonld", type: "file", size: "3.0 KB", language: "jsonld" },
+          { path: "fixtures/tournament-brackets.json", name: "tournament-brackets.json", type: "file", size: "12.4 KB", language: "json" },
+          { path: "fixtures/swiss-rounds.json", name: "swiss-rounds.json", type: "file", size: "8.1 KB", language: "json" },
         ],
       },
       {
-        path: "scripts",
-        name: "scripts",
+        path: "brand",
+        name: "brand",
         type: "directory",
         children: [
-          { path: "scripts/rehearsal-test.mjs", name: "rehearsal-test.mjs", type: "file", size: "30.2 KB", language: "javascript" },
-          { path: "scripts/tournament-formats-test.mjs", name: "tournament-formats-test.mjs", type: "file", size: "17.9 KB", language: "javascript" },
-          { path: "scripts/verify-vocab-drift.mjs", name: "verify-vocab-drift.mjs", type: "file", size: "12.4 KB", language: "javascript" },
-          { path: "scripts/verify-env-promotion.mjs", name: "verify-env-promotion.mjs", type: "file", size: "10.6 KB", language: "javascript" },
+          { path: "brand/theme.css", name: "theme.css", type: "file", size: "4.2 KB", language: "css" },
+          { path: "brand/logo.svg", name: "logo.svg", type: "file", size: "1.8 KB", language: "svg" },
+        ],
+      },
+      {
+        path: "config",
+        name: "config",
+        type: "directory",
+        children: [
+          { path: "package.json", name: "package.json", type: "file", size: "1.6 KB", language: "json" },
+          { path: "tsconfig.json", name: "tsconfig.json", type: "file", size: "828 B", language: "json" },
+          { path: "next.config.js", name: "next.config.js", type: "file", size: "240 B", language: "javascript" },
+          { path: "README.md", name: "README.md", type: "file", size: "4.8 KB", language: "markdown" },
         ],
       },
     ];
@@ -5947,43 +5961,42 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       },
       {
         layer: "Edge Compute & API",
-        name: "S3A Gate Coordinator (Durable Objects)",
-        tech: "Cloudflare Workers, Durable Objects, Workflows",
-        role_description: "Coordinates single-writer Git push ordering, task claiming, rehearsal loop execution, and cryptographic Ed25519 commit signing.",
+        name: "Brakets Progression Engine & Escrow API",
+        tech: "Cloudflare Workers, Edge Scoring API",
+        role_description: "Coordinates bracket advancement state machines, draw score rejection rules, and match standings calculation.",
         invariants: [
-          "Single-writer push serialization per project",
-          "Strict dual human supervisor gating (Ashley + Ward)",
+          "Rejects tied scores in knockout bracket formats",
+          "Dynamic lobby capacity parameterization from tournament format configuration",
         ],
       },
       {
         layer: "Verification & Sandbox",
-        name: "Cloudflare Sandbox Container & Browser QA",
-        tech: "docker.io/cloudflare/sandbox:0.12.10, Puppeteer, Workers AI",
-        role_description: "Isolated container compilation and test execution (`npm run build`, `npm test`) with automated retry loop and headless browser journey capture.",
+        name: "Tournament Match Simulation & Visual QA",
+        tech: "Cloudflare Sandbox Container, Playwright, Headless Browser",
+        role_description: "Runs full bracket tournament simulations, verifies format progression integrity, and captures viewport screenshot evidence.",
         invariants: [
-          "Non-zero exit codes block CR approval and label failed_verification",
-          "All journeys upload full-viewport screenshots to R2 with HTTP 200 verification",
+          "Zero format progression regressions across all 4 tournament formats",
+          "100% HTTP 200 pass verification on match progression evidence",
         ],
       },
       {
         layer: "Storage & Evidence",
-        name: "Cloudflare R2 Bucket & Artifacts Namespace",
-        tech: "s3a-evidence (R2), Cloudflare Artifacts (default namespace)",
-        role_description: "Stores immutable visual screenshot evidence, build/test logs, and git bundle artifacts for verified auditability.",
+        name: "Tournament Asset & State Store",
+        tech: "Cloudflare R2 Bucket (s3a-evidence), Durable Object Storage",
+        role_description: "Stores immutable visual tournament match evidence, match reports, and bracket progression snapshots.",
         invariants: [
-          "No tournament pass without verified R2 evidence URLs (100% 200 OK)",
-          "Traces exportable to fine-tuning JSONL format",
+          "Evidence URLs verified with HTTP 200 before tournament round advancement",
+          "Match report standings schema prevents duplicate team IDs",
         ],
       },
       {
         layer: "Governance & Roles",
-        name: "S3A Autonomous Swarm Roles & xAPI/OWL Profiles",
-        tech: "W3C xAPI Profiles v1.0, OWL 2 DL (PROV-O, FaBiO, CiTO, FOAF)",
-        role_description: "Per-agent role boundaries for PM, Builder, QA, Budget, Librarian, and Scrum with strictly enforced capability envelopes.",
+        name: "Dual-Supervisor Tournament Escrow & Human Gate",
+        tech: "Ed25519 Cryptographic Multi-Sig (Ashley + Ward)",
+        role_description: "Controls tournament prize pool disbursements and production rule promotion under strict dual human approval.",
         invariants: [
-          ":HumanActor owl:disjointWith :AIAgent (AI agents never emit judgment verbs)",
-          "Only builder role may produce code patches; review/QA roles strictly read-only",
-          "Human supervisor approves Plan of Attack before builder code generation",
+          "Prize escrow requires 2 human supervisor signatures (Ashley + Ward)",
+          "AI agents propose changes; only human supervisors merge or release funds",
         ],
       },
     ];
@@ -6080,17 +6093,17 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
     return {
       project_id: projectId,
       readme_summary: {
-        title: "Brakets Tournament Engine & Autonomous Verification Gate",
-        tagline: "High-concurrency esports tournament progression and bracket generation backed by S3A autonomous agent verification and dual human governance.",
-        purpose: "Provides a reliable, mathematically verifiable tournament engine across single-elimination, double-elimination, swiss, and group stage playoff structures with zero duplicate pull requests, verified visual evidence in R2, and strict human supervisory approval.",
+        title: "Brakets Tournament Engine (plat-gaming)",
+        tagline: "High-concurrency esports tournament progression and bracket generation for Brakets gaming platform.",
+        purpose: "Provides a reliable, mathematically verifiable tournament progression engine across single-elimination, double-elimination, swiss, and group stage playoff structures with format-aware draw validation and real-time match scoring.",
         core_workflows: [
-          "Triage: Autonomous PM Agent prioritizes issues and formulates Plan of Attack (xapi:planned)",
-          "Human Gate: Human supervisors (Ashley / Ward) review and approve the Plan before code changes (xapi:approved)",
-          "Builder: Autonomous Builder generates patch restricted strictly to files_allowed (xapi:edited)",
-          "Verification: Cloudflare Sandbox compiles and runs tests (xapi:tested); headless browser uploads evidence to R2 (xapi:captured-screenshot)",
-          "Delivery: Ed25519 signed Change Request submitted to Gate for supervisor judgment",
+          "Bracket Generation: Deterministic single, double, swiss, and playoff tree seeding",
+          "Format-Aware Scoring: Strict draw rejection for knockouts, valid tie allowance in round-robin/swiss",
+          "Escrow & Prize Payouts: Dual-supervisor gated crypto verification before disbursement",
+          "Match Advancement: Dynamic lobby capacity and standings validation",
+          "Visual Quality Assurance: Headless browser journeys captured to R2 with HTTP 200 checks",
         ],
-        governance_model: "Strict separation of powers (:HumanActor owl:disjointWith :AIAgent). Models propose and verify; humans judge and deploy.",
+        governance_model: "Managed by swarm autonomous agents under strict human supervisory approval (Ashley + Ward).",
       },
       repo_tree,
       architecture_map,
@@ -6186,6 +6199,333 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
     }, null, 2), {
       status: 200,
       headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Swarm Platform Project Registry & Project Creator
+  // --------------------------------------------------------------------------
+
+  public async getOrInitProjectsRegistry(): Promise<ProjectRegistryItem[]> {
+    let list = await this.state.storage.get<ProjectRegistryItem[]>("projects_registry");
+    const currentEnv = (await this.state.storage.get<BraketsEnv>("brakets_env")) || "test";
+    if (!list || list.length === 0) {
+      list = [
+        {
+          id: "brakets",
+          name: "Brakets",
+          slug: "plat-gaming",
+          repo_name: "ashleycribb/plat-gaming",
+          description: "High-concurrency esports tournament progression and bracket generation",
+          env: currentEnv,
+          created_at: 1729000000000,
+          active_agent: "gate-agent (builder)",
+          active_task: "TASK-283",
+          status: "active"
+        },
+        {
+          id: "scholar",
+          name: "Scholar",
+          slug: "scholar-engine",
+          repo_name: "ashleycribb/scholar-engine",
+          description: "Semantic academic citation graphs, W3C PROV-O provenance, and OWL 2 DL reasoning",
+          env: "demo",
+          created_at: 1729100000000,
+          active_agent: "antigravity (reviewer)",
+          active_task: "SCHOLAR-001",
+          status: "active"
+        }
+      ];
+      await this.state.storage.put("projects_registry", list);
+    } else {
+      const braketsProj = list.find(p => p.id === "brakets");
+      if (braketsProj && braketsProj.env !== currentEnv) {
+        braketsProj.env = currentEnv;
+        await this.state.storage.put("projects_registry", list);
+      }
+    }
+    return list;
+  }
+
+  private async handleGetProjects(): Promise<Response> {
+    const projects = await this.getOrInitProjectsRegistry();
+    return new Response(JSON.stringify({ projects }, null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  private async handleCreateProject(request: Request): Promise<Response> {
+    let body: any = {};
+    try { body = await request.json(); } catch(e) {}
+    const prompt = String(body.prompt || "").trim();
+    if (!prompt) {
+      return new Response(JSON.stringify({ error: "Missing required prompt parameter" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    const lower = prompt.toLowerCase();
+    let template: "micro_saas" | "fix_repo" | "threejs_site" | "custom" = body.template || "custom";
+    if (body.template) {
+      template = body.template;
+    } else if (lower.includes("micro-saas") || lower.includes("saas") || lower.includes("stripe") || lower.includes("billing")) {
+      template = "micro_saas";
+    } else if (lower.includes("fix this repo") || lower.includes("fix repo") || lower.includes("audit") || lower.includes("clean code") || lower.includes("healer")) {
+      template = "fix_repo";
+    } else if (lower.includes("three.js") || lower.includes("threejs") || lower.includes("3d") || lower.includes("webgl") || lower.includes("canvas")) {
+      template = "threejs_site";
+    }
+
+    let defaultName = "Custom Project";
+    let defaultSlug = "custom-project";
+    let defaultDesc = prompt;
+    let seededTasks: TaskItem[] = [];
+    let initialFiles: RepoTreeItem[] = [];
+
+    if (template === "micro_saas") {
+      defaultName = body.name || "InvoiceFlow Micro-SaaS";
+      defaultSlug = body.id || body.slug || "micro-saas";
+      defaultDesc = "Next.js 15 recurring billing micro-SaaS with Stripe, Cloudflare D1/R2, and Lucia Auth";
+      seededTasks = [
+        {
+          id: "TASK-SAAS-1",
+          title: "Setup Stripe webhook signature verification and checkout session handler",
+          description: "Implement Stripe webhook handler in app/api/webhooks/stripe/route.ts verifying STRIPE_WEBHOOK_SECRET and updating subscription state in D1.",
+          status: "open",
+          files_allowed: ["app/api/webhooks/stripe/route.ts", "lib/stripe.ts"],
+          risk_level: "high",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-SAAS-2",
+          title: "Implement D1 schema migrations for tenant billing and subscription tiers",
+          description: "Author drizzle/sql schema for organizations, subscriptions, invoices, and seat limits.",
+          status: "open",
+          files_allowed: ["lib/db/schema.ts", "migrations/0001_billing.sql"],
+          risk_level: "high",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-SAAS-3",
+          title: "Create customer portal and cancelation retention flow",
+          description: "Build billing management UI in app/dashboard/billing/page.tsx with Stripe Customer Portal redirect.",
+          status: "open",
+          files_allowed: ["app/dashboard/billing/page.tsx"],
+          risk_level: "low",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-SAAS-4",
+          title: "Add E2E Playwright test for subscriber onboarding funnel",
+          description: "Verify end-to-end user signup, plan selection, and simulated checkout webhook.",
+          status: "open",
+          files_allowed: ["tests/e2e/checkout.spec.ts"],
+          risk_level: "low",
+          created_at: Date.now()
+        }
+      ];
+      initialFiles = [
+        { path: "app/api/webhooks/stripe/route.ts", name: "route.ts", type: "file", size: "3.2 KB", language: "typescript" },
+        { path: "app/dashboard/billing/page.tsx", name: "page.tsx", type: "file", size: "4.5 KB", language: "typescript" },
+        { path: "lib/stripe.ts", name: "stripe.ts", type: "file", size: "2.1 KB", language: "typescript" },
+        { path: "lib/db/schema.ts", name: "schema.ts", type: "file", size: "3.8 KB", language: "typescript" },
+        { path: "package.json", name: "package.json", type: "file", size: "1.4 KB", language: "json" },
+        { path: "README.md", name: "README.md", type: "file", size: "3.5 KB", language: "markdown" },
+      ];
+    } else if (template === "fix_repo") {
+      defaultName = body.name || "Repo Auto-Healer";
+      defaultSlug = body.id || body.slug || "repo-fixer";
+      defaultDesc = "Automated code health analysis, bug triage, and test suite generation";
+      seededTasks = [
+        {
+          id: "TASK-FIX-1",
+          title: "Static analysis: eliminate 4 high-severity type and security warnings",
+          description: "Fix strict null dereferences and unsafe type casts in src/index.ts and src/parser.ts.",
+          status: "open",
+          files_allowed: ["src/index.ts", "src/parser.ts"],
+          risk_level: "high",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-FIX-2",
+          title: "Add unit tests for unhandled null references in data parser",
+          description: "Author comprehensive test coverage in tests/parser.test.ts for malformed inputs.",
+          status: "open",
+          files_allowed: ["tests/parser.test.ts"],
+          risk_level: "low",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-FIX-3",
+          title: "Remove dead code and prune 12 unused dependencies",
+          description: "Audit dependency tree and remove obsolete packages from package.json.",
+          status: "open",
+          files_allowed: ["package.json"],
+          risk_level: "low",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-FIX-4",
+          title: "Configure automated CI regression workflow in Cloudflare Sandbox",
+          description: "Setup container execution for npm test and bundle size verification.",
+          status: "open",
+          files_allowed: ["scripts/ci.mjs"],
+          risk_level: "low",
+          created_at: Date.now()
+        }
+      ];
+      initialFiles = [
+        { path: "src/index.ts", name: "index.ts", type: "file", size: "5.4 KB", language: "typescript" },
+        { path: "src/parser.ts", name: "parser.ts", type: "file", size: "7.1 KB", language: "typescript" },
+        { path: "tests/parser.test.ts", name: "parser.test.ts", type: "file", size: "4.2 KB", language: "typescript" },
+        { path: "package.json", name: "package.json", type: "file", size: "1.2 KB", language: "json" },
+        { path: "README.md", name: "README.md", type: "file", size: "2.8 KB", language: "markdown" },
+      ];
+    } else if (template === "threejs_site") {
+      defaultName = body.name || "Spatial 3D Canvas";
+      defaultSlug = body.id || body.slug || "threejs-3d-site";
+      defaultDesc = "Interactive Three.js and WebGL 3D model viewer with PBR lighting and OrbitControls";
+      seededTasks = [
+        {
+          id: "TASK-3D-1",
+          title: "Initialize WebGL 3D canvas with responsive aspect ratio and PBR lighting",
+          description: "Create WebGL renderer with DirectionalLight and HemisphereLight in src/components/Scene3D.tsx.",
+          status: "open",
+          files_allowed: ["src/components/Scene3D.tsx"],
+          risk_level: "high",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-3D-2",
+          title: "Implement GLTF/GLB model loader with fallback progressive placeholder",
+          description: "Add GLTFLoader with Draco compression support and loading progress spinner.",
+          status: "open",
+          files_allowed: ["src/lib/loaders.ts"],
+          risk_level: "high",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-3D-3",
+          title: "Add touch gesture camera orbit and mouse damping controls",
+          description: "Configure OrbitControls with enableDamping=true and rotation speed clamps.",
+          status: "open",
+          files_allowed: ["src/components/ModelViewer.tsx"],
+          risk_level: "low",
+          created_at: Date.now()
+        },
+        {
+          id: "TASK-3D-4",
+          title: "Optimize shader render loop for 60fps mobile battery performance",
+          description: "Author GLSL atmosphere shader with requestAnimationFrame throttling.",
+          status: "open",
+          files_allowed: ["src/shaders/atmosphere.glsl"],
+          risk_level: "low",
+          created_at: Date.now()
+        }
+      ];
+      initialFiles = [
+        { path: "src/components/Scene3D.tsx", name: "Scene3D.tsx", type: "file", size: "6.2 KB", language: "typescript" },
+        { path: "src/components/ModelViewer.tsx", name: "ModelViewer.tsx", type: "file", size: "4.8 KB", language: "typescript" },
+        { path: "src/lib/loaders.ts", name: "loaders.ts", type: "file", size: "3.5 KB", language: "typescript" },
+        { path: "src/shaders/atmosphere.glsl", name: "atmosphere.glsl", type: "file", size: "2.4 KB", language: "glsl" },
+        { path: "package.json", name: "package.json", type: "file", size: "1.5 KB", language: "json" },
+        { path: "README.md", name: "README.md", type: "file", size: "3.8 KB", language: "markdown" },
+      ];
+    } else {
+      defaultName = body.name || prompt.slice(0, 30);
+      defaultSlug = body.id || body.slug || prompt.toLowerCase().replace(/[^a-z0-9]/g, "-").slice(0, 20);
+      defaultDesc = prompt;
+      seededTasks = [
+        {
+          id: `TASK-${defaultSlug.toUpperCase().slice(0, 4)}-1`,
+          title: `Scaffold initial project architecture for ${defaultName}`,
+          description: `Initialize project structure and dependencies based on prompt: ${prompt}`,
+          status: "open",
+          files_allowed: ["src/index.ts", "package.json"],
+          risk_level: "high",
+          created_at: Date.now()
+        }
+      ];
+      initialFiles = [
+        { path: "src/index.ts", name: "index.ts", type: "file", size: "3.2 KB", language: "typescript" },
+        { path: "package.json", name: "package.json", type: "file", size: "1.2 KB", language: "json" },
+        { path: "README.md", name: "README.md", type: "file", size: "2.4 KB", language: "markdown" },
+      ];
+    }
+
+    const projectId = (body.id || defaultSlug).toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    const newProject: ProjectRegistryItem = {
+      id: projectId,
+      name: body.name || defaultName,
+      slug: defaultSlug,
+      repo_name: `swarm/${projectId}`,
+      description: defaultDesc,
+      env: "demo",
+      template,
+      created_at: Date.now(),
+      active_agent: "gate-agent (builder)",
+      active_task: seededTasks[0]?.id || "TASK-INIT-1",
+      status: "active"
+    };
+
+    const registry = await this.getOrInitProjectsRegistry();
+    const existingIdx = registry.findIndex(p => p.id === projectId);
+    if (existingIdx >= 0) {
+      registry[existingIdx] = newProject;
+    } else {
+      registry.push(newProject);
+    }
+    await this.state.storage.put("projects_registry", registry);
+
+    try {
+      const projDoId = this.env.REPO_COORDINATOR.idFromName(projectId);
+      const projStub = this.env.REPO_COORDINATOR.get(projDoId);
+      await projStub.fetch(`https://internal/project/${projectId}/init-project`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: newProject,
+          tasks: seededTasks,
+          files: initialFiles,
+          template
+        })
+      });
+    } catch(e) {
+      console.warn("Failed to call init-project on target DO:", e);
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: `Project '${newProject.name}' created successfully with isolated repository, issue board, and format packs.`,
+      project: {
+        ...newProject,
+        url: `/p/${projectId}/code`
+      }
+    }, null, 2), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
+  private async handleInitProject(request: Request): Promise<Response> {
+    let body: any = {};
+    try { body = await request.json(); } catch(e) {}
+    if (body.project) {
+      await this.state.storage.put("project_info", body.project);
+    }
+    if (body.tasks && Array.isArray(body.tasks)) {
+      await this.state.storage.put("brakets_tasks", body.tasks);
+    }
+    if (body.template) {
+      await this.state.storage.put("project_template", body.template);
+    }
+    await this.state.storage.put("brakets_env", "demo");
+
+    return new Response(JSON.stringify({ status: "initialized", project_id: body.project?.id }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
     });
   }
 }

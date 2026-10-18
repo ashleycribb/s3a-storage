@@ -47,3 +47,23 @@ The Gate exposes all vocabulary packs and manifests via REST:
 - `GET /project/:projectId/vocab/roles`: List all 6 role manifests, profiles, and ontologies
 - `GET /project/:projectId/vocab/roles/:role`: Get specific role manifest, profile (`?format=jsonld`), or ontology (`?format=ttl`)
 - `GET /project/:projectId/vocab/resolve?iri=<iri_or_verb>`: Ontological resolution & classification check
+
+---
+
+## Code Editor & Reviewer Pair Architecture (Senior Dev & Junior Dev)
+
+The S3A development swarm differentiates between autonomous code authoring, peer review, and project coordination:
+
+1. **`gate-agent` (Senior Dev / Builder)**:
+   - Takes in requests from the human client, builds actual changes into the system, and produces bounded patches (`xapi:edited`, `xapi:authored-diff`).
+   - Runs verification tests in the Cloudflare Sandbox (`xapi:tested`) and submits Change Requests.
+2. **`antigravity` (Junior Dev / Code Reviewer & Suggester)**:
+   - Takes in human requirements and makes structural and code suggestions.
+   - Visually reviews code and design using the SVG Review Canvas.
+   - Files structured findings (`xapi:flagged-discrepancy`) and verifies repair status without unreviewed direct commits.
+3. **`pm` (Project Overseer & Agent Coordinator)**:
+   - Overlooks the project and coordinates all AI agents (`xapi:planned`, `xapi:assigned`).
+   - Ensures agents perform their tasks according to the Plan of Attack.
+   - Strictly prohibited from authoring code patches (`no_code_patches`).
+4. **Swarm Visual Review Canvas (`/project/:projectId/visual-review.svg`)**:
+   - Live vector canvas for the swarm to visually inspect code for reviews (AST component hierarchy), inspect visual aspects of design (wireframe layout, typography, contrast), view errors anchored to exact `file:line` locations, verify whether errors have been repaired, and issue the final review check.

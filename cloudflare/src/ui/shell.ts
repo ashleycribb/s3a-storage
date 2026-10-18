@@ -1,11 +1,13 @@
 // cloudflare/src/ui/shell.ts
 // Shared Application Shell: Common Layout, Navigation, Breadcrumbs, Modals, and Client Scripts
 
-import type { BreadcrumbItem, BraketsEnv } from "../types";
+import type { BreadcrumbItem, BraketsEnv, ProjectRegistryItem } from "../types";
 
 export interface ShellOptions {
   projectId: string;
-  activeTab: "code" | "issues" | "pulls" | "agents" | "actions" | "rehearsals" | "insights";
+  projectName?: string;
+  projectSlug?: string;
+  activeTab: string;
   pageTitle?: string;
   breadcrumbs?: BreadcrumbItem[];
   counts?: {
@@ -15,19 +17,39 @@ export interface ShellOptions {
   };
   isPaused?: boolean;
   braketsEnv?: BraketsEnv;
+  projects?: ProjectRegistryItem[];
+  activeAgentInfo?: string;
+  isPlatform?: boolean;
 }
 
 export function renderShell(contentHtml: string, options: ShellOptions): string {
-  const { projectId, activeTab, breadcrumbs = [], counts = {}, isPaused = false, braketsEnv = "demo" } = options;
+  const {
+    projectId,
+    activeTab,
+    breadcrumbs = [],
+    counts = {},
+    isPaused = false,
+    braketsEnv = "demo",
+    isPlatform = false,
+    projects = [],
+  } = options;
+
+  const projectName = options.projectName || (projectId === "scholar" ? "Scholar" : (projectId === "brakets" || projectId === "s3a-swarm-main" ? "Brakets" : projectId));
+  const projectSlug = options.projectSlug || (projectId === "scholar" ? "scholar-engine" : (projectId === "brakets" || projectId === "s3a-swarm-main" ? "plat-gaming" : projectId));
+  const activeAgentInfo = options.activeAgentInfo || (projectId === "scholar" ? "scholar-agent (librarian) working on SCHOLAR-001" : "gate-agent (builder) working on TASK-283");
 
   const titlePrefix = options.pageTitle ? `${options.pageTitle} · ` : "";
-  const fullTitle = `${titlePrefix}ashleycribb/plat-gaming · S3A Gate`;
+  const fullTitle = isPlatform
+    ? `${titlePrefix}swarm · AI Agentic GitHub Platform`
+    : `${titlePrefix}swarm / ${projectName} (${projectSlug})`;
 
   // Render breadcrumbs
-  const breadcrumbItems = [
-    { label: projectId, url: `/p/${projectId}/code` },
-    ...breadcrumbs
-  ];
+  const breadcrumbItems = isPlatform
+    ? [{ label: "swarm", url: "/platform" }, ...breadcrumbs]
+    : [
+        { label: projectName, url: `/p/${projectId}/code` },
+        ...breadcrumbs
+      ];
 
   const breadcrumbsHtml = breadcrumbItems.map((item, idx) => {
     const isLast = idx === breadcrumbItems.length - 1;
@@ -324,74 +346,148 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
   </style>
 </head>
 <body>
-  <!-- Header with Breadcrumbs & Global Action Buttons -->
+  <!-- Header with Project Switcher, Breadcrumbs & Global Action Buttons -->
   <header class="gh-header">
     <div class="gh-header-top">
       <div class="repo-title-row">
-        <!-- Octicon Repo Icon -->
-        <svg height="18" viewBox="0 0 16 16" width="18" fill="var(--gh-text-muted)">
-          <path fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
-        </svg>
-        <span style="font-weight: 600;">S3A Gate</span>
-        <span style="color: var(--gh-text-muted); margin: 0 0.2rem;">/</span>
-        ${breadcrumbsHtml}
-        <span class="repo-pill">Private</span>
-        <span class="repo-pill" style="border-color: rgba(243,128,32,0.4); color: var(--gh-orange);">Autonomous Swarm</span>
-        <span id="env-badge" class="repo-pill env-badge env-badge-${braketsEnv}" onclick="openPromotionModal()" style="cursor: pointer; font-weight: 700; text-transform: uppercase;" title="Brakets Environment: ${braketsEnv.toUpperCase()}. Click to view promotion status & checklist.">
-          ${braketsEnv === 'production' ? '🛡️' : (braketsEnv === 'test' ? '🧪' : '🎮')} ENV: ${braketsEnv.toUpperCase()}
-        </span>
+        <!-- Swarm Platform Logo & Link -->
+        <a href="/platform" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; color: #f0f6fc; font-weight: 700;">
+          <span style="color: var(--gh-orange); font-size: 1.25rem; font-weight: 800;">swarm</span>
+        </a>
+
+        ${isPlatform ? `
+          <span style="color: var(--gh-text-muted); margin: 0 0.15rem;">/</span>
+          <span style="color: var(--gh-text-heading); font-weight: 600;">${options.pageTitle || 'Platform'}</span>
+          <span class="repo-pill" style="border-color: rgba(243,128,32,0.4); color: var(--gh-orange);">Autonomous Platform</span>
+        ` : `
+          <span style="color: var(--gh-text-muted); font-size: 12px; margin: 0 0.15rem;">▶</span>
+
+          <!-- Project Switcher Dropdown Trigger -->
+          <div style="position: relative; display: inline-block;">
+            <button onclick="toggleProjectDropdown()" id="project-switcher-btn" class="gh-btn gh-btn-sm" style="background: #21262d; color: var(--gh-text-heading); font-weight: 600; font-size: 13px; border: 1px solid var(--gh-border); display: inline-flex; align-items: center; gap: 0.4rem; padding: 3px 8px; cursor: pointer;">
+              <span style="color: var(--gh-link);">${projectName} (${projectSlug})</span>
+              <span style="font-size: 9px; color: var(--gh-text-muted);">▼</span>
+            </button>
+
+            <!-- Project Switcher Dropdown Menu -->
+            <div id="project-dropdown-menu" style="display: none; position: absolute; top: 100%; left: 0; margin-top: 5px; background: #161b22; border: 1px solid var(--gh-border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); min-width: 290px; z-index: 9999; overflow: hidden;">
+              <div style="padding: 7px 12px; font-size: 11px; font-weight: 700; color: var(--gh-text-muted); background: #0d1117; border-bottom: 1px solid var(--gh-border); text-transform: uppercase;">
+                Switch Swarm Project
+              </div>
+              <div style="max-height: 280px; overflow-y: auto;">
+                ${(projects.length > 0 ? projects : [
+                  { id: "brakets", name: "Brakets", slug: "plat-gaming", description: "Esports tournament progression engine", env: braketsEnv },
+                  { id: "scholar", name: "Scholar", slug: "scholar-engine", description: "Academic citation graphs and OWL reasoning", env: "demo" }
+                ]).map(p => `
+                  <a href="/p/${p.id}/code" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; text-decoration: none; color: var(--gh-text); border-bottom: 1px solid var(--gh-border-subtle); ${p.id === projectId ? 'background: rgba(56, 139, 253, 0.15); color: #58a6ff;' : ''}">
+                    <div>
+                      <div style="font-weight: 600; font-size: 13px;">${p.name} <span style="font-size: 11px; color: var(--gh-text-muted);">(${p.slug})</span></div>
+                      <div style="font-size: 11px; color: var(--gh-text-muted);">${(p.description || '').slice(0, 34)}...</div>
+                    </div>
+                    ${p.id === projectId ? '<span style="color: #3fb950; font-weight: 700; font-size: 14px;">✓</span>' : ''}
+                  </a>
+                `).join('')}
+              </div>
+              <div style="padding: 6px 8px; background: #0d1117; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--gh-border);">
+                <button type="button" onclick="openCreateProjectModal()" class="gh-btn gh-btn-sm gh-btn-primary" style="width: 100%; justify-content: center; font-size: 12px;">
+                  + Create New Project
+                </button>
+                <a href="/platform" class="gh-btn gh-btn-sm" style="width: 100%; justify-content: center; font-size: 12px;">
+                  ⚙️ Swarm Platform Overview
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <span style="color: var(--gh-text-muted); margin: 0 0.15rem;">•</span>
+          <span id="env-badge" class="repo-pill env-badge env-badge-${braketsEnv}" onclick="openPromotionModal()" style="cursor: pointer; font-weight: 700; text-transform: uppercase;" title="Project Environment: ${braketsEnv.toUpperCase()}. Click to view promotion status & checklist.">
+            ${braketsEnv === 'production' ? '🛡️' : (braketsEnv === 'test' ? '🧪' : '🎮')} ENV: ${braketsEnv}
+          </span>
+
+          <!-- Active Agent & Task Indicator ("who is working on what") -->
+          <span class="repo-pill" style="border-color: rgba(56, 139, 253, 0.4); color: #58a6ff; font-weight: 500;" title="Active Agent activity on ${projectName}">
+            🤖 ${activeAgentInfo}
+          </span>
+        `}
       </div>
 
       <!-- Action buttons -->
       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-        <button id="btn-promote-env" class="gh-btn" onclick="openPromotionModal()" title="View environment lifecycle & promotion checklist">
-          🚀 Promote (${braketsEnv})
+        <button id="btn-create-project-top" class="gh-btn gh-btn-primary" onclick="openCreateProjectModal()" title="Create a new isolated project in Swarm">
+          + New Project
         </button>
-        <button id="engine-toggle-btn" class="gh-btn ${isPaused ? 'gh-btn-primary' : 'gh-btn-danger'}" onclick="toggleAutonomousEngine('${isPaused ? 'resume' : 'pause'}')">
-          ${isPaused ? '▶ Resume Swarm' : '⏸ Pause Swarm'}
-        </button>
-        <button id="btn-manual-step" class="gh-btn" onclick="triggerManualTick()">
-          ⚡ Run 1 Step
-        </button>
-        <button class="gh-btn" onclick="openEnrollmentModal()">
-          🔑 Enroll Key
-        </button>
+        ${!isPlatform ? `
+          <button id="btn-promote-env" class="gh-btn" onclick="openPromotionModal()" title="View environment lifecycle & promotion checklist">
+            🚀 Promote (${braketsEnv})
+          </button>
+          <button id="engine-toggle-btn" class="gh-btn ${isPaused ? 'gh-btn-primary' : 'gh-btn-danger'}" onclick="toggleAutonomousEngine('${isPaused ? 'resume' : 'pause'}')">
+            ${isPaused ? '▶ Resume Swarm' : '⏸ Pause Swarm'}
+          </button>
+          <button id="btn-manual-step" class="gh-btn" onclick="triggerManualTick()">
+            ⚡ Run 1 Step
+          </button>
+          <button class="gh-btn" onclick="openEnrollmentModal()">
+            🔑 Enroll Key
+          </button>
+        ` : `
+          <a href="/p/brakets/code" class="gh-btn">
+            Open Brakets ↗
+          </a>
+        `}
       </div>
     </div>
 
     <!-- Navigation Tabs -->
-    <nav class="gh-tabs" aria-label="Repository">
-      <a href="/p/${projectId}/code" id="nav-tab-code" class="tab-item ${activeTab === 'code' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M4.72 3.22a.75.75 0 011.06 1.06L2.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L.47 8.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 8l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06l-4.25-4.25z"/></svg>
-        <span>Code</span>
-      </a>
-      <a href="/p/${projectId}/issues" id="nav-tab-issues" class="tab-item ${activeTab === 'issues' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
-        <span>Issues</span>
-        ${counts.issues !== undefined ? `<span class="tab-counter">${counts.issues}</span>` : ''}
-      </a>
-      <a href="/p/${projectId}/pulls" id="nav-tab-pulls" class="tab-item ${activeTab === 'pulls' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
-        <span>Pull requests</span>
-        ${counts.pulls !== undefined ? `<span class="tab-counter">${counts.pulls}</span>` : ''}
-      </a>
-      <a href="/p/${projectId}/agents" id="nav-tab-agents" class="tab-item ${activeTab === 'agents' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path d="M10.561 8.073a6.005 6.005 0 013.432 5.142.75.75 0 11-1.498.07 4.5 4.5 0 00-8.99 0 .75.75 0 01-1.498-.07 6.004 6.004 0 013.431-5.142 3.999 3.999 0 115.123 0zM10.5 5a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0z"/></svg>
-        <span>Agents</span>
-        ${counts.agents !== undefined ? `<span class="tab-counter">${counts.agents}</span>` : ''}
-      </a>
-      <a href="/p/${projectId}/actions" id="nav-tab-actions" class="tab-item ${activeTab === 'actions' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-2.75A.75.75 0 017.25 4.5h1.5a.75.75 0 01.75.75v5.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-5.5z"/></svg>
-        <span>Actions</span>
-      </a>
-      <a href="/p/${projectId}/rehearsals" id="nav-tab-rehearsals" class="tab-item ${activeTab === 'rehearsals' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path d="M9.504.43a1.5 1.5 0 011.264.508l4.296 4.697c.3.327.436.772.373 1.214l-1.393 9.754A1.5 1.5 0 0112.558 18H3.442a1.5 1.5 0 01-1.486-1.397L.563 6.85a1.5 1.5 0 01.373-1.215L5.232.938A1.5 1.5 0 016.496.43h3.008zM6.5 2.5a.5.5 0 00-.5.5v2a.5.5 0 001 0V3h2v2a.5.5 0 001 0V3a.5.5 0 00-.5-.5h-3zM3 8a1 1 0 100 2 1 1 0 000-2zm10 0a1 1 0 100 2 1 1 0 000-2zm-5 4a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg>
-        <span>Rehearsals</span>
-      </a>
-      <a href="/p/${projectId}/insights" id="nav-tab-insights" class="tab-item ${activeTab === 'insights' ? 'active' : ''}">
-        <svg height="16" viewBox="0 0 16 16" width="16"><path d="M1.5 1.75a.75.75 0 00-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 000-1.5H1.5V1.75z"/><path d="M3.75 6.5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5a.75.75 0 01.75-.75zm4.5-2a.75.75 0 01.75.75v6.5a.75.75 0 01-1.5 0v-6.5a.75.75 0 01.75-.75zm4.5 4a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0v-2.5a.75.75 0 01.75-.75z"/></svg>
-        <span>Insights</span>
-      </a>
+    <nav class="gh-tabs" aria-label="${isPlatform ? 'Platform' : 'Repository'}">
+      ${isPlatform ? `
+        <a href="/platform" class="tab-item ${activeTab === 'overview' ? 'active' : ''}">
+          <span>Overview</span>
+        </a>
+        <a href="/platform/projects" class="tab-item ${activeTab === 'projects' ? 'active' : ''}">
+          <span>Projects (${projects.length})</span>
+        </a>
+        <a href="/platform/agents" class="tab-item ${activeTab === 'agents' ? 'active' : ''}">
+          <span>Agents (${counts.agents || 2})</span>
+        </a>
+        <a href="/platform/ledger" class="tab-item ${activeTab === 'ledger' ? 'active' : ''}">
+          <span>Ledger</span>
+        </a>
+        <a href="/platform/traces" class="tab-item ${activeTab === 'traces' ? 'active' : ''}">
+          <span>Traces</span>
+        </a>
+      ` : `
+        <a href="/p/${projectId}/code" id="nav-tab-code" class="tab-item ${activeTab === 'code' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M4.72 3.22a.75.75 0 011.06 1.06L2.06 8l3.72 3.72a.75.75 0 11-1.06 1.06L.47 8.53a.75.75 0 010-1.06l4.25-4.25zm6.56 0a.75.75 0 10-1.06 1.06L13.94 8l-3.72 3.72a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06l-4.25-4.25z"/></svg>
+          <span>Code</span>
+        </a>
+        <a href="/p/${projectId}/issues" id="nav-tab-issues" class="tab-item ${activeTab === 'issues' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path d="M8 9.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/><path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zM1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0z"/></svg>
+          <span>Issues</span>
+          ${counts.issues !== undefined ? `<span class="tab-counter">${counts.issues}</span>` : ''}
+        </a>
+        <a href="/p/${projectId}/pulls" id="nav-tab-pulls" class="tab-item ${activeTab === 'pulls' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+          <span>Pull requests</span>
+          ${counts.pulls !== undefined ? `<span class="tab-counter">${counts.pulls}</span>` : ''}
+        </a>
+        <a href="/p/${projectId}/agents" id="nav-tab-agents" class="tab-item ${activeTab === 'agents' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path d="M10.561 8.073a6.005 6.005 0 013.432 5.142.75.75 0 11-1.498.07 4.5 4.5 0 00-8.99 0 .75.75 0 01-1.498-.07 6.004 6.004 0 013.431-5.142 3.999 3.999 0 115.123 0zM10.5 5a2.5 2.5 0 10-5 0 2.5 2.5 0 005 0z"/></svg>
+          <span>Agents</span>
+          ${counts.agents !== undefined ? `<span class="tab-counter">${counts.agents}</span>` : ''}
+        </a>
+        <a href="/p/${projectId}/actions" id="nav-tab-actions" class="tab-item ${activeTab === 'actions' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" d="M1.5 8a6.5 6.5 0 1113 0 6.5 6.5 0 01-13 0zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-2.75A.75.75 0 017.25 4.5h1.5a.75.75 0 01.75.75v5.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-5.5z"/></svg>
+          <span>Actions</span>
+        </a>
+        <a href="/p/${projectId}/rehearsals" id="nav-tab-rehearsals" class="tab-item ${activeTab === 'rehearsals' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path d="M9.504.43a1.5 1.5 0 011.264.508l4.296 4.697c.3.327.436.772.373 1.214l-1.393 9.754A1.5 1.5 0 0112.558 18H3.442a1.5 1.5 0 01-1.486-1.397L.563 6.85a1.5 1.5 0 01.373-1.215L5.232.938A1.5 1.5 0 016.496.43h3.008zM6.5 2.5a.5.5 0 00-.5.5v2a.5.5 0 001 0V3h2v2a.5.5 0 001 0V3a.5.5 0 00-.5-.5h-3zM3 8a1 1 0 100 2 1 1 0 000-2zm10 0a1 1 0 100 2 1 1 0 000-2zm-5 4a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/></svg>
+          <span>Rehearsals</span>
+        </a>
+        <a href="/p/${projectId}/insights" id="nav-tab-insights" class="tab-item ${activeTab === 'insights' ? 'active' : ''}">
+          <svg height="16" viewBox="0 0 16 16" width="16"><path d="M1.5 1.75a.75.75 0 00-1.5 0v12.5c0 .414.336.75.75.75h14.5a.75.75 0 000-1.5H1.5V1.75z"/><path d="M3.75 6.5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5a.75.75 0 01.75-.75zm4.5-2a.75.75 0 01.75.75v6.5a.75.75 0 01-1.5 0v-6.5a.75.75 0 01.75-.75zm4.5 4a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0v-2.5a.75.75 0 01.75-.75z"/></svg>
+          <span>Insights</span>
+        </a>
+      `}
     </nav>
   </header>
 
@@ -879,7 +975,200 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
         alert("Rollback error: " + e.message);
       }
     }
+
+    // --- Project Switcher & Project Creator Handlers ---
+
+    function toggleProjectDropdown() {
+      const menu = document.getElementById('project-dropdown-menu');
+      if (menu) {
+        menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+      }
+    }
+
+    // Close dropdown on outside click
+    document.addEventListener('click', function(e) {
+      const switcherBtn = document.getElementById('project-switcher-btn');
+      const menu = document.getElementById('project-dropdown-menu');
+      if (menu && switcherBtn && !switcherBtn.contains(e.target) && !menu.contains(e.target)) {
+        menu.style.display = 'none';
+      }
+    });
+
+    function openCreateProjectModal() {
+      const modal = document.getElementById('create-project-modal');
+      if (modal) {
+        modal.style.display = 'flex';
+        const input = document.getElementById('create-project-prompt');
+        if (input) input.focus();
+      }
+      const menu = document.getElementById('project-dropdown-menu');
+      if (menu) menu.style.display = 'none';
+    }
+
+    function closeCreateProjectModal() {
+      const modal = document.getElementById('create-project-modal');
+      if (modal) modal.style.display = 'none';
+      const statusDiv = document.getElementById('create-project-status');
+      if (statusDiv) statusDiv.style.display = 'none';
+    }
+
+    function selectPresetPrompt(promptText, nameText, idText, templateKey) {
+      const promptEl = document.getElementById('create-project-prompt');
+      const nameEl = document.getElementById('create-project-name');
+      const idEl = document.getElementById('create-project-id');
+      const tmplEl = document.getElementById('create-project-template');
+      if (promptEl) promptEl.value = promptText;
+      if (nameEl) nameEl.value = nameText;
+      if (idEl) idEl.value = idText;
+      if (tmplEl) tmplEl.value = templateKey;
+    }
+
+    async function createProjectDirect(promptText, nameText, idText, templateKey) {
+      selectPresetPrompt(promptText, nameText, idText, templateKey);
+      openCreateProjectModal();
+      await submitCreateProject();
+    }
+
+    async function submitCreateProject() {
+      const promptEl = document.getElementById('create-project-prompt');
+      const nameEl = document.getElementById('create-project-name');
+      const idEl = document.getElementById('create-project-id');
+      const tmplEl = document.getElementById('create-project-template');
+      const statusDiv = document.getElementById('create-project-status');
+      const submitBtn = document.getElementById('btn-submit-create-project');
+
+      const promptVal = promptEl ? promptEl.value.trim() : "";
+      if (!promptVal) {
+        alert("Please enter a project prompt or select a template.");
+        return;
+      }
+
+      const nameVal = nameEl ? nameEl.value.trim() : "";
+      const idVal = idEl ? idEl.value.trim() : "";
+      const tmplVal = tmplEl ? tmplEl.value.trim() : "";
+
+      if (statusDiv) {
+        statusDiv.style.display = 'block';
+        statusDiv.style.background = 'rgba(56, 139, 253, 0.15)';
+        statusDiv.style.color = '#58a6ff';
+        statusDiv.innerText = "⏳ Initializing project, isolated repository, issue board & format packs...";
+      }
+      if (submitBtn) submitBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: promptVal,
+            name: nameVal || undefined,
+            id: idVal || undefined,
+            template: tmplVal || undefined
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (statusDiv) {
+            statusDiv.style.background = 'rgba(46, 160, 67, 0.2)';
+            statusDiv.style.color = '#3fb950';
+            statusDiv.innerText = "✓ Project created! Redirecting to workspace...";
+          }
+          setTimeout(() => {
+            window.location.href = data.project?.url || ('/p/' + data.project?.id + '/code');
+          }, 600);
+        } else {
+          if (statusDiv) {
+            statusDiv.style.background = 'rgba(218, 54, 51, 0.15)';
+            statusDiv.style.color = '#f85149';
+            statusDiv.innerText = "Error: " + (data.error || "Failed to create project");
+          }
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      } catch (e) {
+        if (statusDiv) {
+          statusDiv.style.background = 'rgba(218, 54, 51, 0.15)';
+          statusDiv.style.color = '#f85149';
+          statusDiv.innerText = "Error: " + e.message;
+        }
+        if (submitBtn) submitBtn.disabled = false;
+      }
+    }
   </script>
+
+  <!-- Modal: Create Project -->
+  <div id="create-project-modal" class="modal-overlay" onclick="if(event.target === this) closeCreateProjectModal()">
+    <div style="background: var(--gh-card-bg); border: 1px solid var(--gh-border); border-radius: 8px; width: 100%; max-width: 620px; box-shadow: 0 16px 36px rgba(0,0,0,0.7); overflow: hidden;">
+      <div style="padding: 1rem 1.25rem; border-bottom: 1px solid var(--gh-border); display: flex; justify-content: space-between; align-items: center; background: #0d1117;">
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.2rem;">🚀</span>
+          <strong style="color: #f0f6fc; font-size: 1.1rem;">Create Project in Swarm</strong>
+        </div>
+        <button onclick="closeCreateProjectModal()" style="background: transparent; border: none; color: var(--gh-text-muted); font-size: 1.2rem; cursor: pointer;">✕</button>
+      </div>
+      <div style="padding: 1.25rem;">
+        <p style="color: var(--gh-text-muted); font-size: 13px; margin-bottom: 1rem;">
+          Tell Swarm what you want to build. The platform will initialize an isolated project workspace, repository, seeded issue board, and format/skill packs.
+        </p>
+
+        <!-- Quick Preset Cards -->
+        <label style="display: block; font-weight: 600; font-size: 12px; color: var(--gh-text-heading); margin-bottom: 0.5rem; text-transform: uppercase;">
+          Quick Starter Templates
+        </label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; margin-bottom: 1.25rem;">
+          <button type="button" class="preset-card" onclick="selectPresetPrompt('make me a micro-SaaS', 'InvoiceFlow Micro-SaaS', 'micro-saas', 'micro_saas')" style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 0.75rem 0.6rem; text-align: left; cursor: pointer; color: var(--gh-text); transition: border-color 0.15s;">
+            <div style="font-size: 1.1rem; margin-bottom: 0.25rem;">⚡</div>
+            <strong style="font-size: 12px; color: #f0f6fc; display: block; margin-bottom: 0.2rem;">Micro-SaaS</strong>
+            <span style="font-size: 11px; color: var(--gh-text-muted); display: block; line-height: 1.3;">Stripe billing, D1/R2, Next.js 15, Auth</span>
+          </button>
+          <button type="button" class="preset-card" onclick="selectPresetPrompt('fix this repo', 'Repo Auto-Healer', 'repo-fixer', 'fix_repo')" style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 0.75rem 0.6rem; text-align: left; cursor: pointer; color: var(--gh-text); transition: border-color 0.15s;">
+            <div style="font-size: 1.1rem; margin-bottom: 0.25rem;">🛠️</div>
+            <strong style="font-size: 12px; color: #f0f6fc; display: block; margin-bottom: 0.2rem;">Fix This Repo</strong>
+            <span style="font-size: 11px; color: var(--gh-text-muted); display: block; line-height: 1.3;">Bug triage, AST audit, regression suite</span>
+          </button>
+          <button type="button" class="preset-card" onclick="selectPresetPrompt('create a three.js 3D site', 'Spatial 3D Canvas', 'threejs-3d-site', 'threejs_site')" style="background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; padding: 0.75rem 0.6rem; text-align: left; cursor: pointer; color: var(--gh-text); transition: border-color 0.15s;">
+            <div style="font-size: 1.1rem; margin-bottom: 0.25rem;">🎨</div>
+            <strong style="font-size: 12px; color: #f0f6fc; display: block; margin-bottom: 0.2rem;">Three.js 3D Site</strong>
+            <span style="font-size: 11px; color: var(--gh-text-muted); display: block; line-height: 1.3;">WebGL 3D canvas, OrbitControls, Shaders</span>
+          </button>
+        </div>
+
+        <!-- Custom Prompt & Form -->
+        <div style="margin-bottom: 1rem;">
+          <label for="create-project-prompt" style="display: block; font-weight: 600; font-size: 12.5px; color: var(--gh-text-heading); margin-bottom: 0.35rem;">
+            Project Goal / Prompt:
+          </label>
+          <textarea id="create-project-prompt" rows="3" placeholder="e.g. make me a micro-SaaS with Stripe or fix this repo" style="width: 100%; background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; color: #f0f6fc; font-family: inherit; font-size: 13px; padding: 0.6rem 0.8rem; line-height: 1.4; resize: vertical;"></textarea>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1.25rem;">
+          <div>
+            <label for="create-project-name" style="display: block; font-weight: 600; font-size: 12px; color: var(--gh-text-heading); margin-bottom: 0.35rem;">
+              Project Name:
+            </label>
+            <input type="text" id="create-project-name" placeholder="InvoiceFlow Micro-SaaS" style="width: 100%; background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; color: #f0f6fc; font-size: 13px; padding: 0.5rem 0.75rem;">
+          </div>
+          <div>
+            <label for="create-project-id" style="display: block; font-weight: 600; font-size: 12px; color: var(--gh-text-heading); margin-bottom: 0.35rem;">
+              Project Slug / ID:
+            </label>
+            <input type="text" id="create-project-id" placeholder="micro-saas" style="width: 100%; background: #0d1117; border: 1px solid var(--gh-border); border-radius: 6px; color: #7ee787; font-family: monospace; font-size: 12.5px; padding: 0.5rem 0.75rem;">
+          </div>
+        </div>
+
+        <input type="hidden" id="create-project-template" value="">
+
+        <div id="create-project-status" style="display: none; font-size: 12.5px; padding: 0.6rem 0.8rem; border-radius: 6px; margin-bottom: 1rem;"></div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 0.5rem;">
+          <button type="button" class="gh-btn" onclick="closeCreateProjectModal()">Cancel</button>
+          <button type="button" id="btn-submit-create-project" class="gh-btn gh-btn-primary" onclick="submitCreateProject()">
+            🚀 Create Project
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>`;
 }

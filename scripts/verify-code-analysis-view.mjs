@@ -35,8 +35,8 @@ async function run() {
   assert.ok(Array.isArray(analysis.repo_tree) && analysis.repo_tree.length >= 3, "Repo tree must contain directories");
   const treePaths = analysis.repo_tree.map(d => d.path);
   assert.ok(treePaths.includes("apps/brakets-gg"), "Repo tree must include apps/brakets-gg");
-  assert.ok(treePaths.includes("demo/brakets-bracket"), "Repo tree must include demo/brakets-bracket");
-  assert.ok(treePaths.includes("docs/vocab"), "Repo tree must include docs/vocab");
+  assert.ok(treePaths.includes("fixtures"), "Repo tree must include fixtures");
+  assert.ok(!treePaths.includes("docs/vocab"), "Repo tree must strictly exclude platform docs/vocab");
   console.log("   ✓ (1) Repo tree and README summary verified.");
 
   // (2) Stack & Architecture Map

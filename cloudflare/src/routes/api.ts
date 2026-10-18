@@ -5,6 +5,7 @@ import type { Env } from "../types";
 import { checkAdminAuth, isSupervisorKeyAllowed } from "../crypto";
 import { getSandbox } from "../sandbox";
 import { generateRehearsalEvidenceSvg } from "../rehearsal/visualEvidence";
+import { generateVisualReviewSvg } from "../ui/visualReviewSvg";
 
 const DEFAULT_PROJECT_ID = "s3a-swarm-main";
 
@@ -332,32 +333,98 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
   }
 
   // --------------------------------------------------------------------------
-  // 7. Project-Scoped API Routes: /project/:projectId/... and /p/:projectId/api/...
+  // 7. Visual Code & Design Review SVG Canvas
   // --------------------------------------------------------------------------
+  if (
+    path === "/visual-review.svg" ||
+    (pathParts[0] === "project" && pathParts[2] === "visual-review.svg") ||
+    (pathParts[0] === "p" && pathParts[2] === "visual-review.svg")
+  ) {
+    const targetProject = pathParts[1] || "brakets";
+    const svg = generateVisualReviewSvg(targetProject);
+    return new Response(svg, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/svg+xml; charset=utf-8",
+        "Cache-Control": "public, max-age=60",
+      },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // 8. Global Projects API: /api/projects (GET / POST)
+  // --------------------------------------------------------------------------
+  if (path === "/api/projects" || path === "/api/projects/") {
+    const doId = env.REPO_COORDINATOR.idFromName(DEFAULT_PROJECT_ID);
+    const stub = env.REPO_COORDINATOR.get(doId);
+    const targetUrl = new URL(request.url);
+    targetUrl.pathname = `/project/${DEFAULT_PROJECT_ID}/projects`;
+    return stub.fetch(new Request(targetUrl.toString(), request));
+  }
+
+  // --------------------------------------------------------------------------
+  // 9. Project-Scoped API Routes: /project/:projectId/... and /p/:projectId/api/...
+  // --------------------------------------------------------------------------
+  const DO_API_ACTIONS = new Set([
+    "operations", "rehearsals", "formats", "env", "game-packs", "test-sandbox", "push",
+    "tasks", "sync", "change-requests", "change_requests", "cr", "status", "agents",
+    "human-queue", "resolve", "preview", "agent", "control", "scheduler-tick",
+    "close-duplicate-prs", "triage-duplicates", "record-usage", "reset-task",
+    "reopen-cr-283", "reopen-failed-verification", "rerun-task-283", "rerun-review-task",
+    "ledger", "budget", "trace", "traces", "vocab", "analysis", "plan", "repairs",
+    "projects", "init-project", "events"
+  ]);
+
+  // Legacy redirects: /p/s3a-swarm-main/* and /project/s3a-swarm-main/* (for non-API endpoints)
+  if (
+    (pathParts[0] === "p" && pathParts[1] === "s3a-swarm-main" && pathParts[2] !== "api") ||
+    (pathParts[0] === "project" && pathParts[1] === "s3a-swarm-main" && !DO_API_ACTIONS.has(pathParts[2] || ""))
+  ) {
+    const rest = pathParts.slice(2).join("/");
+    const dest = rest ? `/p/brakets/${rest}` : `/p/brakets/code`;
+    const search = url.search || "";
+    return new Response(null, {
+      status: 301,
+      headers: { Location: `${dest}${search}` }
+    });
+  }
+
   if (pathParts[0] === "project" && pathParts.length >= 2) {
     const projectId = pathParts[1];
     const sub = pathParts[2] || "";
 
+    // If sub is a UI page or not a DO API action, let ui.ts handle it
+    if (!DO_API_ACTIONS.has(sub)) {
+      return null;
+    }
+
+    const targetDoId = (projectId === "brakets" || projectId === "s3a-swarm-main") ? DEFAULT_PROJECT_ID : projectId;
+    const doId = env.REPO_COORDINATOR.idFromName(targetDoId);
+    const stub = env.REPO_COORDINATOR.get(doId);
+
     // Live preview proxy route: /project/:id/preview/live
     if (sub === "preview" && pathParts[3] === "live") {
-      const doId = env.REPO_COORDINATOR.idFromName(projectId);
-      const stub = env.REPO_COORDINATOR.get(doId);
       return stub.fetch(request);
     }
 
     // Forward API request to the RepoCoordinator Durable Object
-    const doId = env.REPO_COORDINATOR.idFromName(projectId);
-    const stub = env.REPO_COORDINATOR.get(doId);
+    if (targetDoId !== projectId) {
+      const rewrittenUrl = new URL(request.url);
+      rewrittenUrl.pathname = `/project/${targetDoId}/${pathParts.slice(2).join("/")}`;
+      return stub.fetch(new Request(rewrittenUrl.toString(), request));
+    }
+
     return stub.fetch(request);
   }
 
   // /p/:projectId/api/... or /p/:projectId/plan/... forward to RepoCoordinator DO
   if (pathParts[0] === "p" && (pathParts[2] === "api" || pathParts[2] === "plan")) {
     const projectId = pathParts[1];
+    const targetDoId = (projectId === "brakets" || projectId === "s3a-swarm-main") ? DEFAULT_PROJECT_ID : projectId;
     const targetUrl = new URL(request.url);
     const subPath = pathParts[2] === "api" ? pathParts.slice(3).join("/") : pathParts.slice(2).join("/");
-    targetUrl.pathname = `/project/${projectId}/${subPath}`;
-    const doId = env.REPO_COORDINATOR.idFromName(projectId);
+    targetUrl.pathname = `/project/${targetDoId}/${subPath}`;
+    const doId = env.REPO_COORDINATOR.idFromName(targetDoId);
     const stub = env.REPO_COORDINATOR.get(doId);
     return stub.fetch(new Request(targetUrl.toString(), request));
   }

@@ -178,7 +178,7 @@ export interface TaskItem {
   title: string;
   description: string;
   files_allowed: string[];
-  tests: string;
+  tests?: string;
   risk_level: "low" | "high" | "review";
   status: "open" | "claimed" | "in_review" | "changes_requested" | "merged" | "failed" | "deferred_budget" | "done";
   claimed_by?: string;
@@ -198,6 +198,7 @@ export interface TaskItem {
   expected_result?: string;
   actual_result?: string;
   screenshot_url?: string;
+  created_at?: number;
 }
 
 export interface ChangeRequest {
@@ -487,6 +488,9 @@ export interface RegisteredAgent {
   registered_at: number;
   last_seen: number;
   files_allowed?: string[];
+  agent_name?: string;
+  public_key_hex?: string;
+  capabilities?: string[];
 }
 
 export interface DailyLimits {
@@ -826,5 +830,37 @@ export interface ProjectAnalysis {
   findings: CodeHealthFinding[];
   plan_of_attack: PlanOfAttack;
   package_spec: PackageSpec;
+}
+
+// --------------------------------------------------------------------------
+// Swarm Platform & Project Registry Models
+// --------------------------------------------------------------------------
+
+export interface ProjectRegistryItem {
+  id: string;
+  name: string;
+  slug: string;
+  repo_name: string;
+  description: string;
+  env: BraketsEnv;
+  template?: "micro_saas" | "fix_repo" | "threejs_site" | "custom";
+  created_at: number;
+  active_agent?: string;
+  active_task?: string;
+  status?: "active" | "archived" | "in_setup";
+}
+
+export interface CreateProjectRequest {
+  prompt: string;
+  name?: string;
+  id?: string;
+  slug?: string;
+  template?: "micro_saas" | "fix_repo" | "threejs_site" | "custom";
+}
+
+export interface CreateProjectResult {
+  success: boolean;
+  message: string;
+  project: ProjectRegistryItem;
 }
 

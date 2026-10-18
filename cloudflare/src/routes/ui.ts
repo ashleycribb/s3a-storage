@@ -1,7 +1,7 @@
 // cloudflare/src/routes/ui.ts
 // Server-Rendered UI Routes & Redirects
 
-import type { Env, TaskItem, ChangeRequest, RegisteredAgent, BudgetStatus, BreadcrumbItem, ProjectAnalysis } from "../types";
+import type { Env, TaskItem, ChangeRequest, RegisteredAgent, BudgetStatus, BreadcrumbItem, ProjectAnalysis, ProjectRegistryItem } from "../types";
 import { renderShell } from "../ui/shell";
 import { renderCodePage } from "../ui/pages/code";
 import { renderIssuesPage, renderIssueDetailPage } from "../ui/pages/issues";
@@ -10,8 +10,9 @@ import { renderAgentsPage } from "../ui/pages/agents";
 import { renderActionsPage, renderActionDetailPage } from "../ui/pages/actions";
 import { renderInsightsPage } from "../ui/pages/insights";
 import { renderRehearsalsPage, renderRehearsalDetailPage } from "../ui/pages/rehearsals";
+import { renderPlatformPage } from "../ui/pages/platform";
 
-const DEFAULT_PROJECT_ID = "s3a-swarm-main";
+const DEFAULT_PROJECT_ID = "brakets";
 
 export async function handleUIRoutes(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
@@ -19,7 +20,95 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   const pathParts = path.split("/").filter(Boolean);
 
   // --------------------------------------------------------------------------
-  // 1. Retire ?tab= query parameter (301 Redirect) for top-level navigation
+  // 1. Explicit 301 Redirects: /p/s3a-swarm-main/* -> /p/brakets/*
+  // --------------------------------------------------------------------------
+  if (pathParts[0] === "p" && pathParts[1] === "s3a-swarm-main") {
+    const rest = pathParts.slice(2).join("/");
+    const dest = rest ? `/p/brakets/${rest}` : `/p/brakets/code`;
+    const search = url.search || "";
+    return new Response(null, {
+      status: 301,
+      headers: { Location: `${dest}${search}` }
+    });
+  }
+
+  // /project/s3a-swarm-main/* (browser requests) -> /p/brakets/*
+  if (pathParts[0] === "project" && pathParts[1] === "s3a-swarm-main") {
+    const rest = pathParts.slice(2).join("/");
+    const dest = rest ? `/p/brakets/${rest}` : `/p/brakets/code`;
+    const search = url.search || "";
+    return new Response(null, {
+      status: 301,
+      headers: { Location: `${dest}${search}` }
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. Swarm Platform Routes (/platform/*)
+  // --------------------------------------------------------------------------
+  if (pathParts[0] === "platform") {
+    const platformSection = (pathParts[1] || "overview") as "overview" | "projects" | "agents" | "ledger" | "traces";
+    const doId = env.REPO_COORDINATOR.idFromName("s3a-swarm-main");
+    const stub = env.REPO_COORDINATOR.get(doId);
+
+    let budgetData: BudgetStatus | undefined = undefined;
+    let agentsList: RegisteredAgent[] = [];
+    let projectsList: ProjectRegistryItem[] = [];
+
+    const [resBudget, resAgents, resProjects] = await Promise.allSettled([
+      stub.fetch(new Request("https://internal/project/s3a-swarm-main/ledger")),
+      stub.fetch(new Request("https://internal/project/s3a-swarm-main/agents")),
+      stub.fetch(new Request("https://internal/project/s3a-swarm-main/projects")),
+    ]);
+
+    if (resBudget.status === "fulfilled" && resBudget.value.ok) {
+      try { budgetData = await resBudget.value.json() as BudgetStatus; } catch (e) {}
+    }
+    if (resAgents.status === "fulfilled" && resAgents.value.ok) {
+      try {
+        const aJson: any = await resAgents.value.json();
+        agentsList = Object.values(aJson.agents || {});
+      } catch (e) {}
+    }
+    if (resProjects.status === "fulfilled" && resProjects.value.ok) {
+      try {
+        const pJson: any = await resProjects.value.json();
+        projectsList = pJson.projects || [];
+      } catch (e) {}
+    }
+    if (projectsList.length === 0) {
+      projectsList = [
+        { id: "brakets", name: "Brakets", slug: "plat-gaming", repo_name: "ashleycribb/plat-gaming", description: "High-concurrency esports tournament progression and bracket generation", env: "test", created_at: Date.now(), active_agent: "gate-agent (builder)", active_task: "TASK-283" },
+        { id: "scholar", name: "Scholar", slug: "scholar-engine", repo_name: "ashleycribb/scholar-engine", description: "Semantic academic citation graphs, W3C PROV-O provenance, and OWL 2 DL reasoning", env: "demo", created_at: Date.now(), active_agent: "antigravity (reviewer)", active_task: "SCHOLAR-001" },
+      ];
+    }
+
+    const pageHtml = renderPlatformPage({
+      section: platformSection,
+      projects: projectsList,
+      agents: agentsList,
+      budget: budgetData,
+    });
+
+    const fullHtml = renderShell(pageHtml, {
+      projectId: "platform",
+      projectName: "swarm",
+      projectSlug: "platform",
+      activeTab: platformSection,
+      pageTitle: platformSection.charAt(0).toUpperCase() + platformSection.slice(1),
+      isPlatform: true,
+      projects: projectsList,
+      counts: { agents: agentsList.length },
+    });
+
+    return new Response(fullHtml, {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // 3. Retire ?tab= query parameter (301 Redirect) for top-level navigation
   // --------------------------------------------------------------------------
   if (url.searchParams.has("tab") && pathParts.length < 3) {
     const rawTab = url.searchParams.get("tab") || "code";
@@ -32,9 +121,9 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     // Determine target project
     let proj = DEFAULT_PROJECT_ID;
     if (pathParts[0] === "p" && pathParts[1]) {
-      proj = pathParts[1];
+      proj = pathParts[1] === "s3a-swarm-main" ? "brakets" : pathParts[1];
     } else if (pathParts[0] === "project" && pathParts[1]) {
-      proj = pathParts[1];
+      proj = pathParts[1] === "s3a-swarm-main" ? "brakets" : pathParts[1];
     }
 
     return new Response(null, {
@@ -44,14 +133,13 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   // --------------------------------------------------------------------------
-  // 2. Retire /preview/cr links (301 Redirect)
+  // 4. Retire /preview/cr links (301 Redirect)
   // --------------------------------------------------------------------------
-  // Pattern: /preview/cr/:crId or /project/:id/preview/cr/:crId or /p/:id/preview/cr/:crId
   if (path.includes("/preview/cr/")) {
     const crId = path.split("/preview/cr/")[1]?.split("/")[0] || "";
     let proj = DEFAULT_PROJECT_ID;
-    if (pathParts[0] === "p" && pathParts[1]) proj = pathParts[1];
-    else if (pathParts[0] === "project" && pathParts[1]) proj = pathParts[1];
+    if (pathParts[0] === "p" && pathParts[1]) proj = pathParts[1] === "s3a-swarm-main" ? "brakets" : pathParts[1];
+    else if (pathParts[0] === "project" && pathParts[1]) proj = pathParts[1] === "s3a-swarm-main" ? "brakets" : pathParts[1];
 
     return new Response(null, {
       status: 301,
@@ -60,7 +148,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   // --------------------------------------------------------------------------
-  // 3. Root & Legacy Route Redirects (301)
+  // 5. Root & Legacy Route Redirects (301)
   // --------------------------------------------------------------------------
   if (path === "/" || path === "") {
     return new Response(null, {
@@ -82,7 +170,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     return new Response(null, { status: 301, headers: { Location: dest } });
   }
   if (pathParts[0] === "agents") {
-    return new Response(null, { status: 301, headers: { Location: `/p/${DEFAULT_PROJECT_ID}/agents` } });
+    return new Response(null, { status: 301, headers: { Location: `/platform/agents` } });
   }
   if (pathParts[0] === "actions") {
     const dest = pathParts[1] ? `/p/${DEFAULT_PROJECT_ID}/actions/${pathParts[1]}` : `/p/${DEFAULT_PROJECT_ID}/actions`;
@@ -98,7 +186,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
 
   // /project/:id/issues, /project/:id/pulls, etc. (browser requests redirect to /p/:id/...)
   if (pathParts[0] === "project" && pathParts.length >= 2) {
-    const proj = pathParts[1];
+    const proj = pathParts[1] === "s3a-swarm-main" ? "brakets" : pathParts[1];
     const sub = pathParts[2];
     if (sub && ["code", "issues", "pulls", "agents", "actions", "rehearsals", "insights"].includes(sub)) {
       const rest = pathParts.slice(3).join("/");
@@ -111,7 +199,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   // --------------------------------------------------------------------------
-  // 4. Canonical /p/:projectId/... Server-Rendered UI Routes
+  // 6. Canonical /p/:projectId/... Server-Rendered UI Routes
   // --------------------------------------------------------------------------
   if (pathParts[0] !== "p" || pathParts.length < 2) {
     return null; // Not a UI route
@@ -135,7 +223,8 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   // Fetch project data from Durable Object
-  const doId = env.REPO_COORDINATOR.idFromName(projectId);
+  const coordinatorId = (projectId === "brakets" || projectId === "s3a-swarm-main") ? "s3a-swarm-main" : projectId;
+  const doId = env.REPO_COORDINATOR.idFromName(coordinatorId);
   const stub = env.REPO_COORDINATOR.get(doId);
 
   let statusData: any = {};
@@ -145,15 +234,17 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   let registeredAgentsList: RegisteredAgent[] = [];
   let budgetData: BudgetStatus | undefined = undefined;
   let analysisData: ProjectAnalysis | undefined = undefined;
+  let projectsList: ProjectRegistryItem[] = [];
 
-  const [resStatus, resControl, resBudget, resTasks, resCRs, resAgents, resAnalysis] = await Promise.allSettled([
-    stub.fetch(new Request(`https://internal/project/${projectId}/status`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/control`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/ledger`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/tasks`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/change-requests`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/agents`)),
-    stub.fetch(new Request(`https://internal/project/${projectId}/analysis`)),
+  const [resStatus, resControl, resBudget, resTasks, resCRs, resAgents, resAnalysis, resProjects] = await Promise.allSettled([
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/status`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/control`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/ledger`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/tasks`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/change-requests`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/agents`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/analysis`)),
+    stub.fetch(new Request(`https://internal/project/${coordinatorId}/projects`)),
   ]);
 
   if (resStatus.status === "fulfilled" && resStatus.value.ok) {
@@ -188,6 +279,18 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     try {
       analysisData = await resAnalysis.value.json() as ProjectAnalysis;
     } catch (e) {}
+  }
+  if (resProjects.status === "fulfilled" && resProjects.value.ok) {
+    try {
+      const pJson: any = await resProjects.value.json();
+      projectsList = pJson.projects || [];
+    } catch (e) {}
+  }
+  if (projectsList.length === 0) {
+    projectsList = [
+      { id: "brakets", name: "Brakets", slug: "plat-gaming", repo_name: "ashleycribb/plat-gaming", description: "High-concurrency esports tournament progression and bracket generation", env: (statusData.brakets_env as any) || "demo", created_at: Date.now(), active_agent: "gate-agent (builder)", active_task: "TASK-283" },
+      { id: "scholar", name: "Scholar", slug: "scholar-engine", repo_name: "ashleycribb/scholar-engine", description: "Semantic academic citation graphs, W3C PROV-O provenance, and OWL 2 DL reasoning", env: "demo", created_at: Date.now(), active_agent: "antigravity (reviewer)", active_task: "SCHOLAR-001" },
+    ];
   }
 
   const counts = {
@@ -273,7 +376,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
       if (detailId) {
         let selectedRun = null;
         try {
-          const runRes = await stub.fetch(new Request(`https://internal/project/${projectId}/rehearsals/${detailId}`));
+          const runRes = await stub.fetch(new Request(`https://internal/project/${coordinatorId}/rehearsals/${detailId}`));
           if (runRes.ok) selectedRun = await runRes.json();
         } catch (e) {}
         pageTitle = selectedRun ? `Rehearsal Run · ${(selectedRun as any).run_id}` : `Rehearsal Not Found · ${detailId}`;
@@ -291,7 +394,7 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
       } else {
         let runsList: any[] = [];
         try {
-          const runsRes = await stub.fetch(new Request(`https://internal/project/${projectId}/rehearsals`));
+          const runsRes = await stub.fetch(new Request(`https://internal/project/${coordinatorId}/rehearsals`));
           if (runsRes.ok) {
             const data: any = await runsRes.json();
             runsList = data.runs || [];
@@ -313,15 +416,25 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
   }
 
   const braketsEnv = (statusData.brakets_env as any) || "demo";
+  const projMeta = projectsList.find(p => p.id === projectId);
+  const projectName = projMeta?.name || (projectId === "brakets" || projectId === "s3a-swarm-main" ? "Brakets" : (projectId === "scholar" ? "Scholar" : projectId));
+  const projectSlug = projMeta?.slug || (projectId === "brakets" || projectId === "s3a-swarm-main" ? "plat-gaming" : (projectId === "scholar" ? "scholar-engine" : projectId));
+  const activeAgentInfo = projMeta?.active_agent 
+    ? `${projMeta.active_agent} working on ${projMeta.active_task || 'Backlog'}`
+    : "gate-agent (builder) working on TASK-283";
 
   const fullHtml = renderShell(pageHtml, {
     projectId,
+    projectName,
+    projectSlug,
     activeTab: section as any,
     pageTitle,
     breadcrumbs,
     counts,
     isPaused,
     braketsEnv,
+    projects: projectsList,
+    activeAgentInfo,
   });
 
   return new Response(fullHtml, {

@@ -113,6 +113,7 @@ export function renderCodePage(options: CodePageOptions): string {
       <div style="display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.2rem;">
         <a href="#section-tree-readme" class="gh-btn gh-btn-sm">📁 1. Repo Tree &amp; README</a>
         <a href="#section-arch" class="gh-btn gh-btn-sm">🏛️ 2. Architecture Map</a>
+        <a href="#section-visual-review" class="gh-btn gh-btn-sm" style="border-color: var(--gh-blue); color: #58a6ff;">🎨 2.5 Visual Review Canvas (SVG)</a>
         <a href="#section-findings" class="gh-btn gh-btn-sm">🔍 3. Ranked Findings (${findings.length})</a>
         <a href="#section-plan" class="gh-btn gh-btn-sm" style="${isPlanApproved ? 'border-color: var(--gh-green-text);' : 'border-color: var(--gh-orange); font-weight: 600;'}">
           📋 4. Plan of Attack ${isPlanApproved ? '✓' : '⚠️'}
@@ -226,6 +227,38 @@ export function renderCodePage(options: CodePageOptions): string {
                 </div>
               </div>
             `).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================== -->
+      <!-- SECTION 2.5: SWARM VISUAL SVG CODE & DESIGN REVIEW CANVAS             -->
+      <!-- ===================================================================== -->
+      <div id="section-visual-review" class="gh-card" style="border: 1px solid var(--gh-border); overflow: hidden;">
+        <div class="gh-card-header" style="background: #161b22; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <span style="font-size: 15px;">🎨</span>
+            <strong style="color: var(--gh-text-heading); font-size: 13.5px;">Swarm Visual Code &amp; Design Review Canvas</strong>
+            <span class="gh-badge gh-badge-blue">gate-agent (Senior Dev) &bull; antigravity (Junior Dev)</span>
+            <span class="gh-badge gh-badge-success">✓ 5/5 Repaired</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <a href="/project/${projectId}/visual-review.svg" target="_blank" class="gh-btn gh-btn-sm" style="color: #58a6ff; font-weight: 600;">
+              <span>Open Vector SVG</span> ↗
+            </a>
+          </div>
+        </div>
+        <div class="gh-card-body" style="padding: 0; background: #0d1117; display: flex; justify-content: center; overflow-x: auto;">
+          <div style="width: 100%; max-width: 1020px;">
+            <img src="/project/${projectId}/visual-review.svg" alt="Swarm Visual Code and Design Review Canvas" style="width: 100%; height: auto; display: block; border-radius: 0 0 6px 6px;" />
+          </div>
+        </div>
+        <div style="padding: 0.75rem 1.25rem; background: #161b22; border-top: 1px solid var(--gh-border); font-size: 12px; color: var(--gh-text-muted); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+          <div>
+            <strong>Inspection Dimensions:</strong> AST Component Hierarchy &bull; Rendered Wireframe Design &bull; file:line Error Anchors &bull; Repair Verification Status
+          </div>
+          <div>
+            <strong>Roles:</strong> Senior Dev (<code>gate-agent</code>), Junior Dev / Reviewer (<code>antigravity</code>), PM Coordinator (<code>pm</code>)
           </div>
         </div>
       </div>
