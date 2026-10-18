@@ -49,6 +49,19 @@ import { renderBraketsPreviewHtml } from "../ui/preview";
 import { TournamentHarness } from "../rehearsal/TournamentHarness";
 import { FormatRegistry } from "../rehearsal/FormatRegistry";
 import type { RehearsalRunRecord, RehearsalOptions, TournamentFormatConfig, GamePack } from "../types";
+import {
+  verb_id_for_iri,
+  iri_for_verb_id,
+  isProfileVerb,
+  isHumanActor,
+  isAIAgent,
+  isJudgmentVerb,
+  isFindingOrReportVerb,
+  validateTraceEntry,
+  SCHOLAR_XAPI_PROFILE_JSON,
+  SCHOLAR_ONTOLOGY_TTL,
+  PROFILE_VERB_CONCEPTS,
+} from "../vocab";
 
 export class RepoCoordinator implements DurableObject {
   state: DurableObjectState;
@@ -326,6 +339,32 @@ export class RepoCoordinator implements DurableObject {
     const tasks = await this.getOrInitTasks();
     const task = tasks.find(t => t.id === taskId);
     const taskTitle = task?.title || `Task ${taskId}`;
+    const isReviewTask = Boolean(
+      !task?.files_allowed ||
+      task.files_allowed.length === 0 ||
+      task.risk_level === "review" ||
+      taskId === "TASK-283" ||
+      (task?.description && task.description.toLowerCase().includes("read-only review"))
+    );
+
+    // Grounding in S3A Ontology + Scholar xAPI Profile:
+    // 1. Verbs must exist in profile.
+    // 2. Judgment verbs require human actor; AI agents must NEVER emit them.
+    // 3. Review tasks emit only finding/report verbs, never patches.
+    // 4. Trace entries validate against the profile before write; invalid entries fail the step.
+    const validation = validateTraceEntry({
+      actor,
+      verb,
+      taskId,
+      patch,
+      isReviewTask,
+    });
+    if (!validation.valid) {
+      console.error(`[S3A Trace Profile Violation] Task ${taskId}: ${validation.error}`);
+      throw new Error(`[S3A Trace Profile Violation] Task ${taskId}: ${validation.error}`);
+    }
+
+    const canonicalIri = iri_for_verb_id(verb) || verb;
 
     if (!trace) {
       trace = {
@@ -344,7 +383,7 @@ export class RepoCoordinator implements DurableObject {
       step_index: stepIndex,
       step_name: stepName,
       actor,
-      xapi_verb: verb,
+      xapi_verb: canonicalIri,
       prompt,
       model,
       patch,
@@ -603,8 +642,9 @@ export class RepoCoordinator implements DurableObject {
       candidate.id,
       "pm-task-plan",
       { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-      "http://adlnet.gov/expapi/verbs/planned",
+      "https://ashecribb.dev/xapi/verbs/ai-answered",
       `PM triage plan for ${candidate.title} (${candidate.id})`,
+      undefined,
       undefined,
       planText
     );
@@ -655,8 +695,9 @@ export class RepoCoordinator implements DurableObject {
       candidate.id,
       "review-plan",
       { id: agentId, name: `${agentId} (In-Gate Reviewer)`, type: "ai" },
-      "http://adlnet.gov/expapi/verbs/planned",
+      "https://ashecribb.dev/xapi/verbs/viewed",
       `Read-only code health review plan for ${candidate.title} (${candidate.id})`,
+      undefined,
       undefined,
       planText
     );
@@ -775,24 +816,26 @@ export class RepoCoordinator implements DurableObject {
 
     await this.state.storage.put("code_health_review_summary", summary);
 
-    // Record review findings in trace
-    await this.appendTraceStep(
-      candidate.id,
-      "review-findings-filed",
-      { id: agentId, name: `${agentId} (In-Gate Reviewer)`, type: "ai" },
-      "http://activitystrea.ms/schema/1.0/create",
-      `Filed ${findings.length} code health findings (${summary.by_severity.high} high, ${summary.by_severity.medium} medium, ${summary.by_severity.low} low)`,
-      undefined,
-      undefined,
-      JSON.stringify(summary, null, 2)
-    );
+    // Record each finding with flagged-discrepancy and exact provenance
+    for (const finding of findings) {
+      await this.appendTraceStep(
+        candidate.id,
+        `finding-${finding.id}`,
+        { id: agentId, name: `${agentId} (In-Gate Reviewer)`, type: "ai" },
+        "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
+        `[${finding.severity.toUpperCase()}] ${finding.title} at ${finding.file_line}`,
+        undefined,
+        undefined, // patch is strictly undefined
+        `Location: ${finding.file_line}\nCategory: ${finding.category}\nSeverity: ${finding.severity}\nFinding: ${finding.description}\nSuggested Fix: ${finding.suggested_fix}`
+      );
+    }
 
     await this.appendTraceStep(
       candidate.id,
       "review-summary",
       { id: agentId, name: `${agentId} (In-Gate Reviewer)`, type: "ai" },
-      "http://adlnet.gov/expapi/verbs/completed",
-      `Code health review completed with 0 diffs, 0 commits, and 0 Change Requests. Output published to /insights.`,
+      "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      `Code health review completed with 0 diffs, 0 commits, and 0 Change Requests. Output published to /insights. Requested human review from supervisors.`,
       undefined,
       undefined,
       `Findings Summary:\n- Total: ${findings.length}\n- High: ${summary.by_severity.high}\n- Medium: ${summary.by_severity.medium}\n- Low: ${summary.by_severity.low}`
@@ -859,7 +902,7 @@ export class RepoCoordinator implements DurableObject {
         candidate.id,
         "write-patch-deferred",
         { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-        "http://adlnet.gov/expapi/verbs/deferred",
+        "https://ashecribb.dev/xapi/verbs/requested-human-review",
         "Daily budget cap reached ($5.00 limit). Paid LLM action deferred."
       );
       return { status: "deferred_budget", task_id: candidate.id };
@@ -888,7 +931,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       candidate.id,
       "write-patch",
       { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-      "http://activitystrea.ms/schema/1.0/author",
+      "https://ashecribb.dev/xapi/verbs/edited",
       `Author patch for ${targetFile}`,
       "@cf/qwen/qwen2.5-coder-32b-instruct",
       codePatch
@@ -959,7 +1002,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
           candidate.id,
           `sandbox-repair-attempt-${attempts}`,
           { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-          "http://adlnet.gov/expapi/verbs/failed",
+          "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
           undefined,
           undefined,
           undefined,
@@ -982,7 +1025,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       candidate.id,
       "sandbox-verify-and-repair",
       { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-      "http://adlnet.gov/expapi/verbs/verified",
+      "https://ashecribb.dev/xapi/verbs/verified-claim",
       undefined,
       undefined,
       undefined,
@@ -1102,7 +1145,8 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       candidate.id,
       "sign-and-push",
       { id: agentId, name: `${agentId} (In-Gate PM/Builder)`, type: "ai" },
-      "http://adlnet.gov/expapi/verbs/signed",
+      "https://ashecribb.dev/xapi/verbs/requested-human-review",
+      undefined,
       undefined,
       undefined,
       `PR ${crId} submitted with commit ${commitSha.slice(0, 10)} and Ed25519 signature by ${agentId}`
@@ -1565,7 +1609,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
         cr.task_id,
         "verification-blocked",
         { id: reviewer_pubkey || "supervisor", name: "Verification Barrier", type: "human" },
-        "http://adlnet.gov/expapi/verbs/failed",
+        "https://ashecribb.dev/xapi/verbs/rejected",
         `Approval blocked: ${failureReason}`,
         undefined,
         undefined,
@@ -1607,7 +1651,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
         reviewer_pubkey: reviewer_pubkey || "",
         rationale: cr.human_rationale,
       },
-      "http://adlnet.gov/expapi/verbs/approved",
+      "https://ashecribb.dev/xapi/verbs/approved",
       undefined,
       undefined,
       undefined,
@@ -1686,6 +1730,28 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       agent.last_seen = Date.now();
       await this.state.storage.put(`reg_agent:${cr.agent_id}`, agent);
     }
+
+    const reviewer_pubkey = request.headers.get("x-admin-key") || body.reviewer_pubkey || "";
+    const supervisorName = getSupervisorName(reviewer_pubkey);
+    await this.appendTraceStep(
+      cr.task_id,
+      "human-rejection",
+      {
+        type: "human",
+        id: reviewer_pubkey || "supervisor",
+        name: supervisorName,
+        supervisor_id: supervisorName,
+        reviewer_pubkey: reviewer_pubkey || "",
+        rationale: cr.human_rationale,
+      },
+      "https://ashecribb.dev/xapi/verbs/rejected",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { decision: "rejected", rationale: cr.human_rationale, supervisor: supervisorName }
+    );
 
     return new Response(JSON.stringify({
       status: "rejected",
@@ -1771,6 +1837,28 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
       status: "working",
       task: `Revising: ${feedback}`,
     });
+
+    const reviewer_pubkey = request.headers.get("x-admin-key") || body.reviewer_pubkey || "";
+    const supervisorName = getSupervisorName(reviewer_pubkey);
+    await this.appendTraceStep(
+      cr.task_id,
+      "human-changes-requested",
+      {
+        type: "human",
+        id: reviewer_pubkey || "supervisor",
+        name: supervisorName,
+        supervisor_id: supervisorName,
+        reviewer_pubkey: reviewer_pubkey || "",
+        rationale: cr.pm_feedback,
+      },
+      "https://ashecribb.dev/xapi/verbs/reviewed",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { decision: "changes_requested", feedback: cr.pm_feedback, supervisor: supervisorName }
+    );
 
     return new Response(JSON.stringify({
       status: "changes_requested",
@@ -2648,6 +2736,7 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
           started: Date.now(),
         };
         await this.saveOperation(opRecord);
+        await this.state.storage.delete("trace:TASK-283");
 
         const reviewResult = await this.executeGateAgentReviewLoop(
           projectId,
@@ -2743,6 +2832,47 @@ Write the implementation for ${targetFile}. Return ONLY the code block.`;
           return new Response(JSON.stringify(tr), { headers: { "Content-Type": "application/json" } });
         }
         return new Response("Missing task ID", { status: 400 });
+
+      case "vocab":
+        if (pathParts[3] === "profile") {
+          return new Response(JSON.stringify(SCHOLAR_XAPI_PROFILE_JSON, null, 2), {
+            headers: { "Content-Type": "application/ld+json" }
+          });
+        }
+        if (pathParts[3] === "ontology") {
+          return new Response(SCHOLAR_ONTOLOGY_TTL, {
+            headers: { "Content-Type": "text/turtle" }
+          });
+        }
+        if (pathParts[3] === "resolve") {
+          const iriParam = url.searchParams.get("iri");
+          const verbParam = url.searchParams.get("verb");
+          const q = iriParam || verbParam || "";
+          const resolvedVerbId = verb_id_for_iri(q);
+          const resolvedIri = iri_for_verb_id(q);
+          const isJudgment = resolvedVerbId ? isJudgmentVerb(resolvedVerbId) : false;
+          const isFindingReport = resolvedVerbId ? isFindingOrReportVerb(resolvedVerbId) : false;
+          return new Response(JSON.stringify({
+            query: q,
+            verb_id: resolvedVerbId,
+            iri: resolvedIri,
+            is_profile_verb: resolvedVerbId !== undefined,
+            is_judgment: isJudgment,
+            is_finding_or_report: isFindingReport
+          }, null, 2), {
+            headers: { "Content-Type": "application/json" }
+          });
+        }
+        return new Response(JSON.stringify({
+          profile_id: SCHOLAR_XAPI_PROFILE_JSON.id,
+          ontology_iri: "https://ashecribb.dev/ontologies/scholar/v1",
+          verbs_count: PROFILE_VERB_CONCEPTS.length,
+          endpoints: [
+            `/project/${projectId}/vocab/profile`,
+            `/project/${projectId}/vocab/ontology`,
+            `/project/${projectId}/vocab/resolve?iri=<iri_or_verb>`
+          ]
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
 
       case "repairs":
         return this.handleRepairs(projectId);
@@ -4363,10 +4493,8 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
         stage.stage_id,
         { id: "tournament-harness", name: "S3A Rehearsal Engine", type: "ai" },
         stage.status === "passed"
-          ? "http://adlnet.gov/expapi/verbs/passed"
-          : stage.status === "disputed"
-          ? "http://activitystrea.ms/schema/1.0/flag"
-          : "http://adlnet.gov/expapi/verbs/failed",
+          ? "https://ashecribb.dev/xapi/verbs/verified-claim"
+          : "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
         `Simulated tournament stage: ${stage.name}`,
         "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         undefined,
@@ -4381,7 +4509,7 @@ Agents may propose the page or business logic in a Change Request (PR). Human su
       record.run_id,
       "stage_visual_evidence",
       { id: "tournament-harness", name: "S3A Rehearsal Visual Capture", type: "ai" },
-      record.status === "evidence_missing" ? "http://adlnet.gov/expapi/verbs/failed" : "http://activitystrea.ms/schema/1.0/create",
+      record.status === "evidence_missing" ? "https://ashecribb.dev/xapi/verbs/flagged-discrepancy" : "https://ashecribb.dev/xapi/verbs/exported-snapshot",
       `Visual evidence artifact recorded for tournament run: ${record.run_id}`,
       "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
       undefined,

@@ -147,7 +147,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       await recordCoordinatorTrace(
         "fetch-repo",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://activitystrea.ms/schema/1.0/access",
+        "https://ashecribb.dev/xapi/verbs/viewed",
         { prompt: `Fetched target file ${targetFile} from baseline Artifacts mirror` }
       );
 
@@ -179,7 +179,7 @@ Provide a concise, 3-step technical implementation plan. No conversational fille
       await recordCoordinatorTrace(
         "plan-task",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://adlnet.gov/expapi/verbs/planned",
+        "https://ashecribb.dev/xapi/verbs/ai-answered",
         { prompt, model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", patch: response }
       );
 
@@ -194,7 +194,7 @@ Provide a concise, 3-step technical implementation plan. No conversational fille
         await recordCoordinatorTrace(
           "write-patch-deferred",
           { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-          "http://adlnet.gov/expapi/verbs/deferred",
+          "https://ashecribb.dev/xapi/verbs/requested-human-review",
           { prompt: `Deferred: 100% daily budget cap reached. Enqueued in deferred_queue.` }
         );
         return {
@@ -224,7 +224,7 @@ Return ONLY the code/content within a single codeblock.`;
       await recordCoordinatorTrace(
         "write-patch",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://activitystrea.ms/schema/1.0/author",
+        "https://ashecribb.dev/xapi/verbs/edited",
         { prompt, model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", patch: code }
       );
 
@@ -290,7 +290,7 @@ Return ONLY the code/content within a single codeblock.`;
       await recordCoordinatorTrace(
         "sandbox-verify-and-repair",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://adlnet.gov/expapi/verbs/verified",
+        "https://ashecribb.dev/xapi/verbs/verified-claim",
         { buildTestLog: buildRes.stdout || buildRes.stderr }
       );
 
@@ -380,7 +380,7 @@ Return ONLY the code/content within a single codeblock.`;
       await recordCoordinatorTrace(
         "start-preview-and-browser-qa",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://adlnet.gov/expapi/verbs/tested",
+        "https://ashecribb.dev/xapi/verbs/verified-claim",
         { qaEvidence: report }
       );
 
@@ -475,7 +475,7 @@ Return ONLY the code/content within a single codeblock.`;
       await recordCoordinatorTrace(
         "sign-and-push",
         { id: agentId, name: `Agent ${agentId}`, type: "ai" },
-        "http://adlnet.gov/expapi/verbs/signed",
+        "https://ashecribb.dev/xapi/verbs/requested-human-review",
         { patch: `Commit ${commitId} sealed with SHA-256 ${sealHash.substring(0, 16)}... and Ed25519 signature` }
       );
 

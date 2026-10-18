@@ -103,7 +103,7 @@ export async function sandbox_build(
               await context.appendTrace(
                 "sandbox_build_stream",
                 { id: "sandbox-container", name: "Cloudflare Sandbox Container", type: "system" },
-                "http://activitystrea.ms/schema/1.0/stream",
+                "http://adlnet.gov/expapi/verbs/experienced",
                 {
                   stream,
                   chunk: data,
@@ -168,7 +168,7 @@ ${stderrAccum || "(no stderr)"}
       await context.appendTrace(
         "sandbox_build_complete",
         { id: "sandbox-container", name: "Cloudflare Sandbox Container", type: "system" },
-        "http://adlnet.gov/expapi/verbs/completed",
+        success ? "https://ashecribb.dev/xapi/verbs/verified-claim" : "https://ashecribb.dev/xapi/verbs/flagged-discrepancy",
         {
           argv,
           exitCode,
