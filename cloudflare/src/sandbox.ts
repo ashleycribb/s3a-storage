@@ -234,8 +234,9 @@ export async function sandbox_build(
         exitCode = npmCiRes.exitCode || 1;
         success = false;
       } else {
-        // Step 7: Run requested build command in package root cwd
-        const execPromise = sandbox.exec(`cd '${buildCwd}' && ${safeCommand}`, {
+        // Step 7: Run requested build command in package root cwd (clean stale .next types first and strip standalone copy)
+        await sandbox.exec(`if [ -f "${buildCwd}/next.config.js" ]; then sed -i 's/output: *"standalone",*//g' "${buildCwd}/next.config.js"; fi`);
+        const execPromise = sandbox.exec(`cd '${buildCwd}' && rm -rf .next && ${safeCommand}`, {
           timeout: timeout_ms,
           stream: true,
           onOutput: async (stream: "stdout" | "stderr", data: string) => {
