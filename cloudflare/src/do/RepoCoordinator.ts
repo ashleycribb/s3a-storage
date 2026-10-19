@@ -60,6 +60,7 @@ import { callModel } from "../models";
 import { sandbox_build } from "../sandbox";
 import { formatPREvidenceComment } from "../types";
 import { renderBraketsPreviewHtml } from "../ui/preview";
+import { generateVisualReviewSvg, VisualFindingRun, DEFAULT_FINDINGS_SPEC } from "../ui/visualReviewSvg";
 import { TournamentHarness } from "../rehearsal/TournamentHarness";
 import { FormatRegistry } from "../rehearsal/FormatRegistry";
 import type { RehearsalRunRecord, RehearsalOptions, TournamentFormatConfig, GamePack } from "../types";
@@ -3133,6 +3134,11 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
       return this.handlePreviewLiveProxy(request, targetProject);
     }
 
+    if (action === "visual-review.svg" || pathParts[0] === "visual-review.svg" || pathParts[2] === "visual-review.svg") {
+      const targetProj = (projectId === "visual-review.svg" || projectId === "default") ? "brakets" : projectId;
+      return this.handleVisualReviewSvg(targetProj);
+    }
+
     switch (action) {
       case "operations":
         if (pathParts[3] === "update" && request.method === "POST") {
@@ -3185,6 +3191,8 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
         return this.handleGamePacks(request, projectId, pathParts.slice(3));
       case "test-sandbox":
         return this.handleTestSandbox(request);
+      case "visual-review.svg":
+        return this.handleVisualReviewSvg(projectId);
       case "push":
         return this.handlePush(request, projectId);
       case "tasks":
@@ -4909,6 +4917,61 @@ fi
         headers: { "Content-Type": "application/json" },
       });
     }
+  }
+
+  // --------------------------------------------------------------------------
+  // Visual Review SVG Canvas Handler (/project/:id/visual-review.svg)
+  // Strictly renders from real stored CR and Task run records
+  // --------------------------------------------------------------------------
+  public async handleVisualReviewSvg(projectId: string = "brakets"): Promise<Response> {
+    const tasks = await this.getOrInitTasks();
+    const crMap = await this.state.storage.list<ChangeRequest>({ prefix: "cr:" });
+    const allCrs = Array.from(crMap.values());
+
+    const realFindings: VisualFindingRun[] = DEFAULT_FINDINGS_SPEC.map(spec => {
+      const task = tasks.find(t => t.id === spec.taskId);
+      const crsForTask = allCrs.filter(c => c.task_id === spec.taskId);
+      crsForTask.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      const cr = crsForTask[0];
+
+      if (!cr) {
+        return {
+          ...spec,
+          status: task?.status || "not_run",
+          passed: false,
+          exit_code: undefined,
+          duration_ms: undefined,
+          commit_sha: undefined,
+          log_url: undefined,
+        };
+      }
+
+      const exitCode = cr.test_report?.test_exit_code ?? cr.test_report?.exit_code;
+      const passed = cr.test_report?.passed === true && exitCode === 0 && cr.status !== "failed_verification";
+
+      return {
+        ...spec,
+        crId: cr.id,
+        exit_code: exitCode,
+        duration_ms: cr.test_report?.duration_ms,
+        commit_sha: cr.commit_sha || cr.commit_id,
+        log_url: cr.test_report?.log_url || cr.build_log_r2_url,
+        passed,
+        status: cr.status,
+        first_human_approval: cr.first_human_approval,
+        second_human_approval: cr.second_human_approval,
+        reviewer_pubkey: cr.reviewer_pubkey,
+      };
+    });
+
+    const svg = generateVisualReviewSvg(projectId, realFindings);
+    return new Response(svg, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/svg+xml; charset=utf-8",
+        "Cache-Control": "public, max-age=10",
+      },
+    });
   }
 
   // --------------------------------------------------------------------------
