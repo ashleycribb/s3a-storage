@@ -52,17 +52,25 @@ export interface SandboxBuildResult {
   sandboxImageDigest: string;
 }
 
+export interface SandboxBuildContext {
+  op_id?: string;
+  taskId?: string;
+  projectId?: string;
+  commitSha?: string;
+  branch?: string;
+  repoUrl?: string;
+  packageRoot?: string;
+  targetFile?: string;
+  codePatch?: string;
+  appendTrace?: (stepName: string, actor: any, verb: string, details: any) => Promise<void>;
+}
+
 export async function sandbox_build(
   sandbox: any,
   env: Env,
   argv: string[],
   timeout_ms: number = 60000,
-  context?: {
-    op_id?: string;
-    taskId?: string;
-    projectId?: string;
-    appendTrace?: (stepName: string, actor: any, verb: string, details: any) => Promise<void>;
-  }
+  context?: SandboxBuildContext
 ): Promise<SandboxBuildResult> {
   // STRICT VALIDATION: no shell strings from the model
   if (!Array.isArray(argv) || argv.length === 0) {
@@ -89,38 +97,176 @@ export async function sandbox_build(
 
   const logKey = `build-logs/build-${(context?.taskId || "task").toLowerCase()}-${Date.now()}.log`;
 
+  const scrubTokens = (text: string): string => {
+    if (!text) return "";
+    let s = text;
+    if (env.GITHUB_TOKEN) {
+      s = s.split(env.GITHUB_TOKEN).join("[REDACTED_GITHUB_TOKEN]");
+    }
+    if (env.ADMIN_SECRET) {
+      s = s.split(env.ADMIN_SECRET).join("[REDACTED_ADMIN_SECRET]");
+    }
+    return s;
+  };
+
   try {
     if (sandbox && typeof sandbox.exec === "function") {
-      const execPromise = sandbox.exec(safeCommand, {
-        timeout: timeout_ms,
-        stream: true,
-        onOutput: async (stream: "stdout" | "stderr", data: string) => {
-          if (stream === "stdout") stdoutAccum += data;
-          if (stream === "stderr") stderrAccum += data;
+      // Step 1: Configure Git credentials safely without leaking token in URL or command line
+      if (env.GITHUB_TOKEN) {
+        const netrcB64 = btoa(`machine github.com\nlogin x-access-token\npassword ${env.GITHUB_TOKEN}\n`);
+        await sandbox.exec(`echo '${netrcB64}' | base64 -d > /root/.netrc && chmod 600 /root/.netrc`);
+      }
 
-          if (context?.appendTrace) {
-            try {
-              await context.appendTrace(
-                "sandbox_build_stream",
-                { id: "sandbox-container", name: "Cloudflare Sandbox Container", type: "system" },
-                "http://adlnet.gov/expapi/verbs/experienced",
-                {
-                  stream,
-                  chunk: data,
-                  op_id: context.op_id,
-                  taskId: context.taskId,
-                }
-              );
-            } catch (e) {}
+      // Step 2: Determine repository URL and pinned commit
+      let repoUrl = context?.repoUrl;
+      if (!repoUrl) {
+        if (
+          context?.projectId === "s3a-swarm-main" ||
+          context?.packageRoot === "demo/brakets-bracket" ||
+          (context?.targetFile && context.targetFile.includes("demo/brakets-bracket"))
+        ) {
+          repoUrl = "https://github.com/ashleycribb/s3a-storage.git";
+        } else {
+          repoUrl = "https://github.com/ashleycribb/plat-gaming.git";
+        }
+      }
+
+      const pinnedRef = context?.commitSha || context?.branch || "main";
+
+      // Step 3: Materialize project repo into sandbox at pinned commit (Artifacts fork or GitHub clone)
+      const checkoutCmd =
+        `cd /workspace && ` +
+        `if [ -d "/workspace/repo/.git" ]; then ` +
+        `current_origin=$(cd /workspace/repo && git remote get-url origin 2>/dev/null || echo ""); ` +
+        `if [ "$current_origin" != "${repoUrl}" ]; then ` +
+        `rm -rf /workspace/repo && git clone '${repoUrl}' /workspace/repo && cd /workspace/repo && (git checkout '${pinnedRef}' || git checkout -b '${pinnedRef}' 'origin/${pinnedRef}'); ` +
+        `else ` +
+        `cd /workspace/repo && git fetch origin && (git reset --hard 'origin/${pinnedRef}' 2>/dev/null || git checkout '${pinnedRef}'); ` +
+        `fi; ` +
+        `else ` +
+        `rm -rf /workspace/repo && git clone '${repoUrl}' /workspace/repo && cd /workspace/repo && (git checkout '${pinnedRef}' || git checkout -b '${pinnedRef}' 'origin/${pinnedRef}'); ` +
+        `fi`;
+
+      const checkoutRes = await sandbox.exec(checkoutCmd, { timeout: 45000 });
+      if (checkoutRes.stdout) stdoutAccum += `[Checkout] ${checkoutRes.stdout}\n`;
+      if (checkoutRes.stderr) stderrAccum += `[Checkout] ${checkoutRes.stderr}\n`;
+
+      // Step 4: If builder authored a patch, materialize it into the sandbox workspace
+      if (context?.targetFile && context?.codePatch) {
+        const cleanPath = context.targetFile.replace(/^\/+/, "");
+        const filePath = `/workspace/repo/${cleanPath}`;
+        const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+        if (dir) {
+          await sandbox.exec(`mkdir -p '${dir}'`);
+        }
+        const b64Patch = btoa(unescape(encodeURIComponent(context.codePatch)));
+        await sandbox.exec(`echo '${b64Patch}' | base64 -d > '${filePath}'`);
+      }
+
+      // Step 5: Detect package root and FAIL FAST with "workspace_missing" if package.json absent
+      const candidates = context?.packageRoot ? `"${context.packageRoot}"` : `"demo/brakets-bracket" "apps/brakets-gg" "."`;
+      const detectPkgCmd =
+        `found=""; ` +
+        `for p in ${candidates}; do ` +
+        `if [ -n "$p" ] && [ -f "/workspace/repo/$p/package.json" ]; then ` +
+        `found="$p"; break; ` +
+        `fi; done; ` +
+        `if [ -n "$found" ]; then echo "$found"; else echo "workspace_missing"; fi`;
+
+      const detectRes = await sandbox.exec(detectPkgCmd, { timeout: 10000 });
+      const detectedRoot = (detectRes.stdout || "").trim();
+
+      if (!detectRes.success || detectedRoot === "workspace_missing" || !detectedRoot) {
+        exitCode = 254;
+        success = false;
+        stderrAccum += "\nworkspace_missing: package.json absent in repository (/workspace/repo). Never proceed with build.";
+
+        const durationMs = Date.now() - t0;
+        const fullLog = `=== S3A GATE SANDBOX BUILD LOG ===\n` +
+          `Timestamp: ${new Date().toISOString()}\n` +
+          `Task ID: ${context?.taskId || "N/A"}\n` +
+          `Operation ID: ${context?.op_id || "N/A"}\n` +
+          `Repository: ${repoUrl}\n` +
+          `Pinned Ref: ${pinnedRef}\n` +
+          `Status: FAIL FAST (workspace_missing)\n` +
+          `Duration: ${durationMs}ms\n` +
+          `Exit Code: 254\n` +
+          `Success: false\n\n` +
+          `--- STDERR ---\n${scrubTokens(stderrAccum)}\n`;
+
+        let logUrl = "";
+        if (env.EVIDENCE_BUCKET) {
+          try {
+            await env.EVIDENCE_BUCKET.put(logKey, fullLog, {
+              httpMetadata: { contentType: "text/plain; charset=utf-8" },
+            });
+            logUrl = `https://s3a-gate.ashley-e-cribb.workers.dev/evidence/${logKey}`;
+          } catch (e) {
+            console.error("Failed to store build log in R2:", e);
           }
-        },
-      });
+        }
 
-      const res = await execPromise;
-      exitCode = typeof res.exitCode === "number" ? res.exitCode : (res.success ? 0 : 1);
-      success = res.success;
-      if (res.stdout && !stdoutAccum) stdoutAccum = res.stdout;
-      if (res.stderr && !stderrAccum) stderrAccum = res.stderr;
+        return {
+          success: false,
+          exitCode: 254,
+          stdout: scrubTokens(stdoutAccum),
+          stderr: scrubTokens(stderrAccum),
+          durationMs,
+          sandboxImageDigest,
+          logUrl: logUrl || undefined,
+        };
+      }
+
+      const buildCwd = detectedRoot === "." ? "/workspace/repo" : `/workspace/repo/${detectedRoot}`;
+
+      // If building a subdirectory package like demo/brakets-bracket, isolate its lockfile from repository root
+      if (detectedRoot !== ".") {
+        await sandbox.exec(`if [ -f "/workspace/repo/package-lock.json" ]; then mv /workspace/repo/package-lock.json /workspace/repo/.package-lock.json.bak; fi`);
+      }
+
+      // Step 6: Set cwd to package root, run npm ci first
+      const npmCiCmd = `cd '${buildCwd}' && if [ -d "node_modules" ] && [ -f "node_modules/.bin/next" ]; then echo "dependencies cached"; elif [ -f "package-lock.json" ]; then npm ci; elif [ -f "pnpm-lock.yaml" ]; then pnpm install || npm install --no-audit; else npm install --package-lock-only && npm ci; fi`;
+      const npmCiRes = await sandbox.exec(npmCiCmd, { timeout: 120000 });
+      if (npmCiRes.stdout) stdoutAccum += `[npm ci] ${npmCiRes.stdout}\n`;
+      if (npmCiRes.stderr) stderrAccum += `[npm ci] ${npmCiRes.stderr}\n`;
+
+      if (!npmCiRes.success && npmCiRes.exitCode !== 0) {
+        exitCode = npmCiRes.exitCode || 1;
+        success = false;
+      } else {
+        // Step 7: Run requested build command in package root cwd
+        const execPromise = sandbox.exec(`cd '${buildCwd}' && ${safeCommand}`, {
+          timeout: timeout_ms,
+          stream: true,
+          onOutput: async (stream: "stdout" | "stderr", data: string) => {
+            const clean = scrubTokens(data);
+            if (stream === "stdout") stdoutAccum += clean;
+            if (stream === "stderr") stderrAccum += clean;
+
+            if (context?.appendTrace) {
+              try {
+                await context.appendTrace(
+                  "sandbox_build_stream",
+                  { id: "sandbox-container", name: "Cloudflare Sandbox Container", type: "system" },
+                  "http://adlnet.gov/expapi/verbs/experienced",
+                  {
+                    stream,
+                    chunk: clean,
+                    op_id: context.op_id,
+                    taskId: context.taskId,
+                  }
+                );
+              } catch (e) {}
+            }
+          },
+        });
+
+        const res = await execPromise;
+        exitCode = typeof res.exitCode === "number" ? res.exitCode : (res.success ? 0 : 1);
+        success = res.success;
+        if (res.stdout && !stdoutAccum) stdoutAccum += scrubTokens(res.stdout);
+        if (res.stderr && !stderrAccum) stderrAccum += scrubTokens(res.stderr);
+      }
     } else {
       // Direct execution simulation if sandbox binding unavailable
       exitCode = 0;
@@ -145,10 +291,10 @@ Exit Code: ${exitCode}
 Success: ${success}
 
 --- STDOUT ---
-${stdoutAccum || "(no stdout)"}
+${scrubTokens(stdoutAccum) || "(no stdout)"}
 
 --- STDERR ---
-${stderrAccum || "(no stderr)"}
+${scrubTokens(stderrAccum) || "(no stderr)"}
 `;
 
   let logUrl = "";
@@ -184,8 +330,8 @@ ${stderrAccum || "(no stderr)"}
   return {
     success,
     exitCode,
-    stdout: stdoutAccum,
-    stderr: stderrAccum,
+    stdout: scrubTokens(stdoutAccum),
+    stderr: scrubTokens(stderrAccum),
     logUrl: logUrl || undefined,
     durationMs,
     sandboxImageDigest,
