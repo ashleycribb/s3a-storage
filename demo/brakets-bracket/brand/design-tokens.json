@@ -1,83 +1,36 @@
 {
-  "$schema": "https://design-tokens.github.io/community-group/format/",
-  "_meta": {
-    "name": "Brakets Brand Tokens",
-    "description": "Machine-readable brand palette and semantic tokens for Brakets tournament system."
-  },
   "color": {
-    "brand": {
-      "teal": {
-        "value": "#3AB6A1",
-        "type": "color",
-        "description": "Primary accent / brand teal"
-      },
-      "blue": {
-        "value": "#4599CA",
-        "type": "color",
-        "description": "Secondary accent / brand blue"
-      },
-      "gray": {
-        "value": "#5F6264",
-        "type": "color",
-        "description": "Neutral / muted UI gray"
-      },
-      "white": {
-        "value": "#FFFFFF",
-        "type": "color",
-        "description": "Surface / light background"
-      },
-      "black": {
-        "value": "#060606",
-        "type": "color",
-        "description": "Text / dark background"
-      },
-      "neonPrimary": {
-        "value": "#38bdf8",
-        "type": "color",
-        "description": "Tournament neon primary"
-      },
-      "neonSecondary": {
-        "value": "#22d3ee",
-        "type": "color",
-        "description": "Tournament neon secondary"
-      }
+    "primary": {
+      "value": "#007bff",
+      "type": "color"
     },
-    "semantic": {
-      "primary": {
-        "value": "{color.brand.neonPrimary}",
-        "type": "color"
-      },
-      "secondary": {
-        "value": "{color.brand.neonSecondary}",
-        "type": "color"
-      },
-      "text": {
-        "value": "{color.brand.black}",
-        "type": "color"
-      },
-      "textMuted": {
-        "value": "{color.brand.gray}",
-        "type": "color"
-      },
-      "background": {
-        "value": "{color.brand.white}",
-        "type": "color"
-      },
-      "backgroundDark": {
-        "value": "{color.brand.black}",
-        "type": "color"
-      },
-      "border": {
-        "value": "{color.brand.gray}",
-        "type": "color"
-      }
+    "secondary": {
+      "value": "#6c757d",
+      "type": "color"
+    }
+  },
+  "font": {
+    "base": {
+      "value": "16px",
+      "type": "font-size"
     },
-    "gradient": {
-      "brand": {
-        "value": "linear-gradient(135deg, #3AB6A1 0%, #4599CA 100%)",
-        "type": "color",
-        "description": "Teal-to-blue brand gradient (matches bracket-glyph fill)"
-      }
+    "large": {
+      "value": "24px",
+      "type": "font-size"
+    }
+  },
+  "spacing": {
+    "small": {
+      "value": "8px",
+      "type": "spacing"
+    },
+    "medium": {
+      "value": "16px",
+      "type": "spacing"
+    },
+    "large": {
+      "value": "24px",
+      "type": "spacing"
     }
   }
 }
