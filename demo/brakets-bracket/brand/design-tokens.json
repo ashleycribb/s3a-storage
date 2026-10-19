@@ -75,7 +75,7 @@
     "gradient": {
       "brand": {
         "value": "linear-gradient(135deg, #3AB6A1 0%, #4599CA 100%)",
-        "type": "color",
+        "type": "gradient",
         "description": "Teal-to-blue brand gradient (matches bracket-glyph fill)"
       }
     }
