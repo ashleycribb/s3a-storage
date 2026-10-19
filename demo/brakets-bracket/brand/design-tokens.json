@@ -1,83 +1,9 @@
-{
-  "$schema": "https://design-tokens.github.io/community-group/format/",
-  "_meta": {
-    "name": "Brakets Brand Tokens",
-    "description": "Machine-readable brand palette and semantic tokens for Brakets tournament system."
-  },
-  "color": {
-    "brand": {
-      "teal": {
-        "value": "#3AB6A1",
-        "type": "color",
-        "description": "Primary accent / brand teal"
-      },
-      "blue": {
-        "value": "#4599CA",
-        "type": "color",
-        "description": "Secondary accent / brand blue"
-      },
-      "gray": {
-        "value": "#5F6264",
-        "type": "color",
-        "description": "Neutral / muted UI gray"
-      },
-      "white": {
-        "value": "#FFFFFF",
-        "type": "color",
-        "description": "Surface / light background"
-      },
-      "black": {
-        "value": "#060606",
-        "type": "color",
-        "description": "Text / dark background"
-      },
-      "neonPrimary": {
-        "value": "#38bdf8",
-        "type": "color",
-        "description": "Tournament neon primary"
-      },
-      "neonSecondary": {
-        "value": "#22d3ee",
-        "type": "color",
-        "description": "Tournament neon secondary"
-      }
-    },
-    "semantic": {
-      "primary": {
-        "value": "{color.brand.neonPrimary}",
-        "type": "color"
-      },
-      "secondary": {
-        "value": "{color.brand.neonSecondary}",
-        "type": "color"
-      },
-      "text": {
-        "value": "{color.brand.black}",
-        "type": "color"
-      },
-      "textMuted": {
-        "value": "{color.brand.gray}",
-        "type": "color"
-      },
-      "background": {
-        "value": "{color.brand.white}",
-        "type": "color"
-      },
-      "backgroundDark": {
-        "value": "{color.brand.black}",
-        "type": "color"
-      },
-      "border": {
-        "value": "{color.brand.gray}",
-        "type": "color"
-      }
-    },
-    "gradient": {
-      "brand": {
-        "value": "linear-gradient(135deg, #3AB6A1 0%, #4599CA 100%)",
-        "type": "color",
-        "description": "Teal-to-blue brand gradient (matches bracket-glyph fill)"
-      }
-    }
-  }
-}
+./app/api/tournaments/[id]/report/route.ts:16:60
+Type error: Expected 1 arguments, but got 2.
+
+  14 |     // Validate score to prevent unhandled draw (resolves fp_unhandle_09367ddd)
+  15 |     if (score && typeof score === "object") {
+> 16 |       const validation = validateMatchScore(score);
+  17 |       if (!validation.valid) {
+  18 |         return NextResponse.json(
+  19 |           { error: "draw_not_permitted", message: validation.error },
