@@ -7,6 +7,7 @@
     "test:walkaway": "node scripts/walkaway-and-operations-test.mjs",
     "test:rehearsal": "node scripts/rehearsal-test.mjs",
     "test:formats": "node scripts/tournament-formats-test.mjs",
+    "test:no-auto-merge": "node scripts/verify-no-auto-merge.mjs",
     "test": "node scripts/security-test.mjs && node scripts/crawl-nav-test.mjs && node scripts/walkaway-and-operations-test.mjs && node scripts/rehearsal-test.mjs && node scripts/tournament-formats-test.mjs"
   },
   "devDependencies": {
