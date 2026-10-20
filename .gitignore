@@ -12,3 +12,6 @@ tests/adl-conformance/
 *.vault.s3a
 *.vault
 node_modules/
+
+# Next.js build output
+.next/
