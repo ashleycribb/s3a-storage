@@ -1,3 +1,28 @@
+stages:
+  - checkout
+  - build
+  - review
+
+checkout_job:
+  stage: checkout
+  script:
+    - mkdir -p /workspace/repo
+    - cd /workspace/repo
+    - git clone <repository-url> .
+    - if [ ! -f package.json ]; then echo "package.json is missing"; exit 1; fi
+
+build_job:
+  stage: build
+  script:
+    - cd /workspace/repo
+    - npm install
+    - npm run build
+
+visual_review_job:
+  stage: review
+  script:
+    - cd /workspace/repo
+    - npm run visual-review -- --target-file demo/brakets-bracket/brand/design-tokens.json
 # Clean the workspace if it already exists
 if [ -d "/workspace/repo" ]; then
   rm -rf /workspace/repo
