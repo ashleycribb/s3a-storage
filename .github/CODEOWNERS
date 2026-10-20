@@ -1,0 +1,8 @@
+# Core is human-judgment only. Changes here require review by @ashleycribb
+# (takes effect once "Require review from Code Owners" is enabled in branch protection).
+/crates/       @ashleycribb
+/docs/spec/    @ashleycribb
+/spec-vectors/ @ashleycribb
+/.github/      @ashleycribb
+/Cargo.toml    @ashleycribb
+/Cargo.lock    @ashleycribb
