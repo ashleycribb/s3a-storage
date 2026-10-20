@@ -18,6 +18,11 @@ build_job:
     - npm install
     - npm run build
 
+review_job:
+  stage: review
+  script:
+    - cd /workspace/repo
+    - npm run visual-review -- demo/brakets-bracket/brand/design-tokens.json
 visual_review_job:
   stage: review
   script:
