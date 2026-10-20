@@ -58,6 +58,18 @@ fi
 echo "Performing visual review on target file: demo/brakets-bracket/brand/design-tokens.json"
 # Add your visual review command here
 {
+  "name": "brakets-bracket",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^13.4.12", // Ensure this version is compatible with your project
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   "dependencies": {
     "some-package": "1.0.0" // Replace with the actual version or version range
   },
