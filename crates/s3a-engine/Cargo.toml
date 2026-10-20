@@ -28,7 +28,7 @@ cmpv2 = "0.2"
 spki = "0.7"
 x509-cert = { version = "0.2", features = ["pem", "std"] }
 rsa = { version = "0.9", features = ["sha2"] }
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 signature = "2.2"
 getrandom = "0.2"
 reed-solomon-erasure = "6.0.0"
