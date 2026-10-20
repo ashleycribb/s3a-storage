@@ -42,7 +42,7 @@ sha2 = "0.10"
 sha1 = "0.10"
 hex = "0.4"
 humantime = "2.1"
-ureq = { version = "2.10", default-features = false, features = ["tls"] }
+ureq = { version = "3.4", default-features = false, features = ["tls"] }
 miniz_oxide = "0.9"
 
 
