@@ -3,18 +3,33 @@ updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule: { interval: weekly }
   - package-ecosystem: npm
     directory: "/"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: "/cloudflare"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: "/demo/cloudflare-worker"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: "/demo/brakets-bracket"
     schedule: { interval: weekly }
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
