@@ -2,6 +2,18 @@
   "$schema": "https://design-tokens.github.io/community-group/format/",
   "_meta": {
     "name": "Brakets Brand Tokens",
+    "last_updated": "2026-10-20T09:36:07.158Z",
+    "review_status": "verified"
+  },
+  "color": {
+    "brand": {
+      "neonPrimary": {
+        "value": "#38bdf8",
+        "type": "color"
+      },
+      "neonSecondary": {
+        "value": "#22d3ee",
+        "type": "color"
     "description": "Machine-readable brand palette and semantic tokens for Brakets tournament system."
   },
   "color": {
