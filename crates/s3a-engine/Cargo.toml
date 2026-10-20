@@ -22,7 +22,7 @@ hex = { workspace = true }
 humantime = { workspace = true }
 opentimestamps = "0.2.0"
 x509-tsp = "0.1.0"
-der = { version = "0.7", features = ["std", "oid", "alloc"] }
+der = { version = "0.8", features = ["std", "oid", "alloc"] }
 cms = "0.2"
 cmpv2 = "0.2"
 spki = "0.7"
