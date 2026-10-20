@@ -23,3 +23,94 @@ review_job:
   script:
     - cd /workspace/repo
     - npm run visual-review -- demo/brakets-bracket/brand/design-tokens.json
+visual_review_job:
+  stage: review
+  script:
+    - cd /workspace/repo
+    - npm run visual-review -- --target-file demo/brakets-bracket/brand/design-tokens.json
+# Clean the workspace if it already exists
+if [ -d "/workspace/repo" ]; then
+  rm -rf /workspace/repo
+fi
+
+# Checkout the repository
+git clone <repository-url> /workspace/repo
+
+# Check for the presence of package.json
+if [ ! -f "/workspace/repo/package.json" ]; then
+  echo "Error: package.json absent in repository (/workspace/repo). Never proceed with build."
+  exit 1
+fi
+
+# Proceed with the visual review task
+# Assuming the task is to perform some action on the target file
+echo "Performing visual review on target file: demo/brakets-bracket/brand/design-tokens.json"
+# Add your visual review command here
+{
+  "dependencies": {
+    "some-package": "1.0.0" // Replace with the actual version or version range
+  },
+  "devDependencies": {
+    "another-package": "2.0.0" // Replace with the actual version or version range
+    "your-package-name": "^1.0.0" // Replace with the actual package name and version
+    "some-package": "^1.0.0" // Replace with the actual version or package name
+  },
+  "devDependencies": {
+    "another-package": "^2.0.0" // Replace with the actual version or package name
+  "color": {
+    "primary": {
+      "value": "#007bff",
+      "type": "color"
+    },
+    "secondary": {
+      "value": "#6c757d",
+      "type": "color"
+    }
+  },
+  "font": {
+    "base": {
+      "value": "16px",
+      "type": "font-size"
+    },
+    "large": {
+      "value": "24px",
+      "type": "font-size"
+    }
+  },
+  "spacing": {
+    "small": {
+      "value": "8px",
+      "type": "spacing"
+    },
+    "medium": {
+      "value": "16px",
+      "type": "spacing"
+    },
+    "large": {
+      "value": "24px",
+      "type": "spacing"
+    "primary": "#007bff",
+    "secondary": "#6c757d",
+    "success": "#28a745",
+    "info": "#17a2b8",
+    "warning": "#ffc107",
+    "danger": "#dc3545",
+    "light": "#f8f9fa",
+    "dark": "#343a40"
+  },
+  "font": {
+    "family": "Arial, sans-serif",
+    "size": {
+      "small": "12px",
+      "medium": "16px",
+      "large": "20px"
+    }
+  },
+  "spacing": {
+    "tiny": "4px",
+    "small": "8px",
+    "medium": "16px",
+    "large": "24px",
+    "huge": "32px"
+  }
+}
