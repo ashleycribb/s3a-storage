@@ -31,7 +31,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets
 
   test:
-    name: "cargo test --workspace (KNOWN FAILING: s3a-edge writer_tests, s3a-engine edge_engine_interop)"
+    name: "cargo test --workspace (KNOWN FAILING: edge writer_tests, engine edge_engine_interop, harness e2e_lrs_test, spec-vectors micro_*)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -40,7 +40,7 @@ jobs:
       - run: cargo test --workspace --no-fail-fast
 
   spec-vectors:
-    name: "spec-vectors conformance"
+    name: "spec-vectors conformance (KNOWN FAILING: micro_* vectors, bytemuck alignment)"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
