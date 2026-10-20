@@ -170,10 +170,20 @@ export function evaluateWinCondition(
     case "first_to_n":
       return score.wins >= condition.target;
     case "best_of_n":
-      return score.wins > condition.target / 2;
+      return score.wins > Math.floor(condition.target / 2);
     case "points":
       return (score.points ?? 0) >= condition.target;
     default:
       return false;
   }
+}
+
+/**
+ * Transition validation helper: verifies tournament readiness for test/demo environments (resolves TASK-680).
+ */
+export function verifyTournamentReadiness(status: TournamentStatus): { ready: boolean; environment: string } {
+  return {
+    ready: status !== "cancelled",
+    environment: process.env.NODE_ENV || "development",
+  };
 }
