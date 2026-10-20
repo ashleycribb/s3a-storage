@@ -299,6 +299,9 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     agents: registeredAgentsList.length,
   };
   const isPaused = controlData.paused ?? false;
+  const pausedBy = controlData.paused_by || statusData.paused_by;
+  const pausedReason = controlData.paused_reason || statusData.paused_reason;
+  const pausedAt = controlData.paused_at || statusData.paused_at;
 
   let pageHtml = "";
   let pageTitle = "";
@@ -432,6 +435,9 @@ export async function handleUIRoutes(request: Request, env: Env): Promise<Respon
     breadcrumbs,
     counts,
     isPaused,
+    pausedBy,
+    pausedReason,
+    pausedAt,
     braketsEnv,
     projects: projectsList,
     activeAgentInfo,
