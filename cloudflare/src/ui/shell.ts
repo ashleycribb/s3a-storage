@@ -16,6 +16,9 @@ export interface ShellOptions {
     agents?: number;
   };
   isPaused?: boolean;
+  pausedBy?: string;
+  pausedReason?: string;
+  pausedAt?: number;
   braketsEnv?: BraketsEnv;
   projects?: ProjectRegistryItem[];
   activeAgentInfo?: string;
@@ -29,6 +32,9 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
     breadcrumbs = [],
     counts = {},
     isPaused = false,
+    pausedBy,
+    pausedReason,
+    pausedAt,
     braketsEnv = "demo",
     isPlatform = false,
     projects = [],
@@ -423,6 +429,11 @@ export function renderShell(contentHtml: string, options: ShellOptions): string 
           <button id="engine-toggle-btn" class="gh-btn ${isPaused ? 'gh-btn-primary' : 'gh-btn-danger'}" onclick="toggleAutonomousEngine('${isPaused ? 'resume' : 'pause'}')">
             ${isPaused ? '▶ Resume Swarm' : '⏸ Pause Swarm'}
           </button>
+          ${isPaused && pausedReason ? `
+            <span style="font-size: 11px; color: var(--gh-yellow-text); background: rgba(210,153,34,0.15); border: 1px solid rgba(210,153,34,0.3); border-radius: 4px; padding: 3px 8px; font-weight: 500;" title="Paused by ${pausedBy || 'Supervisor'}">
+              ⏸ Paused by ${pausedBy || 'Supervisor'}: ${pausedReason}
+            </span>
+          ` : ''}
           <button id="btn-manual-step" class="gh-btn" onclick="triggerManualTick()">
             ⚡ Run 1 Step
           </button>
