@@ -1,5 +1,9 @@
 {
   "dependencies": {
+    "some-package": "1.0.0" // Replace with the actual version or version range
+  },
+  "devDependencies": {
+    "another-package": "2.0.0" // Replace with the actual version or version range
     "your-package-name": "^1.0.0" // Replace with the actual package name and version
     "some-package": "^1.0.0" // Replace with the actual version or package name
   },
