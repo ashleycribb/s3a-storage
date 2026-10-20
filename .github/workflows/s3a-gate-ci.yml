@@ -42,7 +42,7 @@ jobs:
         run: node scripts/security-test.mjs
         env:
           BASE_URL: "https://s3a-gate.ashley-e-cribb.workers.dev"
-          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET || 's3a_admin_sec_9f8b2a14e6c7d35' }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
 
       - name: Run Navigation Crawler Test (Expect 200, Zero 404s)
         run: node scripts/crawl-nav-test.mjs
