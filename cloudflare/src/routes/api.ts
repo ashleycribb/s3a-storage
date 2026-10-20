@@ -340,15 +340,12 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     (pathParts[0] === "project" && pathParts[2] === "visual-review.svg") ||
     (pathParts[0] === "p" && pathParts[2] === "visual-review.svg")
   ) {
-    const targetProject = pathParts[1] || "brakets";
-    const svg = generateVisualReviewSvg(targetProject);
-    return new Response(svg, {
-      status: 200,
-      headers: {
-        "Content-Type": "image/svg+xml; charset=utf-8",
-        "Cache-Control": "public, max-age=60",
-      },
-    });
+    const targetProject = (pathParts[0] === "project" || pathParts[0] === "p") ? (pathParts[1] || "brakets") : "brakets";
+    const doId = env.REPO_COORDINATOR.idFromName(DEFAULT_PROJECT_ID);
+    const stub = env.REPO_COORDINATOR.get(doId);
+    const targetUrl = new URL(request.url);
+    targetUrl.pathname = `/project/${targetProject}/visual-review.svg`;
+    return stub.fetch(new Request(targetUrl.toString(), request));
   }
 
   // --------------------------------------------------------------------------
@@ -372,7 +369,7 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
     "close-duplicate-prs", "triage-duplicates", "record-usage", "reset-task",
     "reopen-cr-283", "reopen-failed-verification", "rerun-task-283", "rerun-review-task",
     "ledger", "budget", "trace", "traces", "vocab", "analysis", "plan", "repairs",
-    "projects", "init-project", "events"
+    "projects", "init-project", "events", "visual-review.svg"
   ]);
 
   // Legacy redirects: /p/s3a-swarm-main/* and /project/s3a-swarm-main/* (for non-API endpoints)
