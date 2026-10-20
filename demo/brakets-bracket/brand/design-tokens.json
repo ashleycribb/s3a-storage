@@ -1,3 +1,14 @@
+# Navigate to the root directory
+cd /workspace/repo
+
+# Remove the unnecessary package-lock.json
+rm -f demo/brakets-bracket/package-lock.json
+
+# Install dependencies in the root directory
+npm install
+
+# Build the project
+npm run build
 stages:
   - checkout
   - build
