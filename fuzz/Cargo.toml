@@ -1,0 +1,51 @@
+[package]
+name = "s3a-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytemuck = { version = "1.18", features = ["derive"] }
+tempfile = "3.10"
+s3a-core = { path = "../crates/s3a-core" }
+s3a-engine = { path = "../crates/s3a-engine" }
+s3a-edge = { path = "../crates/s3a-edge" }
+s3a-vault = { path = "../crates/s3a-vault" }
+
+# Not part of the main workspace (needs nightly + libFuzzer).
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "tile_header"
+path = "fuzz_targets/tile_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sealed_footer"
+path = "fuzz_targets/sealed_footer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault_grant"
+path = "fuzz_targets/vault_grant.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edge_reader"
+path = "fuzz_targets/edge_reader.rs"
+test = false
+doc = false
+bench = false

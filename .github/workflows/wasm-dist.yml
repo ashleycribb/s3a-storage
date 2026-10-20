@@ -1,0 +1,116 @@
+name: wasm-dist
+
+# Builds s3a-wasm-snapshot for the browser, smoke-tests it in Node, and only if green
+# publishes it to ashleycribb/s3a-wasm-dist as a new version folder + latest/ + tag.
+# Requires repo secret WASM_DIST_TOKEN (fine-grained PAT, contents:write on s3a-wasm-dist only).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/s3a-wasm-snapshot/**"
+      - "crates/s3a-core/**"
+      - "crates/s3a-simd/**"
+      - "crates/s3a-engine/**"
+      - "crates/s3a-edge/**"
+      - "crates/s3a-pack-scholar/**"
+      - "crates/s3a-pack-ontology/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/wasm-dist.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write      # for build provenance attestation
+  attestations: write
+
+concurrency:
+  group: wasm-dist
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Install wasm-pack (pinned, built from crates.io with --locked)
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Build (wasm-pack --target web --release)
+        working-directory: crates/s3a-wasm-snapshot
+        run: wasm-pack build --target web --release --out-dir pkg
+
+      - name: Node smoke test (export_bytes must not throw)
+        working-directory: crates/s3a-wasm-snapshot/pkg
+        run: |
+          cat > smoke.mjs <<'JS'
+          import fs from 'fs';
+          const m = await import('./s3a_wasm_snapshot.js');
+          m.initSync({ module: fs.readFileSync('./s3a_wasm_snapshot_bg.wasm') });
+          const s = m.new_session('0123456789abcdef0123456789abcdef');
+          s.record_human(1, 12345n, 777, undefined);
+          s.record_ai('openalex-agent', 18, 0.9, 0);
+          const b = s.export_bytes();
+          if (!b || b.length === 0) throw new Error('export_bytes returned empty');
+          const b2 = m.from_bytes(b).export_bytes();
+          if (Buffer.compare(Buffer.from(b), Buffer.from(b2)) !== 0) throw new Error('round-trip mismatch');
+          const d = s.export_delta();
+          if (!d || d.length === 0) throw new Error('export_delta returned empty');
+          console.log(`smoke OK export_bytes=${b.length} roundtrip=identical export_delta=${d.length}`);
+          JS
+          node smoke.mjs
+          rm smoke.mjs
+
+      - name: Attest build provenance (wasm + js glue)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            crates/s3a-wasm-snapshot/pkg/s3a_wasm_snapshot_bg.wasm
+            crates/s3a-wasm-snapshot/pkg/s3a_wasm_snapshot.js
+
+      - name: Publish to s3a-wasm-dist
+        env:
+          WASM_DIST_TOKEN: ${{ secrets.WASM_DIST_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WASM_DIST_TOKEN}" ]; then echo "WASM_DIST_TOKEN not set"; exit 1; fi
+          AUTH=$(printf 'x-access-token:%s' "$WASM_DIST_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" clone https://github.com/ashleycribb/s3a-wasm-dist.git dist
+          cd dist
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" fetch --tags
+          LAST=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          LAST=${LAST:-v0.1.0}
+          IFS=. read -r MA MI PA <<<"${LAST#v}"
+          VER="v${MA}.${MI}.$((PA+1))"
+          SRC=../crates/s3a-wasm-snapshot/pkg
+          for d in "$VER" latest; do
+            rm -rf "$d"; mkdir -p "$d"
+            cp "$SRC"/s3a_wasm_snapshot_bg.wasm "$SRC"/s3a_wasm_snapshot.js "$SRC"/s3a_wasm_snapshot.d.ts \
+               "$SRC"/s3a_wasm_snapshot_bg.wasm.d.ts "$SRC"/package.json "$d"/
+            {
+              echo "source: ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+              echo "version: $VER"
+              echo "sha256(s3a_wasm_snapshot_bg.wasm): $(sha256sum "$d"/s3a_wasm_snapshot_bg.wasm | cut -d' ' -f1)"
+              echo "built: $(date -u +%FT%TZ) by ${GITHUB_WORKFLOW} run ${GITHUB_RUN_ID}"
+            } > "$d"/BUILD_INFO.txt
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "$VER: s3a-wasm-snapshot build from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}"
+          git tag "$VER"
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:main "$VER"
+          echo "Published $VER: https://cdn.jsdelivr.net/gh/ashleycribb/s3a-wasm-dist@$VER/$VER/s3a_wasm_snapshot.js"
