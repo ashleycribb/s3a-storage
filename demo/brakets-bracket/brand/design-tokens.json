@@ -1,5 +1,36 @@
 {
   "color": {
+    "primary": {
+      "value": "#007bff",
+      "type": "color"
+    },
+    "secondary": {
+      "value": "#6c757d",
+      "type": "color"
+    }
+  },
+  "font": {
+    "base": {
+      "value": "16px",
+      "type": "font-size"
+    },
+    "large": {
+      "value": "24px",
+      "type": "font-size"
+    }
+  },
+  "spacing": {
+    "small": {
+      "value": "8px",
+      "type": "spacing"
+    },
+    "medium": {
+      "value": "16px",
+      "type": "spacing"
+    },
+    "large": {
+      "value": "24px",
+      "type": "spacing"
     "primary": "#007bff",
     "secondary": "#6c757d",
     "success": "#28a745",
