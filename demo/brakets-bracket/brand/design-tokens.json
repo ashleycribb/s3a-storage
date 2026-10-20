@@ -1,4 +1,9 @@
 {
+  "dependencies": {
+    "some-package": "^1.0.0" // Replace with the actual version or package name
+  },
+  "devDependencies": {
+    "another-package": "^2.0.0" // Replace with the actual version or package name
   "color": {
     "primary": {
       "value": "#007bff",
