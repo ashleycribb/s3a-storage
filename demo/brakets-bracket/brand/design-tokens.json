@@ -1,139 +1,83 @@
-# Navigate to the root directory
-cd /workspace/repo
-
-# Remove the unnecessary package-lock.json
-rm -f demo/brakets-bracket/package-lock.json
-
-# Install dependencies in the root directory
-npm install
-
-# Build the project
-npm run build
-stages:
-  - checkout
-  - build
-  - review
-
-checkout_job:
-  stage: checkout
-  script:
-    - mkdir -p /workspace/repo
-    - cd /workspace/repo
-    - git clone <repository-url> .
-    - if [ ! -f package.json ]; then echo "package.json is missing"; exit 1; fi
-
-build_job:
-  stage: build
-  script:
-    - cd /workspace/repo
-    - npm install
-    - npm run build
-
-review_job:
-  stage: review
-  script:
-    - cd /workspace/repo
-    - npm run visual-review -- demo/brakets-bracket/brand/design-tokens.json
-visual_review_job:
-  stage: review
-  script:
-    - cd /workspace/repo
-    - npm run visual-review -- --target-file demo/brakets-bracket/brand/design-tokens.json
-# Clean the workspace if it already exists
-if [ -d "/workspace/repo" ]; then
-  rm -rf /workspace/repo
-fi
-
-# Checkout the repository
-git clone <repository-url> /workspace/repo
-
-# Check for the presence of package.json
-if [ ! -f "/workspace/repo/package.json" ]; then
-  echo "Error: package.json absent in repository (/workspace/repo). Never proceed with build."
-  exit 1
-fi
-
-# Proceed with the visual review task
-# Assuming the task is to perform some action on the target file
-echo "Performing visual review on target file: demo/brakets-bracket/brand/design-tokens.json"
-# Add your visual review command here
 {
-  "name": "brakets-bracket",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "_meta": {
+    "name": "Brakets Brand Tokens",
+    "description": "Machine-readable brand palette and semantic tokens for Brakets tournament system."
   },
-  "dependencies": {
-    "next": "^13.4.12", // Ensure this version is compatible with your project
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  "dependencies": {
-    "some-package": "1.0.0" // Replace with the actual version or version range
-  },
-  "devDependencies": {
-    "another-package": "2.0.0" // Replace with the actual version or version range
-    "your-package-name": "^1.0.0" // Replace with the actual package name and version
-    "some-package": "^1.0.0" // Replace with the actual version or package name
-  },
-  "devDependencies": {
-    "another-package": "^2.0.0" // Replace with the actual version or package name
   "color": {
-    "primary": {
-      "value": "#007bff",
-      "type": "color"
+    "brand": {
+      "teal": {
+        "value": "#3AB6A1",
+        "type": "color",
+        "description": "Primary accent / brand teal"
+      },
+      "blue": {
+        "value": "#4599CA",
+        "type": "color",
+        "description": "Secondary accent / brand blue"
+      },
+      "gray": {
+        "value": "#5F6264",
+        "type": "color",
+        "description": "Neutral / muted UI gray"
+      },
+      "white": {
+        "value": "#FFFFFF",
+        "type": "color",
+        "description": "Surface / light background"
+      },
+      "black": {
+        "value": "#060606",
+        "type": "color",
+        "description": "Text / dark background"
+      },
+      "neonPrimary": {
+        "value": "#38bdf8",
+        "type": "color",
+        "description": "Tournament neon primary"
+      },
+      "neonSecondary": {
+        "value": "#22d3ee",
+        "type": "color",
+        "description": "Tournament neon secondary"
+      }
     },
-    "secondary": {
-      "value": "#6c757d",
-      "type": "color"
+    "semantic": {
+      "primary": {
+        "value": "{color.brand.neonPrimary}",
+        "type": "color"
+      },
+      "secondary": {
+        "value": "{color.brand.neonSecondary}",
+        "type": "color"
+      },
+      "text": {
+        "value": "{color.brand.black}",
+        "type": "color"
+      },
+      "textMuted": {
+        "value": "{color.brand.gray}",
+        "type": "color"
+      },
+      "background": {
+        "value": "{color.brand.white}",
+        "type": "color"
+      },
+      "backgroundDark": {
+        "value": "{color.brand.black}",
+        "type": "color"
+      },
+      "border": {
+        "value": "{color.brand.gray}",
+        "type": "color"
+      }
+    },
+    "gradient": {
+      "brand": {
+        "value": "linear-gradient(135deg, #3AB6A1 0%, #4599CA 100%)",
+        "type": "color",
+        "description": "Teal-to-blue brand gradient (matches bracket-glyph fill)"
+      }
     }
-  },
-  "font": {
-    "base": {
-      "value": "16px",
-      "type": "font-size"
-    },
-    "large": {
-      "value": "24px",
-      "type": "font-size"
-    }
-  },
-  "spacing": {
-    "small": {
-      "value": "8px",
-      "type": "spacing"
-    },
-    "medium": {
-      "value": "16px",
-      "type": "spacing"
-    },
-    "large": {
-      "value": "24px",
-      "type": "spacing"
-    "primary": "#007bff",
-    "secondary": "#6c757d",
-    "success": "#28a745",
-    "info": "#17a2b8",
-    "warning": "#ffc107",
-    "danger": "#dc3545",
-    "light": "#f8f9fa",
-    "dark": "#343a40"
-  },
-  "font": {
-    "family": "Arial, sans-serif",
-    "size": {
-      "small": "12px",
-      "medium": "16px",
-      "large": "20px"
-    }
-  },
-  "spacing": {
-    "tiny": "4px",
-    "small": "8px",
-    "medium": "16px",
-    "large": "24px",
-    "huge": "32px"
   }
 }
