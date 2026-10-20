@@ -260,6 +260,12 @@ Return ONLY the code/content within a single codeblock.`;
       if (this.env.Sandbox) {
         try {
           const sandbox = getSandbox(this.env.Sandbox, `s3a-preview-${projectId}-v6`, { normalizeId: true });
+          const pkgRoot = (filesAllowed && filesAllowed[0]?.includes("demo/brakets-bracket")) || repoContext.targetFile.includes("demo/brakets-bracket")
+            ? "demo/brakets-bracket"
+            : (filesAllowed && filesAllowed[0]?.includes("apps/brakets-gg")) || repoContext.targetFile.includes("apps/brakets-gg")
+            ? "apps/brakets-gg"
+            : undefined;
+
           buildRes = await sandbox_build(
             sandbox,
             this.env,
@@ -269,6 +275,10 @@ Return ONLY the code/content within a single codeblock.`;
               op_id: opId,
               taskId,
               projectId,
+              commitSha: "main",
+              packageRoot: pkgRoot,
+              targetFile: repoContext.targetFile,
+              codePatch: patch.code,
               appendTrace: async (stepName, actor, verb, details) => {
                 await recordCoordinatorTrace(stepName, actor, verb, details);
               },
