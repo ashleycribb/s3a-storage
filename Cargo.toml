@@ -29,7 +29,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["S3A Architecture Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/your-org/s3a-storage"
+repository = "https://github.com/ashleycribb/s3a-storage"
 
 [workspace.dependencies]
 bytemuck = { version = "1.18", default-features = false, features = ["derive"] }
