@@ -22,6 +22,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write      # for build provenance attestation
+  attestations: write
 
 concurrency:
   group: wasm-dist
@@ -31,18 +33,18 @@ jobs:
   build-test-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
 
-      - name: Install wasm-pack
-        run: curl -sSfL https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      - name: Install wasm-pack (pinned, built from crates.io with --locked)
+        run: cargo install wasm-pack --version 0.13.1 --locked
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
 
@@ -70,6 +72,13 @@ jobs:
           JS
           node smoke.mjs
           rm smoke.mjs
+
+      - name: Attest build provenance (wasm + js glue)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            crates/s3a-wasm-snapshot/pkg/s3a_wasm_snapshot_bg.wasm
+            crates/s3a-wasm-snapshot/pkg/s3a_wasm_snapshot.js
 
       - name: Publish to s3a-wasm-dist
         env:
