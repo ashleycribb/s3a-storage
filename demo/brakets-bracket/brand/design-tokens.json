@@ -1,3 +1,21 @@
+# Clean the workspace if it already exists
+if [ -d "/workspace/repo" ]; then
+  rm -rf /workspace/repo
+fi
+
+# Checkout the repository
+git clone <repository-url> /workspace/repo
+
+# Check for the presence of package.json
+if [ ! -f "/workspace/repo/package.json" ]; then
+  echo "Error: package.json absent in repository (/workspace/repo). Never proceed with build."
+  exit 1
+fi
+
+# Proceed with the visual review task
+# Assuming the task is to perform some action on the target file
+echo "Performing visual review on target file: demo/brakets-bracket/brand/design-tokens.json"
+# Add your visual review command here
 {
   "dependencies": {
     "some-package": "1.0.0" // Replace with the actual version or version range
