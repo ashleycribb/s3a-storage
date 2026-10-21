@@ -152,3 +152,17 @@ An edge device MAY hold named **packet stores**:
 3. Should the replay window size be negotiated?
 4. CBOR vs fixed binary for `HELLO`/`HAVE` bodies.
 5. Registration of a BPv7 service/endpoint ID for S3A.
+
+## 7. Prior art and recommended resolutions
+
+Questions in §6 stay **Open** until approved by Ashley Cribb. Recommendations only.
+
+| # | What prior art chose | Recommended S3A answer |
+|---|----------------------|------------------------|
+| 1 | RFC 9173 default contexts are symmetric (BIB-HMAC-SHA2, BCB-AES-GCM); CCSDS SDLS (355.0-B) is AES-GCM with pre-shared keys; no CCSDS PQ default yet. NIST FIPS 204 finalised ML-DSA (2024). | Hybrid Ed25519+ML-DSA-65 (alg 3) for receipts/manifests; Ed25519 allowed for constrained links; HMAC-BLAKE3 MAY be used per hop. |
+| 2 | RFC 9172 leaves key management out of scope; SDLS uses ground-managed keys with an extended-procedures key-management service (OTAR, activate/deactivate). | Pre-provisioned keys; rotation and revocation sent as signed, lifetime-bound sync messages; revocation lists carried as bundles. |
+| 3 | SDLS anti-replay: per-SA sequence number and window, **configured** by management, not negotiated. | Configured per stream; advertised in `HELLO`; not negotiated. |
+| 4 | BPv7 (RFC 9171) encodes bundles in CBOR (RFC 8949); CCSDS Space Packet (133.0-B) uses a fixed binary header. | Fixed binary envelope; deterministic CBOR for `HELLO`; fixed arrays of hashes for `HAVE`/`WANT`. |
+| 5 | BPv7 endpoints use `dtn:` or `ipn:` schemes; `ipn` node/service numbers are IANA/SANA registered (RFC 9758). CCSDS 734.2-B profiles BPv7 for CCSDS. | Use `dtn://<node>/s3a` now; request an `ipn` service number from IANA/SANA before 1.0. |
+
+Sources: RFC 9171, 9172, 9173, 5326, 9758 (rfc-editor.org); CCSDS 727.0-B, 133.0-B, 734.2-B, 355.0-B (public.ccsds.org); NASA LunaNet Interoperability Specification (nasa.gov); ECSS-E-ST-70-41C (ecss.nl); NIST FIPS 204 (csrc.nist.gov).
