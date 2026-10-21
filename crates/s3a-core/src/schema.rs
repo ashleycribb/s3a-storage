@@ -1,4 +1,5 @@
 use bytemuck::{bytes_of, cast_slice, Pod, Zeroable};
+
 use crc32c::crc32c;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -149,26 +150,41 @@ pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>
     let field_size = core::mem::size_of::<CompactSchemaFieldRecord>();
 
     let types_len = header.type_count as usize * type_size;
-    let fields_len = header.total_fields as usize * field_size;
-    let required_body = types_len + fields_len;
+    let fields_len = (header.total_fields as usize)
+        .checked_mul(field_size)
+        .ok_or(S3AError::OutOfBounds)?;
+    let required_body = types_len.checked_add(fields_len).ok_or(S3AError::OutOfBounds)?;
+    let required_total = header_size.checked_add(required_body).ok_or(S3AError::OutOfBounds)?;
 
-    if payload.len() < header_size + required_body {
-        return Err(S3AError::BufferTooSmall { required: header_size + required_body, provided: payload.len() });
+    if payload.len() < required_total {
+        return Err(S3AError::BufferTooSmall { required: required_total, provided: payload.len() });
     }
 
-    let body_bytes = &payload[header_size..header_size + required_body];
+    let body_bytes = &payload[header_size..required_total];
     let actual_crc = crc32c(body_bytes);
     if actual_crc != header.schema_crc32 {
         return Err(S3AError::ChecksumMismatch { expected: header.schema_crc32, actual: actual_crc });
     }
 
-    let type_slice: &[CompactSchemaTypeRecord] = cast_slice(&payload[header_size..header_size + types_len]);
-    let field_slice: &[CompactSchemaFieldRecord] = cast_slice(&payload[header_size + types_len..header_size + required_body]);
+    // B1: decode records with pod_read_unaligned so a payload at any alignment
+    // (mmap offset, fuzz input, network buffer) cannot panic in cast_slice.
+    let type_slice: Vec<CompactSchemaTypeRecord> = payload[header_size..header_size + types_len]
+        .chunks_exact(type_size)
+        .map(bytemuck::pod_read_unaligned::<CompactSchemaTypeRecord>)
+        .collect();
+    let field_slice: Vec<CompactSchemaFieldRecord> = payload[header_size + types_len..required_total]
+        .chunks_exact(field_size)
+        .map(bytemuck::pod_read_unaligned::<CompactSchemaFieldRecord>)
+        .collect();
+    let declared: usize = type_slice.iter().map(|t| t.field_count as usize).sum();
+    if declared != field_slice.len() {
+        return Err(S3AError::InvalidFormat);
+    }
 
     let mut result = Vec::with_capacity(header.type_count as usize);
     let mut field_cursor = 0;
 
-    for tr in type_slice {
+    for tr in &type_slice {
         let f_count = tr.field_count as usize;
         if field_cursor + f_count > field_slice.len() {
             return Err(S3AError::OutOfBounds);

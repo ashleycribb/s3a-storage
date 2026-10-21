@@ -88,6 +88,7 @@ pub fn generate_all_vectors<P: AsRef<Path>>(out_dir: P) -> io::Result<Vec<String
         generate_valid_after_compaction(dir)?,
         generate_valid_dual_header_slots(dir)?,
         generate_valid_unknown_tile_type(dir)?,
+        generate_valid_schema_catalog(dir)?,
         generate_valid_snapshot_container(dir)?,
         generate_valid_protected_mark_hidden(dir)?,
         // 2. Invalid Cases (v1.0)
@@ -452,6 +453,34 @@ fn generate_valid_unknown_tile_type(dir: &Path) -> io::Result<String> {
         records_visible_with_override: None,
         visible_records: 0,
         hidden_records: 0,
+        ..Default::default()
+    };
+    write_json_and_record(dir, name, &exp)
+}
+
+// Case B1: valid_schema_catalog
+fn generate_valid_schema_catalog(dir: &Path) -> io::Result<String> {
+    let name = "valid_schema_catalog";
+    let file_path = dir.join(format!("{}.s3a", name));
+    let mut writer = TileWriter::create_with_uuid(&file_path, [0xB1, 0x5C])?;
+    let mut header = HyperTileHeader::new(0, TileType::TELEMETRY);
+    header.record_count = 1;
+    writer.write_raw_hyper_tile(&header, &[0x11u8; 32])?;
+    drop(writer);
+    s3a_engine::append_schema_tile_if_missing(&file_path)?;
+
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("0".to_string(), 1);
+    map.insert("77".to_string(), 1);
+
+    let exp = ConformanceExpectation {
+        case_name: name.to_string(),
+        category: "valid".to_string(),
+        description: "Telemetry tile plus Schema tile 77; catalog() must return the embedded catalog naming types 0 and 77".to_string(),
+        expected_outcome: "ok".to_string(),
+        file_size_bytes: Some(512 + 2 * HYPER_TILE_SIZE as u64),
+        header: Some(HeaderExpectation { active_slot: 0, generation: 3, tile_count: 2, addon_mask: 0 }),
+        records_per_tile_type: map,
         ..Default::default()
     };
     write_json_and_record(dir, name, &exp)
@@ -1886,6 +1915,7 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `valid_after_compaction` | **Valid** | `ok` | *None* | Archive after compaction: soft-deleted tombstones purged, live records preserved. |
 | `valid_dual_header_slots` | **Valid** | `ok` | *None* | Both Slot A and Slot B valid; reader must arbitrate to Slot B (higher generation). |
 | `valid_unknown_tile_type` | **Valid** | `ok` | *None* | Archive containing unknown tile type 9999; readers must skip during domain queries and verify CRC. |
+| `valid_schema_catalog` | **Valid** | `ok` | *None* | Telemetry tile plus Schema tile 77 (B1); `catalog()` returns the embedded catalog naming types 0 and 77. |
 | `valid_snapshot_container` | **Valid** | `ok` | *None* | Portable research snapshot (.snapshot.s3a) containing Tile 15 SRS_MANIFEST and ADDON_EDU. |
 | `invalid_bad_magic` | **Invalid** | `error` | `InvalidMagic` | Header magic corrupted to `b"BAD!"`. Reader must fail immediately. |
 | `invalid_both_slots_corrupt` | **Invalid** | `error` | `CorruptedHeader` | Both Slot A and Slot B have corrupted CRC32C. Reader must fail closed. |
@@ -1976,6 +2006,7 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
         ("valid_after_compaction", "ok"),
         ("valid_dual_header_slots", "ok"),
         ("valid_unknown_tile_type", "ok"),
+        ("valid_schema_catalog", "ok"),
         ("valid_snapshot_container", "ok"),
         ("invalid_bad_magic", "error"),
         ("invalid_both_slots_corrupt", "error"),
@@ -2035,6 +2066,16 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                         .map_err(|e| format!("{}: verify_sealed_archive failed: {}", name, e))?;
                     assert!(report.is_sealed, "{}: expected is_sealed true", name);
                     assert_eq!(report.repaired_tiles.len(), 0, "{}: expected 0 repaired tiles", name);
+                }
+
+                if name == "valid_schema_catalog" {
+                    let cat = reader.catalog().map_err(|e| format!("{}: catalog: {}", name, e))?;
+                    if cat.source == s3a_engine::schema::CatalogSource::Registry
+                        || cat.get(0).is_none()
+                        || cat.get(77).is_none()
+                    {
+                        return Err(format!("{}: embedded catalog missing types 0/77", name));
+                    }
                 }
 
                 if name == "valid_protected_mark_hidden" {
@@ -2283,10 +2324,10 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("s3a_vectors_all_test_{}", std::process::id()));
         let generated = generate_all_vectors(&temp_dir).expect("Vector generation must succeed");
-        assert_eq!(generated.len(), 30);
+        assert_eq!(generated.len(), 31);
 
         let verified = verify_conformance_vectors(&temp_dir).expect("Verification must succeed");
-        assert_eq!(verified, 30);
+        assert_eq!(verified, 31);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

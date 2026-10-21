@@ -14,6 +14,7 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `valid_after_compaction` | **Valid** | `ok` | *None* | Archive after compaction: soft-deleted tombstones purged, live records preserved. |
 | `valid_dual_header_slots` | **Valid** | `ok` | *None* | Both Slot A and Slot B valid; reader must arbitrate to Slot B (higher generation). |
 | `valid_unknown_tile_type` | **Valid** | `ok` | *None* | Archive containing unknown tile type 9999; readers must skip during domain queries and verify CRC. |
+| `valid_schema_catalog` | **Valid** | `ok` | *None* | Telemetry tile plus Schema tile 77 (B1); `catalog()` returns the embedded catalog naming types 0 and 77. |
 | `valid_snapshot_container` | **Valid** | `ok` | *None* | Portable research snapshot (.snapshot.s3a) containing Tile 15 SRS_MANIFEST and ADDON_EDU. |
 | `invalid_bad_magic` | **Invalid** | `error` | `InvalidMagic` | Header magic corrupted to `b"BAD!"`. Reader must fail immediately. |
 | `invalid_both_slots_corrupt` | **Invalid** | `error` | `CorruptedHeader` | Both Slot A and Slot B have corrupted CRC32C. Reader must fail closed. |
@@ -34,6 +35,10 @@ This directory contains official conformance test vectors for the **S3A Hyper-Ti
 | `micro_valid_4kb` | **Valid** | `ok` | *None* | Valid 4 KB micro-tile file with standard DualFileHeader (MICRO-VEC-01). |
 | `micro_truncated_file` | **Valid** | `ok` | *None* | Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write (MICRO-VEC-02). |
 | `micro_signed_seal_chain` | **Valid** | `ok` | *None* | 3 consecutive 4 KB tiles with continuous SHA-256 seal chain and Ed25519 signatures (MICRO-VEC-03). |
+| `vault_transfer_chain` | **Valid** | `ok` | *None* | 3-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01). |
+| `vault_delegation_governance` | **Valid** | `ok` | *None* | Delegation grant with agent action execution and non-delegable judgment protection (VAULT-VEC-02). |
+| `vault_key_revocation` | **Valid** | `ok` | *None* | Key rotation K1 to K2 invalidating subsequent actions while preserving history (VAULT-VEC-03). |
+| `vault_vc_import` | **Valid** | `ok` | *None* | W3C VC / Open Badges 3.0 JSON-LD credential in Blob tile 68 with indexed VaultItemRecord (VAULT-VEC-04). |
 
 ---
 
@@ -71,6 +76,11 @@ An independent implementation runner MUST execute the test suite adhering to the
    - For `micro_valid_4kb`, verify archive declares Edge profile, tile stride is 4096 bytes, and both micro-tiles pass CRC32C and payload hash validation.
    - For `micro_truncated_file`, verify reader accepts committed Tile 0 and EdgeWriter recovery cleanly restores append readiness.
    - For `micro_signed_seal_chain`, verify all 3 tiles maintain continuous SHA-256 seal hash chaining and valid Ed25519 hardware signatures.
+7. **Vault Profile Verification (Phase 1)**:
+   - For `vault_transfer_chain`, verify 3-link ownership resolution via `resolve_chain_ownership`, tamper detection, and double-send prevention.
+   - For `vault_delegation_governance`, verify active grant delegation, agent tool step tracking, and fail-safe blocking of judgment actions (`RequiresHumanApproval`).
+   - For `vault_key_revocation`, verify `KeyRotationRecord` invalidates actions at/after rotation while preserving validity of historical actions.
+   - For `vault_vc_import`, verify Blob tile 68 stores valid Open Badges 3.0 JSON-LD with verified Ed25519 proof signature and `VaultItemRecord` index.
 
 ---
 

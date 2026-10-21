@@ -31,6 +31,7 @@ pub mod sealed;
 pub mod anchor;
 pub mod edge_import;
 pub mod migrate;
+pub mod schema;
 
 pub use fsutil::{atomic_replace, clean_orphan_temps, unique_compact_temp_path};
 pub use compactor_gates::*;

@@ -1,6 +1,6 @@
 # S3A Hyper-Tile Storage Format Specification
 
-**Document Version:** 1.4-draft  
+**Document Version:** 1.5-draft  
 **Status:** Implementable Standard  
 **Date:** October 2026  
 **License:** [Creative Commons Attribution 4.0 International (CC-BY-4.0)](LICENSE)  
@@ -8,6 +8,8 @@
 
 ### Specification Changelog
 
+- **v1.5-draft (October 2026)**:
+  - **Schema tile catalog (§14.5.4, B1, ADR-0008)**: payload layout corrected to match the reference code (it was mis-documented; no on-disk bytes change). Added the catalog reader contract: embedded catalog when present, registry fallback when absent, hard error on a bad Schema tile, unaligned-safe decoding, `field_count` sum MUST equal `total_fields`. Additive and optional; new vector `valid_schema_catalog`.
 - **v1.4-draft (October 2026)**:
   - **Common Tile Header (§14.1, ADR-0003)**: bytes 12..16, 56..60, 60..64 documented as `data_crc32`, `header_crc32`, `generation` to match the reference code; they were wrongly listed as reserved. No on-disk bytes change.
 - **v1.3-draft (October 2026)**:
@@ -1223,29 +1225,17 @@ The table below maps the historical wire assignments into the Catalog ID scheme 
   - `record_layout_version`: `u16` — Layout version for the schema binary encoding (1).
   - `payload_bytes`: `u32` — Total byte length of encoded schema payload.
 - **Payload Layout**:
-  - Binary encoding formatted as `CompactSchemaHeader` + sequential `CompactSchemaTypeRecord` blocks with interleaved `CompactSchemaFieldRecord` lists:
-    1. `CompactSchemaHeader` (32 bytes, 8-byte aligned):
-       - `magic`: `[u8; 4]` (`*b"S3AS"`)
-       - `version`: `u16` (1)
-       - `type_count`: `u16` — Total number of declared type records
-       - `total_fields`: `u32` — Total number of declared field records across all types
-       - `schema_crc32`: `u32` — CRC32C checksum over trailing type and field payload bytes
-       - `_reserved`: `[u8; 16]` — Reserved padding
-    2. `CompactSchemaTypeRecord` (80 bytes, 8-byte aligned per type):
-       - `type_id`: `u32` — Tile type ID
-       - `type_version`: `u32` — Record layout version
-       - `record_size`: `u32` — Fixed record byte size
-       - `field_count`: `u32` — Number of field records following this type
-       - `name`: `[u8; 32]` — Null-terminated UTF-8 type name
-       - `owning_pack`: `[u8; 32]` — Null-terminated UTF-8 owning pack name
-    3. `CompactSchemaFieldRecord` (48 bytes, 8-byte aligned per field):
-       - `field_id`: `u16` — 1-based sequential field number
-       - `field_type`: `u16` — Primitive type enum (`1=u8, 2=u16, 3=u32, 4=u64, 5=u128, 6=f32, 7=f64, 8=bool, 9=string, 10=uuid128, 11=bytes32, 12=bytes64, 13=opaque_blob`)
-       - `byte_offset`: `u32` — Byte offset within record struct
-       - `byte_len`: `u32` — Byte length of field
-       - `null_allowed`: `u8` — Nullability flag (`0 = Required`, `1 = Nullable`)
-       - `_padding`: `[u8; 3]` — Alignment padding
-       - `name`: `[u8; 32]` — Null-terminated UTF-8 field name
+  - Binary encoding: one `CompactSchemaHeader`, then `type_count` `CompactSchemaTypeRecord`s, then all `total_fields` `CompactSchemaFieldRecord`s (fields are grouped in type order, not interleaved). All little-endian. Layout as implemented in `crates/s3a-core/src/schema.rs` (corrected in v1.5; earlier text listed a `magic` field and a different field order that the code never wrote):
+    1. `CompactSchemaHeader` (32 bytes): `schema_id: u32` (1), `schema_format: u16` (1 = compact binary), `type_count: u16`, `total_fields: u32`, `schema_crc32: u32` (CRC32C over all type and field record bytes), `_reserved: [u8; 16]`.
+    2. `CompactSchemaTypeRecord` (80 bytes): `type_id: u32`, `type_version: u32`, `name: [u8; 32]`, `owning_pack: [u8; 32]`, `record_size: u32` (0 = variable), `field_count: u16`, `_reserved: u16`.
+    3. `CompactSchemaFieldRecord` (48 bytes): `field_id: u16`, `field_type: u16`, `byte_offset: u32`, `byte_len: u32`, `null_allowed: u8`, `_reserved: [u8; 3]`, `name: [u8; 32]`. Names are NUL-padded UTF-8.
+- **Catalog reader contract (B1, v1.5)**:
+  - Readers MUST decode records without assuming alignment (`pod_read_unaligned`); a payload at any offset MUST NOT cause a panic.
+  - The sum of `field_count` over all type records MUST equal `total_fields`; otherwise the tile is invalid.
+  - `MmapReader::catalog()` uses the first Schema tile. Its tile `header_crc32` and `data_crc32` (when non-zero) and its `schema_crc32` MUST all validate; any failure is an error (`CatalogError`), never a silent fallback.
+  - If the file has no Schema tile, readers MUST fall back to the compiled-in tile-type registry. Files without a Schema tile remain fully valid in v1.x.
+  - A catalog entry for a registered type SHOULD agree with the registry on `record_size` and fall within its supported layout-version window (`schema::catalog_mismatches`). Disagreement is reported, not auto-corrected.
+  - Edge-profile archives use a separate `u16` type namespace (77 = `TILE_TYPE_CONFIG` there) and never carry this tile.
 - **Required vs Optional Fields**:
   - Required: `magic`, `version`, `type_count`, `total_fields`, `schema_crc32`.
   - Optional: Field definitions can be empty for opaque binary tiles.

@@ -60,6 +60,7 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **30** | `elr_credential_assertion` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
+| **77** | `schema` | Core Engine (`s3a-core` codec, `s3a-engine` reader) | None | Variable | Compact Binary Catalog (§14.5.4) | Active⁶ |
 | **78** | `manifest` | Core Engine (`s3a-core`) | None | Variable | Plain UTF-8 Text | Active |
 | **79** | `specification` | Core Engine (`s3a-core`) | None | Variable | Compressed Markdown (Deflate) | Active |
 
@@ -107,3 +108,4 @@ When defining a new domain pack or third-party tile type:
 2. **Readers MUST Handle Unknown Tile Types Gracefully**:
    - Compliant readers MUST skip unknown tile types during targeted queries.
    - Compliant compactors and tools MUST preserve unknown tile types intact ("copy-through"), never discarding them or failing.
+6. **Tile 77 Schema (B1, ADR-0008)**: In-file catalog of tile types. Assigned since the §14 catalog; listed here by B1. It is not yet a descriptor in `crates/s3a-core/src/registry.rs` (writes go through the unregistered-type path). `MmapReader::catalog()` returns it when present and falls back to the registry when absent. Note: the edge profile's separate `u16` namespace uses 77 for `TILE_TYPE_CONFIG`; the two namespaces never mix.
