@@ -157,12 +157,14 @@ An edge device MAY hold named **packet stores**:
 
 Questions in §6 stay **Open** until approved by Ashley Cribb. Recommendations only.
 
-| # | What prior art chose | Recommended S3A answer |
-|---|----------------------|------------------------|
-| 1 | RFC 9173 default contexts are symmetric (BIB-HMAC-SHA2, BCB-AES-GCM); CCSDS SDLS (355.0-B) is AES-GCM with pre-shared keys; no CCSDS PQ default yet. NIST FIPS 204 finalised ML-DSA (2024). | Hybrid Ed25519+ML-DSA-65 (alg 3) for receipts/manifests; Ed25519 allowed for constrained links; HMAC-BLAKE3 MAY be used per hop. |
-| 2 | RFC 9172 leaves key management out of scope; SDLS uses ground-managed keys with an extended-procedures key-management service (OTAR, activate/deactivate). | Pre-provisioned keys; rotation and revocation sent as signed, lifetime-bound sync messages; revocation lists carried as bundles. |
-| 3 | SDLS anti-replay: per-SA sequence number and window, **configured** by management, not negotiated. | Configured per stream; advertised in `HELLO`; not negotiated. |
-| 4 | BPv7 (RFC 9171) encodes bundles in CBOR (RFC 8949); CCSDS Space Packet (133.0-B) uses a fixed binary header. | Fixed binary envelope; deterministic CBOR for `HELLO`; fixed arrays of hashes for `HAVE`/`WANT`. |
-| 5 | BPv7 endpoints use `dtn:` or `ipn:` schemes; `ipn` node/service numbers are IANA/SANA registered (RFC 9758). CCSDS 734.2-B profiles BPv7 for CCSDS. | Use `dtn://<node>/s3a` now; request an `ipn` service number from IANA/SANA before 1.0. |
+| # | Status | What prior art chose | Recommended S3A answer |
+|---|--------|----------------------|------------------------|
+| 1 | Verified | RFC 9173 §3 BIB-HMAC-SHA2 and §4 BCB-AES-GCM (symmetric). CCSDS 352.0-B-2 (Aug 2019) §3.1 mandates AES; §4.4.2–4.4.3 recommend RSA signatures (4096-bit for new missions). SDLS 355.0-B-2 §1.2 mandates no algorithm and defers to 352.0. No CCSDS PQC standard found; ESA E2EQSS (3S 2025) prototypes hybrid ML-DSA/ML-KEM over SDLS. FIPS 204 (ML-DSA) final Aug 2024; NIST IR 8547 deprecates quantum-vulnerable algorithms by 2035. | Hybrid Ed25519+ML-DSA-65 by default; Ed25519 alone on constrained links; HMAC-BLAKE3 MAY be used per hop. |
+| 2 | Verified | RFC 9172 §6: key management is "a separate part of network management"; BPSec "neither defines nor requires" a strategy (RFC 9173 §6.1 likewise). SDLS-EP 355.1-B-1 §2.3.2 defines key management with OTAR, activation and deactivation command PDUs (§5). | Keys loaded in advance; rotation and revocation sent as signed sync messages that expire; revocation lists carried as bundles. |
+| 3 | Verified | SDLS 355.0-B-2 §2.3.2.3: anti-replay sequence number plus a "fixed positive delta" window **specified in the SA**, sized for link delays; not negotiated. RFC 9172 §8 relies on bundle lifetime and cipher suites for replay protection. | Window configured per stream, announced in `HELLO`, not negotiated; `lifetime_s` also bounds replay. |
+| 4 | Verified | RFC 9171 §4.1: all block fields MUST use RFC 8949 core deterministic CBOR (indefinite-length allowed). CCSDS 133.0-B-2 §4.1: fixed 6-octet packet primary header. | Fixed binary envelope; deterministic CBOR for `HELLO`; plain hash arrays for `HAVE`/`WANT`. |
+| 5 | Verified | RFC 9758 §9.3: `ipn` service numbers 128–255 Standards Action; 0x0100–0x7FFF Private Use; 0x8000–0xFFFF Specification Required (public spec suffices). | Use a private-use service number now; request one in 0x8000–0xFFFF before 1.0. |
 
-Sources: RFC 9171, 9172, 9173, 5326, 9758 (rfc-editor.org); CCSDS 727.0-B, 133.0-B, 734.2-B, 355.0-B (public.ccsds.org); NASA LunaNet Interoperability Specification (nasa.gov); ECSS-E-ST-70-41C (ecss.nl); NIST FIPS 204 (csrc.nist.gov).
+Sources: https://www.rfc-editor.org/rfc/rfc9171 · rfc9172 · rfc9173 · rfc9758 ·
+https://public.ccsds.org/Pubs/352x0b2.pdf · 355x0b2.pdf · 355x1b1.pdf · 133x0b2e2.pdf ·
+https://csrc.nist.gov/pubs/fips/204/final · https://security4space.esa.int/2025/papers/15/
