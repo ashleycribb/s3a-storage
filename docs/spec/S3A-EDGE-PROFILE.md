@@ -1,11 +1,14 @@
 # S3A Edge Profile Specification (S3A-EDGE-PROFILE)
 
-**Document Version:** 1.0-draft  
+**Document Version:** 1.1-draft  
 **Status:** IMPLEMENTED (Phase 1: Device-Side Writer)  
 **Date:** October 2026  
 **License:** [Creative Commons Attribution 4.0 International (CC-BY-4.0)](LICENSE)  
 **Patents:** [Royalty-Free Patent Non-Assertion Pledge](PATENTS.md)  
 **Parent Specification:** [S3A Hyper-Tile Storage Format Specification](S3A-TILE-SPEC.md)
+
+**Changelog:**
+- **v1.1-draft (October 2026)**: §2.4.1 now documents `data_crc32` (12..16), `header_crc32` (56..60) and `generation` (60..64) as written by the reference code, replacing the stale reserved-byte rows and the §14.4 discrepancy note (ADR-0003). No on-disk bytes change.
 
 ---
 
@@ -113,20 +116,26 @@ Edge devices MAY format the start of the archive file using either of two framin
 Every Micro-Tile starts with a header defining its type, record count, and integrity hashes. Edge implementations MUST use one of the two formats below:
 
 #### 2.4.1 Canonical 64-Byte Common Tile Header (Lossless Native)
-The canonical edge tile header is identical in byte layout and semantics to the 64-byte Common Tile Header defined in §14.1 of `S3A-TILE-SPEC.md`:
+The canonical edge tile header is identical in byte layout to the 64-byte Common Tile Header defined in §14.1 of `S3A-TILE-SPEC.md`. All multi-byte integers are little-endian. Offsets are verified by `crates/s3a-edge/tests/header_layout.rs` (ADR-0003):
 
 | Offset | Size | Type | Field Name | Description |
 |:---:|:---:|:---:|:---|:---|
 | `0 .. 2` | 2 B | `u16` | `type_id` | Canonical wire tile type ID (e.g. 64, 70, 71, 75). |
 | `2 .. 4` | 2 B | `u16` | `type_version` | Record schema layout version (1-based, starts at 1). |
 | `4 .. 6` | 2 B | `u16` | `flags` | Tile flags (`FLAG_ACTIVE = 0`, `FLAG_SEALED = 1`, `FLAG_CRC_CHAIN = 2`). |
-| `6 .. 8` | 2 B | `u16` | `_reserved1` | Explicit alignment padding (MUST be 0). |
+| `6 .. 8` | 2 B | `u16` | `_reserved1` | Reserved. Writers MUST write 0; readers MUST ignore the value. |
 | `8 .. 12` | 4 B | `u32` | `record_count` | Number of logical records contained in payload. |
-| `12 .. 16` | 4 B | `u32` | `_reserved2` | Explicit alignment padding (MUST be 0). |
+| `12 .. 16` | 4 B | `u32` | `data_crc32` | CRC32C (Castagnoli) over the active payload bytes `[64 .. 64 + payload_len)`. |
 | `16 .. 24` | 8 B | `u64` | `payload_len` | Byte length of active payload ($0 \le \text{payload\_len} \le \text{tile\_stride} - 64$). |
 | `24 .. 56` | 32 B | `[u8; 32]` | `payload_hash` | SHA-256 digest over active payload bytes. |
-| `56 .. 64` | 8 B | `u64` | `_reserved3` | Explicit trailing padding (MUST be 0). |
+| `56 .. 60` | 4 B | `u32` | `header_crc32` | CRC32C over header bytes `0..56` concatenated with `60..64` (this field skipped). |
+| `60 .. 64` | 4 B | `u32` | `generation` | Commit generation of the archive when this tile was sealed (low 32 bits of the file-header `generation`). |
 
+- **Integrity rules**:
+  - Writers MUST set `data_crc32`, `header_crc32` and `generation` on every sealed tile, and the reference writer sets `TILE_FLAG_CRC_CHAIN` (`flags` bit value `2`) alongside `TILE_FLAG_SEALED` (`1`).
+  - When `TILE_FLAG_CRC_CHAIN` is set, desktop/full-engine readers SHOULD verify `header_crc32` and `data_crc32` and treat a mismatch as a torn or corrupt tile. Edge recovery (§4) MUST verify them. *Note: the current reference engine (`s3a-engine` `get_edge_tile`) does not yet verify them; tracked for Phase A3.*
+  - `header_crc32 == 0` means the header is unsealed/invalid (`CommonTileHeader::verify` returns false).
+  - Vectors: `spec-vectors/hashes/edge_data_crc32c.json`, `edge_header_crc32c.json`.
 - **Capacities**:
   - In a 4 KB micro-tile: Max payload = $4,096 - 64 = 4,032\text{ bytes}$.
   - In an 8 KB micro-tile: Max payload = $8,192 - 64 = 8,128\text{ bytes}$.
@@ -650,7 +659,7 @@ cargo build --target thumbv7em-none-eabihf -p s3a-edge --no-default-features --r
 ### 14.4 Specification Clarifications & Wire Harmonization Notes
 
 1. **`CompactEdgeSensorRecord` Zero-Padding**: Under `bytemuck::Pod`, structs must not contain compiler-inserted padding bytes. In the normative layout (§5.1.1), `_reserved: [u8; 4]` is explicitly declared at offset 10..14 to maintain 4-byte struct alignment and guarantee an exact 16-byte size without padding.
-2. **`CommonTileHeader` CRC & Generation**: In `S3A-TILE-SPEC.md` §14.1, offsets 12..16 and 56..64 were unallocated/reserved. In `CommonTileHeader` (§2.4.1), offset 12..16 stores `data_crc32: u32`, offset 56..60 stores `header_crc32: u32`, and offset 60..64 stores `generation: u32`. Standard desktop readers ignore reserved fields without error, while edge runtimes use them for atomic verification.
+2. **`CommonTileHeader` CRC & Generation**: Resolved in v1.1-draft. `data_crc32`, `header_crc32` and `generation` are now normative in §2.4.1 and `S3A-TILE-SPEC.md` §14.1 (ADR-0003).
 3. **Homogeneous Micro-Tiles**: Each micro-tile encapsulates a single `type_id` declared in its `CommonTileHeader`. Mixed record types within a single tile are rejected by `append_record` with `TileTypeMismatch`. Factory provisioning utilizes `EdgeWriter::provision`, which commits consent into Tile 0 and device identity into Tile 1.
 
 ---

@@ -1,0 +1,5 @@
+{
+  "rule": "Edge CommonTileHeader data_crc32: CRC32C (Castagnoli) over the active payload bytes [64 .. 64+payload_len) of the micro-tile; stored u32 LE at header bytes 12..16",
+  "input_hex": "68656c6c6f207333612065646765",
+  "expected_u32": 4097608067
+}

@@ -1,0 +1,5 @@
+{
+  "rule": "Edge CommonTileHeader header_crc32: CRC32C over header bytes 0..56 concatenated with 60..64 (field itself skipped); stored u32 LE at 56..60. Vector: type_id=70, type_version=1, flags=SEALED|CRC_CHAIN (3), record_count=1, data_crc32=0xF43C8983, payload_len=14, payload_hash=0xAB*32, generation=7",
+  "header_hex": "46000100030000000100000083893cf40e00000000000000abababababababababababababababababababababababababababababababab5dfab64e07000000",
+  "expected_u32": 1320614493
+}
