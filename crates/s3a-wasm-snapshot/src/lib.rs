@@ -108,6 +108,7 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
 
         // 2. Export to byte buffer (simulates web app packaging)
@@ -199,12 +200,20 @@ mod tests {
                 delta_seq: 1,
                 last_applied_delta_seq: 0,
                 statement_log: Vec::new(),
+                consents: Vec::new(),
             }
             .export_bytes()
             .unwrap(),
         )
         .unwrap();
 
+        snap1.set_consent(
+            true,
+            s3a_core::ConsentPurpose::Research,
+            7,
+            [0u8; 16],
+            1600000000,
+        );
         // Mutate snap1: add a claim and an AI trace
         snap1.add_claim(
             101,
@@ -239,7 +248,15 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
+        snap2.set_consent(
+            true,
+            s3a_core::ConsentPurpose::Research,
+            7,
+            [0u8; 16],
+            1600000000,
+        );
         assert_eq!(snap2.ai_traces.len(), 0);
 
         let applied = snap2.apply_delta_bytes(&delta_bytes).expect("apply delta");
@@ -270,6 +287,7 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
 
         // Claim 1: Quantum physics with vector [1.0, 0.0, 0.0, 0.0]
@@ -352,6 +370,7 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
 
         snap.add_claim(
@@ -417,6 +436,7 @@ mod tests {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
 
         // 1. Delta with AGENT_REGISTRY is rejected fail-closed
@@ -537,6 +557,7 @@ mod tests {
         let mut session =
             crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
                 .unwrap();
+        session.set_consent(true, 1, "study-test").unwrap();
 
         // 1. record_ai must reject judgment verbs: approved (3), rejected (4), reviewed (2)
         let judgment_verbs = [
@@ -598,6 +619,7 @@ mod tests {
         let mut session =
             crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
                 .unwrap();
+        session.set_consent(true, 1, "study-test").unwrap();
 
         // Record a few human + AI steps (including new verbs 10..=21 and ai_trace_index links)
         let ai_idx1 = session
@@ -682,6 +704,7 @@ mod tests {
         let mut session =
             crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
                 .unwrap();
+        session.set_consent(true, 1, "study-test").unwrap();
 
         // Record 5 statements: 3 AI traces, 2 Human decisions
         let a0 = session
@@ -769,6 +792,7 @@ mod tests {
         let mut session =
             crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
                 .unwrap();
+        session.set_consent(true, 1, "study-test").unwrap();
         let mut last_size = 0;
 
         for i in 0..100 {
@@ -854,5 +878,111 @@ mod tests {
             bytes2.len(),
             "both exports must succeed and lengths must be stable"
         );
+    }
+
+    // ---- Consent gate (fail-closed) ----
+    fn sess() -> crate::bindgen::WasmAgentSnapshot {
+        crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap()
+    }
+
+    fn trace_some(s: &mut crate::bindgen::WasmAgentSnapshot) {
+        s.record_ai(
+            "lab-assistant",
+            s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+            0.9,
+            None,
+        )
+        .unwrap();
+        s.record_human(
+            s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+            wasm_bindgen::JsValue::NULL,
+            1,
+            None,
+        )
+        .unwrap();
+        s.add_paper("W1", "10.1/x", 2024, 1, None).unwrap();
+        s.add_claim("lab-assistant", "a claim", 0.8, None, None)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_consent_no_consent_exports_empty_traces_keeps_content() {
+        let mut s = sess();
+        assert_eq!(s.consent_state(), "none");
+        assert!(!s.recording_active());
+        trace_some(&mut s);
+        let snap = WasmAgentSnapshot::from_bytes(&s.export_bytes().unwrap()).unwrap();
+        assert!(snap.human_decisions.is_empty() && snap.ai_traces.is_empty());
+        assert_eq!(snap.papers.len(), 1);
+        assert_eq!(snap.claims.len(), 1);
+        // Inbound trace deltas are dropped too.
+        let mut a = sess();
+        a.set_consent(true, 1, "study-1").unwrap();
+        trace_some(&mut a);
+        let delta = a.export_delta().unwrap();
+        let mut b = WasmAgentSnapshot::from_bytes(&s.export_bytes().unwrap()).unwrap();
+        b.manifest.origin_session_uuid = a.inner.manifest.origin_session_uuid;
+        b.manifest.snapshot_uuid = a.inner.manifest.snapshot_uuid;
+        b.apply_delta_bytes(&delta).unwrap();
+        assert!(b.human_decisions.is_empty() && b.ai_traces.is_empty());
+        assert_eq!(b.papers.len(), 2);
+    }
+
+    #[test]
+    fn test_consent_requires_research_and_study() {
+        let mut s = sess();
+        assert!(s.set_consent(true, 1, "  ").is_err());
+        assert!(!s.set_consent(true, 2, "study-1").unwrap()); // Analytics is not enough
+        trace_some(&mut s);
+        assert!(s.inner.ai_traces.is_empty() && s.inner.human_decisions.is_empty());
+    }
+
+    #[test]
+    fn test_consent_granted_records() {
+        let mut s = sess();
+        assert!(s.set_consent(true, 1, "study-1").unwrap());
+        assert_eq!(s.consent_state(), "granted");
+        trace_some(&mut s);
+        let snap = WasmAgentSnapshot::from_bytes(&s.export_bytes().unwrap()).unwrap();
+        assert_eq!(snap.human_decisions.len(), 1);
+        assert_eq!(snap.ai_traces.len(), 2); // record_ai + add_claim auto-trace
+    }
+
+    #[test]
+    fn test_consent_withdraw_stops_and_marks() {
+        let mut s = sess();
+        s.set_consent(true, 1, "study-1").unwrap();
+        trace_some(&mut s);
+        assert!(!s.set_consent(false, 1, "study-1").unwrap());
+        assert_eq!(s.consent_state(), "withdrawn");
+        trace_some(&mut s);
+        assert_eq!(s.inner.ai_traces.len(), 2);
+        assert_eq!(s.inner.human_decisions.len(), 1);
+        assert_eq!(s.inner.claims.len(), 2);
+        let marked: Vec<u32> = s
+            .inner
+            .policy_marks
+            .iter()
+            .filter(|m| m.mark_kind == MARK_CONSENT_WITHDRAWN && m.is_set())
+            .map(|m| m.target_tile_type)
+            .collect();
+        assert!(marked.contains(&ScholarTileType::HUMAN_LRS));
+        assert!(marked.contains(&ScholarTileType::AI_TRACE_LOG));
+    }
+
+    #[test]
+    fn test_consent_tile71_roundtrip_hash_chain() {
+        let mut s = sess();
+        s.set_consent(true, 1, "study-1").unwrap();
+        s.set_consent(false, 1, "study-1").unwrap();
+        let snap = WasmAgentSnapshot::from_bytes(&s.export_bytes().unwrap()).unwrap();
+        assert_eq!(snap.consents, s.inner.consents);
+        assert_eq!(snap.consents.len(), 2);
+        assert!(snap.consents.iter().all(|c| c.verify_hash()));
+        assert_eq!(
+            snap.consents[1].prev_consent_hash,
+            snap.consents[0].consent_hash
+        );
+        assert!(!snap.tracing_allowed());
     }
 }

@@ -1,9 +1,9 @@
 use crate::snapshot_view::WasmSnapshotView;
 use bytemuck::{bytes_of, cast_slice};
 use s3a_core::{
-    EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType, ADDON_EDU,
-    ADDON_ONTOLOGY, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_SIZE,
-    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    ConsentPurpose, ConsentRecord, EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord,
+    TileType, ADDON_EDU, ADDON_ONTOLOGY, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
+    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
 };
 use s3a_pack_ontology::{
     OntologyAxiomRecord, OntologyConceptRecord, OntologyTileType, PREDICATE_HAS_APPROVED_ANALOGY,
@@ -141,6 +141,8 @@ pub struct WasmAgentSnapshot {
     pub delta_seq: u64,
     pub last_applied_delta_seq: u64,
     pub statement_log: Vec<SrsDeltaEntry>,
+    /// Append-only, hash-chained consent events (Tile 71). Empty = never consented (fail-closed).
+    pub consents: Vec<ConsentRecord>,
 }
 
 impl WasmAgentSnapshot {
@@ -214,7 +216,73 @@ impl WasmAgentSnapshot {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log,
+            consents: view.consents.into_iter().copied().collect(),
         })
+    }
+
+    /// True only when the latest Tile-71 event is an active Research grant for a non-empty study.
+    /// Human/AI tracing (Tiles 10/11) is permitted only in that state.
+    pub fn tracing_allowed(&self) -> bool {
+        match self.consents.last() {
+            Some(c) => {
+                c.study_id != 0
+                    && c.parsed_purpose() == Some(ConsentPurpose::Research)
+                    && c.granted_at > 0
+                    && c.is_active(0)
+                    && c.verify_hash()
+            }
+            None => false,
+        }
+    }
+
+    /// Appends a consent grant (granted=true) or decline/withdrawal (granted=false) as a
+    /// hash-chained `ConsentRecord`. A withdrawal after an active grant stamps the already
+    /// recorded Tile 10/11 entries with whole-tile `MARK_CONSENT_WITHDRAWN` marks.
+    pub fn set_consent(
+        &mut self,
+        granted: bool,
+        purpose: ConsentPurpose,
+        study_id: u64,
+        subject_id: [u8; 16],
+        now: u64,
+    ) -> ConsentRecord {
+        let was_active = self.tracing_allowed();
+        let prev = self
+            .consents
+            .last()
+            .map(|c| c.consent_hash)
+            .unwrap_or([0u8; 32]);
+        let rec = if granted {
+            ConsentRecord::new(
+                subject_id,
+                study_id,
+                purpose,
+                0,
+                now.max(1),
+                0,
+                false,
+                0,
+                prev,
+            )
+        } else {
+            ConsentRecord::new_withdrawal(subject_id, study_id, purpose, 0, now.max(1), 0, prev)
+        };
+        self.consents.push(rec);
+        if was_active && !self.tracing_allowed() {
+            for tile in [ScholarTileType::HUMAN_LRS, ScholarTileType::AI_TRACE_LOG] {
+                self.policy_marks.push(MarkRecord::new(
+                    tile,
+                    0,
+                    s3a_core::MARK_TARGET_ALL_RECORDS,
+                    0,
+                    s3a_core::MARK_CONSENT_WITHDRAWN,
+                    s3a_core::MARK_SET,
+                    now,
+                    0,
+                ));
+            }
+        }
+        rec
     }
 
     /// Exports only statements and delta records recorded after `cursor`.
@@ -506,6 +574,18 @@ impl WasmAgentSnapshot {
                 max_ts,
             ));
         }
+        if !self.consents.is_empty() {
+            let ts = |c: &ConsentRecord| c.granted_at.max(c.withdrawn_at);
+            let min_ts = self.consents.iter().map(ts).min().unwrap_or(0);
+            let max_ts = self.consents.iter().map(ts).max().unwrap_or(0);
+            tiles.push((
+                TileType::CONSENT,
+                cast_slice(&self.consents).to_vec(),
+                self.consents.len() as u32,
+                min_ts,
+                max_ts,
+            ));
+        }
         if !self.citation_fingerprints.is_empty() {
             let min_ts = self
                 .citation_fingerprints
@@ -682,8 +762,17 @@ impl WasmAgentSnapshot {
         }
 
         // 4. Phase 2: Commit all entries
+        // Consent gate: inbound human/AI trace entries are silently dropped unless this
+        // session is a consented study participant.
+        let tracing = self.tracing_allowed();
         let mut count = 0;
         for entry in &packet.entries {
+            if !tracing
+                && (entry.tile_type == ScholarTileType::HUMAN_LRS
+                    || entry.tile_type == ScholarTileType::AI_TRACE_LOG)
+            {
+                continue;
+            }
             match entry.tile_type {
                 ScholarTileType::HUMAN_LRS => {
                     let r: HumanLrsRecord =
@@ -783,20 +872,22 @@ impl WasmAgentSnapshot {
             text,
         );
 
-        // Record as an AI Trace claim step for provenance
-        let trace = AiTraceRecord::new(
-            self.manifest.origin_session_uuid,
-            now,
-            author_hash,
-            STEP_CLAIM,
-            confidence,
-            s3a_core::S3ACoordinate::default(),
-            (claim_id % 1000) as u32,
-        );
-        self.ai_traces.push(trace);
-        if let Ok(entry) = SrsDeltaEntry::from_record(ScholarTileType::AI_TRACE_LOG, &trace) {
-            self.pending_delta.push(entry);
-            self.statement_log.push(entry);
+        // Record as an AI Trace claim step for provenance (only for consented study participants)
+        if self.tracing_allowed() {
+            let trace = AiTraceRecord::new(
+                self.manifest.origin_session_uuid,
+                now,
+                author_hash,
+                STEP_CLAIM,
+                confidence,
+                s3a_core::S3ACoordinate::default(),
+                (claim_id % 1000) as u32,
+            );
+            self.ai_traces.push(trace);
+            if let Ok(entry) = SrsDeltaEntry::from_record(ScholarTileType::AI_TRACE_LOG, &trace) {
+                self.pending_delta.push(entry);
+                self.statement_log.push(entry);
+            }
         }
 
         // Push claim record to delta
