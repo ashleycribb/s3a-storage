@@ -120,6 +120,9 @@ fn current_timestamp_sec() -> u64 {
     }
 }
 
+/// Index returned by `record_human`/`record_ai` when the consent gate suppressed the write.
+pub const NOT_RECORDED: u32 = u32::MAX;
+
 /// Browser-side WebAssembly wrapper around `WasmAgentSnapshot`.
 #[wasm_bindgen]
 pub struct WasmAgentSnapshot {
@@ -179,12 +182,63 @@ impl WasmAgentSnapshot {
             delta_seq: 1,
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
+            consents: Vec::new(),
         };
 
         Ok(Self {
             inner,
             session_uuid,
         })
+    }
+
+    /// Records consent (granted=true) or decline/withdrawal (granted=false) as a Tile-71
+    /// `ConsentRecord`. Tracing is enabled only for a Research grant with a non-empty study_id.
+    /// `purpose`: 1=Research, 2=Analytics, 3=ModelTraining, 4=Sharing.
+    #[wasm_bindgen]
+    pub fn set_consent(
+        &mut self,
+        granted: bool,
+        purpose: u32,
+        study_id: &str,
+    ) -> Result<bool, JsValue> {
+        let purpose = s3a_core::ConsentPurpose::from_u32(purpose)
+            .ok_or_else(|| js_error("Unknown consent purpose"))?;
+        let study = study_id.trim();
+        if granted && study.is_empty() {
+            return Err(js_error("Consent grant requires a non-empty study_id"));
+        }
+        let study_hash = if study.is_empty() {
+            0
+        } else {
+            s3a_pack_scholar::xapi::hash_iri(study)
+        };
+        let mut subject = [0u8; 16];
+        subject[0..8].copy_from_slice(&self.session_uuid[0].to_le_bytes());
+        subject[8..16].copy_from_slice(&self.session_uuid[1].to_le_bytes());
+        self.inner.set_consent(
+            granted,
+            purpose,
+            study_hash,
+            subject,
+            current_timestamp_sec(),
+        );
+        Ok(self.inner.tracing_allowed())
+    }
+
+    /// Returns "none" (never asked), "granted", or "withdrawn" (declined or withdrawn).
+    #[wasm_bindgen]
+    pub fn consent_state(&self) -> String {
+        match self.inner.consents.last() {
+            None => "none".to_string(),
+            Some(c) if c.withdrawn_at > 0 => "withdrawn".to_string(),
+            Some(_) => "granted".to_string(),
+        }
+    }
+
+    /// Engine truth for the UI recording indicator: true only if tracing is active.
+    #[wasm_bindgen]
+    pub fn recording_active(&self) -> bool {
+        self.inner.tracing_allowed()
     }
 
     /// Records a human activity statement / decision.
@@ -202,6 +256,10 @@ impl WasmAgentSnapshot {
             ));
         }
 
+        if !self.inner.tracing_allowed() {
+            // Consent gate (fail-closed): silent no-op, nothing recorded.
+            return Ok(NOT_RECORDED);
+        }
         let actor = js_value_to_u64(&actor_hash)?;
         let ai_trace_coord = match ai_trace_index {
             Some(idx) => S3ACoordinate::new(0, 0, idx),
@@ -248,6 +306,10 @@ impl WasmAgentSnapshot {
             ));
         }
 
+        if !self.inner.tracing_allowed() {
+            // Consent gate (fail-closed): silent no-op, nothing recorded.
+            return Ok(NOT_RECORDED);
+        }
         let agent_id = s3a_pack_scholar::xapi::hash_iri(agent_slug);
         let human_coord = match human_index {
             Some(idx) => S3ACoordinate::new(0, 0, idx),

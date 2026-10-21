@@ -28,6 +28,7 @@ pub struct WasmSnapshotView<'a> {
     pub citation_fingerprints: Vec<&'a CitationFingerprintRecord>,
     pub embeddings: Vec<&'a EmbeddingRecord128>,
     pub policy_marks: Vec<&'a MarkRecord>,
+    pub consents: Vec<&'a s3a_core::ConsentRecord>,
 }
 
 impl<'a> WasmSnapshotView<'a> {
@@ -74,6 +75,7 @@ impl<'a> WasmSnapshotView<'a> {
         let mut citation_fingerprints = Vec::new();
         let mut embeddings = Vec::new();
         let mut policy_marks = Vec::new();
+        let mut consents = Vec::new();
 
         let tile_count = header.tile_count as usize;
         for i in 0..tile_count {
@@ -141,6 +143,11 @@ impl<'a> WasmSnapshotView<'a> {
                     let recs: &[MarkRecord] = bytemuck::cast_slice(payload);
                     policy_marks.extend(recs.iter());
                 }
+                TileType::CONSENT => {
+                    let recs: &[s3a_core::ConsentRecord] = bytemuck::try_cast_slice(payload)
+                        .map_err(|_| "Corrupted Tile 71 consent payload")?;
+                    consents.extend(recs.iter());
+                }
                 OntologyTileType::ONTOLOGY_CONCEPT => {
                     let recs: &[OntologyConceptRecord] = bytemuck::cast_slice(payload);
                     concepts.extend(recs.iter());
@@ -168,6 +175,7 @@ impl<'a> WasmSnapshotView<'a> {
             citation_fingerprints,
             embeddings,
             policy_marks,
+            consents,
         })
     }
 }

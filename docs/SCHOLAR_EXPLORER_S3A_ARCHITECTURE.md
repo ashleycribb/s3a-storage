@@ -222,6 +222,14 @@ Instead of clumsy SQL dumps:
 
 ---
 
+#### 3.6.1 Participant Consent (fail-closed)
+* Human (Tile 10) and AI (Tile 11) tracing happens **only** for a consented study participant: the latest Tile-71 `ConsentRecord` must be an active `Research` grant with a non-empty `study_id`.
+* Sessions start with no consent. Until granted, `record_human`, `record_ai`, the auto-trace inside `add_claim`, and inbound Tile 10/11 delta entries are silent no-ops (`record_*` return `NOT_RECORDED = u32::MAX`).
+* A person's own papers and claims always persist; they are workspace content, not telemetry.
+* Every grant, decline, and withdrawal is appended to Tile 71 using s3a-core's hash-chained `ConsentRecord`, so a snapshot carries evidence of the consent decision.
+* Withdrawing mid-session stops tracing immediately and appends whole-tile `MARK_CONSENT_WITHDRAWN` marks over Tiles 10 and 11.
+* WASM API: `set_consent(granted, purpose, study_id)`, `consent_state()` (`none` / `granted` / `withdrawn`), `recording_active()` (engine truth for the UI indicator).
+
 ### 3.7 In-Browser WebAssembly Engine (`s3a-wasm-snapshot`)
 
 The Scholar Explorer web interface runs S3A directly inside researcher browsers using WebAssembly:
