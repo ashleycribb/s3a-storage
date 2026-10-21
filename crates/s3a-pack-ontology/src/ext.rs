@@ -95,7 +95,7 @@ impl OntologyCrudExt for S3ACrudEngine {
             let records: &[OntologyConceptRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
                 if rec.concept_id == concept_id && !rec.is_tombstone() {
-                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                    let coord = S3ACoordinate::new(0, i, rec_idx as u32);
                     return Ok(Some((*rec, coord)));
                 }
             }
@@ -127,7 +127,7 @@ impl OntologyCrudExt for S3ACrudEngine {
                     && rec.predicate_id == PREDICATE_HAS_APPROVED_ANALOGY
                     && !rec.is_tombstone()
                 {
-                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                    let coord = S3ACoordinate::new(0, i, rec_idx as u32);
                     results.push((*rec, coord));
                 }
             }
@@ -156,7 +156,7 @@ impl OntologyCrudExt for S3ACrudEngine {
             let records: &[OntologyAxiomRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
                 if rec.subject_concept_id == subject_id && !rec.is_tombstone() {
-                    let coord = S3ACoordinate::new(0, i as u32, rec_idx as u32);
+                    let coord = S3ACoordinate::new(0, i, rec_idx as u32);
                     results.push((*rec, coord));
                 }
             }

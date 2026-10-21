@@ -159,7 +159,7 @@ impl ColumnarTileBuilder {
         desc.data_bytes = data_raw.len() as u32;
 
         let num_records = self.header.record_count as usize;
-        let bitmap_bytes_len = (num_records + 7) / 8;
+        let bitmap_bytes_len = num_records.div_ceil(8);
         let mut null_map = vec![0xFFu8; bitmap_bytes_len]; // Default all valid
 
         if let Some(v_mask) = validity {
@@ -346,7 +346,7 @@ impl<'a> ColumnarTileView<'a> {
             return false;
         };
         let num_records = self.header.record_count as usize;
-        let bitmap_len = (num_records + 7) / 8;
+        let bitmap_len = num_records.div_ceil(8);
         let bm_start = desc.null_bitmap_offset as usize;
         if bm_start + bitmap_len > self.payload.len() {
             return false;

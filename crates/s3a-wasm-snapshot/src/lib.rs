@@ -484,9 +484,10 @@ mod tests {
     fn test_wasm_verb_registry_roundtrip() {
         // Round-trip tests for IDs 1..=21
         for id in 1..=21 {
-            let iri = iri_for_verb_id(id).expect(&format!("IRI must exist for verb id {}", id));
-            let resolved_id =
-                verb_id_for_iri(&iri).expect(&format!("Verb ID must resolve for IRI {}", iri));
+            let iri =
+                iri_for_verb_id(id).unwrap_or_else(|| panic!("IRI must exist for verb id {}", id));
+            let resolved_id = verb_id_for_iri(&iri)
+                .unwrap_or_else(|| panic!("Verb ID must resolve for IRI {}", iri));
             assert_eq!(resolved_id, id, "Round-trip mismatch for verb id {}", id);
         }
 

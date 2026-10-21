@@ -187,7 +187,7 @@ pub unsafe extern "C" fn s3a_compact(
         }
     }
 
-    match Compactor::compact(&in_strs, &out_str) {
+    match Compactor::compact(&in_strs, out_str) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn s3a_fuse_telemetry(
         }
     }
 
-    match TileFusionEngine::fuse_telemetry_tiles(&in_strs, &out_str) {
+    match TileFusionEngine::fuse_telemetry_tiles(&in_strs, out_str) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -382,7 +382,7 @@ mod tests {
         let c_p2 = CString::new(path_str2).unwrap();
         let c_out = CString::new(out_str).unwrap();
 
-        let inputs = vec![c_p1.as_ptr(), c_p2.as_ptr()];
+        let inputs = [c_p1.as_ptr(), c_p2.as_ptr()];
 
         unsafe {
             let res_fuse = s3a_fuse_telemetry(inputs.as_ptr(), 2, c_out.as_ptr());

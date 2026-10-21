@@ -26,7 +26,7 @@ use crate::xapi::{
 };
 
 pub fn is_sealed_file_bytes(bytes: &[u8]) -> bool {
-    bytes.len() >= 64 && &bytes[bytes.len() - 64..bytes.len() - 56] == s3a_core::SEALED_ENDCAP_MAGIC
+    bytes.len() >= 64 && bytes[bytes.len() - 64..bytes.len() - 56] == s3a_core::SEALED_ENDCAP_MAGIC
 }
 
 /// Verification outcome for a citation fingerprint against its original source & Crossref.
@@ -79,23 +79,12 @@ pub struct RecheckReport {
 }
 
 /// Execution options for citation rechecking.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RecheckOptions {
     pub online: bool,
     pub crossref_endpoint: Option<String>,
     pub url_overrides: HashMap<u64, (String, String)>, // paper_id -> (doi, source_url)
     pub out_path: Option<String>,
-}
-
-impl Default for RecheckOptions {
-    fn default() -> Self {
-        Self {
-            online: false,
-            crossref_endpoint: None,
-            url_overrides: HashMap::new(),
-            out_path: None,
-        }
-    }
 }
 
 /// Rechecks all citation fingerprints in an S3A archive (live or sealed snapshot).
@@ -151,9 +140,9 @@ pub fn recheck_archive<P: AsRef<Path>>(
                 ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
             for rec in recs {
-                if !paper_doi_map.contains_key(&rec.paper_id) {
-                    paper_doi_map.insert(rec.paper_id, format!("10.1000/{}", rec.paper_id));
-                }
+                paper_doi_map
+                    .entry(rec.paper_id)
+                    .or_insert_with(|| format!("10.1000/{}", rec.paper_id));
             }
         } else if tile_header.tile_type == TileType::STATEMENT_BODY {
             // Extract DOIs and URLs from xAPI statement bodies

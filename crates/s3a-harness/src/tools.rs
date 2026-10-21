@@ -152,16 +152,16 @@ impl Tool for S3aQueryTool {
         if let Ok(entries) = std::fs::read_dir(root) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.extension().map_or(false, |ext| ext == "s3a") {
+                if p.extension().is_some_and(|ext| ext == "s3a") {
                     archive_paths.push(p);
                 }
             }
         }
         let exports_dir = ctx.sandbox.exports_dir();
-        if let Ok(entries) = std::fs::read_dir(&exports_dir) {
+        if let Ok(entries) = std::fs::read_dir(exports_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.extension().map_or(false, |ext| ext == "s3a") {
+                if p.extension().is_some_and(|ext| ext == "s3a") {
                     archive_paths.push(p);
                 }
             }

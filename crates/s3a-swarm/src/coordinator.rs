@@ -220,7 +220,7 @@ impl SharedRepoCoordinator {
         let mut telemetry_records: Vec<s3a_core::TelemetryRecord> = Vec::new();
         let mut claim_records: Vec<s3a_pack_scholar::records::ScholarNoteClaimRecord> = Vec::new();
 
-        for (_id, rec) in &self.active_records {
+        for rec in self.active_records.values() {
             if rec.tile_type == TileType::TELEMETRY {
                 telemetry_records.push(s3a_core::TelemetryRecord::new(
                     rec.committed_timestamp,

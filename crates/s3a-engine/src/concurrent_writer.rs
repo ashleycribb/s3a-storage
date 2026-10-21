@@ -72,41 +72,46 @@ impl ConcurrentTileWriter {
 
     /// Enables an addon capability bitmask (e.g. `ADDON_EDU`) across all concurrent writers.
     pub fn enable_addon(&self, mask: u32) -> io::Result<()> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.enable_addon(mask)
     }
 
     /// Returns the currently committed tile count, reporting an error if lock acquisition fails.
     pub fn tile_count(&self) -> io::Result<u32> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.tile_count())
     }
 
     /// Reads all committed archive bytes safely under the write lock.
     pub fn read_all_bytes(&self) -> io::Result<Vec<u8>> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.read_all_bytes()
     }
 
     /// Returns the current header generation counter, reporting an error if lock acquisition fails.
     pub fn generation(&self) -> io::Result<u64> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.generation())
     }
 
     /// Returns the active addon mask, reporting an error if lock acquisition fails.
     pub fn addon_mask(&self) -> io::Result<u32> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.addon_mask())
     }
 
@@ -120,9 +125,10 @@ impl ConcurrentTileWriter {
         timestamps: Option<&[u64]>,
         hull: Option<SimplexHull>,
     ) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_hyper_tile(tile_type, records, timestamps, hull)
     }
 
@@ -135,9 +141,10 @@ impl ConcurrentTileWriter {
         hull: Option<SimplexHull>,
         filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_hyper_tile_ext(tile_type, records, timestamps, hull, filter_keys)
     }
 
@@ -147,9 +154,10 @@ impl ConcurrentTileWriter {
         header: &HyperTileHeader,
         payload: &[u8],
     ) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_raw_hyper_tile(header, payload)
     }
 

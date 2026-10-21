@@ -48,7 +48,7 @@ impl Vault {
             .as_secs();
 
         let mut name_bytes = [0u8; 32];
-        let copy_len = display_name.as_bytes().len().min(31);
+        let copy_len = display_name.len().min(31);
         name_bytes[0..copy_len].copy_from_slice(&display_name.as_bytes()[0..copy_len]);
 
         let mut identity = VaultIdentityRecord {
@@ -253,7 +253,7 @@ impl Vault {
     pub fn gate_address(&self) -> Result<GateAddress, VaultError> {
         let primary = self
             .primary_identity()
-            .ok_or_else(|| VaultError::CorruptedData("Vault has no primary identity"))?;
+            .ok_or(VaultError::CorruptedData("Vault has no primary identity"))?;
         Ok(GateAddress::from_public_key(&primary.public_key))
     }
 

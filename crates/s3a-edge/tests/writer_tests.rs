@@ -29,8 +29,7 @@ fn test_append_and_seal_roundtrip() {
 
     // Tile 2: Telemetry Sensor Records
     for i in 0..50 {
-        let rec =
-            CompactEdgeSensorRecord::new((i * 100) as u16, 1, 1, 2000 + (i as i32) * 5, QUALITY_OK);
+        let rec = CompactEdgeSensorRecord::new((i * 100) as u16, 1, 1, 2000 + i * 5, QUALITY_OK);
         writer
             .append_sensor_record(&rec)
             .expect("sensor append should succeed");

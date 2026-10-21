@@ -170,16 +170,16 @@ impl RoboticsQueryExt for MmapReader {
             let valid_payload = &payload[..header.payload_bytes as usize];
             let records: &[RoboticsKinematicRecord] = bytemuck::cast_slice(valid_payload);
             for rec in records {
-                if rec.timestamp_us >= min_ts_us && rec.timestamp_us <= max_ts_us {
-                    if rec.position_xyz[0] >= min_xyz[0]
-                        && rec.position_xyz[0] <= max_xyz[0]
-                        && rec.position_xyz[1] >= min_xyz[1]
-                        && rec.position_xyz[1] <= max_xyz[1]
-                        && rec.position_xyz[2] >= min_xyz[2]
-                        && rec.position_xyz[2] <= max_xyz[2]
-                    {
-                        results.push(*rec);
-                    }
+                if rec.timestamp_us >= min_ts_us
+                    && rec.timestamp_us <= max_ts_us
+                    && rec.position_xyz[0] >= min_xyz[0]
+                    && rec.position_xyz[0] <= max_xyz[0]
+                    && rec.position_xyz[1] >= min_xyz[1]
+                    && rec.position_xyz[1] <= max_xyz[1]
+                    && rec.position_xyz[2] >= min_xyz[2]
+                    && rec.position_xyz[2] <= max_xyz[2]
+                {
+                    results.push(*rec);
                 }
             }
         }

@@ -1251,7 +1251,7 @@ fn generate_tiles_out_of_order(dir: &Path) -> io::Result<String> {
         s3a_engine::DEFAULT_SEAL_K,
         s3a_engine::DEFAULT_SEAL_M,
     )
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+    .map_err(|e| io::Error::other(format!("{}", e)))?;
     fs::write(&file_path, &sealed_bytes)?;
     let _ = fs::remove_file(unsealed_tmp);
 
@@ -1424,27 +1424,27 @@ fn generate_micro_valid_4kb(dir: &Path) -> io::Result<String> {
     let device_id = [0x11u8; 16];
     let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
     let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     // Tile 0: Consent Record
     let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
     writer
         .append_consent(&consent)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     writer
         .seal_tile(1700000001)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     // Tile 1: 5 Sensor records
     for i in 0..5 {
-        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + (i as i32) * 5, 0);
+        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + i * 5, 0);
         writer
             .append_sensor_record(&rec)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     }
     writer
         .seal_tile(1700000060)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     let flash = writer.into_storage();
     let total_bytes = 512 + 2 * 4096;
@@ -1507,16 +1507,16 @@ fn generate_micro_truncated_file(dir: &Path) -> io::Result<String> {
     let device_id = [0x11u8; 16];
     let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
     let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     // Tile 0: Consent Record
     let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
     writer
         .append_consent(&consent)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     writer
         .seal_tile(1700000001)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     let mut flash = writer.into_storage();
     // Simulate torn write of Tile 1: write partial payload into flash sector 1 (offset 512 + 4096 + 64),
@@ -1573,7 +1573,7 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
     let device_id = [0x11u8; 16];
     let file_uuid = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
     let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, 1700000000)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
 
     let signing_key = s3a_edge::SigningKey::from_bytes(&[0x42u8; 32]);
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
@@ -1582,23 +1582,23 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
     let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
     writer
         .append_consent(&consent)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     let seal0 = writer
         .seal_tile(1700000001)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     let sig0 = s3a_edge::sign_seal_hash(&signing_key, &seal0);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal0, &sig0));
 
     // Tile 1: 5 Sensor records
     for i in 0..5 {
-        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + (i as i32) * 5, 0);
+        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + i * 5, 0);
         writer
             .append_sensor_record(&rec)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     }
     let seal1 = writer
         .seal_tile(1700000060)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     let sig1 = s3a_edge::sign_seal_hash(&signing_key, &seal1);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal1, &sig1));
 
@@ -1615,11 +1615,11 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
         );
         writer
             .append_equipment_event(&evt)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     }
     let seal2 = writer
         .seal_tile(1700000080)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        .map_err(|e| io::Error::other(format!("{:?}", e)))?;
     let sig2 = s3a_edge::sign_seal_hash(&signing_key, &seal2);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal2, &sig2));
 

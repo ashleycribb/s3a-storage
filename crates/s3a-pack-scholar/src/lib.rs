@@ -325,7 +325,7 @@ mod tests {
             1,
             1.0,
             S3ACoordinate::new(0, 4, 0),
-            1001 as u32,
+            1001_u32,
         );
         let ai = AiTraceRecord::new(
             session_uuid,

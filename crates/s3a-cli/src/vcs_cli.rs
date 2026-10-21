@@ -269,7 +269,7 @@ pub fn handle_vcs_command(args: &[String]) {
                 .filter(|a| !a.starts_with('-'))
                 .map(|s| s.as_str())
                 .collect();
-            if non_flags.len() < 1 {
+            if non_flags.is_empty() {
                 println!("Usage: s3a-cli vcs diff <archive_file> [commit_a] [commit_b] [--json]");
                 return;
             }

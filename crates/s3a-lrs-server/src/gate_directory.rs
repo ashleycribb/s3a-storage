@@ -697,7 +697,7 @@ impl GateDirectoryService {
         let mut purged_count = 0;
         let mut erasures = Vec::new();
 
-        for (_addr, queue) in self.mailboxes.iter_mut() {
+        for queue in self.mailboxes.values_mut() {
             let mut active = Vec::new();
             for item in queue.drain(..) {
                 if now.saturating_sub(item.deposited_at) > expiry {
@@ -774,9 +774,8 @@ pub fn handle_gate_directory(
         } else {
             make_err_response(405, "Method Not Allowed")
         }
-    } else if path.starts_with("/gate/resolve/") {
+    } else if let Some(target) = path.strip_prefix("/gate/resolve/") {
         if method == &Method::Get || method == &Method::Head {
-            let target = &path["/gate/resolve/".len()..];
             if let Some(entry) = service.lock().unwrap().resolve(target) {
                 let bytes = serde_json::to_vec(&entry).unwrap_or_default();
                 make_json_response(200, &bytes)
@@ -786,10 +785,8 @@ pub fn handle_gate_directory(
         } else {
             make_err_response(405, "Method Not Allowed")
         }
-    } else if path.starts_with("/gate/mailbox/") {
-        let rest = &path["/gate/mailbox/".len()..];
-        if rest.ends_with("/retrieve") {
-            let target_addr = &rest[..rest.len() - "/retrieve".len()];
+    } else if let Some(rest) = path.strip_prefix("/gate/mailbox/") {
+        if let Some(target_addr) = rest.strip_suffix("/retrieve") {
             if method == &Method::Post {
                 let req: Result<RetrieveMailboxRequest, _> = serde_json::from_slice(body);
                 match req {

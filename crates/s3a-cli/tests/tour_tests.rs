@@ -230,7 +230,7 @@ fn test_tour_array_slice_reads_only_covered_chunks() {
     // Chunk 0: rows [0..4], cols [0..4] (coords [0, 0])
     let mut chunk0 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &[4, 4], &[0, 0]).unwrap();
     chunk0.set_axis_names("rows,cols");
-    let data0: Vec<i32> = (0..16).map(|i| 100 + i as i32).collect();
+    let data0: Vec<i32> = (0..16).map(|i| 100 + i).collect();
     chunk0.set_data(&data0).unwrap();
     let payload0 = chunk0.build();
     writer
@@ -240,7 +240,7 @@ fn test_tour_array_slice_reads_only_covered_chunks() {
     // Chunk 1: rows [0..4], cols [4..8] (coords [0, 4])
     let mut chunk1 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &[4, 4], &[0, 4]).unwrap();
     chunk1.set_axis_names("rows,cols");
-    let data1: Vec<i32> = (0..16).map(|i| 200 + i as i32).collect();
+    let data1: Vec<i32> = (0..16).map(|i| 200 + i).collect();
     chunk1.set_data(&data1).unwrap();
     let payload1 = chunk1.build();
     writer

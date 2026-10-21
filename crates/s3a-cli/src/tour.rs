@@ -501,7 +501,7 @@ fn inspect_archive_context<R: Read + Seek>(
                             reader.seek(SeekFrom::Start(data_end_offset))?;
                             let mut anchor_buf = vec![0u8; potential_anchor_len];
                             if reader.read_exact(&mut anchor_buf).is_ok()
-                                && &anchor_buf[..8] == &SEALED_ANCHORS_MAGIC
+                                && anchor_buf[..8] == SEALED_ANCHORS_MAGIC
                             {
                                 anchors = extract_anchors_from_footer(&anchor_buf, 0, 0);
                             }
@@ -1686,10 +1686,10 @@ fn record_matches_filter(
             }
         }
         for (k, v) in map {
-            if k == "timestamp" || k == "id" || k == "sensor_id" || k == "subject_id" {
-                if format!("{}", v).trim_matches('"') == val_str {
-                    return true;
-                }
+            if (k == "timestamp" || k == "id" || k == "sensor_id" || k == "subject_id")
+                && format!("{}", v).trim_matches('"') == val_str
+            {
+                return true;
             }
         }
         return false;
@@ -1734,16 +1734,15 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!(" Total Epochs:      {}", history.len());
         println!();
         println!(
-            "{:<4} {:<20} {:<34} {:<34} {}",
-            "Gen", "Sealed Time", "Prev Seal Hash", "Seal Hash", "Anchor Status"
+            "{:<4} {:<20} {:<34} {:<34} Anchor Status",
+            "Gen", "Sealed Time", "Prev Seal Hash", "Seal Hash"
         );
         println!(
-            "{:<4} {:<20} {:<34} {:<34} {}",
+            "{:<4} {:<20} {:<34} {:<34} -------------",
             "---",
             "-------------------",
             "--------------------------------",
-            "--------------------------------",
-            "-------------"
+            "--------------------------------"
         );
         for h in history {
             println!(

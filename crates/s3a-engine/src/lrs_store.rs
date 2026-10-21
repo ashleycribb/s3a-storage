@@ -345,7 +345,7 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
             let mut pu_count = 0;
             while idx < subtags.len() {
                 let sub = subtags[idx];
-                if sub.len() >= 1
+                if !sub.is_empty()
                     && sub.len() <= 8
                     && sub.chars().all(|c| c.is_ascii_alphanumeric())
                 {
@@ -390,8 +390,7 @@ pub fn is_valid_iso8601_duration(s: &str) -> bool {
         return false;
     }
     let rest = &s[1..];
-    if rest.ends_with('W') {
-        let num_str = &rest[..rest.len() - 1];
+    if let Some(num_str) = rest.strip_suffix('W') {
         return !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit());
     }
     if rest.contains('W') {
@@ -471,7 +470,7 @@ pub fn is_valid_iso8601_duration(s: &str) -> bool {
 
 pub fn base64_url_decode(input: &str) -> Result<Vec<u8>, String> {
     let mut clean = input.trim_end_matches('=').to_string();
-    while clean.len() % 4 != 0 {
+    while !clean.len().is_multiple_of(4) {
         clean.push('=');
     }
     let mut out = Vec::new();
@@ -929,12 +928,12 @@ pub fn validate_activity_definition(
     let has_steps = def.get("steps").is_some();
 
     let int_type_opt = def.get("interactionType");
-    if has_crp || has_choices || has_scale || has_source || has_target || has_steps {
-        if int_type_opt.is_none() {
-            return Err(LrsStoreError::InvalidStatement(
+    if (has_crp || has_choices || has_scale || has_source || has_target || has_steps)
+        && int_type_opt.is_none()
+    {
+        return Err(LrsStoreError::InvalidStatement(
                 "Activity Definition must include interactionType when correctResponsesPattern, choices, scale, source, target, or steps are present".into()
             ));
-        }
     }
 
     if let Some(it) = int_type_opt {
@@ -1755,7 +1754,7 @@ pub fn parse_statement_metadata(
 
     // 5. Timestamp
     let timestamp_ms = if let Some(ts_str) = json_val.get("timestamp").and_then(|v| v.as_str()) {
-        chrono_parse_ms(ts_str).unwrap_or_else(|| now_ms())
+        chrono_parse_ms(ts_str).unwrap_or_else(now_ms)
     } else {
         now_ms()
     };
@@ -2349,7 +2348,7 @@ impl LrsStore {
         }
 
         // For cached statements, load their body JSON to populate relation indexes
-        for (_id, entry) in stmts.iter_mut() {
+        for entry in stmts.values_mut() {
             if entry.raw_json.is_none() {
                 if let Ok(Some(json_str)) = self.read_body_json_from_disk(
                     &reader,
@@ -2397,7 +2396,7 @@ impl LrsStore {
             *self.last_committed_ms.read().unwrap(),
             mark_kind,
             if set { MARK_SET } else { MARK_CLEAR },
-            (now_ms() / 1000) as u64,
+            now_ms() / 1000,
             actor_hash,
         );
         mark._reserved = statement_id;
@@ -2699,8 +2698,7 @@ impl LrsStore {
         const MAX_PAYLOAD_CHUNK: usize =
             HYPER_TILE_PAYLOAD_SIZE - std::mem::size_of::<StatementBlobHeader>();
         let total_bytes = canonical_bytes.len();
-        let total_chunks =
-            ((total_bytes + MAX_PAYLOAD_CHUNK - 1) / MAX_PAYLOAD_CHUNK).max(1) as u16;
+        let total_chunks = total_bytes.div_ceil(MAX_PAYLOAD_CHUNK).max(1) as u16;
 
         let mut first_tile_id = 0u32;
         let mut byte_offset = 0;
@@ -2845,7 +2843,7 @@ impl LrsStore {
         let mut atts = Vec::new();
         if entry.index_record.has_attachments() {
             let att_map = self.attachments.read().unwrap();
-            for (_, (hdr, data)) in att_map.iter() {
+            for (hdr, data) in att_map.values() {
                 atts.push((*hdr, data.clone()));
             }
         }
@@ -3047,7 +3045,7 @@ impl LrsStore {
                 statement_strings.push(raw.clone());
             }
             if filter.attachments && entry.index_record.has_attachments() {
-                for (_, (hdr, data)) in att_map.iter() {
+                for (hdr, data) in att_map.values() {
                     atts.push((*hdr, data.clone()));
                 }
             }
@@ -3338,7 +3336,7 @@ impl LrsStore {
         let docs = self.documents.read().unwrap();
         let mut result = Vec::new();
 
-        for (_h, (hdr, _content, key_str)) in docs.iter() {
+        for (hdr, _content, key_str) in docs.values() {
             if hdr.doc_kind == doc_kind && key_str.starts_with(prefix) {
                 if let Some(since) = since_ms {
                     if hdr.timestamp_ms <= since {
@@ -3805,7 +3803,7 @@ impl LrsStore {
             *self.last_committed_ms.read().unwrap(),
             mark_kind,
             if set { MARK_SET } else { MARK_CLEAR },
-            (now_ms() / 1000) as u64,
+            now_ms() / 1000,
             actor_hash,
         );
         mark._reserved = person_id;

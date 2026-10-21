@@ -98,7 +98,7 @@ impl SimulatedAgent {
             && !is_repair_fix
             && !is_claim_conflict
             && !is_grant_violation
-            && (slot >= 50 && slot < 55); // ~5%
+            && (50..55).contains(&slot); // ~5%
 
         let (tile_type, raw_payload, records, paths, msg) = if is_intentional_bug {
             // Intentional bug: Agent 7 injects a TypeScript error into components/MatchCard.tsx
@@ -157,7 +157,7 @@ impl SimulatedAgent {
         } else if is_claim_conflict {
             // Claim / Evidence Conflict on Brakets match result in fixtures
             let claim_id = "fixture_match_result_claim_open_a";
-            let (winner_team, confidence) = if self.index % 2 == 0 {
+            let (winner_team, confidence) = if self.index.is_multiple_of(2) {
                 ("Solar Flare", 0.98)
             } else {
                 ("Vortex Gaming", 0.95)
@@ -231,7 +231,7 @@ impl SimulatedAgent {
             )
         } else if is_overlapping_edit {
             // Deliberately colliding edits on Brakets bracket colors or seeding fixtures
-            let (shared_key, summary_text, msg_text) = if (self.index % 2) == 0 {
+            let (shared_key, summary_text, msg_text) = if self.index.is_multiple_of(2) {
                 (
                     "brakets_design_tokens_color_teal".to_string(),
                     format!(
@@ -313,9 +313,9 @@ impl SimulatedAgent {
         // Compute prospective seal hash
         let mut seal_hasher = Sha256::default();
         seal_hasher.update(b"S3A_PROSPECTIVE_SEAL");
-        seal_hasher.update(&parent_seal);
-        seal_hasher.update(&(self.index as u64).to_le_bytes());
-        seal_hasher.update(&(seq as u64).to_le_bytes());
+        seal_hasher.update(parent_seal);
+        seal_hasher.update((self.index as u64).to_le_bytes());
+        seal_hasher.update((seq as u64).to_le_bytes());
         seal_hasher.update(&raw_payload);
         let prospective_seal: [u8; 32] = seal_hasher.finalize().into();
 

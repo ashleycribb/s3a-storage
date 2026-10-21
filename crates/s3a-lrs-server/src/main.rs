@@ -806,12 +806,10 @@ fn main() {
             "--daily-anchor" => {
                 config.enable_daily_anchoring = true;
             }
-            "--anchoring-interval" => {
-                if i + 1 < args.len() {
-                    config.anchoring_interval_secs = args[i + 1].parse().unwrap_or(86400);
-                    config.enable_daily_anchoring = true;
-                    i += 1;
-                }
+            "--anchoring-interval" if i + 1 < args.len() => {
+                config.anchoring_interval_secs = args[i + 1].parse().unwrap_or(86400);
+                config.enable_daily_anchoring = true;
+                i += 1;
             }
             _ => {}
         }
@@ -864,7 +862,7 @@ fn main() {
     config.archive_path = config.data_dir.join(&archive_name);
 
     // Default audit archive path if not explicitly configured
-    if config.audit_archive_path == PathBuf::from("lrs_data.audit.s3a") {
+    if config.audit_archive_path == *"lrs_data.audit.s3a" {
         let stem = archive_name.strip_suffix(".s3a").unwrap_or(&archive_name);
         config.audit_archive_path = config.data_dir.join(format!("{}.audit.s3a", stem));
     } else if config.audit_archive_path.is_relative() {
@@ -1015,32 +1013,30 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // -------------------------------------------------------------------------
     // Root status discovery (Unauthenticated GET /)
     // -------------------------------------------------------------------------
-    if path == "/" || path.is_empty() {
-        if method == Method::Get || method == Method::Head {
-            let info_json = serde_json::json!({
-                "name": "S3A Native LRS Server",
-                "version": ["1.0.3"],
-                "endpoints": {
-                    "about": "/xapi/about",
-                    "statements": "/xapi/statements",
-                    "activities": "/xapi/activities",
-                    "state": "/xapi/activities/state",
-                    "learner_person": "/api/person",
-                    "learner_events": "/api/learning-event",
-                    "learner_goals": "/api/goal"
-                },
-                "status": "ready"
-            })
-            .to_string();
-            let resp = make_response(
-                200,
-                "application/json",
-                info_json.as_bytes(),
-                method == Method::Head,
-            );
-            let _ = req.respond(resp);
-            return;
-        }
+    if (path == "/" || path.is_empty()) && (method == Method::Get || method == Method::Head) {
+        let info_json = serde_json::json!({
+            "name": "S3A Native LRS Server",
+            "version": ["1.0.3"],
+            "endpoints": {
+                "about": "/xapi/about",
+                "statements": "/xapi/statements",
+                "activities": "/xapi/activities",
+                "state": "/xapi/activities/state",
+                "learner_person": "/api/person",
+                "learner_events": "/api/learning-event",
+                "learner_goals": "/api/goal"
+            },
+            "status": "ready"
+        })
+        .to_string();
+        let resp = make_response(
+            200,
+            "application/json",
+            info_json.as_bytes(),
+            method == Method::Head,
+        );
+        let _ = req.respond(resp);
+        return;
     }
 
     // -------------------------------------------------------------------------
@@ -4370,7 +4366,7 @@ mod tests {
         config.credentials.push(pinned_cred.clone());
 
         let audit_writer =
-            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("scholar.audit.s3a")).unwrap());
+            Arc::new(ConcurrentTileWriter::create(temp_dir.join("scholar.audit.s3a")).unwrap());
 
         // 1. Startup must NOT panic with "Archive file is already locked by another process"
         let state = AppState::init_with_audit(config, audit_writer)
@@ -4462,7 +4458,7 @@ mod tests {
         config.credentials.push(bad_cred);
 
         let audit_writer =
-            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+            Arc::new(ConcurrentTileWriter::create(temp_dir.join("lrs_data.audit.s3a")).unwrap());
 
         let res = AppState::init_with_audit(config, audit_writer);
         assert!(
@@ -4505,7 +4501,7 @@ mod tests {
         });
 
         let audit_writer =
-            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+            Arc::new(ConcurrentTileWriter::create(temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -4618,7 +4614,7 @@ mod tests {
         });
 
         let audit_writer =
-            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+            Arc::new(ConcurrentTileWriter::create(temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -4720,7 +4716,7 @@ mod tests {
         });
 
         let audit_writer =
-            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+            Arc::new(ConcurrentTileWriter::create(temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");

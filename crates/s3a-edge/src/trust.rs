@@ -17,8 +17,8 @@ pub fn compute_seal_hash(
     let mut hasher = Sha256::new();
     hasher.update(SEAL_CHAIN_DOMAIN_TAG);
     hasher.update(prev_seal_hash);
-    hasher.update(&generation.to_le_bytes());
-    hasher.update(&tile_index.to_le_bytes());
+    hasher.update(generation.to_le_bytes());
+    hasher.update(tile_index.to_le_bytes());
     hasher.update(payload_hash);
     hasher.update(device_id);
     hasher.finalize().into()

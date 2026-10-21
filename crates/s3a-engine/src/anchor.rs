@@ -38,9 +38,9 @@ pub fn compute_sealed_fingerprint(
     directory: &[SealedDirectoryEntry],
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(&file_uuid[0].to_le_bytes());
-    hasher.update(&file_uuid[1].to_le_bytes());
-    hasher.update(&tile_count.to_le_bytes());
+    hasher.update(file_uuid[0].to_le_bytes());
+    hasher.update(file_uuid[1].to_le_bytes());
+    hasher.update(tile_count.to_le_bytes());
     let dir_bytes = cast_slice::<SealedDirectoryEntry, u8>(directory);
     hasher.update(dir_bytes);
     hasher.finalize().into()
@@ -176,7 +176,7 @@ pub fn extract_anchors_from_footer(
     }
 
     let anchors_slice = &footer_slice[anchors_offset..];
-    if &anchors_slice[0..8] != &SEALED_ANCHORS_MAGIC {
+    if anchors_slice[0..8] != SEALED_ANCHORS_MAGIC {
         return Vec::new();
     }
 
@@ -257,8 +257,7 @@ pub fn attach_anchor_to_sealed_bytes(
         let data_end = FILE_HEADER_SIZE + (index_hdr.tile_count as usize * HYPER_TILE_SIZE);
         let parity_len =
             if (endcap.flags & s3a_core::SEALED_FLAG_PARITY_ENABLED) != 0 && index_hdr.k > 0 {
-                let num_groups = (index_hdr.tile_count as usize + index_hdr.k as usize - 1)
-                    / (index_hdr.k as usize);
+                let num_groups = (index_hdr.tile_count as usize).div_ceil(index_hdr.k as usize);
                 num_groups * (index_hdr.m as usize) * HYPER_TILE_SIZE
             } else {
                 0
@@ -321,7 +320,7 @@ pub fn attach_anchor_to_sealed_bytes(
     let num_groups = if endcap.tile_count == 0 {
         0
     } else {
-        (endcap.tile_count as usize + (endcap.k as usize) - 1) / (endcap.k as usize)
+        (endcap.tile_count as usize).div_ceil(endcap.k as usize)
     };
     let parity_byte_len = num_groups * (endcap.m as usize) * HYPER_TILE_SIZE;
 
@@ -390,7 +389,7 @@ pub use opentimestamps::{
 };
 
 /// Collects all attestations and their accumulated hashes from an OTS timestamp execution tree.
-pub fn collect_attestations<'a>(step: &'a Step) -> Vec<(&'a Attestation, &'a [u8])> {
+pub fn collect_attestations(step: &Step) -> Vec<(&Attestation, &[u8])> {
     let mut list = Vec::new();
     if let StepData::Attestation(ref att) = step.data {
         list.push((att, step.output.as_slice()));
@@ -448,10 +447,10 @@ pub fn target_from_nbits(nbits: u32) -> [u8; 32] {
     let mut target = [0u8; 32];
     if exponent <= 3 {
         let val = mantissa >> (8 * (3 - exponent));
-        target[28..32].copy_from_slice(&(val as u32).to_be_bytes());
+        target[28..32].copy_from_slice(&val.to_be_bytes());
     } else if exponent <= 32 {
         let offset = 32 - exponent;
-        let m_bytes = (mantissa as u32).to_be_bytes(); // [0, m0, m1, m2]
+        let m_bytes = mantissa.to_be_bytes(); // [0, m0, m1, m2]
         if offset < 32 {
             target[offset] = m_bytes[1];
         }
@@ -516,8 +515,8 @@ pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result
                 out.copy_from_slice(&header_bytes);
 
                 // 1. Verify double-SHA256(header) reversed == hash returned by /block-height/{h}
-                let h1 = Sha256::digest(&out);
-                let mut h2 = Sha256::digest(&h1);
+                let h1 = Sha256::digest(out);
+                let mut h2 = Sha256::digest(h1);
                 h2.reverse();
                 let computed_hash_hex = hex::encode(h2);
                 if computed_hash_hex.to_lowercase() != block_hash.trim().to_lowercase() {
@@ -798,7 +797,7 @@ pub fn verify_ots(
                     )
                 })?;
                 let merkle_root = extract_merkle_root_from_header(&header);
-                if calculated_hash != &merkle_root {
+                if calculated_hash != merkle_root {
                     return Err(format!(
                         "Bitcoin block Merkle root mismatch at height {}: calculated {}, header has {}",
                         h,
@@ -999,7 +998,7 @@ pub fn cert_matches_ski(cert: &x509_cert::Certificate, ski: &[u8]) -> bool {
     cert.tbs_certificate
         .extensions
         .as_ref()
-        .map_or(false, |exts| {
+        .is_some_and(|exts| {
             exts.iter().any(|ext| {
                 if ext.extn_id == ski_oid {
                     if let Ok(inner) = OctetString::from_der(ext.extn_value.as_bytes()) {
@@ -1086,7 +1085,7 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
         ),
     };
-    let hashed_message = OctetString::new(&fingerprint)
+    let hashed_message = OctetString::new(fingerprint)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     let message_imprint = MessageImprint {
         hash_algorithm,
@@ -1095,7 +1094,7 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
 
     let mut nonce_bytes = [0u8; 8];
     getrandom::getrandom(&mut nonce_bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("getrandom error: {}", e)))?;
+        .map_err(|e| io::Error::other(format!("getrandom error: {}", e)))?;
     nonce_bytes[0] &= 0x7f; // Ensure non-negative in ASN.1 DER INTEGER
     let nonce = Int::new(&nonce_bytes)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -1180,12 +1179,12 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
             let resp_nonce = tst.nonce.as_ref().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "TSA reply missing nonce")
             })?;
-            if resp_nonce.as_bytes() != &nonce_bytes {
+            if resp_nonce.as_bytes() != nonce_bytes {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "Nonce mismatch in TSA reply: expected {:?}, got {:?}",
-                        &nonce_bytes,
+                        nonce_bytes,
                         resp_nonce.as_bytes()
                     ),
                 ));
@@ -1390,7 +1389,7 @@ pub fn verify_rfc3161(
         .tbs_certificate
         .extensions
         .as_ref()
-        .map_or(false, |exts| {
+        .is_some_and(|exts| {
             exts.iter().any(|ext| {
                 if ext.extn_id == eku_oid {
                     if let Ok(seq) = der::asn1::SequenceOf::<ObjectIdentifier, 16>::from_der(
@@ -1590,15 +1589,15 @@ pub mod mock_calendar {
                                     let h_val: u64 = h_str.parse().unwrap_or(0);
                                     let lock = conf_clone.lock().unwrap();
                                     let mut found_header = None;
-                                    for (_commit, &(height, header)) in lock.iter() {
+                                    for &(height, header) in lock.values() {
                                         if height == h_val {
                                             found_header = Some(header);
                                             break;
                                         }
                                     }
                                     if let Some(header) = found_header {
-                                        let h1 = Sha256::digest(&header);
-                                        let h2 = Sha256::digest(&h1);
+                                        let h1 = Sha256::digest(header);
+                                        let h2 = Sha256::digest(h1);
                                         let mut rev = h2.to_vec();
                                         rev.reverse();
                                         let hash_hex = hex::encode(rev);
@@ -1624,9 +1623,9 @@ pub mod mock_calendar {
                                         .trim_end_matches("/header");
                                     let lock = conf_clone.lock().unwrap();
                                     let mut found_header = None;
-                                    for (_commit, &(_h, header)) in lock.iter() {
-                                        let h1 = Sha256::digest(&header);
-                                        let h2 = Sha256::digest(&h1);
+                                    for &(_h, header) in lock.values() {
+                                        let h1 = Sha256::digest(header);
+                                        let h2 = Sha256::digest(h1);
                                         let mut rev = h2.to_vec();
                                         rev.reverse();
                                         if hex::encode(rev).eq_ignore_ascii_case(hash) {
@@ -1694,8 +1693,8 @@ pub mod mock_calendar {
             let target = target_from_nbits(0x207fffff);
             for nonce in 0u32..10000 {
                 header[76..80].copy_from_slice(&nonce.to_le_bytes());
-                let h1 = Sha256::digest(&header);
-                let h2 = Sha256::digest(&h1);
+                let h1 = Sha256::digest(header);
+                let h2 = Sha256::digest(h1);
                 let mut rev = h2.to_vec();
                 rev.reverse();
                 if rev.as_slice() <= &target[..] {
@@ -2340,7 +2339,7 @@ mod tests {
 
         let res_inter = verify_certificate_chain(
             &attacker_leaf,
-            &[forged_cert.clone()],
+            std::slice::from_ref(&forged_cert),
             &trust_store,
             gen_time,
         );

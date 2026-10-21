@@ -41,13 +41,7 @@ fn test_edge_to_full_engine_import_and_deduplication() {
 
     // Tile 2: Sensor telemetry records
     for i in 0..20 {
-        let rec = CompactEdgeSensorRecord::new(
-            (i * 100) as u16,
-            1,
-            1,
-            3000 + (i as i32) * 10,
-            QUALITY_OK,
-        );
+        let rec = CompactEdgeSensorRecord::new((i * 100) as u16, 1, 1, 3000 + i * 10, QUALITY_OK);
         writer.append_sensor_record(&rec).unwrap();
     }
     let seal2 = writer.seal_tile(now + 10).unwrap();

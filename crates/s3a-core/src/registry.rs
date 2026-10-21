@@ -1012,7 +1012,7 @@ where
     F: FnOnce(&mut TileTypeRegistry) -> R,
 {
     let mut w = get_registry_lock().write().unwrap();
-    f(&mut *w)
+    f(&mut w)
 }
 
 #[cfg(test)]

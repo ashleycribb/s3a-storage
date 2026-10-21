@@ -51,7 +51,7 @@ pub fn encode_claim_embedding(
     raw_bytes[64..66].copy_from_slice(&(emb_dim as u16).to_le_bytes());
     let text_bytes = text.as_bytes();
     let emb_extra_bytes = if emb_dim > 16 { (emb_dim - 16) * 4 } else { 0 };
-    let max_text_bytes = (512 - 68 - emb_extra_bytes).max(0);
+    let max_text_bytes = 512 - 68 - emb_extra_bytes;
     let actual_text_len = text_bytes.len().min(max_text_bytes);
     raw_bytes[66..68].copy_from_slice(&(actual_text_len as u16).to_le_bytes());
 
@@ -642,27 +642,25 @@ impl WasmAgentSnapshot {
                         bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     // Security policy for marks in deltas:
                     // Only NEEDS_REVIEW and CONSENT_WITHDRAWN can be SET
-                    if mark.is_set() {
-                        if mark.mark_kind != s3a_core::MARK_NEEDS_REVIEW
-                            && mark.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
-                        {
-                            return Err(format!(
-                                "UnauthorizedMark: cannot set mark_kind {}",
-                                mark.mark_kind
-                            ));
-                        }
+                    if mark.is_set()
+                        && mark.mark_kind != s3a_core::MARK_NEEDS_REVIEW
+                        && mark.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
+                    {
+                        return Err(format!(
+                            "UnauthorizedMark: cannot set mark_kind {}",
+                            mark.mark_kind
+                        ));
                     }
                     // Cannot CLEAR legal hold, quarantine, or consent withdrawn
-                    if mark.is_cleared() {
-                        if mark.mark_kind == s3a_core::MARK_LEGAL_HOLD
+                    if mark.is_cleared()
+                        && (mark.mark_kind == s3a_core::MARK_LEGAL_HOLD
                             || mark.mark_kind == s3a_core::MARK_QUARANTINE
-                            || mark.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN
-                        {
-                            return Err(format!(
-                                "UnauthorizedMark: cannot clear mark_kind {}",
-                                mark.mark_kind
-                            ));
-                        }
+                            || mark.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN)
+                    {
+                        return Err(format!(
+                            "UnauthorizedMark: cannot clear mark_kind {}",
+                            mark.mark_kind
+                        ));
                     }
                 }
                 ScholarTileType::HUMAN_LRS

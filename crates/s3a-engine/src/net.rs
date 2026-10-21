@@ -50,7 +50,7 @@ pub fn read_frame(stream: &mut TcpStream) -> io::Result<(u8, u64, Vec<u8>)> {
     let mut header = [0u8; S3AP_HEADER_SIZE];
     stream.read_exact(&mut header)?;
 
-    if &header[0..4] != &S3AP_MAGIC {
+    if header[0..4] != S3AP_MAGIC {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid S3AP magic bytes",
@@ -156,7 +156,7 @@ impl S3AClient {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         if msg_type == MSG_ERROR {
-            return Err(io::Error::new(io::ErrorKind::Other, resp_str));
+            return Err(io::Error::other(resp_str));
         }
 
         Ok(resp_str)
@@ -180,7 +180,7 @@ impl S3AClient {
 
         if msg_type == MSG_ERROR {
             let err_msg = String::from_utf8_lossy(&payload);
-            return Err(io::Error::new(io::ErrorKind::Other, err_msg));
+            return Err(io::Error::other(err_msg));
         }
 
         if payload.len() >= 8 {

@@ -257,11 +257,11 @@ impl ItemTransferRecord {
     pub fn compute_transfer_hash(&self) -> [u8; 32] {
         let mut hasher = sha2::Sha256::new();
         use sha2::Digest;
-        hasher.update(&self.prev_transfer_hash);
-        hasher.update(&self.item_hash);
-        hasher.update(&self.from_pubkey);
-        hasher.update(&self.to_pubkey);
-        hasher.update(&self.timestamp);
+        hasher.update(self.prev_transfer_hash);
+        hasher.update(self.item_hash);
+        hasher.update(self.from_pubkey);
+        hasher.update(self.to_pubkey);
+        hasher.update(self.timestamp);
         hasher.finalize().into()
     }
 

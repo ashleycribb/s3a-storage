@@ -562,13 +562,11 @@ fn run_agent_cli(args: &[String]) {
                     i += 1;
                 }
             }
-            "--project-uuid" => {
-                if i + 1 < args.len() {
-                    if let Some(pair) = parse_hex_uuid(&args[i + 1]) {
-                        project_uuid = pair;
-                    }
-                    i += 1;
+            "--project-uuid" if i + 1 < args.len() => {
+                if let Some(pair) = parse_hex_uuid(&args[i + 1]) {
+                    project_uuid = pair;
                 }
+                i += 1;
             }
             _ => {}
         }
@@ -720,11 +718,9 @@ fn resume_agent_cli(args: &[String]) {
                     i += 1;
                 }
             }
-            "--db" => {
-                if i + 1 < args.len() {
-                    db_filename = args[i + 1].clone();
-                    i += 1;
-                }
+            "--db" if i + 1 < args.len() => {
+                db_filename = args[i + 1].clone();
+                i += 1;
             }
             _ => {}
         }

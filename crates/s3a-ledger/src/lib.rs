@@ -139,8 +139,8 @@ impl Ledger {
             self.last_reset_day = current_day;
             self.spent_today = 0.0;
             // Drain deferred queue on reset
-            let resumed = std::mem::take(&mut self.deferred_queue);
-            resumed
+
+            std::mem::take(&mut self.deferred_queue)
         } else {
             Vec::new()
         }

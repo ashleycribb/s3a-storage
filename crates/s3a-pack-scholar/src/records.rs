@@ -1145,7 +1145,7 @@ mod tests {
         // 5. Test ACTIVE vs TOMBSTONE single bit flips on records
         let mut active_paper =
             AcademicPaperRecord::new(1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0);
-        assert_eq!(active_paper.flags, FLAG_ACTIVE as u64);
+        assert_eq!(active_paper.flags, FLAG_ACTIVE);
         assert!(!active_paper.is_tombstone());
 
         // Flip bit 0: becomes tombstone (safely pruned/hidden)
@@ -1157,7 +1157,7 @@ mod tests {
             let mut p = AcademicPaperRecord::new(1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0);
             p.flags ^= 1 << bit;
             assert_ne!(
-                p.flags, FLAG_ACTIVE as u64,
+                p.flags, FLAG_ACTIVE,
                 "Bit {} flip cannot leave FLAG_ACTIVE unchanged",
                 bit
             );

@@ -280,7 +280,7 @@ impl ReedSolomonCodec {
         let original_crc32c = crc32c::crc32c(data);
 
         // Compute shard size (rounded up to align evenly across K shards)
-        let shard_size = (data.len() + self.k - 1) / self.k;
+        let shard_size = data.len().div_ceil(self.k);
 
         // Populate K data shards
         let mut data_shards: Vec<Vec<u8>> = Vec::with_capacity(self.k);

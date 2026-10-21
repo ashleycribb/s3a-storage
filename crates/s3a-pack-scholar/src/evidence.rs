@@ -294,7 +294,11 @@ pub fn build_claim_proof<P: AsRef<Path>>(
                 .and_then(|v| v.get("id"))
                 .and_then(|i| i.as_str())
             {
-                verifier_verb = verb_obj.split('/').last().unwrap_or(verb_obj).to_string();
+                verifier_verb = verb_obj
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(verb_obj)
+                    .to_string();
             }
             if let Some(actor_mbox) = stmt
                 .get("actor")

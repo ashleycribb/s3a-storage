@@ -1,3 +1,5 @@
+// Test fixtures intentionally use the literal 3.14 as arbitrary sample data.
+#![allow(clippy::approx_constant)]
 //! S3A Phase 1 Durability & Crash Recovery Fault-Injection Harness
 //!
 //! Validates:
@@ -144,7 +146,7 @@ fn test_crash_torn_eof_partial_tile() {
         .unwrap();
     drop(writer);
 
-    let expected_valid_size = FILE_HEADER_SIZE as u64 + (1 * HYPER_TILE_SIZE as u64);
+    let expected_valid_size = FILE_HEADER_SIZE as u64 + (HYPER_TILE_SIZE as u64);
     assert_eq!(fs::metadata(path).unwrap().len(), expected_valid_size);
 
     // 2. Fault Injection: Simulate torn write appending 2048 partial bytes to EOF without header commit
@@ -193,7 +195,7 @@ fn test_crash_uncommitted_tile_before_header_sync() {
         .unwrap();
     drop(writer);
 
-    let committed_size = FILE_HEADER_SIZE as u64 + (1 * HYPER_TILE_SIZE as u64);
+    let committed_size = FILE_HEADER_SIZE as u64 + (HYPER_TILE_SIZE as u64);
 
     // 2. Fault Injection: Append an entire 128KB tile block at EOF, but do not update header slot
     {

@@ -68,7 +68,7 @@ impl AskHumanQueue {
             h.update(record_id.as_bytes());
             h.update(target_version.as_bytes());
             h.update(source_version.as_bytes());
-            h.update(&now.to_le_bytes());
+            h.update(now.to_le_bytes());
             let out = h.finalize();
             u64::from_le_bytes(out[0..8].try_into().unwrap())
         });

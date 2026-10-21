@@ -319,7 +319,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 "#;
 
 fn register_all_types() {
-    let _ = s3a_core::registry::with_global_registry_mut(|reg| {
+    s3a_core::registry::with_global_registry_mut(|reg| {
         let _ = s3a_pack_wearable::register_pack_types(reg);
         let _ = s3a_pack_robotics::register_pack_types(reg);
         let _ = s3a_pack_gis::register_pack_types(reg);
@@ -985,13 +985,9 @@ fn main() {
                                     i += 1;
                                 }
                             }
-                            "--out" => {
-                                if i + 1 < args.len() {
-                                    out_path = Some(args[i + 1].clone());
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--out" if i + 1 < args.len() => {
+                                out_path = Some(args[i + 1].clone());
+                                i += 2;
                             }
                             _ => {
                                 i += 1;
@@ -1026,13 +1022,9 @@ fn main() {
                                 json_ld = true;
                                 i += 1;
                             }
-                            "--out" => {
-                                if i + 1 < args.len() {
-                                    out_path = Some(args[i + 1].clone());
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--out" if i + 1 < args.len() => {
+                                out_path = Some(args[i + 1].clone());
+                                i += 2;
                             }
                             _ => {
                                 i += 1;
@@ -1069,13 +1061,9 @@ fn main() {
                                     i += 1;
                                 }
                             }
-                            "--format" => {
-                                if i + 1 < args.len() {
-                                    format = args[i + 1].to_lowercase();
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--format" if i + 1 < args.len() => {
+                                format = args[i + 1].to_lowercase();
+                                i += 2;
                             }
                             _ => {
                                 i += 1;
@@ -1913,9 +1901,7 @@ fn inspect_file(path: &str, json_mode: bool) {
                         DaTileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
-                        TileType::LEARNING_RECORD_STORE => {
-                            "LEARNING_RECORD_STORE (xAPI / RL Trajectory)"
-                        }
+                        TileType::RESERVED_BOUNDARY => "RESERVED_BOUNDARY",
                         TileType::COLUMNAR => "COLUMNAR (Vertically Partitioned Columnar Tile)",
                         TileType::ARRAY => "ARRAY (N-Dimensional Array / Tensor Tile)",
                         TileType::CONSENT => "CONSENT (Subject Privacy & Governance)",
@@ -3710,10 +3696,8 @@ fn run_server(port: u16) {
         port
     );
 
-    for stream in listener.incoming() {
-        if let Ok(mut stream) = stream {
-            handle_connection(&mut stream);
-        }
+    for mut stream in listener.incoming().flatten() {
+        handle_connection(&mut stream);
     }
 }
 
@@ -4264,7 +4248,7 @@ fn handle_connection(stream: &mut TcpStream) {
                     Err(e) => format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"{}\"}}", e),
                 }
             } else {
-                format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"Invalid coordinate format\"}}")
+                "{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"Invalid coordinate format\"}".to_string()
             }
         } else if tool_name == "s3a_query_telemetry" {
             let min_ts = parse_json_u64(&body, "min_ts").unwrap_or(0);
@@ -4280,7 +4264,7 @@ fn handle_connection(stream: &mut TcpStream) {
             let val = parse_json_f64(&body, "value").unwrap_or(42.5);
             let rec = TelemetryRecord::new(ts, sensor, metric, val);
             engine.create_telemetry(&[rec]).unwrap();
-            format!("{{\"status\":\"success\",\"tool\":\"s3a_insert_telemetry\",\"message\":\"Record appended to 128KB Hyper-Tile\"}}")
+            "{\"status\":\"success\",\"tool\":\"s3a_insert_telemetry\",\"message\":\"Record appended to 128KB Hyper-Tile\"}".to_string()
         } else if tool_name == "s3a_delete_telemetry" {
             let ts = parse_json_u64(&body, "timestamp").unwrap_or(1000);
             let sensor = parse_json_u64(&body, "sensor_id").unwrap_or(1) as u32;

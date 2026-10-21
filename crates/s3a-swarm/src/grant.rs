@@ -71,8 +71,8 @@ pub fn issue_agent_grant(
     let mut h = sha2::Sha256::default();
     use sha2::Digest;
     h.update(b"S3A_AGENT_GRANT");
-    h.update(&agent_id);
-    h.update(&now.to_le_bytes());
+    h.update(agent_id);
+    h.update(now.to_le_bytes());
     grant_id.copy_from_slice(&h.finalize()[..16]);
 
     let mut record = DelegationGrantRecord {

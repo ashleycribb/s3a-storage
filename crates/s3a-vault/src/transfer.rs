@@ -22,7 +22,7 @@ pub fn compute_transfer_hash(
     hasher.update(item_hash);
     hasher.update(from_pubkey);
     hasher.update(to_pubkey);
-    hasher.update(&timestamp.to_le_bytes());
+    hasher.update(timestamp.to_le_bytes());
     hasher.finalize().into()
 }
 

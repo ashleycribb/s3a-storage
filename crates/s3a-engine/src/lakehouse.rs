@@ -34,7 +34,7 @@ impl SnowflakeBatchRequest {
                     .trim_end_matches(']')
                     .trim();
                 for row_chunk in content.split("],") {
-                    let clean = row_chunk.replace('[', "").replace(']', "");
+                    let clean = row_chunk.replace(['[', ']'], "");
                     let parts: Vec<&str> = clean.split(',').map(|s| s.trim()).collect();
                     if parts.len() >= 2 {
                         if let Ok(row_num) = parts[0].parse::<usize>() {
@@ -79,9 +79,8 @@ pub fn handle_snowflake_batch_request(
                     response_data.push(format!("[{}, {}]", row_num, err_val));
                 }
             }
-        } else if param.starts_with("QUERY:") {
+        } else if let Some(query_body) = param.strip_prefix("QUERY:") {
             // Case B: Vector / Range query parameter
-            let query_body = &param[6..];
             let records = engine
                 .read_telemetry_with_coords(1, 101, 0, u64::MAX)
                 .unwrap_or_default();

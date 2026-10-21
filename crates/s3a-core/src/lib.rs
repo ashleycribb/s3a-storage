@@ -639,17 +639,9 @@ impl Default for TileFilterMetadata {
 
 /// Category 2: Cryptographic Provenance & Merkle Root (32 bytes, 8-byte aligned).
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 pub struct TileProvenanceMetadata {
     pub merkle_root: [u8; 32], // 256-bit BLAKE3/SHA-256 payload Merkle root
-}
-
-impl Default for TileProvenanceMetadata {
-    fn default() -> Self {
-        Self {
-            merkle_root: [0u8; 32],
-        }
-    }
 }
 
 /// Category 3: Lifecycle & Certified Freshness Metadata (24 bytes, 8-byte aligned).
@@ -679,23 +671,12 @@ impl Default for TileLifecycleMetadata {
 
 /// Category 4: Multi-Tenant & Security Capability Metadata (16 bytes, 8-byte aligned).
 #[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 pub struct TileSecurityMetadata {
     pub tenant_id: u64,          // Tenant / Workspace / Organization ID
     pub security_tag_mask: u32,  // Bitmask tags (PUBLIC, CONFIDENTIAL, RESTRICTED)
     pub min_clearance_level: u8, // Required clearance level (0-255)
     pub _reserved: [u8; 3],
-}
-
-impl Default for TileSecurityMetadata {
-    fn default() -> Self {
-        Self {
-            tenant_id: 0,
-            security_tag_mask: 0,
-            min_clearance_level: 0,
-            _reserved: [0u8; 3],
-        }
-    }
 }
 
 /// Category 5: Columnar Encoding & Frame-of-Reference (FoR) Baselines (16 bytes, 8-byte aligned).

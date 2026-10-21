@@ -197,7 +197,7 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
     let block_height = 899123u64;
     let mut block_hasher = Sha256::new();
     block_hasher.update(commitment);
-    block_hasher.update(&block_height.to_le_bytes());
+    block_hasher.update(block_height.to_le_bytes());
     let block_hash: [u8; 32] = block_hasher.finalize().into();
     let header = MockOtsCalendar::make_mock_block_header(block_hash);
     cal1.confirm(&hex::encode(commitment), block_height, header);

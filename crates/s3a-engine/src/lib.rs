@@ -609,8 +609,8 @@ impl TileWriter {
             }
         }
 
-        let record_size = std::mem::size_of::<T>();
-        let payload_bytes = records.len() * record_size;
+        let _record_size = std::mem::size_of::<T>();
+        let payload_bytes = std::mem::size_of_val(records);
 
         if payload_bytes > HYPER_TILE_PAYLOAD_SIZE {
             return Err(io::Error::new(
@@ -1619,18 +1619,16 @@ impl TileFusionEngine {
         {
             if crate::compactor_gates::fault_injection::INJECT_RECORD_DROP
                 .load(std::sync::atomic::Ordering::SeqCst)
+                && !output_telemetry.is_empty()
             {
-                if !output_telemetry.is_empty() {
-                    output_telemetry.pop();
-                }
+                output_telemetry.pop();
             }
             if crate::compactor_gates::fault_injection::INJECT_RECORD_DUPLICATION
                 .load(std::sync::atomic::Ordering::SeqCst)
+                && !output_telemetry.is_empty()
             {
-                if !output_telemetry.is_empty() {
-                    let first = output_telemetry[0];
-                    output_telemetry.push(first);
-                }
+                let first = output_telemetry[0];
+                output_telemetry.push(first);
             }
         }
 
@@ -2265,7 +2263,7 @@ pub fn append_schema_tile_if_missing<P: AsRef<Path>>(path: P) -> io::Result<bool
     schema_hdr.payload_bytes = payload.len() as u32;
     schema_hdr.data_crc32 = crc32c::crc32c(&payload);
     schema_hdr.generation = writer.generation();
-    schema_hdr.tile_index = writer.tile_count() as u32;
+    schema_hdr.tile_index = writer.tile_count();
     schema_hdr.file_uuid = writer.file_uuid();
     schema_hdr.header_crc32 = compute_tile_header_crc32(&schema_hdr);
 
@@ -3504,7 +3502,7 @@ impl S3ACrudEngine {
         hdr.payload_bytes = array_payload.len() as u32;
         hdr.data_crc32 = crc32c::crc32c(array_payload);
         hdr.generation = writer.generation();
-        hdr.tile_index = writer.tile_count() as u32;
+        hdr.tile_index = writer.tile_count();
         hdr.file_uuid = writer.file_uuid();
         hdr.header_crc32 = compute_tile_header_crc32(&hdr);
         writer.write_raw_hyper_tile(&hdr, array_payload)
@@ -3990,18 +3988,16 @@ impl Compactor {
         {
             if crate::compactor_gates::fault_injection::INJECT_RECORD_DROP
                 .load(std::sync::atomic::Ordering::SeqCst)
+                && !output_telemetry.is_empty()
             {
-                if !output_telemetry.is_empty() {
-                    output_telemetry.pop();
-                }
+                output_telemetry.pop();
             }
             if crate::compactor_gates::fault_injection::INJECT_RECORD_DUPLICATION
                 .load(std::sync::atomic::Ordering::SeqCst)
+                && !output_telemetry.is_empty()
             {
-                if !output_telemetry.is_empty() {
-                    let first = output_telemetry[0];
-                    output_telemetry.push(first);
-                }
+                let first = output_telemetry[0];
+                output_telemetry.push(first);
             }
         }
 
@@ -4024,7 +4020,7 @@ impl Compactor {
                 hdr.payload_bytes = col_payload.len() as u32;
                 hdr.data_crc32 = crc32c::crc32c(&col_payload);
                 hdr.generation = writer.generation();
-                hdr.tile_index = writer.tile_count() as u32;
+                hdr.tile_index = writer.tile_count();
                 hdr.file_uuid = writer.file_uuid();
                 if let (Some(&first), Some(&last)) = (timestamps.first(), timestamps.last()) {
                     hdr.min_timestamp = first;
@@ -4199,7 +4195,7 @@ impl Compactor {
             schema_hdr.payload_bytes = schema_payload.len() as u32;
             schema_hdr.data_crc32 = crc32c::crc32c(&schema_payload);
             schema_hdr.generation = writer.generation();
-            schema_hdr.tile_index = writer.tile_count() as u32;
+            schema_hdr.tile_index = writer.tile_count();
             schema_hdr.file_uuid = writer.file_uuid();
             schema_hdr.header_crc32 = compute_tile_header_crc32(&schema_hdr);
             writer.write_raw_hyper_tile(&schema_hdr, &schema_payload)?;
@@ -4792,11 +4788,7 @@ mod tests {
 
         // Simulate crash mid-write: 32 KB of partial garbage appended at EOF without header commit
         {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(path)
-                .unwrap();
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
             let garbage = vec![0xEEu8; 32 * 1024];
             file.write_all(&garbage).unwrap();
             file.flush().unwrap();
@@ -5142,6 +5134,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 0.7071 is a fixture literal; kept to stay behavior-neutral
     fn test_composable_s3a_ql_algebraic_scoring() {
         let temp_file = TestTempFile::new();
         let path = temp_file.path();

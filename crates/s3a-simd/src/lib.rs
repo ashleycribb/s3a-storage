@@ -176,7 +176,7 @@ pub fn cosine_similarity_int8(a: &[i8], b: &[i8]) -> f32 {
 
 /// Computes dot product directly on packed 4-bit unsigned nibble vectors.
 pub fn dot_product_4bit(a: &[u8], b: &[u8], dimensions: usize) -> u32 {
-    let byte_len = a.len().min(b.len()).min((dimensions + 1) / 2);
+    let byte_len = a.len().min(b.len()).min(dimensions.div_ceil(2));
     let mut sum = 0u32;
 
     for i in 0..byte_len {

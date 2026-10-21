@@ -163,7 +163,7 @@ impl<const CAPACITY: usize> FlashStorage for RamFlash<CAPACITY> {
             });
         }
 
-        if offset % self.sector_size != 0 || len % self.sector_size != 0 {
+        if !offset.is_multiple_of(self.sector_size) || !len.is_multiple_of(self.sector_size) {
             return Err(RamFlashError::UnalignedErase {
                 offset,
                 len,

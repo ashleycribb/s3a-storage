@@ -866,7 +866,7 @@ fn extract_records_from_tile(
                     rec.sensor_id, rec.metric_id, rec.timestamp
                 );
                 let mut hasher = Sha256::new();
-                hasher.update(&rec.value.to_le_bytes());
+                hasher.update(rec.value.to_le_bytes());
                 let content_hash: [u8; 32] = hasher.finalize().into();
                 let summary = format!("Telemetry(val={})", rec.value);
                 out.push((

@@ -43,13 +43,13 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     }
 
     let mut inner = Sha256::new();
-    inner.update(&ipad);
+    inner.update(ipad);
     inner.update(message);
     let inner_digest = inner.finalize();
 
     let mut outer = Sha256::new();
-    outer.update(&opad);
-    outer.update(&inner_digest);
+    outer.update(opad);
+    outer.update(inner_digest);
     let outer_digest = outer.finalize();
 
     let mut res = [0u8; 32];
@@ -59,7 +59,7 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 
 pub fn base64url_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((input.len() * 4 + 2) / 3);
+    let mut out = String::with_capacity((input.len() * 4).div_ceil(3));
     let mut i = 0;
     while i < input.len() {
         let b0 = input[i] as u32;

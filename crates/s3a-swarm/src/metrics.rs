@@ -156,8 +156,8 @@ impl SwarmMetrics {
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| std::io::Error::other(e.to_string()))?;
         fs::write(p, json)?;
         Ok(())
     }

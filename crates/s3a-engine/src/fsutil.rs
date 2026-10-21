@@ -141,13 +141,13 @@ pub fn clean_orphan_temps<P: AsRef<Path>>(live_path: P) -> io::Result<usize> {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(file_name) = path.file_name().and_then(|f| f.to_str()) {
-                if file_name.starts_with(&compact_prefix)
+                if (file_name.starts_with(&compact_prefix)
                     || file_name.starts_with(&tmp_prefix)
-                    || file_name.starts_with(&old_prefix)
+                    || file_name.starts_with(&old_prefix))
+                    && path != live
+                    && fs::remove_file(&path).is_ok()
                 {
-                    if path != live && fs::remove_file(&path).is_ok() {
-                        cleaned += 1;
-                    }
+                    cleaned += 1;
                 }
             }
         }
@@ -212,12 +212,7 @@ mod atomic_replace_tests {
         let from = d.join("src.s3a");
         fs::write(&to, b"old contents").unwrap();
         fs::write(&from, b"new contents").unwrap();
-        let fail = |_: &File| -> io::Result<()> {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "injected fsync failure",
-            ))
-        };
+        let fail = |_: &File| -> io::Result<()> { Err(io::Error::other("injected fsync failure")) };
         let err = atomic_replace_with(&from, &to, &fail).unwrap_err();
         assert!(err.to_string().contains("injected fsync failure"));
         assert_eq!(fs::read(&to).unwrap(), b"old contents");
@@ -242,10 +237,7 @@ mod atomic_replace_tests {
                     f.metadata()?.is_dir(),
                     "second sync must target the directory"
                 );
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "injected dir fsync failure",
-                ))
+                Err(io::Error::other("injected dir fsync failure"))
             } else {
                 f.sync_all()
             }
@@ -272,7 +264,7 @@ mod atomic_replace_tests {
         let to = dir.join("live.s3a");
         let mut i: u64 = 0;
         loop {
-            let byte = if i % 2 == 0 { b'A' } else { b'B' };
+            let byte = if i.is_multiple_of(2) { b'A' } else { b'B' };
             let tmp = unique_compact_temp_path(&to);
             // Write in chunks so a kill can land mid-write of the temp file.
             let mut f = File::create(&tmp).unwrap();

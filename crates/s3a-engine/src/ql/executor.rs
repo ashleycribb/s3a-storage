@@ -84,30 +84,30 @@ impl S3AQLEngine {
                 if let Some(handler) = map.get(&SiftDomain::Kinematics) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-robotics",
                     feature: "kinematics",
-                });
+                })
             }
             SiftDomain::GisMesh => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::GisMesh) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-gis",
                     feature: "gis_mesh",
-                });
+                })
             }
             SiftDomain::DaCommitments => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::DaCommitments) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-da",
                     feature: "da_commitments",
-                });
+                })
             }
             SiftDomain::HumanLrs | SiftDomain::LearningActivities => {
                 let map = get_pack_handlers().read().unwrap();
@@ -118,30 +118,30 @@ impl S3AQLEngine {
                 if let Some(handler) = map.get(&SiftDomain::HumanLrs) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "human_lrs",
-                });
+                })
             }
             SiftDomain::AiTraces => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::AiTraces) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "ai_traces",
-                });
+                })
             }
             SiftDomain::AcademicPapers => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::AcademicPapers) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "academic_papers",
-                });
+                })
             }
             SiftDomain::Telemetry => {
                 let reader = MmapReader::open(&sift.from_path).map_err(QlError::Io)?;
@@ -243,7 +243,7 @@ impl S3AQLEngine {
                                         };
                                         let time_score = if let Some(hl) = hl_secs {
                                             let dt = (max_t.saturating_sub(rec.timestamp)) as f64;
-                                            let lambda = 0.69314718 / hl.max(1.0);
+                                            let lambda = std::f64::consts::LN_2 / hl.max(1.0);
                                             (-lambda * dt).exp() as f32
                                         } else {
                                             1.0

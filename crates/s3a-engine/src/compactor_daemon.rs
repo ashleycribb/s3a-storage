@@ -143,7 +143,7 @@ impl BackgroundCompactor {
                 }
 
                 // Final drain upon termination
-                while ring_buffer.len() > 0 {
+                while !ring_buffer.is_empty() {
                     let records = ring_buffer.drain(tile_rec_capacity);
                     if records.is_empty() {
                         break;

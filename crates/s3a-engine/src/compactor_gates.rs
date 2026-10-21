@@ -280,6 +280,12 @@ impl CompactionPreflight {
     }
 }
 
+impl Default for CompactionPreflight {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Test-only fault-injection hooks for simulating corrupted pipelines, crashes, and drops.
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod fault_injection {

@@ -288,10 +288,10 @@ pub fn compute_seal_hash_v2(
     let mut hasher = Sha256::new();
     hasher.update(b"S3ASEAL2");
     hasher.update(prev_seal_hash);
-    hasher.update(&seal_generation.to_le_bytes());
-    hasher.update(&tile_count.to_le_bytes());
-    hasher.update(&file_uuid[0].to_le_bytes());
-    hasher.update(&file_uuid[1].to_le_bytes());
+    hasher.update(seal_generation.to_le_bytes());
+    hasher.update(tile_count.to_le_bytes());
+    hasher.update(file_uuid[0].to_le_bytes());
+    hasher.update(file_uuid[1].to_le_bytes());
     let entries_bytes = cast_slice::<SealedTileIndexEntry, u8>(entries);
     hasher.update(entries_bytes);
     hasher.finalize().into()
@@ -522,7 +522,7 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     let num_groups = if tile_count == 0 {
         0
     } else {
-        (tile_count as usize + k_usize - 1) / k_usize
+        (tile_count as usize).div_ceil(k_usize)
     };
 
     for g in 0..num_groups {
@@ -530,8 +530,8 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
         let end_tile = (start_tile + k_usize).min(tile_count as usize);
         let k_g = end_tile - start_tile;
 
-        let codec = ReedSolomonCodec::new(k_g, m_usize)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+        let codec =
+            ReedSolomonCodec::new(k_g, m_usize).map_err(|e| io::Error::other(format!("{}", e)))?;
 
         let mut data_tiles: Vec<&[u8]> = Vec::with_capacity(k_g);
         for i in start_tile..end_tile {
@@ -922,15 +922,14 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     let k_usize = k as usize;
     let m_usize = m as usize;
     if options.enable_parity && tile_count > 0 {
-        let num_groups = (tile_count as usize + k_usize - 1) / k_usize;
+        let num_groups = (tile_count as usize).div_ceil(k_usize);
         for g in 0..num_groups {
             let start_tile = g * k_usize;
             let end_tile = (start_tile + k_usize).min(tile_count as usize);
             let k_g = end_tile - start_tile;
 
-            let rs = ReedSolomon::new(k_g, m_usize).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("ReedSolomon error: {}", e))
-            })?;
+            let rs = ReedSolomon::new(k_g, m_usize)
+                .map_err(|e| io::Error::other(format!("ReedSolomon error: {}", e)))?;
 
             let mut shards: Vec<Vec<u8>> = Vec::with_capacity(k_g + m_usize);
             for i in start_tile..end_tile {
@@ -941,9 +940,8 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 shards.push(vec![0u8; HYPER_TILE_SIZE]);
             }
 
-            rs.encode(&mut shards).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("RS encode error: {}", e))
-            })?;
+            rs.encode(&mut shards)
+                .map_err(|e| io::Error::other(format!("RS encode error: {}", e)))?;
 
             for p in 0..m_usize {
                 parity_bytes.extend_from_slice(&shards[k_g + p]);
@@ -1146,7 +1144,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         let candidate_bytes = &file_bytes[file_len - SEALED_ENDCAP_SIZE..];
         let magic = &candidate_bytes[0..8];
 
-        if magic == &SEALED_ENDCAP_MAGIC_V2 {
+        if magic == SEALED_ENDCAP_MAGIC_V2 {
             let endcap: SealedEndCapV2 = bytemuck::pod_read_unaligned(candidate_bytes);
             let expected_crc = compute_endcap_crc32_v2(&endcap);
             if endcap.endcap_crc32 != expected_crc {
@@ -1254,7 +1252,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 let num_groups = if tile_count == 0 || k_usize == 0 {
                     0
                 } else {
-                    (tile_count as usize + k_usize - 1) / k_usize
+                    (tile_count as usize).div_ceil(k_usize)
                 };
 
                 let data_end_offset = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
@@ -1390,7 +1388,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 let anchors = if endcap.index_offset as usize > parity_end_offset {
                     let anchors_slice =
                         &file_bytes[parity_end_offset..endcap.index_offset as usize];
-                    if anchors_slice.len() >= 12 && &anchors_slice[0..8] == &SEALED_ANCHORS_MAGIC {
+                    if anchors_slice.len() >= 12 && anchors_slice[0..8] == SEALED_ANCHORS_MAGIC {
                         crate::anchor::extract_anchors_from_footer(anchors_slice, 0, 0)
                     } else {
                         Vec::new()
@@ -1571,7 +1569,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     // Reassemble out-of-order tiles if detected
     if out_of_order_detected {
         let mut paired: Vec<(SealedDirectoryEntry, Vec<u8>)> =
-            directory.into_iter().zip(tiles_raw.into_iter()).collect();
+            directory.into_iter().zip(tiles_raw).collect();
         paired.sort_by_key(|(entry, _)| entry.tile_index);
 
         let (sorted_dir, sorted_tiles): (Vec<_>, Vec<_>) = paired.into_iter().unzip();
@@ -1602,7 +1600,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
     let num_groups = if tile_count == 0 {
         0
     } else {
-        (tile_count as usize + k_usize - 1) / k_usize
+        (tile_count as usize).div_ceil(k_usize)
     };
 
     if let Some(ec) = &endcap_opt {
@@ -1655,7 +1653,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             }
 
             let codec = ReedSolomonCodec::new(k_g, m_usize)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))
+                .map_err(|e| io::Error::other(format!("{}", e)))
                 .map_err(|_| S3AError::OutOfBounds)?;
 
             let group_parity_offset = g * m_usize * HYPER_TILE_SIZE;

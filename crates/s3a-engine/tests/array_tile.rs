@@ -1,3 +1,5 @@
+// Test fixtures intentionally use the literal 3.14 as arbitrary sample data.
+#![allow(clippy::approx_constant)]
 //! Comprehensive tests for N-Dimensional Array Tile (Tile 66 / 0x0042)
 //!
 //! Validates:
@@ -75,7 +77,7 @@ fn test_array_roundtrip_2d_3d_4d() {
         ArrayTileBuilder::new(3, ArrayDataType::Int32, &shape_3d, &coords_3d).unwrap();
     builder_3d.set_axis_names("x,y,z");
 
-    let data_3d: Vec<i32> = (0..24).map(|x| (x * 10) as i32).collect();
+    let data_3d: Vec<i32> = (0..24).map(|x| x * 10).collect();
     builder_3d.set_data(&data_3d).unwrap();
     let payload_3d = builder_3d.build();
 
@@ -116,12 +118,12 @@ fn test_array_slice_across_chunk_boundaries() {
     let shape = [4u64, 4u64];
 
     let mut chunk0 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &shape, &[0, 0]).unwrap();
-    let data0: Vec<i32> = (0..16).map(|i| 100 + i as i32).collect();
+    let data0: Vec<i32> = (0..16).map(|i| 100 + i).collect();
     chunk0.set_data(&data0).unwrap();
     let payload0 = chunk0.build();
 
     let mut chunk1 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &shape, &[0, 4]).unwrap();
-    let data1: Vec<i32> = (0..16).map(|i| 200 + i as i32).collect();
+    let data1: Vec<i32> = (0..16).map(|i| 200 + i).collect();
     chunk1.set_data(&data1).unwrap();
     let payload1 = chunk1.build();
 

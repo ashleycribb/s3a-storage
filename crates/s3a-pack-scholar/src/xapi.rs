@@ -354,12 +354,8 @@ pub fn validate_scholar_profile(statement: &serde_json::Value) -> Result<(), Str
                     ));
                 }
             }
-            VERB_ID_CITED => {
-                if !obj.contains_key("id") {
-                    return Err(
-                        "Verb 'cited' requires object.id reference to cited work".to_string()
-                    );
-                }
+            VERB_ID_CITED if !obj.contains_key("id") => {
+                return Err("Verb 'cited' requires object.id reference to cited work".to_string());
             }
             _ => {}
         }
