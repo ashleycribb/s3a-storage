@@ -145,7 +145,7 @@ An edge device MAY hold named **packet stores**:
 - Conflict resolution of concurrent writes (see D2/D3); judgements stay with humans.
 - Changing the tile file format.
 
-## 6. Open questions
+## 6. Questions (resolved, see §7)
 
 1. Default signature algorithm at 1.0: Ed25519, ML-DSA, or hybrid?
 2. Key distribution and revocation for offline peers.
@@ -153,18 +153,33 @@ An edge device MAY hold named **packet stores**:
 4. CBOR vs fixed binary for `HELLO`/`HAVE` bodies.
 5. Registration of a BPv7 service/endpoint ID for S3A.
 
-## 7. Prior art and recommended resolutions
+## 7. Prior art and resolutions
 
-Questions in §6 stay **Open** until approved by Ashley Cribb. Recommendations only.
+Questions 1–5 in §6 are **Resolved — approved by Ashley Cribb 2026-10-21**.
 
-| # | Status | What prior art chose | Recommended S3A answer |
-|---|--------|----------------------|------------------------|
-| 1 | Verified | RFC 9173 §3 BIB-HMAC-SHA2 and §4 BCB-AES-GCM (symmetric). CCSDS 352.0-B-2 (Aug 2019) §3.1 mandates AES; §4.4.2–4.4.3 recommend RSA signatures (4096-bit for new missions). SDLS 355.0-B-2 §1.2 mandates no algorithm and defers to 352.0. No CCSDS PQC standard found; ESA E2EQSS (3S 2025) prototypes hybrid ML-DSA/ML-KEM over SDLS. FIPS 204 (ML-DSA) final Aug 2024; NIST IR 8547 deprecates quantum-vulnerable algorithms by 2035. | Hybrid Ed25519+ML-DSA-65 by default; Ed25519 alone on constrained links; HMAC-BLAKE3 MAY be used per hop. |
-| 2 | Verified | RFC 9172 §6: key management is "a separate part of network management"; BPSec "neither defines nor requires" a strategy (RFC 9173 §6.1 likewise). SDLS-EP 355.1-B-1 §2.3.2 defines key management with OTAR, activation and deactivation command PDUs (§5). | Keys loaded in advance; rotation and revocation sent as signed sync messages that expire; revocation lists carried as bundles. |
-| 3 | Verified | SDLS 355.0-B-2 §2.3.2.3: anti-replay sequence number plus a "fixed positive delta" window **specified in the SA**, sized for link delays; not negotiated. RFC 9172 §8 relies on bundle lifetime and cipher suites for replay protection. | Window configured per stream, announced in `HELLO`, not negotiated; `lifetime_s` also bounds replay. |
-| 4 | Verified | RFC 9171 §4.1: all block fields MUST use RFC 8949 core deterministic CBOR (indefinite-length allowed). CCSDS 133.0-B-2 §4.1: fixed 6-octet packet primary header. | Fixed binary envelope; deterministic CBOR for `HELLO`; plain hash arrays for `HAVE`/`WANT`. |
-| 5 | Verified | RFC 9758 §9.3: `ipn` service numbers 128–255 Standards Action; 0x0100–0x7FFF Private Use; 0x8000–0xFFFF Specification Required (public spec suffices). | Use a private-use service number now; request one in 0x8000–0xFFFF before 1.0. |
+### Q1 Default signature algorithm — Resolved — approved by Ashley Cribb 2026-10-21
+- BPSec default contexts are symmetric: BIB-HMAC-SHA2 (https://www.rfc-editor.org/rfc/rfc9173.html#section-3) and BCB-AES-GCM (https://www.rfc-editor.org/rfc/rfc9173.html#section-4).
+- CCSDS 352.0-B-2 §3.1 requires AES; §4.4.2–4.4.3 recommend RSA signatures, 4096-bit for new missions (https://public.ccsds.org/Pubs/352x0b2.pdf).
+- SDLS 355.0-B-2 §1.2 mandates no algorithm and refers to 352.0 (https://public.ccsds.org/Pubs/355x0b2.pdf).
+- ESA E2EQSS prototypes hybrid ML-DSA/ML-KEM over SDLS (https://security4space.esa.int/2025/papers/15/); no CCSDS PQC standard was found.
+- ML-DSA is final in FIPS 204 (https://csrc.nist.gov/pubs/fips/204/final); NIST plans to deprecate quantum-vulnerable algorithms by 2035 (https://csrc.nist.gov/projects/post-quantum-cryptography).
+- **S3A:** hybrid Ed25519+ML-DSA-65 by default; Ed25519 alone on constrained links; HMAC-BLAKE3 MAY be used per hop.
 
-Sources: https://www.rfc-editor.org/rfc/rfc9171 · rfc9172 · rfc9173 · rfc9758 ·
-https://public.ccsds.org/Pubs/352x0b2.pdf · 355x0b2.pdf · 355x1b1.pdf · 133x0b2e2.pdf ·
-https://csrc.nist.gov/pubs/fips/204/final · https://security4space.esa.int/2025/papers/15/
+### Q2 Key distribution and revocation — Resolved — approved by Ashley Cribb 2026-10-21
+- BPSec leaves key management to network management (https://www.rfc-editor.org/rfc/rfc9172.html#section-6; https://www.rfc-editor.org/rfc/rfc9173.html#section-6.1).
+- SDLS Extended Procedures 355.1-B-1 §2.3.2 and §5 define OTAR, key activation and deactivation (https://public.ccsds.org/Pubs/355x1b1.pdf).
+- **S3A:** keys loaded in advance; rotation and revocation sent as signed sync messages that expire; revocation lists carried as bundles.
+
+### Q3 Replay window — Resolved — approved by Ashley Cribb 2026-10-21
+- SDLS 355.0-B-2 §2.3.2.3: anti-replay window is a fixed value specified in the security association (https://public.ccsds.org/Pubs/355x0b2.pdf).
+- BPSec replay discussion relies on bundle lifetime and cipher suites (https://www.rfc-editor.org/rfc/rfc9172.html#section-8.2.4).
+- **S3A:** window configured per stream, announced in `HELLO`, not negotiated; `lifetime_s` also bounds replay.
+
+### Q4 CBOR vs fixed binary — Resolved — approved by Ashley Cribb 2026-10-21
+- BPv7 block fields MUST use RFC 8949 core deterministic CBOR (https://www.rfc-editor.org/rfc/rfc9171.html#section-4.1).
+- CCSDS 133.0-B-2 §4.1: fixed 6-octet packet primary header (https://public.ccsds.org/Pubs/133x0b2e2.pdf).
+- **S3A:** fixed binary envelope; deterministic CBOR for `HELLO`; plain hash arrays for `HAVE`/`WANT`.
+
+### Q5 BPv7 service number — Resolved — approved by Ashley Cribb 2026-10-21
+- `ipn` service numbers: 128–255 Standards Action, 0x0100–0x7FFF Private Use, 0x8000–0xFFFF Specification Required (https://www.rfc-editor.org/rfc/rfc9758.html#section-9.3).
+- **S3A:** private-use service number now; request one in 0x8000–0xFFFF before 1.0.

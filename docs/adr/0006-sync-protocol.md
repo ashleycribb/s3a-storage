@@ -1,6 +1,6 @@
 # ADR-0006: Sync protocol with a DTN transfer profile (P1)
 
-Status: Proposed (pending review by Ashley Cribb)
+Status: Accepted — open questions resolved, approved by Ashley Cribb 2026-10-21
 
 ## Context
 S3A needs one replication protocol for desktop, server, edge and gate peers. Lessons from Hugging Face
@@ -18,3 +18,6 @@ design: self-contained, signed, content-addressed messages that tolerate delay a
 ## Consequences
 - Docs only; no crate or file-format change in this PR.
 - Implementation depends on C2 (CDC chunks) and the 1.0 hash/provenance freeze.
+
+## Resolutions
+Open questions 1–5 in S3A-SYNC §6 are Resolved — approved by Ashley Cribb 2026-10-21; see S3A-SYNC §7 for decisions and sources.
