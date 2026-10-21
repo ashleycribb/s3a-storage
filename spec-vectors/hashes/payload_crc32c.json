@@ -1,0 +1,5 @@
+{
+  "rule": "CRC32C (Castagnoli) of the active payload bytes; stored as u32 LE in data_crc32",
+  "input_hex": "68656c6c6f20733361",
+  "expected_u32": 2133109061
+}

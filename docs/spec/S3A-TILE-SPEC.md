@@ -1,6 +1,6 @@
 # S3A Hyper-Tile Storage Format Specification
 
-**Document Version:** 1.2-draft  
+**Document Version:** 1.3-draft  
 **Status:** Implementable Standard  
 **Date:** October 2026  
 **License:** [Creative Commons Attribution 4.0 International (CC-BY-4.0)](LICENSE)  
@@ -8,6 +8,10 @@
 
 ### Specification Changelog
 
+- **v1.3-draft (October 2026)**:
+  - **Offset correction (§3.2, ADR-0002)**: §3.2.2–§3.2.7 sub-structure offsets were shifted by 8 bytes and contradicted §3.1. §3.1 (and the reference code) was correct; §3.2 now matches. No on-disk bytes change.
+  - **Byte order & reserved bytes (§3.3)**: all multi-byte fields are little-endian; readers MUST ignore reserved bytes, writers MUST zero them.
+  - **Hashes computed by S3A (§3.4)** with conformance vectors in `spec-vectors/hashes/`.
 - **v1.2-draft (October 2026)**:
   - **Snapshot Anchoring (§11 Anchoring)**: Cryptographic commitment of sealed archives into public OpenTimestamps (OTS) calendars and RFC 3161 Timestamp Authorities (TSA).
   - **Archive Fingerprint**: Canonical 32-byte SHA-256 digest calculated over `file_uuid`, `tile_count`, and all `SealedDirectoryEntry` structs.
@@ -152,7 +156,7 @@ The first 512 bytes of every Hyper-Tile contain its header metadata:
 | `472 .. 480` | 8 B | `learned_index` | `TileLearnedIndex` | Monotonic timestamp index slope and intercept. |
 | `480 .. 488` | 8 B | `generation` | `u64` | Archive generation when this tile was written. |
 | `488 .. 492` | 4 B | `tile_index` | `u32` | 0-based logical index of this tile in the archive sequence. |
-| `492 .. 496` | 4 B | `_reserved_addr`| `u32` | Reserved alignment padding (MUST be zeroed). |
+| `492 .. 496` | 4 B | `_reserved_addr`| `u32` | Reserved. Writers MUST zero; readers MUST ignore (§3.3). |
 | `496 .. 512` | 16 B | `file_uuid` | `[u64; 2]` | 128-bit file UUID matching containing archive's `FileHeader.file_uuid`. |
 
 ### 3.2 Sub-Header Structures
@@ -165,38 +169,60 @@ The first 512 bytes of every Hyper-Tile contain its header metadata:
 - `centroid`: `[f32; 16]` (Offset 184..248) - Mean cluster centroid coordinates.
 - `_reserved`: `[u32; 2]` (Offset 248..256) - Padding to 208 bytes.
 
-#### 3.2.2 TileFilterMetadata (128 Bytes, 8-Byte Aligned, Offset 264..392)
-- `filter_type`: `u16` (Offset 264..266) - Filter algorithm ($0 = \text{None}$, $1 = \text{BlockedBloom960}$).
-- `hash_seed`: `u16` (Offset 266..268) - Seed for hash functions (default `0x533A`).
-- `distinct_sensors`: `u32` (Offset 268..272) - Estimated or exact count of distinct keys.
-- `bits`: `[u64; 15]` (Offset 272..392) - 960-bit SIMD bitmask for Bloom membership testing.
+#### 3.2.2 TileFilterMetadata (128 Bytes, 8-Byte Aligned, Offset 256..384)
+- `filter_type`: `u16` (Offset 256..258) - Filter algorithm ($0 = \text{None}$, $1 = \text{BlockedBloom960}$).
+- `hash_seed`: `u16` (Offset 258..260) - Seed for hash functions (default `0x533A`).
+- `distinct_sensors`: `u32` (Offset 260..264) - Estimated or exact count of distinct keys.
+- `bits`: `[u64; 15]` (Offset 264..384) - 960-bit SIMD bitmask for Bloom membership testing.
 
-#### 3.2.3 TileProvenanceMetadata (32 Bytes, 8-Byte Aligned, Offset 392..424)
-- `merkle_root`: `[u8; 32]` (Offset 392..424) - 256-bit cryptographic payload digest or Merkle root.
+#### 3.2.3 TileProvenanceMetadata (32 Bytes, 8-Byte Aligned, Offset 384..416)
+- `merkle_root`: `[u8; 32]` (Offset 384..416) - Payload provenance root. In the v1 reference writer this is `data_crc32 (u32 LE) || payload_len (u32 LE) || 24 zero bytes` (see §3.4); it is NOT yet a cryptographic digest.
 
-#### 3.2.4 TileLifecycleMetadata (24 Bytes, 8-Byte Aligned, Offset 424..448)
-- `tombstone_count`: `u32` (Offset 424..428) - Number of soft-deleted records in this tile.
-- `stratum_tier`: `u8` (Offset 428..429) - Storage tier ($0 = \text{L0 memory}$, $1 = \text{L1 hot}$, $2 = \text{L2 warm}$, $3 = \text{L3 cold}$).
-- `compaction_epoch`: `u8` (Offset 429..430) - Number of compaction passes this tile has undergone.
-- `_reserved_tier`: `u16` (Offset 430..432) - Reserved padding.
-- `min_expiry_timestamp`: `u64` (Offset 432..440) - Earliest TTL expiry timestamp.
-- `max_expiry_timestamp`: `u64` (Offset 440..448) - Latest TTL expiry timestamp.
+#### 3.2.4 TileLifecycleMetadata (24 Bytes, 8-Byte Aligned, Offset 416..440)
+- `tombstone_count`: `u32` (Offset 416..420) - Number of soft-deleted records in this tile.
+- `stratum_tier`: `u8` (Offset 420..421) - Storage tier ($0 = \text{L0 memory}$, $1 = \text{L1 hot}$, $2 = \text{L2 warm}$, $3 = \text{L3 cold}$).
+- `compaction_epoch`: `u8` (Offset 421..422) - Number of compaction passes this tile has undergone.
+- `_reserved_tier`: `u16` (Offset 422..424) - Reserved padding.
+- `min_expiry_timestamp`: `u64` (Offset 424..432) - Earliest TTL expiry timestamp.
+- `max_expiry_timestamp`: `u64` (Offset 432..440) - Latest TTL expiry timestamp.
 
-#### 3.2.5 TileSecurityMetadata (16 Bytes, 8-Byte Aligned, Offset 448..464)
-- `tenant_id`: `u64` (Offset 448..456) - Organization / Workspace identifier.
-- `security_tag_mask`: `u32` (Offset 456..460) - Security label bitmask.
-- `min_clearance_level`: `u8` (Offset 460..461) - Required user clearance ($0..255$).
-- `_reserved`: `[u8; 3]` (Offset 461..464) - Alignment padding.
+#### 3.2.5 TileSecurityMetadata (16 Bytes, 8-Byte Aligned, Offset 440..456)
+- `tenant_id`: `u64` (Offset 440..448) - Organization / Workspace identifier.
+- `security_tag_mask`: `u32` (Offset 448..452) - Security label bitmask.
+- `min_clearance_level`: `u8` (Offset 452..453) - Required user clearance ($0..255$).
+- `_reserved`: `[u8; 3]` (Offset 453..456) - Alignment padding.
 
-#### 3.2.6 TileEncodingMetadata (16 Bytes, 8-Byte Aligned, Offset 464..480)
-- `value_base`: `f64` (Offset 464..472) - Baseline offset for delta encoding.
-- `value_scale`: `f32` (Offset 472..476) - Quantization scaling factor.
-- `encoding_mode`: `u16` (Offset 476..478) - Encoding mode ($0 = \text{Raw}$, $1 = \text{Delta-FoR}$, $2 = \text{RunLength}$).
-- `_reserved`: `u16` (Offset 478..480) - Alignment padding.
+#### 3.2.6 TileEncodingMetadata (16 Bytes, 8-Byte Aligned, Offset 456..472)
+- `value_base`: `f64` (Offset 456..464) - Baseline offset for delta encoding.
+- `value_scale`: `f32` (Offset 464..468) - Quantization scaling factor.
+- `encoding_mode`: `u16` (Offset 468..470) - Encoding mode ($0 = \text{Raw}$, $1 = \text{Delta-FoR}$, $2 = \text{RunLength}$).
+- `_reserved`: `u16` (Offset 470..472) - Alignment padding.
 
-#### 3.2.7 TileLearnedIndex (8 Bytes, 4-Byte Aligned, Offset 480..488)
-- `slope`: `f32` (Offset 480..484) - Monotonic record rate per time unit ($\Delta \text{records} / \Delta \text{time}$).
-- `intercept`: `f32` (Offset 484..488) - Monotonic offset at `min_timestamp`.
+#### 3.2.7 TileLearnedIndex (8 Bytes, 4-Byte Aligned, Offset 472..480)
+- `slope`: `f32` (Offset 472..476) - Monotonic record rate per time unit ($\Delta \text{records} / \Delta \text{time}$).
+- `intercept`: `f32` (Offset 476..480) - Monotonic offset at `min_timestamp`.
+
+### 3.3 Byte Order and Reserved Bytes
+
+- All multi-byte integer and floating-point fields in the tile header and its sub-structures are encoded **little-endian** (IEEE-754 binary32/binary64 for floats). Array fields are stored element 0 first.
+- Offsets in §3.1 and §3.2 are normative and are enforced by `crates/s3a-engine/tests/header_layout.rs`.
+- Fields named `_reserved*` and padding bytes: writers MUST set them to zero; readers MUST ignore their contents and MUST NOT reject a tile because they are non-zero. (They remain covered by `header_crc32`.)
+
+### 3.4 Hashes Computed by S3A
+
+All values below are verified against the reference code and pinned by vectors in `spec-vectors/hashes/` (recomputed by `crates/s3a-vault/tests/hash_vectors.rs`).
+
+| Hash | Algorithm | Exact input bytes | Output / encoding | Code | Vector |
+|:---|:---|:---|:---|:---|:---|
+| Payload checksum (`data_crc32`) | CRC32C (Castagnoli, reflected, init/xorout `0xFFFFFFFF`) | Active payload bytes `[0 .. payload_bytes)` | `u32`, stored LE at header 32..36 | `s3a-engine` writers (`crc32c::crc32c`) | `payload_crc32c.json` |
+| Tile header checksum (`header_crc32`) | CRC32C | Header bytes `0..36` then `40..512` (the CRC field itself skipped) | `u32`, stored LE at 36..40 | `compute_tile_header_crc32` (`s3a-engine/src/lib.rs`) | `tile_header_crc32c.json` |
+| Provenance root (`merkle_root`) | Not a hash in v1 | `data_crc32` (u32 LE) ‖ `payload_bytes` (u32 LE) ‖ 24 zero bytes | 32 raw bytes at 384..416 | `s3a-engine/src/lib.rs` tile writer | `provenance_root.json` |
+| Seal hash (v2) | SHA-256 | ASCII `S3ASEAL2` ‖ `prev_seal_hash` (32) ‖ `seal_generation` u64 LE ‖ `tile_count` u32 LE ‖ `file_uuid[0]` u64 LE ‖ `file_uuid[1]` u64 LE ‖ raw `SealedTileIndexEntry` array bytes | 32 raw bytes; hex in tooling | `compute_seal_hash_v2` (`s3a-engine/src/sealed.rs`) | `seal_hash_v2.json` |
+| Gate address | SHA-256 + CRC32C | 32-byte Ed25519 public key → `prefix = SHA-256(pk)[0..8]`; `checksum = CRC32C(prefix) & 0xFF` | `s3a-XXXX-XXXX-XXXX-XXXX-CC` (lowercase hex) ; URI `gate://…` | `GateAddress::from_public_key` (`s3a-vault/src/address.rs`) | `gate_address.json` |
+| Sync inventory | SHA-256 | Each tile's active payload bytes (header excluded) | 32 raw bytes (set membership) | `s3a-vcs/src/sync.rs` | `sync_inventory.json` |
+
+Note: the provenance root is currently derived from the CRC32C and length, not a cryptographic Merkle root; a domain-separated cryptographic root is a planned future change and will require a new layout version.
+
 
 ### 3.3 CRC32C Covered Ranges & Padding Rules
 
@@ -533,7 +559,7 @@ For every committed Hyper-Tile $i \in [0, N-1]$, the directory contains an 80-by
 | `8 .. 16` | `u64` | `length` | Physical tile length in bytes (MUST be 131,072 for Hyper-Tiles). |
 | `16 .. 20` | `u32` | `type_id` | Tile type identifier from the registry (§14.6). |
 | `20 .. 22` | `u16` | `type_version` | Record layout version of the tile. |
-| `22 .. 24` | `[u8; 2]` | `_pad` | Reserved alignment padding (MUST be zeroed). |
+| `22 .. 24` | `[u8; 2]` | `_pad` | Reserved. Writers MUST zero; readers MUST ignore (§3.3). |
 | `24 .. 28` | `u32` | `record_count` | Number of committed active records in this tile. |
 | `28 .. 32` | `u32` | `tile_index` | 0-based logical sequence index of the tile. |
 | `32 .. 40` | `u64` | `min_key` | Minimum indexing key in tile (e.g. earliest timestamp). |
@@ -557,7 +583,7 @@ Preceding the tile index entries in the directory, a 128-byte header defines the
 | `72 .. 80` | `u64` | `seal_generation` | Monotonically increasing seal sequence generation number. |
 | `80 .. 88` | `u64` | `sealed_timestamp`| Unix epoch seconds when the archive seal was stamped. |
 | `88 .. 120` | `[u8; 32]` | `seal_hash` | Authoritative 32-byte SHA-256 seal chain fingerprint. |
-| `120 .. 128` | `[u8; 8]` | `_reserved` | Reserved alignment padding (MUST be zeroed). |
+| `120 .. 128` | `[u8; 8]` | `_reserved` | Reserved. Writers MUST zero; readers MUST ignore (§3.3). |
 
 ### 10.4 SealedEndCapV2 Layout (64 Bytes, Fixed at EOF)
 

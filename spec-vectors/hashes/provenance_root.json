@@ -1,0 +1,5 @@
+{
+  "rule": "merkle_root = data_crc32 (u32 LE) || payload_len (u32 LE) || 24 zero bytes. NOT a cryptographic hash.",
+  "input_hex": "68656c6c6f20733361",
+  "expected_hex": "45a9247f09000000000000000000000000000000000000000000000000000000"
+}
