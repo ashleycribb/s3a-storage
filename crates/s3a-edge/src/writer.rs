@@ -8,7 +8,7 @@
 //! - Atomic recovery on boot: Scans tiles, truncates incomplete/torn writes, recovers append pointer.
 //! - Cryptographic SHA-256 seal hash chain linking every micro-tile to genesis.
 
-use bytemuck::{bytes_of, from_bytes};
+use bytemuck::{bytes_of};
 use crate::crc::crc32c;
 use crate::flash::FlashStorage;
 use crate::header::*;
@@ -65,11 +65,11 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
     ) -> Result<Self, EdgeError<S::Error>> {
         let mut slot_buf = [0u8; FILE_HEADER_SLOT_SIZE];
         let has_valid_slot = if storage.read(FILE_HEADER_SLOT_A_OFFSET, &mut slot_buf).is_ok() {
-            let slot_a: FileHeader = *from_bytes(&slot_buf);
+            let slot_a: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
             if slot_a.verify() {
                 true
             } else if storage.read(FILE_HEADER_SLOT_B_OFFSET, &mut slot_buf).is_ok() {
-                let slot_b: FileHeader = *from_bytes(&slot_buf);
+                let slot_b: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
                 slot_b.verify()
             } else {
                 false
@@ -136,12 +136,12 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
 
         // Read Slot A
         storage.read(FILE_HEADER_SLOT_A_OFFSET, &mut slot_buf)?;
-        let slot_a: FileHeader = *from_bytes(&slot_buf);
+        let slot_a: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
         let valid_a = slot_a.verify();
 
         // Read Slot B
         storage.read(FILE_HEADER_SLOT_B_OFFSET, &mut slot_buf)?;
-        let slot_b: FileHeader = *from_bytes(&slot_buf);
+        let slot_b: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
         let valid_b = slot_b.verify();
 
         let (active_slot, active_header) = match (valid_a, valid_b) {
@@ -175,7 +175,7 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
                 break;
             }
 
-            let tile_header: CommonTileHeader = *from_bytes(&header_buf);
+            let tile_header: CommonTileHeader = bytemuck::pod_read_unaligned(&header_buf);
             if !tile_header.verify() {
                 // Corrupted / torn tile header
                 break;

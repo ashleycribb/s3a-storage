@@ -459,7 +459,7 @@ impl WasmAgentSnapshot {
                     return Err(format!("ForbiddenTileInDelta({})", entry.tile_type));
                 }
                 TileType::MARKS => {
-                    let mark: MarkRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let mark: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     // Security policy for marks in deltas:
                     // Only NEEDS_REVIEW and CONSENT_WITHDRAWN can be SET
                     if mark.is_set() {
@@ -508,32 +508,32 @@ impl WasmAgentSnapshot {
         for entry in &packet.entries {
             match entry.tile_type {
                 ScholarTileType::HUMAN_LRS => {
-                    let r: HumanLrsRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: HumanLrsRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.human_decisions.push(r);
                     count += 1;
                 }
                 ScholarTileType::AI_TRACE_LOG => {
-                    let r: AiTraceRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: AiTraceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.ai_traces.push(r);
                     count += 1;
                 }
                 ScholarTileType::ACADEMIC_PAPERS => {
-                    let r: AcademicPaperRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: AcademicPaperRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.papers.push(r);
                     count += 1;
                 }
                 ScholarTileType::RESEARCH_GRAPH => {
-                    let r: ResearchGraphEdgeRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: ResearchGraphEdgeRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.edges.push(r);
                     count += 1;
                 }
                 ScholarTileType::SRS_WORKSPACE => {
-                    let r: SrsWorkspaceRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: SrsWorkspaceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.workspace = Some(r);
                     count += 1;
                 }
                 ScholarTileType::NOTE_CLAIMS => {
-                    let r: ScholarNoteClaimRecord = *bytemuck::from_bytes(&entry.record_bytes()[..160]);
+                    let r: ScholarNoteClaimRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
                     self.claims.push(ClaimItem {
                         record: r,
                         text: String::new(),
@@ -542,7 +542,7 @@ impl WasmAgentSnapshot {
                     count += 1;
                 }
                 ScholarTileType::CITATION_FINGERPRINT => {
-                    let r: CitationFingerprintRecord = *bytemuck::from_bytes(&entry.record_bytes()[..96]);
+                    let r: CitationFingerprintRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
                     self.citation_fingerprints.push(r);
                     count += 1;
                 }
@@ -550,17 +550,17 @@ impl WasmAgentSnapshot {
                     // Embeddings are not transported in standard SrsDeltaEntry due to size limits
                 }
                 TileType::MARKS => {
-                    let mark: MarkRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let mark: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.policy_marks.push(mark);
                     count += 1;
                 }
                 OntologyTileType::ONTOLOGY_CONCEPT => {
-                    let r: OntologyConceptRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: OntologyConceptRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.concepts.push(r);
                     count += 1;
                 }
                 OntologyTileType::ONTOLOGY_AXIOM => {
-                    let r: OntologyAxiomRecord = *bytemuck::from_bytes(&entry.record_bytes()[..64]);
+                    let r: OntologyAxiomRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.axioms.push(r);
                     count += 1;
                 }

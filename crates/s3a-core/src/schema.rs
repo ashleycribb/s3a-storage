@@ -140,7 +140,7 @@ pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>
         return Err(S3AError::BufferTooSmall { required: header_size, provided: payload.len() });
     }
 
-    let header: &CompactSchemaHeader = bytemuck::from_bytes(&payload[..header_size]);
+    let header: &CompactSchemaHeader = &bytemuck::pod_read_unaligned::<CompactSchemaHeader>(&payload[..header_size]);
     if header.schema_format != SCHEMA_FORMAT_COMPACT_BINARY {
         return Err(S3AError::InvalidFormat);
     }

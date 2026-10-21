@@ -246,7 +246,9 @@ impl<'a> ColumnarTileView<'a> {
         if payload.len() < ColumnarTileHeader::SIZE {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Payload too small for ColumnarTileHeader"));
         }
-        let header: &ColumnarTileHeader = bytemuck::from_bytes(&payload[..ColumnarTileHeader::SIZE]);
+        let header: &ColumnarTileHeader = bytemuck::try_from_bytes::<ColumnarTileHeader>(&payload[..ColumnarTileHeader::SIZE])
+            // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "misaligned tile header (A4: borrowed view requires 8-byte alignment)"))?;
         if !header.is_valid() {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid ColumnarTileHeader magic/version"));
         }

@@ -12,7 +12,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use bytemuck::{bytes_of, from_bytes};
+use bytemuck::{bytes_of};
 
 use s3a_core::{HyperTileHeader, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, FILE_HEADER_SIZE};
 
@@ -113,7 +113,7 @@ impl TileStorageAdapter for LocalStorageAdapter {
         let mut header_buf = [0u8; HYPER_TILE_HEADER_SIZE];
         file.read_exact(&mut header_buf)?;
 
-        let header: &HyperTileHeader = from_bytes(&header_buf);
+        let header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
         if header.header_crc32 != 0 {
             let expected = compute_tile_header_crc32(header);
             if header.header_crc32 != expected {
@@ -266,7 +266,7 @@ pub fn archive_cold_tiles<P: AsRef<Path>>(
         let mut header_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)?;
 
-        let header: &HyperTileHeader = from_bytes(&header_bytes);
+        let header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_bytes);
         if header.lifecycle.stratum_tier >= min_stratum_tier {
             // Read the full 128 KB tile
             file.seek(SeekFrom::Start(offset))?;

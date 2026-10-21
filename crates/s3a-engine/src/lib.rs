@@ -4,7 +4,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use fs2::FileExt;
-use bytemuck::{bytes_of, from_bytes, Pod};
+use bytemuck::{bytes_of, Pod};
 use memmap2::Mmap;
 
 pub use s3a_core::*;
@@ -195,7 +195,7 @@ impl MicroTileBuffer {
         let data_bytes = &self.buffer[MICRO_TILE_HEADER_SIZE..self.written_bytes];
         let data_crc32 = crc32c::crc32c(data_bytes);
 
-        let mut header: MicroTileHeader = *from_bytes(&self.buffer[..MICRO_TILE_HEADER_SIZE]);
+        let mut header: MicroTileHeader = bytemuck::pod_read_unaligned(&self.buffer[..MICRO_TILE_HEADER_SIZE]);
         header.record_count = self.record_count;
         header.payload_bytes = payload_bytes;
         header.data_crc32 = data_crc32;
@@ -390,8 +390,8 @@ impl TileWriter {
         file.seek(SeekFrom::Start(0))?;
         file.read_exact(&mut header_buf)?;
 
-        let slot_a: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
-        let slot_b: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&header_buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&header_buf[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
 
         let (active_header, active_slot) = resolve_active_header(slot_a, slot_b)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
@@ -783,6 +783,9 @@ pub enum CorruptReason {
     PayloadTooLong { payload_len: usize, capacity: usize },
     HeaderCrcMismatch { stored: u32, computed: u32 },
     DataCrcMismatch { stored: u32, computed: u32 },
+    /// A4: the tile header sits at an offset that is not aligned for a borrowed view
+    /// (only possible with a file-claimed edge stride that is not a multiple of 8).
+    Misaligned { offset: usize },
 }
 
 /// A tile failed structural or checksum validation (ADR-0004).
@@ -826,8 +829,8 @@ impl MmapReader {
             ));
         }
 
-        let slot_a: &FileHeader = from_bytes(&mmap[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
-        let slot_b: &FileHeader = from_bytes(&mmap[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&mmap[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&mmap[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
 
         let (active_header, active_slot) = resolve_active_header(slot_a, slot_b)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
@@ -956,8 +959,11 @@ impl MmapReader {
         let (offset, slot_end) = self.tile_slot(index, self.header_extent(), self.tile_stride(), hs)?;
 
         let header_slice = &self.mmap[offset..offset + hs];
-        // NOTE(A4): unaligned bytemuck cast; replaced by pod_read_unaligned in A4.
-        let tile_header: &s3a_edge::CommonTileHeader = from_bytes(header_slice);
+        // A4 (ADR-0005): this accessor returns a header borrowed from the mmap (public API), so it
+        // cannot copy out. mmap bases are page-aligned and canonical strides are multiples of 8, so
+        // well-formed files are always aligned; a hostile stride yields `Misaligned`, never a panic.
+        let tile_header: &s3a_edge::CommonTileHeader = bytemuck::try_from_bytes(header_slice)
+            .map_err(|_| Corrupt::new(index, CorruptReason::Misaligned { offset }))?;
 
         let payload_start = offset + hs;
         let len = tile_header.payload_len as usize;
@@ -1015,8 +1021,11 @@ impl MmapReader {
         let (offset, slot_end) = self.tile_slot(index, FILE_HEADER_SIZE, HYPER_TILE_SIZE, HYPER_TILE_HEADER_SIZE)?;
 
         let header_slice = &self.mmap[offset..offset + HYPER_TILE_HEADER_SIZE];
-        // NOTE(A4): unaligned bytemuck cast; replaced by pod_read_unaligned in A4.
-        let tile_header: &HyperTileHeader = from_bytes(header_slice);
+        // A4 (ADR-0005): this accessor returns a header borrowed from the mmap (public API), so it
+        // cannot copy out. mmap bases are page-aligned and canonical strides are multiples of 8, so
+        // well-formed files are always aligned; a hostile stride yields `Misaligned`, never a panic.
+        let tile_header: &HyperTileHeader = bytemuck::try_from_bytes(header_slice)
+            .map_err(|_| Corrupt::new(index, CorruptReason::Misaligned { offset }))?;
 
         let payload_start = offset + HYPER_TILE_HEADER_SIZE;
         let len = tile_header.payload_bytes as usize;
@@ -1247,8 +1256,8 @@ pub fn recover_archive<P: AsRef<Path>>(path: P) -> io::Result<FileHeader> {
     file.seek(SeekFrom::Start(0))?;
     file.read_exact(&mut header_buf)?;
 
-    let slot_a: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
-    let slot_b: &FileHeader = from_bytes(&header_buf[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&header_buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&header_buf[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
 
     let (active_header, _) = resolve_active_header(slot_a, slot_b)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
@@ -3545,7 +3554,7 @@ mod tests {
         let page = buf.finalize();
         assert_eq!(page.len(), MICRO_TILE_SIZE);
 
-        let header: &MicroTileHeader = from_bytes(&page[..MICRO_TILE_HEADER_SIZE]);
+        let header: &MicroTileHeader = &bytemuck::pod_read_unaligned::<MicroTileHeader>(&page[..MICRO_TILE_HEADER_SIZE]);
         assert_eq!(header.tile_id, 1);
         assert_eq!(header.record_count, 2);
         assert_eq!(header.payload_bytes, 32);

@@ -235,7 +235,9 @@ impl<'a> ArrayTileView<'a> {
         if payload.len() < ArrayTileHeader::SIZE {
             return Err("payload too small for ArrayTileHeader");
         }
-        let header: &ArrayTileHeader = bytemuck::from_bytes(&payload[..ArrayTileHeader::SIZE]);
+        let header: &ArrayTileHeader = bytemuck::try_from_bytes::<ArrayTileHeader>(&payload[..ArrayTileHeader::SIZE])
+            // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
+            .map_err(|_| "misaligned tile header (A4: borrowed view requires 8-byte alignment)")?;
         if !header.is_valid() {
             return Err("invalid ArrayTileHeader magic or version");
         }

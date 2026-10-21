@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use bytemuck::from_bytes;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
@@ -90,7 +89,7 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                from_bytes(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
                             commits.push(*rec);
                         }
                     }
@@ -113,7 +112,7 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * ref_size <= payload.len() {
                             let rec: &VcsRefRecord =
-                                from_bytes(&payload[c * ref_size..(c + 1) * ref_size]);
+                                &bytemuck::pod_read_unaligned::<VcsRefRecord>(&payload[c * ref_size..(c + 1) * ref_size]);
                             refs.push(*rec);
                         }
                     }
@@ -142,7 +141,7 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * res_size <= payload.len() {
                             let rec: &VcsResolutionRecord =
-                                from_bytes(&payload[c * res_size..(c + 1) * res_size]);
+                                &bytemuck::pod_read_unaligned::<VcsResolutionRecord>(&payload[c * res_size..(c + 1) * res_size]);
                             resolutions.push(*rec);
                         }
                     }
@@ -437,7 +436,7 @@ impl VcsRepo {
                     for c in 0..c_count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                from_bytes(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
                             commit_tile_indices.insert(rec.seal_hash, i);
                         }
                     }
@@ -491,7 +490,7 @@ impl VcsRepo {
                         for c in 0..c_count {
                             if (c + 1) * consent_size <= payload.len() {
                                 let rec: &ConsentRecord =
-                                    from_bytes(&payload[c * consent_size..(c + 1) * consent_size]);
+                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
                                 if rec.withdrawn_at > 0 {
                                     withdrawn_from += 1;
                                 }
@@ -502,7 +501,7 @@ impl VcsRepo {
                         for m in 0..m_count {
                             if (m + 1) * mark_size <= payload.len() {
                                 let rec: &MarkRecord =
-                                    from_bytes(&payload[m * mark_size..(m + 1) * mark_size]);
+                                    &bytemuck::pod_read_unaligned::<MarkRecord>(&payload[m * mark_size..(m + 1) * mark_size]);
                                 if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
                                     withdrawn_from += 1;
                                 }
@@ -518,7 +517,7 @@ impl VcsRepo {
                         for c in 0..c_count {
                             if (c + 1) * consent_size <= payload.len() {
                                 let rec: &ConsentRecord =
-                                    from_bytes(&payload[c * consent_size..(c + 1) * consent_size]);
+                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
                                 if rec.withdrawn_at > 0 {
                                     withdrawn_to += 1;
                                 }
@@ -529,7 +528,7 @@ impl VcsRepo {
                         for m in 0..m_count {
                             if (m + 1) * mark_size <= payload.len() {
                                 let rec: &MarkRecord =
-                                    from_bytes(&payload[m * mark_size..(m + 1) * mark_size]);
+                                    &bytemuck::pod_read_unaligned::<MarkRecord>(&payload[m * mark_size..(m + 1) * mark_size]);
                                 if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
                                     withdrawn_to += 1;
                                 }
@@ -627,7 +626,7 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                from_bytes(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
                             commit_tile_indices.insert(rec.seal_hash, i);
                             sorted_commit_indices.push(i);
                         }
@@ -799,7 +798,7 @@ fn extract_records_from_tile(
         for r in 0..count {
             if (r + 1) * claim_size <= payload.len() {
                 let rec: &s3a_pack_scholar::records::ScholarNoteClaimRecord =
-                    from_bytes(&payload[r * claim_size..(r + 1) * claim_size]);
+                    &bytemuck::pod_read_unaligned::<s3a_pack_scholar::records::ScholarNoteClaimRecord>(&payload[r * claim_size..(r + 1) * claim_size]);
                 let rec_id = if rec.session_uuid[0] == 0 && rec.session_uuid[1] > 0 {
                     format!("claim_{}", rec.session_uuid[1])
                 } else if rec.session_uuid != [0, 0] {
@@ -825,7 +824,7 @@ fn extract_records_from_tile(
         for r in 0..count {
             if (r + 1) * tel_size <= payload.len() {
                 let rec: &s3a_core::TelemetryRecord =
-                    from_bytes(&payload[r * tel_size..(r + 1) * tel_size]);
+                    &bytemuck::pod_read_unaligned::<s3a_core::TelemetryRecord>(&payload[r * tel_size..(r + 1) * tel_size]);
                 let rec_id = format!("telemetry_{}_{}_{}", rec.sensor_id, rec.metric_id, rec.timestamp);
                 let mut hasher = Sha256::new();
                 hasher.update(&rec.value.to_le_bytes());
@@ -857,8 +856,8 @@ fn get_active_data_len(buf: &[u8]) -> Result<usize, VcsError> {
     if buf.len() < FILE_HEADER_SIZE {
         return Err(VcsError::Generic("Buffer too small for header".into()));
     }
-    let slot_a: &FileHeader = from_bytes(&buf[0..64]);
-    let slot_b: &FileHeader = from_bytes(&buf[64..128]);
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&buf[0..64]);
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&buf[64..128]);
     let (active, _) = s3a_engine::resolve_active_header(slot_a, slot_b)
         .map_err(|e| VcsError::Generic(e.to_string()))?;
     let len = FILE_HEADER_SIZE + (active.tile_count as usize * HYPER_TILE_SIZE);
@@ -870,7 +869,7 @@ pub fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
         return Err(VcsError::Generic("Buffer too small for sealed end cap".into()));
     }
     let endcap_slice = &buf[buf.len() - SEALED_ENDCAP_SIZE..];
-    let endcap: &SealedEndCapV2 = from_bytes(endcap_slice);
+    let endcap: &SealedEndCapV2 = &bytemuck::pod_read_unaligned::<SealedEndCapV2>(endcap_slice);
     if endcap.magic != SEALED_ENDCAP_MAGIC_V2 {
         return Err(VcsError::Generic("Missing SEALED_ENDCAP_MAGIC_V2".into()));
     }
@@ -881,6 +880,6 @@ pub fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
         return Err(VcsError::Generic("Truncated index".into()));
     }
 
-    let idx_hdr: &SealedIndexHeaderV2 = from_bytes(&buf[index_offset..index_offset + SEALED_INDEX_HEADER_SIZE_V2]);
+    let idx_hdr: &SealedIndexHeaderV2 = &bytemuck::pod_read_unaligned::<SealedIndexHeaderV2>(&buf[index_offset..index_offset + SEALED_INDEX_HEADER_SIZE_V2]);
     Ok(idx_hdr.seal_hash)
 }

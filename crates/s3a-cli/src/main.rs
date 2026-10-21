@@ -2196,8 +2196,8 @@ fn run_doctor(path: &str, json_mode: bool) {
         return;
     }
 
-    let slot_a: &s3a_core::FileHeader = bytemuck::from_bytes(&header_buf[s3a_core::FILE_HEADER_SLOT_A_OFFSET..s3a_core::FILE_HEADER_SLOT_A_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
-    let slot_b: &s3a_core::FileHeader = bytemuck::from_bytes(&header_buf[s3a_core::FILE_HEADER_SLOT_B_OFFSET..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
+    let slot_a: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(&header_buf[s3a_core::FILE_HEADER_SLOT_A_OFFSET..s3a_core::FILE_HEADER_SLOT_A_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
+    let slot_b: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(&header_buf[s3a_core::FILE_HEADER_SLOT_B_OFFSET..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
 
     let slot_a_valid = s3a_engine::verify_header_slot(slot_a);
     let slot_b_valid = s3a_engine::verify_header_slot(slot_b);

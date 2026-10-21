@@ -14,7 +14,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use bytemuck::{bytes_of, from_bytes, Pod, Zeroable};
+use bytemuck::{bytes_of, Pod, Zeroable};
 
 /// Error types for Erasure Coding operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +183,7 @@ impl TileShard {
         if bytes.len() < 32 {
             return Err(ErasureError::Io("Shard buffer smaller than 32-byte header".into()));
         }
-        let header: TileShardHeader = *from_bytes(&bytes[..32]);
+        let header: TileShardHeader = bytemuck::pod_read_unaligned(&bytes[..32]);
         let payload = bytes[32..].to_vec();
         header.verify(&payload)?;
         Ok(Self { header, payload })
