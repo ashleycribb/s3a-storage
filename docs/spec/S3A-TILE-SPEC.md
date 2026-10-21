@@ -469,7 +469,7 @@ The `tile_type` field is partitioned into distinct ranges:
 
 Compliant readers and tools MUST adhere to the following rules when encountering a tile type identifier they do not recognize:
 1. **Queries**: A query searching for specific tile types MUST skip unknown tile types without failing.
-2. **Compaction**: A compactor encountering an unknown tile type with `TileTypeFlags::COPY_THROUGH_COMPACT` MUST copy the tile through intact (`write_raw_hyper_tile`), preserving its header and payload bytes verbatim.
+2. **Compaction and rewrite (copy-through by default)**: Any tool that rewrites an archive (compaction, tile fusion, migration, repair) and encounters a tile type it does not recognize MUST copy that tile through intact (`write_raw_hyper_tile`), whether or not the type carries `TileTypeFlags::COPY_THROUGH_COMPACT`. The payload bytes MUST be preserved verbatim; only the relocation fields the writer owns (`tile_id`, `tile_index`, `generation`, `file_uuid` and the header CRCs) may change. A tool MAY drop unknown tiles only when the user explicitly requests it (for example a `--drop-unknown` option); silent dropping is non-compliant. The one exception is erasure: record bytes targeted by an Erasure tile (type 73) record MUST still be zeroed. `COPY_THROUGH_COMPACT` remains a hint for *known* types that a compactor may copy without domain re-encoding; it no longer controls whether unknown tiles survive (ADR-0011).
 3. **Integrity Verification**: Checksum verification tools MUST verify the CRC32C of all tiles, regardless of whether their tile types are recognized.
 
 ---

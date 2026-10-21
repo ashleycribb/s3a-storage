@@ -1567,6 +1567,7 @@ impl TileFusionEngine {
         }
         let mut writer = TileWriter::create_with_uuid(output_path, target_uuid)?;
         let mut fused_records: Vec<TelemetryRecord> = Vec::new();
+        let mut unknown_tiles: Vec<(HyperTileHeader, Vec<u8>)> = Vec::new();
 
         for path in input_paths {
             let reader = MmapReader::open(path)?;
@@ -1579,9 +1580,22 @@ impl TileFusionEngine {
                     if header.tile_type == TileType::TELEMETRY {
                         let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
                         fused_records.extend_from_slice(records);
+                    } else if s3a_core::registry::global_registry()
+                        .get(header.tile_type)
+                        .is_none()
+                    {
+                        // S3A-TILE-SPEC §7.2: unknown tile types are copied through
+                        // by default, whether or not they carry COPY_THROUGH_COMPACT.
+                        unknown_tiles.push((*header, payload.to_vec()));
                     }
                 }
             }
+        }
+
+        for (header, payload) in unknown_tiles {
+            let mut h = header;
+            h.file_uuid = writer.file_uuid();
+            writer.write_raw_hyper_tile(&h, &payload)?;
         }
 
         // Filter out tombstones and deduplicate versioned updates
