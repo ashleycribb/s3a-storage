@@ -228,7 +228,7 @@ All values below are verified against the reference code and pinned by vectors i
 Note: the provenance root is currently derived from the CRC32C and length, not a cryptographic Merkle root; a domain-separated cryptographic root is a planned future change and will require a new layout version.
 
 
-### 3.3 CRC32C Covered Ranges & Padding Rules
+### 3.5 CRC32C Covered Ranges & Padding Rules
 
 1. **Header CRC (`header_crc32`)**:
    - `header_crc32` resides at offset `36..40` of `HyperTileHeader`.
@@ -241,7 +241,7 @@ Note: the provenance root is currently derived from the CRC32C and length, not a
    - Every Hyper-Tile MUST occupy exactly 131,072 bytes on disk.
    - If `payload_bytes < 130,560`, the writer MUST write $131,072 - (512 + \text{payload\_bytes})$ zero bytes (`0x00`) following the active payload.
 
-### 3.4 Tile Self-Addressing & Reader Verification Rules
+### 3.6 Tile Self-Addressing & Reader Verification Rules
 
 In specification v1.1-draft, every Hyper-Tile is self-addressing:
 1. **Protected Address Range**: The `file_uuid` (128-bit), `tile_index` (`u32`), and `generation` (`u64`) fields reside inside `HyperTileHeader` (offsets 480..512) and are strictly covered by `header_crc32`.
@@ -250,13 +250,13 @@ In specification v1.1-draft, every Hyper-Tile is self-addressing:
    - A tile is evaluated as **Legacy Unaddressed** if and only if `record_layout_version <= 1` and `file_uuid == [0, 0]`.
    - Compliant readers MUST permit legacy unaddressed tiles to pass verification through the legacy path without failing closed.
 
-### 3.5 Edge & Micro-Tile Profile Pointer
+### 3.7 Edge & Micro-Tile Profile Pointer
 
 For resource-constrained microcontrollers (ESP32, nRF52, RP2040), embedded sensor nodes, and industrial telemetry loggers operating under strict memory limits ($\le 32\text{ KB}$ RAM, `no_std`, heapless execution), S3A defines the companion **Edge Profile Specification** in [`S3A-EDGE-PROFILE.md`](S3A-EDGE-PROFILE.md).
 
 The Edge Profile specifies 4 KB and 8 KB flash-sector aligned micro-tiles, power-loss crash safety rules, on-device Ed25519 hash-chain sealing, and transport-agnostic sharing protocols while guaranteeing that all edge files remain valid S3A files directly readable by the full engine.
 
-### 3.6 Digital Vault Profile Pointer
+### 3.8 Digital Vault Profile Pointer
 
 For cryptographic identity custody, verifiable credentials (W3C VC / Open Badges 3.0), autonomous agent delegation grants, physical thing management, gate network addressing, approval checkpoints, and digital holdings stored natively within valid S3A archives (`.vault.s3a` / `.s3a`), S3A defines the companion **Digital Vault Specification** in [`S3A-VAULT.md`](S3A-VAULT.md).
 
@@ -469,7 +469,7 @@ The `tile_type` field is partitioned into distinct ranges:
 
 Compliant readers and tools MUST adhere to the following rules when encountering a tile type identifier they do not recognize:
 1. **Queries**: A query searching for specific tile types MUST skip unknown tile types without failing.
-2. **Compaction**: A compactor encountering an unknown tile type with `TileTypeFlags::COPY_THROUGH_COMPACT` MUST copy the tile through intact (`write_raw_hyper_tile`), preserving its header and payload bytes verbatim.
+2. **Compaction and rewrite (copy-through by default)**: Any tool that rewrites an archive (compaction, tile fusion, migration, repair) and encounters a tile type it does not recognize MUST copy that tile through intact (`write_raw_hyper_tile`), whether or not the type carries `TileTypeFlags::COPY_THROUGH_COMPACT`. The payload bytes MUST be preserved verbatim; only the relocation fields the writer owns (`tile_id`, `tile_index`, `generation`, `file_uuid` and the header CRCs) may change. A tool MAY drop unknown tiles only when the user explicitly requests it (for example a `--drop-unknown` option); silent dropping is non-compliant. The one exception is erasure: record bytes targeted by an Erasure tile (type 73) record MUST still be zeroed. `COPY_THROUGH_COMPACT` remains a hint for *known* types that a compactor may copy without domain re-encoding; it no longer controls whether unknown tiles survive (ADR-0011).
 3. **Integrity Verification**: Checksum verification tools MUST verify the CRC32C of all tiles, regardless of whether their tile types are recognized.
 
 ---
