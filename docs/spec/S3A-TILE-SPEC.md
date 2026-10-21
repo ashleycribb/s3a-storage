@@ -1,6 +1,6 @@
 # S3A Hyper-Tile Storage Format Specification
 
-**Document Version:** 1.3-draft  
+**Document Version:** 1.4-draft  
 **Status:** Implementable Standard  
 **Date:** October 2026  
 **License:** [Creative Commons Attribution 4.0 International (CC-BY-4.0)](LICENSE)  
@@ -8,6 +8,8 @@
 
 ### Specification Changelog
 
+- **v1.4-draft (October 2026)**:
+  - **Common Tile Header (§14.1, ADR-0003)**: bytes 12..16, 56..60, 60..64 documented as `data_crc32`, `header_crc32`, `generation` to match the reference code; they were wrongly listed as reserved. No on-disk bytes change.
 - **v1.3-draft (October 2026)**:
   - **Offset correction (§3.2, ADR-0002)**: §3.2.2–§3.2.7 sub-structure offsets were shifted by 8 bytes and contradicted §3.1. §3.1 (and the reference code) was correct; §3.2 now matches. No on-disk bytes change.
   - **Byte order & reserved bytes (§3.3)**: all multi-byte fields are little-endian; readers MUST ignore reserved bytes, writers MUST zero them.
@@ -801,7 +803,7 @@ All cataloged tile types share a canonical 64-byte logical header prefix embedde
 
 #### Common Tile Header Layout (64 Bytes, 8-Byte Aligned, Little-Endian)
 
-The unpadded functional fields (`type_id` 2 B, `type_version` 2 B, `flags` 2 B, `record_count` 4 B, `payload_len` 8 B, and `payload_hash` 32 B) sum to exactly **50 bytes**. To guarantee strict natural 8-byte hardware alignment across 64-bit CPU architectures without compiler-induced struct divergence, the canonical on-disk header incorporates 14 bytes of explicit zeroed reserved padding, yielding a fixed **64-byte** structure. All integer fields are encoded in **Little-Endian (LE)** byte order.
+The header has 62 bytes of fields and 2 bytes of reserved padding (`_reserved1`), yielding a fixed **64-byte**, 8-byte-aligned structure. All integer fields are encoded in **Little-Endian (LE)** byte order.
 
 | Offset (Bytes) | Size | Field Name | Type | Endianness | Description |
 |:---:|:---:|:---|:---:|:---:|:---|
@@ -810,15 +812,16 @@ The unpadded functional fields (`type_id` 2 B, `type_version` 2 B, `flags` 2 B, 
 | `4 .. 6` | 2 B | `flags` | `u16` | Little-Endian | Type-specific bitmask flags (e.g., compression, encryption, ordering). |
 | `6 .. 8` | 2 B | `_reserved1` | `u16` | Little-Endian | Explicit alignment padding (MUST be written as `0`, ignored by reader). |
 | `8 .. 12` | 4 B | `record_count` | `u32` | Little-Endian | Number of logical entries, elements, or records in the payload. |
-| `12 .. 16` | 4 B | `_reserved2` | `u32` | Little-Endian | Explicit alignment padding to 8-byte boundary (MUST be written as `0`). |
+| `12 .. 16` | 4 B | `data_crc32` | `u32` | Little-Endian | CRC32C (Castagnoli) over the active payload bytes. |
 | `16 .. 24` | 8 B | `payload_len` | `u64` | Little-Endian | Byte length of active payload data ($0 \le \text{payload\_len} \le 130,560$). |
 | `24 .. 56` | 32 B | `payload_hash` | `[u8; 32]` | Raw Bytes | SHA-256 cryptographic digest calculated over the active payload bytes. |
-| `56 .. 64` | 8 B | `_reserved3` | `u64` | Little-Endian | Trailing alignment padding to 64 bytes (MUST be written as `0`). |
+| `56 .. 60` | 4 B | `header_crc32` | `u32` | Little-Endian | CRC32C over header bytes `0..56` ‖ `60..64`. |
+| `60 .. 64` | 4 B | `generation` | `u32` | Little-Endian | Commit generation when the tile was sealed (low 32 bits). |
 
-> **Header Size Summary**:
-> - Unpadded functional fields: $2 + 2 + 2 + 4 + 8 + 32 = 50\text{ bytes}$.
-> - Explicit zero padding (`_reserved1` + `_reserved2` + `_reserved3`): $2 + 4 + 8 = 14\text{ bytes}$.
-> - Canonical aligned on-disk header size: $50 + 14 = 64\text{ bytes}$ (exact power-of-two 64-byte cache-line alignment).
+> **Header Size Summary**: fields $2+2+2+4+4+8+32+4+4 = 62$ bytes, plus `_reserved1` (2 B) = 64 bytes.
+
+#### Integrity Fields
+When `flags` has `TILE_FLAG_CRC_CHAIN` (value `2`) set, readers SHOULD verify `header_crc32` and `data_crc32` and treat mismatches as corruption. `_reserved1` MUST be written as `0` and MUST be ignored by readers. Byte-level details and vectors: `S3A-EDGE-PROFILE.md` §2.4.1, `spec-vectors/hashes/edge_*_crc32c.json`, ADR-0003.
 
 #### Reader Skip Enforcement Rule
 A compliant S3A reader MUST inspect `type_id` upon reading each tile. If the reader encounters an unrecognized, unsupported, or private `type_id`, the reader **MUST skip the unknown tile using `payload_len` and MUST NOT fail closed or abort execution**. Readers MUST continue processing subsequent known tiles in the container uninterrupted.

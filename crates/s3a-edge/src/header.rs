@@ -155,11 +155,8 @@ pub fn compute_file_header_crc32(header: &FileHeader) -> u32 {
 
 /// Canonical 64-Byte Common Tile Header (§2.4.1).
 ///
-/// Clarification / Audit Note:
-/// To satisfy power-loss safety (§4.2, §4.4) while preserving strict 64-byte natural alignment
-/// with `S3A-TILE-SPEC.md` §14.1, `data_crc32` is positioned at offset 12..16 (which corresponds
-/// to `_reserved2` in §14.1, explicitly declared as ignored by standard readers), and
-/// `header_crc32` is stored at offset 56..60 (the lower 4 bytes of `_reserved3`).
+/// Layout is normative in S3A-EDGE-PROFILE §2.4.1 and S3A-TILE-SPEC §14.1 (ADR-0003):
+/// `data_crc32` at 12..16, `header_crc32` at 56..60, `generation` at 60..64.
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CommonTileHeader {
