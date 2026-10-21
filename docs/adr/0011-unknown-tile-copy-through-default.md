@@ -17,7 +17,7 @@ tiles, while `TileFusionEngine` silently dropped every non-telemetry tile.
 - `COPY_THROUGH_COMPACT` stays as a hint for known types.
 
 ## Consequences
-- `TileFusionEngine::fuse_telemetry_tiles` now writes unknown tiles to the output (it still drops
-  known non-telemetry types, as before; that is unchanged and out of scope).
+- `TileFusionEngine::fuse_telemetry_tiles` now carries every non-telemetry tile (known or unknown)
+  through unchanged; it only re-encodes telemetry.
 - New test `crates/s3a-engine/tests/unknown_tile_copy_through.rs` checks an unflagged unknown tile
   survives `Compactor::compact` and tile fusion.

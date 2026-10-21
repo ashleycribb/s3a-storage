@@ -55,3 +55,31 @@ fn unflagged_unknown_tile_survives_tile_fusion() {
     TileFusionEngine::fuse_telemetry_tiles(&[&i], &o).unwrap();
     assert_unknown_survives(&o);
 }
+
+#[test]
+fn known_non_telemetry_tile_survives_tile_fusion() {
+    let (i, o) = (tmp("k_in"), tmp("k_out"));
+    write_input(&i);
+    assert!(s3a_engine::append_schema_tile_if_missing(&i).unwrap());
+    let src = MmapReader::open(&i).unwrap();
+    let schema: Vec<u8> = (0..src.tile_count() as usize)
+        .filter_map(|k| src.get_tile(k))
+        .find(|(h, _)| h.tile_type == TileType::SCHEMA)
+        .map(|(_, p)| p.to_vec())
+        .expect("schema tile in input");
+    drop(src);
+    TileFusionEngine::fuse_telemetry_tiles(&[&i], &o).unwrap();
+    let r = MmapReader::open(&o).unwrap();
+    r.verify_checksums().unwrap();
+    let out: Vec<_> = (0..r.tile_count() as usize)
+        .filter_map(|k| r.get_tile(k))
+        .filter(|(h, _)| h.tile_type == TileType::SCHEMA)
+        .collect();
+    assert_eq!(out.len(), 1, "known schema tile must be carried through");
+    assert_eq!(
+        out[0].1,
+        &schema[..],
+        "schema payload must be byte-identical"
+    );
+    assert!(r.catalog().is_ok());
+}
