@@ -1,0 +1,19 @@
+{
+  "case_name": "valid_schema_catalog",
+  "category": "valid",
+  "description": "Telemetry tile plus Schema tile 77; catalog() must return the embedded catalog naming types 0 and 77",
+  "expected_outcome": "ok",
+  "file_size_bytes": 262656,
+  "header": {
+    "active_slot": 0,
+    "generation": 3,
+    "tile_count": 2,
+    "addon_mask": 0
+  },
+  "records_per_tile_type": {
+    "0": 1,
+    "77": 1
+  },
+  "visible_records": 0,
+  "hidden_records": 0
+}

@@ -49,3 +49,10 @@ path = "fuzz_targets/edge_reader.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "schema_tile"
+path = "fuzz_targets/schema_tile.rs"
+test = false
+doc = false
+bench = false
