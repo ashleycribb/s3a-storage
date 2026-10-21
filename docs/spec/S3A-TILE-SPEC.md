@@ -1324,3 +1324,19 @@ Per specification audit policy, a tile type is classified as **IMPLEMENTED** onl
 
 
 
+
+## Appendix: Record-Root Tile (Type ID `83` / `0x0053`, ADR-0012)
+
+Optional tile listing per-tile RFC 6962 record roots. Payload: `record_count` entries of 64 bytes,
+little-endian: `tile_index u32`, `tile_type u32`, `tile_id u64`, `record_count u64`,
+`seal_generation u64`, `root [u8; 32]`. A tile is covered iff `record_count > 0` and
+`payload_bytes` divides evenly into `record_count` records; `root` is the RFC 6962 Merkle Tree Hash
+of those records (leaf `SHA-256(0x00||r)`, node `SHA-256(0x01||l||r)`).
+
+- Writers append it as the last tile(s) immediately before sealing; the v2 seal hash
+  (`compute_seal_hash_v2`) is unchanged and covers it like any tile.
+- It is derived data. Compactors and fusion MUST drop it; sealers MUST drop any prior record-root
+  tile and MAY regenerate it. It never carries forward a stale root.
+- Verifiers that know it recompute every root and report any missing, extra or differing entry,
+  or entries with mixed `seal_generation`. Readers that don't know it skip it (§7.2).
+- Files without it are unaffected.

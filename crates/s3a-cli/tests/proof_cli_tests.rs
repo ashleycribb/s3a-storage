@@ -54,3 +54,66 @@ fn cli_prove_then_verify_proof() {
     assert!(v.status.success());
     assert!(String::from_utf8_lossy(&v.stdout).contains("PROOF OK"));
 }
+
+#[test]
+fn cli_seal_record_roots_then_verify_proof_against_seal() {
+    let bin = env!("CARGO_BIN_EXE_s3a-cli");
+    let dir = std::env::temp_dir();
+    let id = std::process::id();
+    let inp = dir.join(format!("s3a_rr_in_{}.s3a", id));
+    let sealed = dir.join(format!("s3a_rr_sealed_{}.s3a", id));
+    let proof = dir.join(format!("s3a_rr_proof_{}.json", id));
+    std::fs::copy(LEGACY, &inp).unwrap();
+    let s = Command::new(bin)
+        .args([
+            "seal",
+            inp.to_str().unwrap(),
+            sealed.to_str().unwrap(),
+            "--record-roots",
+        ])
+        .output()
+        .unwrap();
+    assert!(s.status.success(), "{}", String::from_utf8_lossy(&s.stdout));
+    let v = Command::new(bin)
+        .args(["verify", sealed.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let vo = String::from_utf8_lossy(&v.stdout);
+    assert!(vo.contains("Record roots: OK"), "{}", vo);
+    // find the telemetry tile (manifest/schema tiles shift indices)
+    let r = s3a_engine::MmapReader::open(&sealed).unwrap();
+    let t = (0..r.tile_count() as usize)
+        .find(|&i| r.get_tile(i).unwrap().0.tile_type == s3a_core::TileType::TELEMETRY)
+        .unwrap()
+        .to_string();
+    let p = Command::new(bin)
+        .args(["prove", sealed.to_str().unwrap(), &t, "1"])
+        .output()
+        .unwrap();
+    assert!(p.status.success());
+    std::fs::write(&proof, &p.stdout).unwrap();
+    let ok = Command::new(bin)
+        .args([
+            "verify-proof",
+            proof.to_str().unwrap(),
+            sealed.to_str().unwrap(),
+            "--against-seal",
+        ])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("PROOF OK"));
+    // legacy file has no record-root tile: --against-seal must refuse, not pass silently
+    let no = Command::new(bin)
+        .args([
+            "verify-proof",
+            proof.to_str().unwrap(),
+            LEGACY,
+            "--against-seal",
+        ])
+        .output()
+        .unwrap();
+    assert!(!no.status.success());
+    for f in [&inp, &sealed, &proof] {
+        let _ = std::fs::remove_file(f);
+    }
+}

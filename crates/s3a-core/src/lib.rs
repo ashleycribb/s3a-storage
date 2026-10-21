@@ -524,6 +524,8 @@ impl TileType {
     pub const VCS_REF: u32 = 81;
     /// Version Control Conflict Resolution Tile (Tile 82 / 0x0052)
     pub const VCS_RESOLUTION: u32 = 82;
+    /// Core Record-Root Tile: per-tile RFC 6962 record Merkle roots, sealed (Tile 83 / 0x0053, ADR-0012)
+    pub const RECORD_ROOT: u32 = 83;
     /// Gate Network Directory Name/Address Record Tile (Tile 85 / 0x0055)
     pub const GATE_DIRECTORY: u32 = 85;
     /// Gate Network Relay Mailbox Item Tile (Tile 86 / 0x0056)

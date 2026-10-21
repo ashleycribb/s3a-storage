@@ -49,6 +49,25 @@ pub fn tile_record_root(path: &str, tile: usize) -> Result<([u8; 32], u64), Stri
     Ok((root, h.record_count as u64))
 }
 
+/// Root for `tile_index` recorded in the file's sealed record-root tile (type 83). Errors if
+/// the file has no record-root tile, or the tile disagrees with the recomputed roots.
+pub fn sealed_record_root(path: &str, tile_index: u32) -> Result<[u8; 32], String> {
+    let reader = MmapReader::open(path).map_err(|e| e.to_string())?;
+    let rep = s3a_engine::record_roots::check(&reader);
+    if !rep.present {
+        return Err("file has no record-root tile (seal with --record-roots)".into());
+    }
+    if !rep.ok() {
+        return Err(format!(
+            "record-root tile mismatch: {}",
+            rep.mismatches.join("; ")
+        ));
+    }
+    s3a_engine::record_roots::sealed_root_for(&reader, tile_index)
+        .map(|e| e.root)
+        .ok_or_else(|| format!("no sealed root for tile {}", tile_index))
+}
+
 pub fn prove(path: &str, tile: usize, record: usize) -> Result<RecordProof, String> {
     let reader = MmapReader::open(path).map_err(|e| e.to_string())?;
     let (h, payload) = reader.try_get_tile(tile).map_err(|e| format!("{:?}", e))?;

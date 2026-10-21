@@ -63,6 +63,7 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **77** | `schema` | Core Engine (`s3a-core` codec, `s3a-engine` reader) | None | Variable | Compact Binary Catalog (§14.5.4) | Active⁶ |
 | **78** | `manifest` | Core Engine (`s3a-core`) | None | Variable | Plain UTF-8 Text | Active |
 | **79** | `specification` | Core Engine (`s3a-core`) | None | Variable | Compressed Markdown (Deflate) | Active |
+| **83** | `record_root` | Core Engine (`s3a-core`, `s3a-engine::record_roots`) | None | 64 B | Fixed Pod | Active⁷ |
 
 ---
 
@@ -109,3 +110,4 @@ When defining a new domain pack or third-party tile type:
    - Compliant readers MUST skip unknown tile types during targeted queries.
    - Compliant compactors and tools MUST preserve unknown tile types intact ("copy-through"), never discarding them or failing.
 6. **Tile 77 Schema (B1, ADR-0008)**: In-file catalog of tile types. Assigned since the §14 catalog; listed here by B1. It is not yet a descriptor in `crates/s3a-core/src/registry.rs` (writes go through the unregistered-type path). `MmapReader::catalog()` returns it when present and falls back to the registry when absent. Note: the edge profile's separate `u16` namespace uses 77 for `TILE_TYPE_CONFIG`; the two namespaces never mix.
+7. **Tile 83 Record Root (ADR-0012)**: Optional, derived. One 64-byte entry per tile whose payload splits into `record_count` equal records: `tile_index u32 | tile_type u32 | tile_id u64 | record_count u64 | seal_generation u64 | root [u8;32]` (little-endian), root = RFC 6962 Merkle Tree Hash of the records. Written last, just before sealing, so the unchanged v2 seal hash covers it. Not `COPY_THROUGH_COMPACT`: compactor/fusion drop it and every seal drops and (if `--record-roots`) regenerates it. Readers that don't know it skip it (§7.2).

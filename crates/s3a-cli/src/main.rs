@@ -373,7 +373,7 @@ fn main() {
                 .filter(|a| !a.starts_with("--"))
                 .collect();
             let Some(pf) = pos.first() else {
-                println!("Usage: s3a-cli verify-proof <proof.json> [<file>]");
+                println!("Usage: s3a-cli verify-proof <proof.json> [<file>] [--against-seal]");
                 return;
             };
             let res = std::fs::read_to_string(pf.as_str())
@@ -383,9 +383,16 @@ fn main() {
                         .map_err(|e| e.to_string())
                 })
                 .and_then(|p| {
+                    let against_seal = args.iter().any(|a| a == "--against-seal");
                     let expected = match pos.get(1) {
+                        Some(f) if against_seal => {
+                            Some(s3a_cli::proof_cli::sealed_record_root(f, p.tile_index)?)
+                        }
                         Some(f) => {
                             Some(s3a_cli::proof_cli::tile_record_root(f, p.tile_index as usize)?.0)
+                        }
+                        None if against_seal => {
+                            return Err("--against-seal needs a <file>".into());
                         }
                         None => None,
                     };
@@ -481,6 +488,7 @@ fn main() {
         "seal" => {
             let parity = args.iter().any(|a| a == "--parity");
             let embed_spec = args.iter().any(|a| a == "--embed-spec");
+            let record_roots = args.iter().any(|a| a == "--record-roots");
             let mut title = None;
             let mut creator = None;
             let mut positional: Vec<&str> = Vec::new();
@@ -508,7 +516,7 @@ fn main() {
                 }
             }
             if positional.len() < 2 {
-                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--title <title>] [--creator <creator>]");
+                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--title <title>] [--creator <creator>]");
                 return;
             }
             seal_file(
@@ -518,6 +526,7 @@ fn main() {
                 embed_spec,
                 title,
                 creator,
+                record_roots,
             );
         }
         "repair" => {
@@ -654,7 +663,25 @@ fn main() {
                 }
             }
             match file_opt {
-                Some(f) => verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url),
+                Some(f) => {
+                    verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url);
+                    if let Ok(r) = s3a_engine::MmapReader::open(f) {
+                        let rep = s3a_engine::record_roots::check(&r);
+                        if rep.present && !json_mode {
+                            if rep.ok() {
+                                println!("Record roots: OK ({} tiles)", rep.checked);
+                            } else {
+                                println!("Record roots: MISMATCH");
+                                for m in &rep.mismatches {
+                                    println!("  - {}", m);
+                                }
+                            }
+                        }
+                        if !rep.ok() {
+                            std::process::exit(3);
+                        }
+                    }
+                }
                 None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]"),
             }
         }
@@ -2201,6 +2228,7 @@ fn seal_file(
     embed_spec: bool,
     title: Option<String>,
     creator: Option<String>,
+    record_roots: bool,
 ) {
     let _ = s3a_engine::append_schema_tile_if_missing(in_path);
     let options = s3a_engine::SealOptionsV2 {
@@ -2213,6 +2241,7 @@ fn seal_file(
         embed_spec,
         title,
         creator,
+        record_roots,
     };
     match s3a_engine::seal_archive_v2(in_path, out_path, &options) {
         Ok(_) => {
@@ -2223,6 +2252,9 @@ fn seal_file(
             features.push("UTF-8 Plain-Text Manifest");
             if embed_spec {
                 features.push("Embedded S3A Specification");
+            }
+            if record_roots {
+                features.push("Record-Root Tile (RFC 6962)");
             }
             println!(
                 "Sealed S3A archive created successfully at '{}' ({})",

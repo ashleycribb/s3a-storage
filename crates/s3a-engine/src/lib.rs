@@ -28,6 +28,7 @@ pub mod lrs_store;
 pub mod migrate;
 pub mod net;
 pub mod ql;
+pub mod record_roots;
 pub mod ring_buffer;
 pub mod schema;
 pub mod sealed;
@@ -1580,6 +1581,8 @@ impl TileFusionEngine {
                     if header.tile_type == TileType::TELEMETRY {
                         let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
                         fused_records.extend_from_slice(records);
+                    } else if header.tile_type == TileType::RECORD_ROOT {
+                        // Derived seal data: dropped, regenerated at next seal.
                     } else {
                         // ADR-0011 / S3A-TILE-SPEC §7.2: fusion only re-encodes telemetry;
                         // every other tile (known or unknown) is carried through unchanged.
@@ -3853,6 +3856,8 @@ impl Compactor {
                         } else {
                             unspecialized_tiles.push((*header, payload.to_vec(), input_idx));
                         }
+                    } else if header.tile_type == TileType::RECORD_ROOT {
+                        // Derived seal data: never carry a stale root; regenerated at seal.
                     } else if header.tile_type == TileType::SCHEMA {
                         if let Ok(types) = decode_schema_payload(payload) {
                             for t in types {
