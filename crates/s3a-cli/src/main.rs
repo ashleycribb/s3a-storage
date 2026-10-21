@@ -341,6 +341,68 @@ fn main() {
     }
 
     match args[1].as_str() {
+        "prove" => {
+            let pos: Vec<&String> = args
+                .iter()
+                .skip(2)
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            let parsed = match pos.as_slice() {
+                [f, t, r] => t
+                    .parse::<usize>()
+                    .ok()
+                    .zip(r.parse::<usize>().ok())
+                    .map(|(t, r)| (f.as_str(), t, r)),
+                _ => None,
+            };
+            match parsed {
+                Some((f, t, r)) => match s3a_cli::proof_cli::prove(f, t, r) {
+                    Ok(p) => println!("{}", serde_json::to_string_pretty(&p).unwrap()),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                },
+                None => println!("Usage: s3a-cli prove <file> <tile_index> <record_index>"),
+            }
+        }
+        "verify-proof" => {
+            let pos: Vec<&String> = args
+                .iter()
+                .skip(2)
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            let Some(pf) = pos.first() else {
+                println!("Usage: s3a-cli verify-proof <proof.json> [<file>]");
+                return;
+            };
+            let res = std::fs::read_to_string(pf.as_str())
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    serde_json::from_str::<s3a_cli::proof_cli::RecordProof>(&s)
+                        .map_err(|e| e.to_string())
+                })
+                .and_then(|p| {
+                    let expected = match pos.get(1) {
+                        Some(f) => {
+                            Some(s3a_cli::proof_cli::tile_record_root(f, p.tile_index as usize)?.0)
+                        }
+                        None => None,
+                    };
+                    s3a_cli::proof_cli::verify(&p, expected.as_ref())
+                });
+            match res {
+                Ok(true) => println!("PROOF OK"),
+                Ok(false) => {
+                    println!("PROOF INVALID");
+                    std::process::exit(2);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         "inspect" => {
             let json_mode = args.iter().any(|a| a == "--json");
             let file_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
@@ -1203,6 +1265,10 @@ fn print_usage() {
     println!("STABLE CORE OPS & MAINTENANCE:");
     println!("  s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata");
     println!("  s3a-cli tour [--json] [--floor N] <archive>        Tour archive: lobby, floors, array slice, cross-section, history");
+    println!(
+        "  s3a-cli prove <file> <tile> <record>         Per-record Merkle inclusion proof (JSON)"
+    );
+    println!("  s3a-cli verify-proof <proof.json> [<file>]   Verify a record proof (optionally against a file)");
     println!("  s3a-cli verify [--json] [--anchor] [--repair <out>] <archive> Verify sealed parity, self-addressing, or anchors");
     println!("  s3a-cli seal <in_file> <out_file>                 Seal cold archive with Reed-Solomon K+M parity & directory");
     println!("  s3a-cli migrate <in_file> <out_file> [--dry-run]  Migrate a legacy v1.0/v1.1-unaddressed file into a NEW verified file");

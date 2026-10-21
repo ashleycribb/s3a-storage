@@ -2496,4 +2496,43 @@ mod tests {
             "Mismatched SKI must NOT match"
         );
     }
+
+    /// Bitcoin main-net genesis header (block 0) as an offline vector for the header/PoW seams.
+    /// Source: https://github.com/bitcoin/bitcoin/blob/master/src/kernel/chainparams.cpp (asserted hashes) and
+    /// https://github.com/karpathy/cryptos/blob/main/cryptos/block.py (GENESIS_BLOCK["main"]).
+    #[test]
+    fn test_bitcoin_mainnet_genesis_header_vector() {
+        use sha2::{Digest, Sha256};
+        let header: [u8; 80] = hex::decode(
+            "0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c",
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        let mut h = Sha256::digest(Sha256::digest(header));
+        h.reverse();
+        assert_eq!(
+            hex::encode(h),
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
+        let mut root = super::extract_merkle_root_from_header(&header);
+        root.reverse();
+        assert_eq!(
+            hex::encode(root),
+            "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b"
+        );
+        let nbits = u32::from_le_bytes(header[72..76].try_into().unwrap());
+        assert_eq!(nbits, 0x1d00ffff);
+        let target = super::target_from_nbits(nbits);
+        assert_eq!(
+            hex::encode(target),
+            "00000000ffff0000000000000000000000000000000000000000000000000000"
+        );
+        assert!(h.as_slice() <= target.as_slice());
+        let mut bad = header;
+        bad[76] ^= 1; // nonce tamper breaks PoW
+        let mut hb = Sha256::digest(Sha256::digest(bad));
+        hb.reverse();
+        assert!(hb.as_slice() > target.as_slice());
+    }
 }

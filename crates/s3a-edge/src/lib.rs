@@ -7,6 +7,7 @@
 pub mod crc;
 pub mod flash;
 pub mod header;
+pub mod merkle;
 pub mod records;
 pub mod timeseries;
 pub mod trust;
