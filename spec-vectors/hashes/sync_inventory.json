@@ -1,0 +1,5 @@
+{
+  "rule": "SHA-256 of each tile's active payload bytes (raw 32-byte digest)",
+  "input_hex": "68656c6c6f20733361",
+  "expected_hex": "1004b79ce956853b7cc8efdc64bfa217c59c901ce72571a47b337534ba23a3b6"
+}

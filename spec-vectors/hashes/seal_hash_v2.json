@@ -1,0 +1,12 @@
+{
+  "rule": "SHA-256('S3ASEAL2' || prev_seal_hash[32] || seal_generation u64 LE || tile_count u32 LE || file_uuid[0] u64 LE || file_uuid[1] u64 LE || SealedTileIndexEntry bytes)",
+  "prev_seal_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "seal_generation": 1,
+  "tile_count": 0,
+  "file_uuid": [
+    1,
+    2
+  ],
+  "entries_hex": "",
+  "expected_hex": "3cb7fc4087c075375bcc7bf61f69d4460dc0c9ee7bcf3d8d5fd3e4435153ae57"
+}
