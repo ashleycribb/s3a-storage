@@ -8,6 +8,7 @@
 
 pub mod agent_api;
 pub mod bindgen;
+pub mod orange_tab;
 pub mod snapshot_view;
 
 pub use agent_api::WasmAgentSnapshot;
