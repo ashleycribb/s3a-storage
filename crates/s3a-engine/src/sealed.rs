@@ -61,6 +61,8 @@ pub struct SealOptionsV2 {
     pub embed_spec: bool,
     pub title: Option<String>,
     pub creator: Option<String>,
+    /// Append a record-root tile (type 83, ADR-0012) covered by the seal. Opt-in.
+    pub record_roots: bool,
 }
 
 impl Default for SealOptionsV2 {
@@ -75,6 +77,7 @@ impl Default for SealOptionsV2 {
             embed_spec: false,
             title: None,
             creator: None,
+            record_roots: false,
         }
     }
 }
@@ -82,6 +85,11 @@ impl Default for SealOptionsV2 {
 impl SealOptionsV2 {
     pub fn with_manifest(mut self) -> Self {
         self.write_manifest = true;
+        self
+    }
+
+    pub fn with_record_roots(mut self) -> Self {
+        self.record_roots = true;
         self
     }
 
@@ -142,6 +150,7 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         76 => "spatial",
         77 => "schema",
         78 => "manifest",
+        83 => "record_root",
         79 => "specification",
         80 => "vcs_commit",
         81 => "vcs_ref",
@@ -609,6 +618,18 @@ pub fn seal_archive_v1<P: AsRef<Path>, Q: AsRef<Path>>(
 }
 
 /// Seals an in-memory S3A archive byte buffer according to v2 format.
+fn set_tile_count(out_data: &mut [u8], tile_count: u32, file_uuid: [u64; 2]) {
+    for off in [FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET] {
+        let slot: &mut FileHeader =
+            bytemuck::from_bytes_mut(&mut out_data[off..off + FILE_HEADER_SLOT_SIZE]);
+        if off == FILE_HEADER_SLOT_A_OFFSET || slot.magic == s3a_core::S3A_MAGIC {
+            slot.tile_count = tile_count;
+            slot.file_uuid = file_uuid;
+            slot.header_crc32 = compute_header_crc32(slot);
+        }
+    }
+}
+
 pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Vec<u8>> {
     let k = options.k;
     let m = options.m;
@@ -660,6 +681,27 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     if slot_a_mut.file_uuid == [0, 0] {
         slot_a_mut.file_uuid = file_uuid;
         slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
+    }
+
+    // A prior record-root tile is derived data and is always dropped; it is regenerated below
+    // when requested (ADR-0012). Files without one are byte-identical to before.
+    {
+        let mut kept: Vec<u8> = out_data[..FILE_HEADER_SIZE].to_vec();
+        let mut n = 0u32;
+        for i in 0..tile_count as usize {
+            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            let h: HyperTileHeader =
+                bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+            if h.tile_type != TileType::RECORD_ROOT {
+                kept.extend_from_slice(&out_data[off..off + HYPER_TILE_SIZE]);
+                n += 1;
+            }
+        }
+        if n != tile_count {
+            out_data = kept;
+            tile_count = n;
+            set_tile_count(&mut out_data, tile_count, file_uuid);
+        }
     }
 
     if options.write_manifest {
@@ -863,6 +905,38 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
     }
 
+    if options.record_roots {
+        let entries = {
+            let tiles: Vec<(usize, HyperTileHeader, &[u8])> = (0..tile_count as usize)
+                .map(|i| {
+                    let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                    let h: HyperTileHeader =
+                        bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+                    (
+                        i,
+                        h,
+                        &out_data[off + HYPER_TILE_HEADER_SIZE..off + HYPER_TILE_SIZE],
+                    )
+                })
+                .collect();
+            crate::record_roots::compute_entries(
+                tiles.iter().map(|(i, h, p)| (*i, h, *p)),
+                options.seal_generation,
+            )
+        };
+        let rr = crate::record_roots::build_tiles(
+            &entries,
+            tile_count,
+            active_header.generation,
+            file_uuid,
+        );
+        for t in &rr {
+            out_data.extend_from_slice(t);
+        }
+        tile_count += rr.len() as u32;
+        set_tile_count(&mut out_data, tile_count, file_uuid);
+    }
+
     // Stamp self-addressing metadata (file_uuid, tile_index, generation) into all tiles
     for i in 0..tile_count as usize {
         let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
@@ -1043,6 +1117,7 @@ pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
         embed_spec: false,
         title: None,
         creator: None,
+        record_roots: false,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -1064,6 +1139,7 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         embed_spec: false,
         title: None,
         creator: None,
+        record_roots: false,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
@@ -1080,6 +1156,7 @@ pub fn seal_buffer_with_manifest(in_bytes: &[u8], k: u16, m: u16) -> io::Result<
         embed_spec: false,
         title: None,
         creator: None,
+        record_roots: false,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -1102,6 +1179,7 @@ pub fn seal_archive_with_manifest<P: AsRef<Path>, Q: AsRef<Path>>(
         embed_spec,
         title: None,
         creator: None,
+        record_roots: false,
     };
     seal_archive_v2(in_path, out_path, &options)
 }

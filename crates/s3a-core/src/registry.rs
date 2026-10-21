@@ -688,6 +688,19 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 83: Record-Root Tile (ADR-0012). Derived data: NOT copy-through; regenerated at seal.
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::RECORD_ROOT,
+        name: "record_root",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 64,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD,
+    })?;
+
     // Tile 80: Version Control Commit Metadata Tile
     reg.register(TileTypeDescriptor {
         tile_type: crate::TileType::VCS_COMMIT,
