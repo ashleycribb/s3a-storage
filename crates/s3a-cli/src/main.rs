@@ -846,6 +846,34 @@ fn main() {
         "benchmark-3d" => {
             run_3d_spatial_benchmark();
         }
+        "export-orange" | "orange-tab" => {
+            if args.len() < 4 {
+                println!(
+                    "Usage: s3a-cli export-orange <snapshot.s3a> <out_dir> [--salt S] [--raw-ids]"
+                );
+                return;
+            }
+            let mut opts = s3a_wasm_snapshot::orange_tab::ExportOptions::default();
+            let mut i = 4;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--raw-ids" => opts.raw_ids = true,
+                    "--salt" if i + 1 < args.len() => {
+                        i += 1;
+                        opts.salt = args[i].as_bytes().to_vec();
+                    }
+                    other => {
+                        eprintln!("Unknown option '{}'", other);
+                        std::process::exit(2);
+                    }
+                }
+                i += 1;
+            }
+            if let Err(e) = run_export_orange(&args[2], &args[3], &opts) {
+                eprintln!("Orange export failed: {}", e);
+                std::process::exit(1);
+            }
+        }
         "export-iceberg" | "iceberg" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli export-iceberg <archive_file> <out_dir> [table_name]");
@@ -1208,6 +1236,7 @@ fn print_usage() {
     println!("  s3a-cli scholar proof <file> --claim <id>         Print/export claim evidence chain (PROV-O JSON-LD)");
     println!("  s3a-cli scholar export-bib <file> --out <path>    Export BibTeX/RIS bibliography with companion .proof.json");
     println!("  s3a-cli export-iceberg <file> <out_dir> [name]    Export Apache Iceberg v1.metadata.json & Delta Lake UniForm log");
+    println!("  s3a-cli export-orange <snapshot> <out_dir> [--salt S] [--raw-ids]  Export papers.tab + sessions.tab for Orange (consented data only)");
     println!("  s3a-cli snowflake-serve [port]                    Start Snowflake External Function REST API gateway (default: 8088)");
     println!("  s3a-cli tier-archive <file> <cold_dir> [stratum]  Offload frozen stratum Hyper-Tiles to S3/RustFS cold storage tier");
     println!("  s3a-cli ec-shard <file> <out_dir> [k] [m]         Stripe S3A archive with K+M Reed-Solomon Erasure Coding (e.g. 8+2)");
@@ -5035,4 +5064,28 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("  Human Decisions:  {} records", human.len());
     println!("  AI Agent Traces:  {} records", ai.len());
     println!("=========================================================================");
+}
+
+fn run_export_orange(
+    input: &str,
+    out_dir: &str,
+    opts: &s3a_wasm_snapshot::orange_tab::ExportOptions,
+) -> Result<(), String> {
+    let bytes = std::fs::read(input).map_err(|e| e.to_string())?;
+    let snap = s3a_wasm_snapshot::WasmAgentSnapshot::from_bytes(&bytes)?;
+    let ex = s3a_wasm_snapshot::orange_tab::export_snapshot(&snap, opts);
+    std::fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
+    let dir = std::path::Path::new(out_dir);
+    std::fs::write(dir.join("papers.tab"), ex.papers.to_tab_string()).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("sessions.tab"), ex.sessions.to_tab_string())
+        .map_err(|e| e.to_string())?;
+    println!(
+        "Wrote {} papers, {} sessions to '{}' (telemetry consented: {}, excluded records: {})",
+        ex.papers.rows.len(),
+        ex.sessions.rows.len(),
+        out_dir,
+        ex.telemetry_consented,
+        ex.excluded_records
+    );
+    Ok(())
 }

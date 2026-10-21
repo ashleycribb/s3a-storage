@@ -1534,6 +1534,7 @@ dependencies = [
  "s3a-pack-wearable",
  "s3a-vault",
  "s3a-vcs",
+ "s3a-wasm-snapshot",
  "serde",
  "serde_json",
  "sha2",
@@ -1833,6 +1834,7 @@ dependencies = [
  "s3a-pack-ontology",
  "s3a-pack-scholar",
  "s3a-simd",
+ "sha2",
  "wasm-bindgen",
 ]
 
