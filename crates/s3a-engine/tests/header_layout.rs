@@ -3,11 +3,21 @@
 use core::mem::{offset_of, size_of};
 use s3a_engine::*;
 
-macro_rules! at { ($t:ty, $f:ident, $off:expr, $sz:expr) => {{
-    assert_eq!(offset_of!($t, $f), $off, concat!(stringify!($t), ".", stringify!($f), " offset"));
-    let v: $t = bytemuck::Zeroable::zeroed();
-    assert_eq!(core::mem::size_of_val(&v.$f), $sz, concat!(stringify!($t), ".", stringify!($f), " size"));
-}}; }
+macro_rules! at {
+    ($t:ty, $f:ident, $off:expr, $sz:expr) => {{
+        assert_eq!(
+            offset_of!($t, $f),
+            $off,
+            concat!(stringify!($t), ".", stringify!($f), " offset")
+        );
+        let v: $t = bytemuck::Zeroable::zeroed();
+        assert_eq!(
+            core::mem::size_of_val(&v.$f),
+            $sz,
+            concat!(stringify!($t), ".", stringify!($f), " size")
+        );
+    }};
+}
 
 #[test]
 fn hyper_tile_header_matches_spec_3_1() {
@@ -37,20 +47,33 @@ fn hyper_tile_header_matches_spec_3_1() {
 #[test]
 fn sub_structures_match_spec_3_2() {
     // Offsets relative to the sub-structure; spec §3.2 lists absolute = base + relative.
-    at!(SimplexHull, dim, 0, 4); at!(SimplexHull, radius, 4, 4);
-    at!(SimplexHull, min_bounds, 8, 64); at!(SimplexHull, max_bounds, 72, 64);
-    at!(SimplexHull, centroid, 136, 64); at!(SimplexHull, _reserved, 200, 8);
-    at!(TileFilterMetadata, filter_type, 0, 2); at!(TileFilterMetadata, hash_seed, 2, 2);
-    at!(TileFilterMetadata, distinct_sensors, 4, 4); at!(TileFilterMetadata, bits, 8, 120);
+    at!(SimplexHull, dim, 0, 4);
+    at!(SimplexHull, radius, 4, 4);
+    at!(SimplexHull, min_bounds, 8, 64);
+    at!(SimplexHull, max_bounds, 72, 64);
+    at!(SimplexHull, centroid, 136, 64);
+    at!(SimplexHull, _reserved, 200, 8);
+    at!(TileFilterMetadata, filter_type, 0, 2);
+    at!(TileFilterMetadata, hash_seed, 2, 2);
+    at!(TileFilterMetadata, distinct_sensors, 4, 4);
+    at!(TileFilterMetadata, bits, 8, 120);
     at!(TileProvenanceMetadata, merkle_root, 0, 32);
-    at!(TileLifecycleMetadata, tombstone_count, 0, 4); at!(TileLifecycleMetadata, stratum_tier, 4, 1);
-    at!(TileLifecycleMetadata, compaction_epoch, 5, 1); at!(TileLifecycleMetadata, _reserved_tier, 6, 2);
-    at!(TileLifecycleMetadata, min_expiry_timestamp, 8, 8); at!(TileLifecycleMetadata, max_expiry_timestamp, 16, 8);
-    at!(TileSecurityMetadata, tenant_id, 0, 8); at!(TileSecurityMetadata, security_tag_mask, 8, 4);
-    at!(TileSecurityMetadata, min_clearance_level, 12, 1); at!(TileSecurityMetadata, _reserved, 13, 3);
-    at!(TileEncodingMetadata, value_base, 0, 8); at!(TileEncodingMetadata, value_scale, 8, 4);
-    at!(TileEncodingMetadata, encoding_mode, 12, 2); at!(TileEncodingMetadata, _reserved, 14, 2);
-    at!(TileLearnedIndex, slope, 0, 4); at!(TileLearnedIndex, intercept, 4, 4);
+    at!(TileLifecycleMetadata, tombstone_count, 0, 4);
+    at!(TileLifecycleMetadata, stratum_tier, 4, 1);
+    at!(TileLifecycleMetadata, compaction_epoch, 5, 1);
+    at!(TileLifecycleMetadata, _reserved_tier, 6, 2);
+    at!(TileLifecycleMetadata, min_expiry_timestamp, 8, 8);
+    at!(TileLifecycleMetadata, max_expiry_timestamp, 16, 8);
+    at!(TileSecurityMetadata, tenant_id, 0, 8);
+    at!(TileSecurityMetadata, security_tag_mask, 8, 4);
+    at!(TileSecurityMetadata, min_clearance_level, 12, 1);
+    at!(TileSecurityMetadata, _reserved, 13, 3);
+    at!(TileEncodingMetadata, value_base, 0, 8);
+    at!(TileEncodingMetadata, value_scale, 8, 4);
+    at!(TileEncodingMetadata, encoding_mode, 12, 2);
+    at!(TileEncodingMetadata, _reserved, 14, 2);
+    at!(TileLearnedIndex, slope, 0, 4);
+    at!(TileLearnedIndex, intercept, 4, 4);
 }
 
 #[test]

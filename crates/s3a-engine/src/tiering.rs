@@ -8,13 +8,13 @@
 //! if the SIMD Bloom filter or Simplex Bounding Hull prunes the tile, downloading the 130 KB
 //! payload across the network is completely bypassed.
 
+use bytemuck::bytes_of;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use bytemuck::{bytes_of};
 
-use s3a_core::{HyperTileHeader, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, FILE_HEADER_SIZE};
+use s3a_core::{HyperTileHeader, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE};
 
 /// Computes the expected CRC32C of a HyperTileHeader excluding the header_crc32 field itself.
 pub fn compute_tile_header_crc32(header: &HyperTileHeader) -> u32 {
@@ -41,7 +41,9 @@ impl fmt::Display for TieringError {
             TieringError::TileNotFound(key) => write!(f, "Tile object not found: {}", key),
             TieringError::CorruptedHeader(msg) => write!(f, "Corrupted HyperTileHeader: {}", msg),
             TieringError::NetworkError(msg) => write!(f, "Network/S3 error: {}", msg),
-            TieringError::InvalidRange { start, end } => write!(f, "Invalid byte range: {}-{}", start, end),
+            TieringError::InvalidRange { start, end } => {
+                write!(f, "Invalid byte range: {}-{}", start, end)
+            }
             TieringError::Io(msg) => write!(f, "Tiering IO error: {}", msg),
         }
     }
@@ -113,7 +115,8 @@ impl TileStorageAdapter for LocalStorageAdapter {
         let mut header_buf = [0u8; HYPER_TILE_HEADER_SIZE];
         file.read_exact(&mut header_buf)?;
 
-        let header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
+        let header: &HyperTileHeader =
+            &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
         if header.header_crc32 != 0 {
             let expected = compute_tile_header_crc32(header);
             if header.header_crc32 != expected {
@@ -148,11 +151,11 @@ impl TileStorageAdapter for LocalStorageAdapter {
 /// Configuration for connecting S3A to an S3 / RustFS Object Storage cluster.
 #[derive(Debug, Clone)]
 pub struct RustFsConfig {
-    pub endpoint: String,      // e.g. "http://localhost:9000"
-    pub bucket: String,        // e.g. "s3a-cold-archive"
+    pub endpoint: String, // e.g. "http://localhost:9000"
+    pub bucket: String,   // e.g. "s3a-cold-archive"
     pub access_key: String,
     pub secret_key: String,
-    pub prefix: String,        // e.g. "telemetry/2026/"
+    pub prefix: String, // e.g. "telemetry/2026/"
 }
 
 impl Default for RustFsConfig {
@@ -179,12 +182,18 @@ impl RustFsAdapter {
             Some(dir) => Some(LocalStorageAdapter::new(dir)?),
             None => None,
         };
-        Ok(Self { config, local_cache })
+        Ok(Self {
+            config,
+            local_cache,
+        })
     }
 
     /// Generates canonical S3 REST URI for PUT/GET requests.
     pub fn build_s3_url(&self, tile_key: &str) -> String {
-        format!("{}/{}/{}{}", self.config.endpoint, self.config.bucket, self.config.prefix, tile_key)
+        format!(
+            "{}/{}/{}{}",
+            self.config.endpoint, self.config.bucket, self.config.prefix, tile_key
+        )
     }
 
     /// Formats the standard HTTP header for zero-copy 512-byte header range requests.
@@ -266,7 +275,8 @@ pub fn archive_cold_tiles<P: AsRef<Path>>(
         let mut header_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
         file.read_exact(&mut header_bytes)?;
 
-        let header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_bytes);
+        let header: &HyperTileHeader =
+            &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_bytes);
         if header.lifecycle.stratum_tier >= min_stratum_tier {
             // Read the full 128 KB tile
             file.seek(SeekFrom::Start(offset))?;
@@ -300,7 +310,12 @@ mod tests {
             .unwrap()
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_tier_test_{}_{}_{}", std::process::id(), ts, id));
+        path.push(format!(
+            "s3a_tier_test_{}_{}_{}",
+            std::process::id(),
+            ts,
+            id
+        ));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -351,7 +366,10 @@ mod tests {
 
         let adapter = RustFsAdapter::new(config, None).unwrap();
         let url = adapter.build_s3_url("tile_000042.s3at");
-        assert_eq!(url, "http://192.168.1.100:9000/telemetry-lakehouse/cold/tile_000042.s3at");
+        assert_eq!(
+            url,
+            "http://192.168.1.100:9000/telemetry-lakehouse/cold/tile_000042.s3at"
+        );
 
         let (header_name, header_val) = RustFsAdapter::range_header_for_header();
         assert_eq!(header_name, "Range");

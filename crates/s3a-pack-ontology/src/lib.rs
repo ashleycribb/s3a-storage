@@ -4,13 +4,13 @@
 //! - Tile 16: Normalized Ontology Concept Record (`OntologyConceptRecord`, 64 bytes)
 //! - Tile 17: Ontology Axiom & Rule Record (`OntologyAxiomRecord`, 64 bytes)
 
+pub mod ext;
 pub mod pack;
 pub mod records;
-pub mod ext;
 
+pub use ext::OntologyCrudExt;
 pub use pack::{register_pack_types, OntologyPack, OntologyTileType, ONTOLOGY_DESCRIPTORS};
 pub use records::*;
-pub use ext::OntologyCrudExt;
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +32,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let mut path = std::env::temp_dir();
-            path.push(format!("s3a_ontology_test_{}_{}_{}.s3a", std::process::id(), ts, id));
+            path.push(format!(
+                "s3a_ontology_test_{}_{}_{}.s3a",
+                std::process::id(),
+                ts,
+                id
+            ));
             Self { path }
         }
     }
@@ -58,18 +63,15 @@ mod tests {
         let temp = TempArchive::new();
         let engine = S3ACrudEngine::open_or_create(&temp.path).unwrap();
 
-        let concept = OntologyConceptRecord::new(
-            0x1234567890ABCDEF,
-            0,
-            ONTOLOGY_CITO,
-            KIND_VERB,
-            1,
-            100,
-        );
+        let concept =
+            OntologyConceptRecord::new(0x1234567890ABCDEF, 0, ONTOLOGY_CITO, KIND_VERB, 1, 100);
 
         // Attempting to write without ADDON_ONTOLOGY must fail
         let res = engine.create_ontology_concepts(&[concept]);
-        assert!(res.is_err(), "Write must fail closed when ADDON_ONTOLOGY is missing");
+        assert!(
+            res.is_err(),
+            "Write must fail closed when ADDON_ONTOLOGY is missing"
+        );
     }
 
     #[test]
@@ -80,14 +82,8 @@ mod tests {
 
         // 1. Register base concept: IdealGasLaw
         let concept_hash = 0xAA00BB11CC22DD33;
-        let concept = OntologyConceptRecord::new(
-            concept_hash,
-            0,
-            ONTOLOGY_PEDAGOGY,
-            KIND_CLASS,
-            1,
-            250,
-        );
+        let concept =
+            OntologyConceptRecord::new(concept_hash, 0, ONTOLOGY_PEDAGOGY, KIND_CLASS, 1, 250);
         let c_tile = engine.create_ontology_concepts(&[concept]).unwrap();
         assert_eq!(c_tile, 1);
 
@@ -97,9 +93,9 @@ mod tests {
             concept_hash,
             analogy_hash,
             PREDICATE_HAS_APPROVED_ANALOGY,
-            2, // PedagogicalScaffold
+            2,      // PedagogicalScaffold
             0x3C00, // 1.0 in FP16
-            10, // HumanLrs
+            10,     // HumanLrs
             ADDON_ONTOLOGY as u16,
         );
         let a_tile = engine.create_ontology_axioms(&[axiom]).unwrap();

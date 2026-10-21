@@ -144,9 +144,15 @@ impl TaskTrace {
             .iter()
             .map(|s| {
                 let (actor_summary, desc) = match &s.actor {
-                    ActorProvenance::Human { supervisor_id, rationale, .. } => (
+                    ActorProvenance::Human {
+                        supervisor_id,
+                        rationale,
+                        ..
+                    } => (
                         format!("Human Supervisor ({})", supervisor_id),
-                        rationale.clone().unwrap_or_else(|| "Supervisory Judgment".to_string()),
+                        rationale
+                            .clone()
+                            .unwrap_or_else(|| "Supervisory Judgment".to_string()),
                     ),
                     ActorProvenance::Ai { agent_id, model } => (
                         format!("AI Agent {} ({})", agent_id, model),

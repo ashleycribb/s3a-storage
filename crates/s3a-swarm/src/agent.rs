@@ -58,12 +58,8 @@ impl SimulatedAgent {
 
         let allowed_prefix = format!("records/agent_{}/", index);
         let grant = issue_agent_grant(
-            root_key,
-            id,
-            pubkey,
-            50, // max ops
-            0xFFFF,
-            86400, // 24h
+            root_key, id, pubkey, 50, // max ops
+            0xFFFF, 86400, // 24h
         );
 
         Self {
@@ -96,8 +92,13 @@ impl SimulatedAgent {
         let is_repair_fix = self.index == 7 && seq == 1;
 
         let is_claim_conflict = !is_intentional_bug && !is_repair_fix && slot == 42; // ~1%
-        let is_grant_violation = !is_intentional_bug && !is_repair_fix && (slot == 13 || slot == 88); // ~2%
-        let is_overlapping_edit = !is_intentional_bug && !is_repair_fix && !is_claim_conflict && !is_grant_violation && (slot >= 50 && slot < 55); // ~5%
+        let is_grant_violation =
+            !is_intentional_bug && !is_repair_fix && (slot == 13 || slot == 88); // ~2%
+        let is_overlapping_edit = !is_intentional_bug
+            && !is_repair_fix
+            && !is_claim_conflict
+            && !is_grant_violation
+            && (50..55).contains(&slot); // ~5%
 
         let (tile_type, raw_payload, records, paths, msg) = if is_intentional_bug {
             // Intentional bug: Agent 7 injects a TypeScript error into components/MatchCard.tsx
@@ -156,7 +157,7 @@ impl SimulatedAgent {
         } else if is_claim_conflict {
             // Claim / Evidence Conflict on Brakets match result in fixtures
             let claim_id = "fixture_match_result_claim_open_a";
-            let (winner_team, confidence) = if self.index % 2 == 0 {
+            let (winner_team, confidence) = if self.index.is_multiple_of(2) {
                 ("Solar Flare", 0.98)
             } else {
                 ("Vortex Gaming", 0.95)
@@ -196,7 +197,10 @@ impl SimulatedAgent {
                 payload,
                 vec![rec_entry],
                 vec![path],
-                format!("Agent {} asserts match result in fixtures: {}", self.index, finding),
+                format!(
+                    "Agent {} asserts match result in fixtures: {}",
+                    self.index, finding
+                ),
             )
         } else if is_grant_violation {
             // Commit touching forbidden path outside grant
@@ -227,16 +231,25 @@ impl SimulatedAgent {
             )
         } else if is_overlapping_edit {
             // Deliberately colliding edits on Brakets bracket colors or seeding fixtures
-            let (shared_key, summary_text, msg_text) = if (self.index % 2) == 0 {
+            let (shared_key, summary_text, msg_text) = if self.index.is_multiple_of(2) {
                 (
                     "brakets_design_tokens_color_teal".to_string(),
-                    format!("Agent {} adjusts bracket primary teal in design-tokens.json (seq {})", self.index, seq),
-                    format!("Agent {} adjusts bracket colors in design tokens", self.index),
+                    format!(
+                        "Agent {} adjusts bracket primary teal in design-tokens.json (seq {})",
+                        self.index, seq
+                    ),
+                    format!(
+                        "Agent {} adjusts bracket colors in design tokens",
+                        self.index
+                    ),
                 )
             } else {
                 (
                     "brakets_fixtures_seeding_order".to_string(),
-                    format!("Agent {} adjusts seeding fixtures in bracket-fixtures.ts (seq {})", self.index, seq),
+                    format!(
+                        "Agent {} adjusts seeding fixtures in bracket-fixtures.ts (seq {})",
+                        self.index, seq
+                    ),
                     format!("Agent {} adjusts seeding fixtures", self.index),
                 )
             };
@@ -269,7 +282,8 @@ impl SimulatedAgent {
         } else {
             // Disjoint edit unique to this agent: match-card copy, local team notes, styling
             let rec_id = format!("rec_match_card_{}_{}", self.index, seq);
-            let rec = TelemetryRecord::new(now, (self.index as u32) + 1, seq as u32, (seq * 10) as f64);
+            let rec =
+                TelemetryRecord::new(now, (self.index as u32) + 1, seq as u32, (seq * 10) as f64);
             let payload = bytemuck::bytes_of(&rec).to_vec();
             let mut h = Sha256::default();
             h.update(&payload);
@@ -299,9 +313,9 @@ impl SimulatedAgent {
         // Compute prospective seal hash
         let mut seal_hasher = Sha256::default();
         seal_hasher.update(b"S3A_PROSPECTIVE_SEAL");
-        seal_hasher.update(&parent_seal);
-        seal_hasher.update(&(self.index as u64).to_le_bytes());
-        seal_hasher.update(&(seq as u64).to_le_bytes());
+        seal_hasher.update(parent_seal);
+        seal_hasher.update((self.index as u64).to_le_bytes());
+        seal_hasher.update((seq as u64).to_le_bytes());
         seal_hasher.update(&raw_payload);
         let prospective_seal: [u8; 32] = seal_hasher.finalize().into();
 

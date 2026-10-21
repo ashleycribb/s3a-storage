@@ -16,9 +16,10 @@ async fn test_swarm_small_concurrency_and_signature_verification() {
 
     let agents = 12;
     let commits_per_agent = 4;
-    let (metrics, _coordinator) = run_swarm(agents, commits_per_agent, false, Some(out_archive.clone()))
-        .await
-        .expect("Swarm run should succeed");
+    let (metrics, _coordinator) =
+        run_swarm(agents, commits_per_agent, false, Some(out_archive.clone()))
+            .await
+            .expect("Swarm run should succeed");
 
     assert_eq!(metrics.agents, 12);
     assert_eq!(metrics.commits, 48);
@@ -71,7 +72,10 @@ fn test_deterministic_merge_rules_lww_and_tie_breaking() {
         author_gate_address: "gate://s3a-0002".to_string(),
     };
     match entry_a.merge_with(&entry_newer) {
-        RecordMergeOutcome::SameRecordUpdated { winner_timestamp, rule_applied } => {
+        RecordMergeOutcome::SameRecordUpdated {
+            winner_timestamp,
+            rule_applied,
+        } => {
             assert_eq!(winner_timestamp, 1050);
             assert_eq!(rule_applied, "timestamp_lww");
         }
@@ -110,11 +114,17 @@ fn test_deterministic_merge_rules_lww_and_tie_breaking() {
         author_gate_address: "gate://s3a-0004".to_string(),
     };
     match entry_a.merge_with(&entry_tie_higher_sig) {
-        RecordMergeOutcome::SameRecordUpdated { winner_timestamp, rule_applied } => {
+        RecordMergeOutcome::SameRecordUpdated {
+            winner_timestamp,
+            rule_applied,
+        } => {
             assert_eq!(winner_timestamp, 1000);
             assert_eq!(rule_applied, "signature_tie_break");
         }
-        other => panic!("Expected SameRecordUpdated via signature tie break, got {:?}", other),
+        other => panic!(
+            "Expected SameRecordUpdated via signature tie break, got {:?}",
+            other
+        ),
     }
 }
 
@@ -144,12 +154,19 @@ fn test_epistemic_disagreements_never_auto_resolve_and_route_to_human() {
 
     // MUST NOT auto-resolve
     match claim_a.merge_with(&claim_b) {
-        RecordMergeOutcome::EpistemicConflictNeedsHuman { record_id, target_version, source_version } => {
+        RecordMergeOutcome::EpistemicConflictNeedsHuman {
+            record_id,
+            target_version,
+            source_version,
+        } => {
             assert_eq!(record_id, "claim_quantum_speedup");
             assert!(target_version.contains("10x speedup"));
             assert!(source_version.contains("No speedup"));
         }
-        other => panic!("Epistemic conflict must route to human, but got {:?}", other),
+        other => panic!(
+            "Epistemic conflict must route to human, but got {:?}",
+            other
+        ),
     }
 
     // Queue and resolve
@@ -173,12 +190,14 @@ fn test_epistemic_disagreements_never_auto_resolve_and_route_to_human() {
     OsRng.fill_bytes(&mut seed);
     let supervisor_key = SigningKey::from_bytes(&seed);
 
-    let resolution = queue.resolve(
-        &cid,
-        RESOLUTION_CHOICE_TARGET,
-        "Replicated finding A with independent calibration",
-        &supervisor_key,
-    ).expect("Resolution must succeed");
+    let resolution = queue
+        .resolve(
+            &cid,
+            RESOLUTION_CHOICE_TARGET,
+            "Replicated finding A with independent calibration",
+            &supervisor_key,
+        )
+        .expect("Resolution must succeed");
 
     assert!(resolution.verify_signature());
     assert_eq!(queue.pending_count(), 0);
@@ -200,11 +219,16 @@ fn test_grant_scope_enforcement_and_rejection() {
 
     let now = 1000;
     // Valid write inside grant
-    assert!(validate_commit_grant(&agent.grant, &agent.allowed_prefix, &valid_paths, now, 0).is_ok());
+    assert!(
+        validate_commit_grant(&agent.grant, &agent.allowed_prefix, &valid_paths, now, 0).is_ok()
+    );
 
     // Invalid write outside grant
     match validate_commit_grant(&agent.grant, &agent.allowed_prefix, &invalid_paths, now, 0) {
-        Err(GrantRejectionReason::UnauthorizedPath { path, allowed_prefix }) => {
+        Err(GrantRejectionReason::UnauthorizedPath {
+            path,
+            allowed_prefix,
+        }) => {
             assert_eq!(path, "system/admin/unauthorized_write");
             assert_eq!(allowed_prefix, "records/agent_7/");
         }
@@ -222,10 +246,16 @@ fn test_bad_signature_rejection() {
     let mut bundle = agent.prepare_commit(0, [0u8; 32]);
 
     // Initial signature is valid
-    assert!(bundle.commit.verify_signature(), "Original commit signature must be valid");
+    assert!(
+        bundle.commit.verify_signature(),
+        "Original commit signature must be valid"
+    );
 
     // Corrupt signature
     bundle.commit.signature[0] ^= 0xff;
     bundle.commit.signature[63] ^= 0xaa;
-    assert!(!bundle.commit.verify_signature(), "Tampered signature must fail verification");
+    assert!(
+        !bundle.commit.verify_signature(),
+        "Tampered signature must fail verification"
+    );
 }

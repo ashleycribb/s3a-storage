@@ -7,10 +7,10 @@ pub struct GisSurveyPointRecord {
     pub latitude_microdeg: i32,  // Latitude in micro-degrees
     pub longitude_microdeg: i32, // Longitude in micro-degrees
     pub elevation_mm: i32,       // Elevation/Depth above/below sea level in millimeters
-    pub point_class: u16,        // Classification (0=Ground, 1=Subsurface Strata, 2=Vegetation, 3=Structure)
-    pub intensity: u16,          // LiDAR/Radar return intensity
-    pub color_rgb: u32,          // Packed 24-bit RGB point color
-    pub timestamp_sec: u32,      // Survey timestamp
+    pub point_class: u16, // Classification (0=Ground, 1=Subsurface Strata, 2=Vegetation, 3=Structure)
+    pub intensity: u16,   // LiDAR/Radar return intensity
+    pub color_rgb: u32,   // Packed 24-bit RGB point color
+    pub timestamp_sec: u32, // Survey timestamp
     pub _reserved: u32,
     pub _padding: u32,
 }

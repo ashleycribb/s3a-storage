@@ -9,13 +9,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use bytemuck::{bytes_of};
+use bytemuck::bytes_of;
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh3::{xxh3_128, xxh3_64};
 
-use s3a_core::*;
 use crate::concurrent_writer::ConcurrentTileWriter;
 use crate::MmapReader;
+use s3a_core::*;
 
 /// Errors returned by the LRS storage engine.
 #[derive(Debug)]
@@ -27,7 +27,7 @@ pub enum LrsStoreError {
     StatementNotVoided,
     InvalidStatement(String),
     CannotVoidVoidingStatement,
-    StatementConflict(String), // 409 Conflict
+    StatementConflict(String),  // 409 Conflict
     PreconditionFailed(String), // 412
     DocumentNotFound,
     CorruptedData(String),
@@ -90,7 +90,10 @@ pub struct StatementMetadata {
 pub fn uuid_to_u64_pair(s: &str) -> Result<[u64; 2], LrsStoreError> {
     let clean = s.trim().replace('-', "");
     if clean.len() != 32 {
-        return Err(LrsStoreError::InvalidStatement(format!("Invalid UUID length: {}", s)));
+        return Err(LrsStoreError::InvalidStatement(format!(
+            "Invalid UUID length: {}",
+            s
+        )));
     }
     let hi = u64::from_str_radix(&clean[..16], 16)
         .map_err(|e| LrsStoreError::InvalidStatement(format!("Invalid UUID hex: {}", e)))?;
@@ -117,7 +120,10 @@ pub fn u64_pair_to_uuid(pair: [u64; 2]) -> String {
 /// Generates an RFC 4122 compliant UUID v4 string without external C dependencies.
 pub fn generate_uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let pid = std::process::id() as u128;
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) as u128;
@@ -134,7 +140,14 @@ pub fn generate_uuid_v4() -> String {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
     let h = hex::encode(bytes);
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 /// Computes an actor IFI hash from an actor JSON Value.
@@ -149,7 +162,10 @@ pub fn hash_actor_value(val: &serde_json::Value) -> u64 {
         return xxh3_64(openid.as_bytes());
     }
     if let Some(acc) = val.get("account") {
-        let hp = acc.get("homePage").and_then(|v| v.as_str()).unwrap_or_default();
+        let hp = acc
+            .get("homePage")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let name = acc.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         let key = format!("{}\0{}", hp, name);
         return xxh3_64(key.as_bytes());
@@ -159,11 +175,15 @@ pub fn hash_actor_value(val: &serde_json::Value) -> u64 {
 
 pub fn is_valid_iri(s: &str) -> bool {
     if let Some(pos) = s.find(':') {
-        if pos == 0 { return false; }
+        if pos == 0 {
+            return false;
+        }
         let scheme = &s[..pos];
         let mut chars = scheme.chars();
         if let Some(first) = chars.next() {
-            if !first.is_ascii_alphabetic() { return false; }
+            if !first.is_ascii_alphabetic() {
+                return false;
+            }
             for c in chars {
                 if !c.is_ascii_alphanumeric() && c != '+' && c != '-' && c != '.' {
                     return false;
@@ -184,10 +204,31 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
         return false;
     }
     const GRANDFATHERED: &[&str] = &[
-        "art-lojban", "cel-gaulish", "en-gb-oed", "i-ami", "i-bnn", "i-default",
-        "i-enochian", "i-hak", "i-klingon", "i-lux", "i-mingo", "i-navajo",
-        "i-pwn", "i-tao", "i-tay", "i-tsu", "no-bok", "no-nyn", "sgn-be-fr",
-        "sgn-be-nl", "sgn-ch-de", "zh-guoyu", "zh-hakka", "zh-min", "zh-min-nan",
+        "art-lojban",
+        "cel-gaulish",
+        "en-gb-oed",
+        "i-ami",
+        "i-bnn",
+        "i-default",
+        "i-enochian",
+        "i-hak",
+        "i-klingon",
+        "i-lux",
+        "i-mingo",
+        "i-navajo",
+        "i-pwn",
+        "i-tao",
+        "i-tay",
+        "i-tsu",
+        "no-bok",
+        "no-nyn",
+        "sgn-be-fr",
+        "sgn-be-nl",
+        "sgn-ch-de",
+        "zh-guoyu",
+        "zh-hakka",
+        "zh-min",
+        "zh-min-nan",
         "zh-xiang",
     ];
     let tag_lower = tag.to_ascii_lowercase();
@@ -196,7 +237,9 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
     }
     if tag_lower.starts_with("x-") {
         let parts: Vec<&str> = tag.split('-').collect();
-        if parts.len() < 2 { return false; }
+        if parts.len() < 2 {
+            return false;
+        }
         for p in &parts[1..] {
             if p.is_empty() || p.len() > 8 || !p.chars().all(|c| c.is_ascii_alphanumeric()) {
                 return false;
@@ -206,7 +249,9 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
     }
 
     let subtags: Vec<&str> = tag.split('-').collect();
-    if subtags.is_empty() { return false; }
+    if subtags.is_empty() {
+        return false;
+    }
 
     let lang = subtags[0];
     if !lang.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -249,7 +294,9 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
     while idx < subtags.len() {
         let s = subtags[idx];
         if (s.len() >= 5 && s.len() <= 8 && s.chars().all(|c| c.is_ascii_alphanumeric()))
-            || (s.len() == 4 && s.chars().next().unwrap().is_ascii_digit() && s.chars().all(|c| c.is_ascii_alphanumeric()))
+            || (s.len() == 4
+                && s.chars().next().unwrap().is_ascii_digit()
+                && s.chars().all(|c| c.is_ascii_alphanumeric()))
         {
             idx += 1;
         } else {
@@ -260,7 +307,10 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
     let mut seen_singletons = std::collections::HashSet::new();
     while idx < subtags.len() {
         let s = subtags[idx];
-        if s.len() == 1 && s.chars().all(|c| c.is_ascii_alphanumeric()) && !s.eq_ignore_ascii_case("x") {
+        if s.len() == 1
+            && s.chars().all(|c| c.is_ascii_alphanumeric())
+            && !s.eq_ignore_ascii_case("x")
+        {
             let singleton = s.chars().next().unwrap().to_ascii_lowercase();
             if seen_singletons.contains(&singleton) {
                 return false;
@@ -270,7 +320,10 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
             let mut ext_subtags = 0;
             while idx < subtags.len() {
                 let sub = subtags[idx];
-                if sub.len() >= 2 && sub.len() <= 8 && sub.chars().all(|c| c.is_ascii_alphanumeric()) {
+                if sub.len() >= 2
+                    && sub.len() <= 8
+                    && sub.chars().all(|c| c.is_ascii_alphanumeric())
+                {
                     idx += 1;
                     ext_subtags += 1;
                 } else {
@@ -292,7 +345,10 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
             let mut pu_count = 0;
             while idx < subtags.len() {
                 let sub = subtags[idx];
-                if sub.len() >= 1 && sub.len() <= 8 && sub.chars().all(|c| c.is_ascii_alphanumeric()) {
+                if !sub.is_empty()
+                    && sub.len() <= 8
+                    && sub.chars().all(|c| c.is_ascii_alphanumeric())
+                {
                     idx += 1;
                     pu_count += 1;
                 } else {
@@ -312,10 +368,16 @@ pub fn is_valid_rfc5646_language_tag(tag: &str) -> bool {
 
 pub fn is_language_map(v: &serde_json::Value) -> bool {
     if let Some(obj) = v.as_object() {
-        if obj.is_empty() { return false; }
+        if obj.is_empty() {
+            return false;
+        }
         for (k, val) in obj {
-            if !val.is_string() { return false; }
-            if !is_valid_rfc5646_language_tag(k) { return false; }
+            if !val.is_string() {
+                return false;
+            }
+            if !is_valid_rfc5646_language_tag(k) {
+                return false;
+            }
         }
         true
     } else {
@@ -328,8 +390,7 @@ pub fn is_valid_iso8601_duration(s: &str) -> bool {
         return false;
     }
     let rest = &s[1..];
-    if rest.ends_with('W') {
-        let num_str = &rest[..rest.len() - 1];
+    if let Some(num_str) = rest.strip_suffix('W') {
         return !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit());
     }
     if rest.contains('W') {
@@ -380,11 +441,15 @@ pub fn is_valid_iso8601_duration(s: &str) -> bool {
                 return false;
             }
             let valid_sec = if let Some((whole, frac)) = num.split_once('.') {
-                !whole.is_empty() && whole.chars().all(|c| c.is_ascii_digit())
-                    && !frac.is_empty() && frac.chars().all(|c| c.is_ascii_digit())
+                !whole.is_empty()
+                    && whole.chars().all(|c| c.is_ascii_digit())
+                    && !frac.is_empty()
+                    && frac.chars().all(|c| c.is_ascii_digit())
             } else if let Some((whole, frac)) = num.split_once(',') {
-                !whole.is_empty() && whole.chars().all(|c| c.is_ascii_digit())
-                    && !frac.is_empty() && frac.chars().all(|c| c.is_ascii_digit())
+                !whole.is_empty()
+                    && whole.chars().all(|c| c.is_ascii_digit())
+                    && !frac.is_empty()
+                    && frac.chars().all(|c| c.is_ascii_digit())
             } else {
                 num.chars().all(|c| c.is_ascii_digit())
             };
@@ -405,7 +470,7 @@ pub fn is_valid_iso8601_duration(s: &str) -> bool {
 
 pub fn base64_url_decode(input: &str) -> Result<Vec<u8>, String> {
     let mut clean = input.trim_end_matches('=').to_string();
-    while clean.len() % 4 != 0 {
+    while !clean.len().is_multiple_of(4) {
         clean.push('=');
     }
     let mut out = Vec::new();
@@ -442,98 +507,163 @@ pub fn base64_url_decode(input: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn validate_jws_signature_bytes(bytes: &[u8]) -> Result<(), LrsStoreError> {
-    let s = std::str::from_utf8(bytes).map_err(|_| LrsStoreError::InvalidStatement("JWS signature must be UTF-8 string".into()))?;
+    let s = std::str::from_utf8(bytes).map_err(|_| {
+        LrsStoreError::InvalidStatement("JWS signature must be UTF-8 string".into())
+    })?;
     let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 3 {
-        return Err(LrsStoreError::InvalidStatement("JWS signature must have 3 parts separated by dots".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "JWS signature must have 3 parts separated by dots".into(),
+        ));
     }
-    let header_bytes = base64_url_decode(parts[0])
-        .map_err(|e| LrsStoreError::InvalidStatement(format!("Failed to base64url decode JWS header: {}", e)))?;
-    let header_json: serde_json::Value = serde_json::from_slice(&header_bytes)
-        .map_err(|e| LrsStoreError::InvalidStatement(format!("JWS header is not valid JSON: {}", e)))?;
-    let alg = header_json.get("alg").and_then(|v| v.as_str())
+    let header_bytes = base64_url_decode(parts[0]).map_err(|e| {
+        LrsStoreError::InvalidStatement(format!("Failed to base64url decode JWS header: {}", e))
+    })?;
+    let header_json: serde_json::Value = serde_json::from_slice(&header_bytes).map_err(|e| {
+        LrsStoreError::InvalidStatement(format!("JWS header is not valid JSON: {}", e))
+    })?;
+    let alg = header_json
+        .get("alg")
+        .and_then(|v| v.as_str())
         .ok_or_else(|| LrsStoreError::InvalidStatement("JWS header missing alg".into()))?;
     if alg != "RS256" && alg != "RS384" && alg != "RS512" {
-        return Err(LrsStoreError::InvalidStatement(format!("JWS algorithm must be RS256, RS384, or RS512, got '{}'", alg)));
+        return Err(LrsStoreError::InvalidStatement(format!(
+            "JWS algorithm must be RS256, RS384, or RS512, got '{}'",
+            alg
+        )));
     }
 
-    let payload_bytes = base64_url_decode(parts[1])
-        .map_err(|e| LrsStoreError::InvalidStatement(format!("Failed to base64url decode JWS payload: {}", e)))?;
-    let _payload_json: serde_json::Value = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| LrsStoreError::InvalidStatement(format!("JWS payload is not valid JSON statement: {}", e)))?;
+    let payload_bytes = base64_url_decode(parts[1]).map_err(|e| {
+        LrsStoreError::InvalidStatement(format!("Failed to base64url decode JWS payload: {}", e))
+    })?;
+    let _payload_json: serde_json::Value = serde_json::from_slice(&payload_bytes).map_err(|e| {
+        LrsStoreError::InvalidStatement(format!("JWS payload is not valid JSON statement: {}", e))
+    })?;
 
     Ok(())
 }
 
 pub fn validate_agent_object(v: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Agent must be a JSON object".into()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Agent must be a JSON object".into()))?;
     for k in obj.keys() {
         match k.as_str() {
-            "objectType" | "name" | "mbox" | "mbox_sha1sum" | "openid" | "account" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Agent: {}", k))),
+            "objectType" | "name" | "mbox" | "mbox_sha1sum" | "openid" | "account" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on Agent: {}",
+                    k
+                )))
+            }
         }
     }
     if let Some(ot) = obj.get("objectType") {
-        let ot_str = ot.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("Agent objectType must be string".into()))?;
+        let ot_str = ot.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("Agent objectType must be string".into())
+        })?;
         if ot_str != "Agent" {
-            return Err(LrsStoreError::InvalidStatement("Agent objectType must be 'Agent'".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Agent objectType must be 'Agent'".into(),
+            ));
         }
     }
     if let Some(name) = obj.get("name") {
         if !name.is_string() {
-            return Err(LrsStoreError::InvalidStatement("Agent name must be a string".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Agent name must be a string".into(),
+            ));
         }
     }
     if obj.get("member").is_some() {
-        return Err(LrsStoreError::InvalidStatement("Agent cannot have member property".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Agent cannot have member property".into(),
+        ));
     }
 
     let ifi_count = (if obj.get("mbox").is_some() { 1 } else { 0 })
-        + (if obj.get("mbox_sha1sum").is_some() { 1 } else { 0 })
+        + (if obj.get("mbox_sha1sum").is_some() {
+            1
+        } else {
+            0
+        })
         + (if obj.get("openid").is_some() { 1 } else { 0 })
         + (if obj.get("account").is_some() { 1 } else { 0 });
 
     if ifi_count != 1 {
-        return Err(LrsStoreError::InvalidStatement("Agent must have exactly one Inverse Functional Identifier".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Agent must have exactly one Inverse Functional Identifier".into(),
+        ));
     }
 
     if let Some(mbox) = obj.get("mbox") {
-        let s = mbox.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("mbox must be string".into()))?;
+        let s = mbox
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("mbox must be string".into()))?;
         if !s.starts_with("mailto:") || s.len() <= 7 {
-            return Err(LrsStoreError::InvalidStatement("mbox must start with mailto:".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox must start with mailto:".into(),
+            ));
         }
         let email = &s[7..];
         if !email.contains('@') || email.starts_with('@') || email.ends_with('@') {
-            return Err(LrsStoreError::InvalidStatement("mbox must have the form 'mailto:email address'".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox must have the form 'mailto:email address'".into(),
+            ));
         }
     }
     if let Some(sha1) = obj.get("mbox_sha1sum") {
-        let s = sha1.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("mbox_sha1sum must be string".into()))?;
+        let s = sha1
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("mbox_sha1sum must be string".into()))?;
         if s.len() != 40 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(LrsStoreError::InvalidStatement("mbox_sha1sum must be 40 hex digits".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox_sha1sum must be 40 hex digits".into(),
+            ));
         }
     }
     if let Some(openid) = obj.get("openid") {
-        let s = openid.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("openid must be string".into()))?;
+        let s = openid
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("openid must be string".into()))?;
         if !is_valid_iri(s) {
-            return Err(LrsStoreError::InvalidStatement("openid must be a valid IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "openid must be a valid IRI".into(),
+            ));
         }
     }
     if let Some(acc) = obj.get("account") {
-        let acc_obj = acc.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("account must be an object".into()))?;
+        let acc_obj = acc
+            .as_object()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account must be an object".into()))?;
         for k in acc_obj.keys() {
             match k.as_str() {
-                "homePage" | "name" => {},
-                _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on account: {}", k))),
+                "homePage" | "name" => {}
+                _ => {
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "Unexpected property on account: {}",
+                        k
+                    )))
+                }
             }
         }
-        let hp = acc_obj.get("homePage").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("account missing homePage".into()))?;
+        let hp = acc_obj
+            .get("homePage")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account missing homePage".into()))?;
         if !is_valid_iri(hp) {
-            return Err(LrsStoreError::InvalidStatement("account homePage must be a valid IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "account homePage must be a valid IRI".into(),
+            ));
         }
-        let name = acc_obj.get("name").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("account missing name".into()))?;
+        let name = acc_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account missing name".into()))?;
         if name.is_empty() {
-            return Err(LrsStoreError::InvalidStatement("account name must be non-empty string".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "account name must be non-empty string".into(),
+            ));
         }
     }
 
@@ -541,144 +671,252 @@ pub fn validate_agent_object(v: &serde_json::Value) -> Result<(), LrsStoreError>
 }
 
 pub fn validate_group_object(v: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Group must be a JSON object".into()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Group must be a JSON object".into()))?;
     for k in obj.keys() {
         match k.as_str() {
-            "objectType" | "name" | "member" | "mbox" | "mbox_sha1sum" | "openid" | "account" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Group: {}", k))),
+            "objectType" | "name" | "member" | "mbox" | "mbox_sha1sum" | "openid" | "account" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on Group: {}",
+                    k
+                )))
+            }
         }
     }
-    let ot = obj.get("objectType").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("Group must have objectType 'Group'".into()))?;
+    let ot = obj
+        .get("objectType")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            LrsStoreError::InvalidStatement("Group must have objectType 'Group'".into())
+        })?;
     if ot != "Group" {
-        return Err(LrsStoreError::InvalidStatement("Group objectType must be 'Group'".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Group objectType must be 'Group'".into(),
+        ));
     }
     if let Some(name) = obj.get("name") {
         if !name.is_string() {
-            return Err(LrsStoreError::InvalidStatement("Group name must be string".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Group name must be string".into(),
+            ));
         }
     }
 
     let ifi_count = (if obj.get("mbox").is_some() { 1 } else { 0 })
-        + (if obj.get("mbox_sha1sum").is_some() { 1 } else { 0 })
+        + (if obj.get("mbox_sha1sum").is_some() {
+            1
+        } else {
+            0
+        })
         + (if obj.get("openid").is_some() { 1 } else { 0 })
         + (if obj.get("account").is_some() { 1 } else { 0 });
 
     if ifi_count > 1 {
-        return Err(LrsStoreError::InvalidStatement("Group cannot have multiple IFIs".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Group cannot have multiple IFIs".into(),
+        ));
     }
 
     if let Some(mbox) = obj.get("mbox") {
-        let s = mbox.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("mbox must be string".into()))?;
+        let s = mbox
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("mbox must be string".into()))?;
         if !s.starts_with("mailto:") || s.len() <= 7 {
-            return Err(LrsStoreError::InvalidStatement("mbox must start with mailto:".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox must start with mailto:".into(),
+            ));
         }
         let email = &s[7..];
         if !email.contains('@') || email.starts_with('@') || email.ends_with('@') {
-            return Err(LrsStoreError::InvalidStatement("mbox must have the form 'mailto:email address'".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox must have the form 'mailto:email address'".into(),
+            ));
         }
     }
     if let Some(sha1) = obj.get("mbox_sha1sum") {
-        let s = sha1.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("mbox_sha1sum must be string".into()))?;
+        let s = sha1
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("mbox_sha1sum must be string".into()))?;
         if s.len() != 40 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(LrsStoreError::InvalidStatement("mbox_sha1sum must be 40 hex digits".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "mbox_sha1sum must be 40 hex digits".into(),
+            ));
         }
     }
     if let Some(openid) = obj.get("openid") {
-        let s = openid.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("openid must be string".into()))?;
+        let s = openid
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("openid must be string".into()))?;
         if !is_valid_iri(s) {
-            return Err(LrsStoreError::InvalidStatement("openid must be a valid IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "openid must be a valid IRI".into(),
+            ));
         }
     }
     if let Some(acc) = obj.get("account") {
-        let acc_obj = acc.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("account must be an object".into()))?;
+        let acc_obj = acc
+            .as_object()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account must be an object".into()))?;
         for k in acc_obj.keys() {
             match k.as_str() {
-                "homePage" | "name" => {},
-                _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on account: {}", k))),
+                "homePage" | "name" => {}
+                _ => {
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "Unexpected property on account: {}",
+                        k
+                    )))
+                }
             }
         }
-        let hp = acc_obj.get("homePage").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("account missing homePage".into()))?;
+        let hp = acc_obj
+            .get("homePage")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account missing homePage".into()))?;
         if !is_valid_iri(hp) {
-            return Err(LrsStoreError::InvalidStatement("account homePage must be a valid IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "account homePage must be a valid IRI".into(),
+            ));
         }
-        let name = acc_obj.get("name").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("account missing name".into()))?;
+        let name = acc_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LrsStoreError::InvalidStatement("account missing name".into()))?;
         if name.is_empty() {
-            return Err(LrsStoreError::InvalidStatement("account name must be non-empty string".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "account name must be non-empty string".into(),
+            ));
         }
     }
 
     if let Some(member) = obj.get("member") {
-        let arr = member.as_array().ok_or_else(|| LrsStoreError::InvalidStatement("Group member must be an array".into()))?;
+        let arr = member.as_array().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("Group member must be an array".into())
+        })?;
         for m in arr {
             validate_agent_object(m)?;
         }
     } else if ifi_count == 0 {
-        return Err(LrsStoreError::InvalidStatement("Anonymous group must have member array".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Anonymous group must have member array".into(),
+        ));
     }
 
     Ok(())
 }
 
 pub fn validate_actor(v: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Actor must be an object".into()))?;
-    let ot = obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Agent");
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Actor must be an object".into()))?;
+    let ot = obj
+        .get("objectType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Agent");
     if ot == "Group" {
         validate_group_object(v)
     } else if ot == "Agent" {
         validate_agent_object(v)
     } else {
-        Err(LrsStoreError::InvalidStatement("Actor objectType must be 'Agent' or 'Group'".into()))
+        Err(LrsStoreError::InvalidStatement(
+            "Actor objectType must be 'Agent' or 'Group'".into(),
+        ))
     }
 }
 
 pub fn validate_verb(v: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Verb must be an object".into()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Verb must be an object".into()))?;
     for k in obj.keys() {
         match k.as_str() {
-            "id" | "display" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Verb: {}", k))),
+            "id" | "display" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on Verb: {}",
+                    k
+                )))
+            }
         }
     }
-    let id_str = obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("Verb missing id IRI".into()))?;
+    let id_str = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Verb missing id IRI".into()))?;
     if !is_valid_iri(id_str) {
-        return Err(LrsStoreError::InvalidStatement(format!("Verb id is not a valid IRI: {}", id_str)));
+        return Err(LrsStoreError::InvalidStatement(format!(
+            "Verb id is not a valid IRI: {}",
+            id_str
+        )));
     }
     if let Some(display) = obj.get("display") {
         if !is_language_map(display) {
-            return Err(LrsStoreError::InvalidStatement("Verb display must be a valid Language Map".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Verb display must be a valid Language Map".into(),
+            ));
         }
     }
     Ok(())
 }
 
-pub fn validate_activity_definition(def: &serde_json::Map<String, serde_json::Value>) -> Result<(), LrsStoreError> {
+pub fn validate_activity_definition(
+    def: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), LrsStoreError> {
     for k in def.keys() {
         match k.as_str() {
-            "name" | "description" | "type" | "moreInfo" | "interactionType" | "correctResponsesPattern"
-            | "choices" | "scale" | "source" | "target" | "steps" | "extensions" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Activity Definition: {}", k))),
+            "name"
+            | "description"
+            | "type"
+            | "moreInfo"
+            | "interactionType"
+            | "correctResponsesPattern"
+            | "choices"
+            | "scale"
+            | "source"
+            | "target"
+            | "steps"
+            | "extensions" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on Activity Definition: {}",
+                    k
+                )))
+            }
         }
     }
     if let Some(name) = def.get("name") {
         if !is_language_map(name) {
-            return Err(LrsStoreError::InvalidStatement("definition name must be a Language Map".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "definition name must be a Language Map".into(),
+            ));
         }
     }
     if let Some(desc) = def.get("description") {
         if !is_language_map(desc) {
-            return Err(LrsStoreError::InvalidStatement("definition description must be a Language Map".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "definition description must be a Language Map".into(),
+            ));
         }
     }
     if let Some(t) = def.get("type") {
-        let t_str = t.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("definition type must be string".into()))?;
+        let t_str = t.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("definition type must be string".into())
+        })?;
         if !is_valid_iri(t_str) {
-            return Err(LrsStoreError::InvalidStatement("definition type must be an IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "definition type must be an IRI".into(),
+            ));
         }
     }
     if let Some(mi) = def.get("moreInfo") {
-        let mi_str = mi.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("definition moreInfo must be string".into()))?;
+        let mi_str = mi.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("definition moreInfo must be string".into())
+        })?;
         if !is_valid_iri(mi_str) {
-            return Err(LrsStoreError::InvalidStatement("definition moreInfo must be an IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "definition moreInfo must be an IRI".into(),
+            ));
         }
     }
 
@@ -690,65 +928,107 @@ pub fn validate_activity_definition(def: &serde_json::Map<String, serde_json::Va
     let has_steps = def.get("steps").is_some();
 
     let int_type_opt = def.get("interactionType");
-    if has_crp || has_choices || has_scale || has_source || has_target || has_steps {
-        if int_type_opt.is_none() {
-            return Err(LrsStoreError::InvalidStatement(
+    if (has_crp || has_choices || has_scale || has_source || has_target || has_steps)
+        && int_type_opt.is_none()
+    {
+        return Err(LrsStoreError::InvalidStatement(
                 "Activity Definition must include interactionType when correctResponsesPattern, choices, scale, source, target, or steps are present".into()
+            ));
+    }
+
+    if let Some(it) = int_type_opt {
+        let it_str = it.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("interactionType must be string".into())
+        })?;
+        const VALID_INTERACTIONS: &[&str] = &[
+            "true-false",
+            "choice",
+            "fill-in",
+            "long-fill-in",
+            "matching",
+            "performance",
+            "sequencing",
+            "likert",
+            "numeric",
+            "other",
+        ];
+        if !VALID_INTERACTIONS.contains(&it_str) {
+            return Err(LrsStoreError::InvalidStatement(format!(
+                "Invalid interactionType: {}",
+                it_str
+            )));
+        }
+
+        if has_choices && it_str != "choice" && it_str != "sequencing" {
+            return Err(LrsStoreError::InvalidStatement(
+                "choices only allowed for choice or sequencing interactionType".into(),
+            ));
+        }
+        if has_scale && it_str != "likert" {
+            return Err(LrsStoreError::InvalidStatement(
+                "scale only allowed for likert interactionType".into(),
+            ));
+        }
+        if (has_source || has_target) && it_str != "matching" {
+            return Err(LrsStoreError::InvalidStatement(
+                "source and target only allowed for matching interactionType".into(),
+            ));
+        }
+        if has_steps && it_str != "performance" {
+            return Err(LrsStoreError::InvalidStatement(
+                "steps only allowed for performance interactionType".into(),
             ));
         }
     }
 
-    if let Some(it) = int_type_opt {
-        let it_str = it.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("interactionType must be string".into()))?;
-        const VALID_INTERACTIONS: &[&str] = &[
-            "true-false", "choice", "fill-in", "long-fill-in", "matching", "performance",
-            "sequencing", "likert", "numeric", "other",
-        ];
-        if !VALID_INTERACTIONS.contains(&it_str) {
-            return Err(LrsStoreError::InvalidStatement(format!("Invalid interactionType: {}", it_str)));
-        }
-
-        if has_choices && it_str != "choice" && it_str != "sequencing" {
-            return Err(LrsStoreError::InvalidStatement("choices only allowed for choice or sequencing interactionType".into()));
-        }
-        if has_scale && it_str != "likert" {
-            return Err(LrsStoreError::InvalidStatement("scale only allowed for likert interactionType".into()));
-        }
-        if (has_source || has_target) && it_str != "matching" {
-            return Err(LrsStoreError::InvalidStatement("source and target only allowed for matching interactionType".into()));
-        }
-        if has_steps && it_str != "performance" {
-            return Err(LrsStoreError::InvalidStatement("steps only allowed for performance interactionType".into()));
-        }
-    }
-
     if let Some(crp) = def.get("correctResponsesPattern") {
-        let arr = crp.as_array().ok_or_else(|| LrsStoreError::InvalidStatement("correctResponsesPattern must be an array".into()))?;
+        let arr = crp.as_array().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("correctResponsesPattern must be an array".into())
+        })?;
         for item in arr {
             if !item.is_string() {
-                return Err(LrsStoreError::InvalidStatement("correctResponsesPattern items must be strings".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "correctResponsesPattern items must be strings".into(),
+                ));
             }
         }
     }
 
     for key in ["choices", "scale", "source", "target", "steps"] {
         if let Some(comp_val) = def.get(key) {
-            let arr = comp_val.as_array().ok_or_else(|| LrsStoreError::InvalidStatement(format!("{} must be an array", key)))?;
+            let arr = comp_val.as_array().ok_or_else(|| {
+                LrsStoreError::InvalidStatement(format!("{} must be an array", key))
+            })?;
             for item in arr {
-                let comp_obj = item.as_object().ok_or_else(|| LrsStoreError::InvalidStatement(format!("{} item must be an object", key)))?;
+                let comp_obj = item.as_object().ok_or_else(|| {
+                    LrsStoreError::InvalidStatement(format!("{} item must be an object", key))
+                })?;
                 for ck in comp_obj.keys() {
                     match ck.as_str() {
-                        "id" | "description" => {},
-                        _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on {}: {}", key, ck))),
+                        "id" | "description" => {}
+                        _ => {
+                            return Err(LrsStoreError::InvalidStatement(format!(
+                                "Unexpected property on {}: {}",
+                                key, ck
+                            )))
+                        }
                     }
                 }
-                let id = comp_obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement(format!("{} item missing id string", key)))?;
+                let id = comp_obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+                    LrsStoreError::InvalidStatement(format!("{} item missing id string", key))
+                })?;
                 if id.is_empty() {
-                    return Err(LrsStoreError::InvalidStatement(format!("{} item id cannot be empty", key)));
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "{} item id cannot be empty",
+                        key
+                    )));
                 }
                 if let Some(desc) = comp_obj.get("description") {
                     if !is_language_map(desc) {
-                        return Err(LrsStoreError::InvalidStatement(format!("{} item description must be Language Map", key)));
+                        return Err(LrsStoreError::InvalidStatement(format!(
+                            "{} item description must be Language Map",
+                            key
+                        )));
                     }
                 }
             }
@@ -756,33 +1036,59 @@ pub fn validate_activity_definition(def: &serde_json::Map<String, serde_json::Va
     }
 
     if let Some(ext) = def.get("extensions") {
-        let ext_obj = ext.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("extensions must be an object".into()))?;
+        let ext_obj = ext.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("extensions must be an object".into())
+        })?;
         for k in ext_obj.keys() {
             if !is_valid_iri(k) {
-                return Err(LrsStoreError::InvalidStatement(format!("extension key must be an IRI: {}", k)));
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "extension key must be an IRI: {}",
+                    k
+                )));
             }
         }
     }
     Ok(())
 }
 
-pub fn validate_statement_object(v: &serde_json::Value, allow_substatement: bool) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Statement object must be a JSON object".into()))?;
-    let ot = obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+pub fn validate_statement_object(
+    v: &serde_json::Value,
+    allow_substatement: bool,
+) -> Result<(), LrsStoreError> {
+    let obj = v.as_object().ok_or_else(|| {
+        LrsStoreError::InvalidStatement("Statement object must be a JSON object".into())
+    })?;
+    let ot = obj
+        .get("objectType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Activity");
     match ot {
         "Activity" => {
             for k in obj.keys() {
                 match k.as_str() {
-                    "objectType" | "id" | "definition" => {},
-                    _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Activity: {}", k))),
+                    "objectType" | "id" | "definition" => {}
+                    _ => {
+                        return Err(LrsStoreError::InvalidStatement(format!(
+                            "Unexpected property on Activity: {}",
+                            k
+                        )))
+                    }
                 }
             }
-            let id = obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("Activity missing id".into()))?;
+            let id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LrsStoreError::InvalidStatement("Activity missing id".into()))?;
             if !is_valid_iri(id) {
-                return Err(LrsStoreError::InvalidStatement(format!("Activity id is not a valid IRI: {}", id)));
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Activity id is not a valid IRI: {}",
+                    id
+                )));
             }
             if let Some(def) = obj.get("definition") {
-                let def_obj = def.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Activity definition must be an object".into()))?;
+                let def_obj = def.as_object().ok_or_else(|| {
+                    LrsStoreError::InvalidStatement("Activity definition must be an object".into())
+                })?;
                 validate_activity_definition(def_obj)?;
             }
         }
@@ -791,35 +1097,68 @@ pub fn validate_statement_object(v: &serde_json::Value, allow_substatement: bool
         "StatementRef" => {
             for k in obj.keys() {
                 match k.as_str() {
-                    "objectType" | "id" => {},
-                    _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on StatementRef: {}", k))),
+                    "objectType" | "id" => {}
+                    _ => {
+                        return Err(LrsStoreError::InvalidStatement(format!(
+                            "Unexpected property on StatementRef: {}",
+                            k
+                        )))
+                    }
                 }
             }
-            let id = obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("StatementRef missing id".into()))?;
+            let id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| LrsStoreError::InvalidStatement("StatementRef missing id".into()))?;
             if !is_valid_uuid_str(id) {
-                return Err(LrsStoreError::InvalidStatement("StatementRef id must be a valid UUID".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "StatementRef id must be a valid UUID".into(),
+                ));
             }
         }
         "SubStatement" => {
             if !allow_substatement {
-                return Err(LrsStoreError::InvalidStatement("SubStatement cannot be nested inside another SubStatement".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "SubStatement cannot be nested inside another SubStatement".into(),
+                ));
             }
             for k in obj.keys() {
                 match k.as_str() {
-                    "objectType" | "actor" | "verb" | "object" | "result" | "context" | "timestamp" | "attachments" => {},
-                    _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on SubStatement: {}", k))),
+                    "objectType" | "actor" | "verb" | "object" | "result" | "context"
+                    | "timestamp" | "attachments" => {}
+                    _ => {
+                        return Err(LrsStoreError::InvalidStatement(format!(
+                            "Unexpected property on SubStatement: {}",
+                            k
+                        )))
+                    }
                 }
             }
-            if obj.get("id").is_some() || obj.get("stored").is_some() || obj.get("version").is_some() || obj.get("authority").is_some() {
-                return Err(LrsStoreError::InvalidStatement("SubStatement cannot have id, stored, version, or authority".into()));
+            if obj.get("id").is_some()
+                || obj.get("stored").is_some()
+                || obj.get("version").is_some()
+                || obj.get("authority").is_some()
+            {
+                return Err(LrsStoreError::InvalidStatement(
+                    "SubStatement cannot have id, stored, version, or authority".into(),
+                ));
             }
-            let sub_actor = obj.get("actor").ok_or_else(|| LrsStoreError::InvalidStatement("SubStatement missing actor".into()))?;
+            let sub_actor = obj.get("actor").ok_or_else(|| {
+                LrsStoreError::InvalidStatement("SubStatement missing actor".into())
+            })?;
             validate_actor(sub_actor)?;
-            let sub_verb = obj.get("verb").ok_or_else(|| LrsStoreError::InvalidStatement("SubStatement missing verb".into()))?;
+            let sub_verb = obj.get("verb").ok_or_else(|| {
+                LrsStoreError::InvalidStatement("SubStatement missing verb".into())
+            })?;
             validate_verb(sub_verb)?;
-            let sub_obj = obj.get("object").ok_or_else(|| LrsStoreError::InvalidStatement("SubStatement missing object".into()))?;
+            let sub_obj = obj.get("object").ok_or_else(|| {
+                LrsStoreError::InvalidStatement("SubStatement missing object".into())
+            })?;
             validate_statement_object(sub_obj, false)?;
-            let sub_obj_type = sub_obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+            let sub_obj_type = sub_obj
+                .get("objectType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Activity");
 
             if let Some(res) = obj.get("result") {
                 validate_result(res)?;
@@ -828,112 +1167,187 @@ pub fn validate_statement_object(v: &serde_json::Value, allow_substatement: bool
                 validate_context(ctx, Some(sub_obj_type))?;
             }
             if let Some(ts) = obj.get("timestamp") {
-                let s = ts.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("timestamp must be string".into()))?;
+                let s = ts.as_str().ok_or_else(|| {
+                    LrsStoreError::InvalidStatement("timestamp must be string".into())
+                })?;
                 if chrono_parse_ms(s).is_none() {
-                    return Err(LrsStoreError::InvalidStatement("Invalid ISO-8601 timestamp".into()));
+                    return Err(LrsStoreError::InvalidStatement(
+                        "Invalid ISO-8601 timestamp".into(),
+                    ));
                 }
             }
             if let Some(atts) = obj.get("attachments") {
                 validate_attachments_value(atts)?;
             }
         }
-        other => return Err(LrsStoreError::InvalidStatement(format!("Unknown objectType: {}", other))),
+        other => {
+            return Err(LrsStoreError::InvalidStatement(format!(
+                "Unknown objectType: {}",
+                other
+            )))
+        }
     }
     Ok(())
 }
 
 pub fn validate_result(v: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("result must be an object".into()))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("result must be an object".into()))?;
     for k in obj.keys() {
         match k.as_str() {
-            "score" | "success" | "completion" | "response" | "duration" | "extensions" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on result: {}", k))),
+            "score" | "success" | "completion" | "response" | "duration" | "extensions" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on result: {}",
+                    k
+                )))
+            }
         }
     }
     if let Some(score) = obj.get("score") {
-        let sc = score.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("score must be an object".into()))?;
+        let sc = score
+            .as_object()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("score must be an object".into()))?;
         for k in sc.keys() {
             match k.as_str() {
-                "scaled" | "raw" | "min" | "max" => {},
-                _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on score: {}", k))),
+                "scaled" | "raw" | "min" | "max" => {}
+                _ => {
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "Unexpected property on score: {}",
+                        k
+                    )))
+                }
             }
         }
         if let Some(s) = sc.get("scaled") {
-            let num = s.as_f64().ok_or_else(|| LrsStoreError::InvalidStatement("score.scaled must be number".into()))?;
+            let num = s.as_f64().ok_or_else(|| {
+                LrsStoreError::InvalidStatement("score.scaled must be number".into())
+            })?;
             if !(-1.0..=1.0).contains(&num) {
-                return Err(LrsStoreError::InvalidStatement("score.scaled must be between -1.0 and 1.0".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "score.scaled must be between -1.0 and 1.0".into(),
+                ));
             }
         }
         let min = if let Some(m) = sc.get("min") {
-            Some(m.as_f64().ok_or_else(|| LrsStoreError::InvalidStatement("score.min must be number".into()))?)
-        } else { None };
+            Some(m.as_f64().ok_or_else(|| {
+                LrsStoreError::InvalidStatement("score.min must be number".into())
+            })?)
+        } else {
+            None
+        };
         let max = if let Some(m) = sc.get("max") {
-            Some(m.as_f64().ok_or_else(|| LrsStoreError::InvalidStatement("score.max must be number".into()))?)
-        } else { None };
+            Some(m.as_f64().ok_or_else(|| {
+                LrsStoreError::InvalidStatement("score.max must be number".into())
+            })?)
+        } else {
+            None
+        };
         let raw = if let Some(r) = sc.get("raw") {
-            Some(r.as_f64().ok_or_else(|| LrsStoreError::InvalidStatement("score.raw must be number".into()))?)
-        } else { None };
+            Some(r.as_f64().ok_or_else(|| {
+                LrsStoreError::InvalidStatement("score.raw must be number".into())
+            })?)
+        } else {
+            None
+        };
 
         if let (Some(mi), Some(ma)) = (min, max) {
             if mi > ma {
-                return Err(LrsStoreError::InvalidStatement("score.min cannot be greater than score.max".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "score.min cannot be greater than score.max".into(),
+                ));
             }
         }
         if let (Some(r), Some(mi)) = (raw, min) {
             if r < mi {
-                return Err(LrsStoreError::InvalidStatement("score.raw cannot be less than score.min".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "score.raw cannot be less than score.min".into(),
+                ));
             }
         }
         if let (Some(r), Some(ma)) = (raw, max) {
             if r > ma {
-                return Err(LrsStoreError::InvalidStatement("score.raw cannot be greater than score.max".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "score.raw cannot be greater than score.max".into(),
+                ));
             }
         }
     }
     if let Some(succ) = obj.get("success") {
         if !succ.is_boolean() {
-            return Err(LrsStoreError::InvalidStatement("result.success must be boolean".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "result.success must be boolean".into(),
+            ));
         }
     }
     if let Some(comp) = obj.get("completion") {
         if !comp.is_boolean() {
-            return Err(LrsStoreError::InvalidStatement("result.completion must be boolean".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "result.completion must be boolean".into(),
+            ));
         }
     }
     if let Some(resp) = obj.get("response") {
         if !resp.is_string() {
-            return Err(LrsStoreError::InvalidStatement("result.response must be string".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "result.response must be string".into(),
+            ));
         }
     }
     if let Some(dur) = obj.get("duration") {
-        let s = dur.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("result.duration must be string".into()))?;
+        let s = dur.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("result.duration must be string".into())
+        })?;
         if !is_valid_iso8601_duration(s) {
-            return Err(LrsStoreError::InvalidStatement("result.duration is not a valid ISO 8601 duration".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "result.duration is not a valid ISO 8601 duration".into(),
+            ));
         }
     }
     if let Some(ext) = obj.get("extensions") {
-        let ext_obj = ext.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("result.extensions must be object".into()))?;
+        let ext_obj = ext.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("result.extensions must be object".into())
+        })?;
         for k in ext_obj.keys() {
             if !is_valid_iri(k) {
-                return Err(LrsStoreError::InvalidStatement(format!("result extension key must be IRI: {}", k)));
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "result extension key must be IRI: {}",
+                    k
+                )));
             }
         }
     }
     Ok(())
 }
 
-pub fn validate_context(v: &serde_json::Value, object_type: Option<&str>) -> Result<(), LrsStoreError> {
-    let obj = v.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("context must be an object".into()))?;
+pub fn validate_context(
+    v: &serde_json::Value,
+    object_type: Option<&str>,
+) -> Result<(), LrsStoreError> {
+    let obj = v
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("context must be an object".into()))?;
     for k in obj.keys() {
         match k.as_str() {
-            "registration" | "instructor" | "team" | "contextActivities" | "revision" | "platform" | "language" | "statement" | "extensions" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on context: {}", k))),
+            "registration" | "instructor" | "team" | "contextActivities" | "revision"
+            | "platform" | "language" | "statement" | "extensions" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on context: {}",
+                    k
+                )))
+            }
         }
     }
     if let Some(reg) = obj.get("registration") {
-        let s = reg.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("registration must be string".into()))?;
+        let s = reg
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("registration must be string".into()))?;
         if !is_valid_uuid_str(s) {
-            return Err(LrsStoreError::InvalidStatement("registration must be a valid UUID".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "registration must be a valid UUID".into(),
+            ));
         }
     }
     if let Some(inst) = obj.get("instructor") {
@@ -943,22 +1357,40 @@ pub fn validate_context(v: &serde_json::Value, object_type: Option<&str>) -> Res
         validate_group_object(team)?;
     }
     if let Some(stmt) = obj.get("statement") {
-        let stmt_obj = stmt.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("context.statement must be an object".into()))?;
-        let ot = stmt_obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("");
+        let stmt_obj = stmt.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.statement must be an object".into())
+        })?;
+        let ot = stmt_obj
+            .get("objectType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if ot != "StatementRef" {
-            return Err(LrsStoreError::InvalidStatement("context.statement objectType must be 'StatementRef'".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "context.statement objectType must be 'StatementRef'".into(),
+            ));
         }
-        let id = stmt_obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("context.statement missing id".into()))?;
+        let id = stmt_obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.statement missing id".into())
+        })?;
         if !is_valid_uuid_str(id) {
-            return Err(LrsStoreError::InvalidStatement("context.statement id must be UUID".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "context.statement id must be UUID".into(),
+            ));
         }
     }
     if let Some(ca) = obj.get("contextActivities") {
-        let ca_obj = ca.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("contextActivities must be an object".into()))?;
+        let ca_obj = ca.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("contextActivities must be an object".into())
+        })?;
         for (k, val) in ca_obj {
             match k.as_str() {
-                "parent" | "grouping" | "category" | "other" => {},
-                _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected contextActivities property: {}", k))),
+                "parent" | "grouping" | "category" | "other" => {}
+                _ => {
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "Unexpected contextActivities property: {}",
+                        k
+                    )))
+                }
             }
             if let Some(arr) = val.as_array() {
                 for item in arr {
@@ -967,37 +1399,58 @@ pub fn validate_context(v: &serde_json::Value, object_type: Option<&str>) -> Res
             } else if val.is_object() {
                 validate_statement_object(val, false)?;
             } else {
-                return Err(LrsStoreError::InvalidStatement("contextActivities item must be Activity object or array of Activity objects".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "contextActivities item must be Activity object or array of Activity objects"
+                        .into(),
+                ));
             }
         }
     }
     if let Some(rev) = obj.get("revision") {
-        let _ = rev.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("context.revision must be string".into()))?;
+        let _ = rev.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.revision must be string".into())
+        })?;
         if let Some(ot) = object_type {
             if ot != "Activity" {
-                return Err(LrsStoreError::InvalidStatement("context.revision is only allowed when statement object is an Activity".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "context.revision is only allowed when statement object is an Activity".into(),
+                ));
             }
         }
     }
     if let Some(plat) = obj.get("platform") {
-        let _ = plat.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("context.platform must be string".into()))?;
+        let _ = plat.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.platform must be string".into())
+        })?;
         if let Some(ot) = object_type {
             if ot != "Activity" {
-                return Err(LrsStoreError::InvalidStatement("context.platform is only allowed when statement object is an Activity".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "context.platform is only allowed when statement object is an Activity".into(),
+                ));
             }
         }
     }
     if let Some(lang) = obj.get("language") {
-        let s = lang.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("context.language must be string".into()))?;
+        let s = lang.as_str().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.language must be string".into())
+        })?;
         if !is_valid_rfc5646_language_tag(s) {
-            return Err(LrsStoreError::InvalidStatement(format!("context.language is not a valid RFC 5646 language tag: {}", s)));
+            return Err(LrsStoreError::InvalidStatement(format!(
+                "context.language is not a valid RFC 5646 language tag: {}",
+                s
+            )));
         }
     }
     if let Some(ext) = obj.get("extensions") {
-        let ext_obj = ext.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("context.extensions must be object".into()))?;
+        let ext_obj = ext.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("context.extensions must be object".into())
+        })?;
         for k in ext_obj.keys() {
             if !is_valid_iri(k) {
-                return Err(LrsStoreError::InvalidStatement(format!("context extension key must be IRI: {}", k)));
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "context extension key must be IRI: {}",
+                    k
+                )));
             }
         }
     }
@@ -1005,36 +1458,58 @@ pub fn validate_context(v: &serde_json::Value, object_type: Option<&str>) -> Res
 }
 
 pub fn validate_xapi_statement(val: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let obj = val.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("Statement must be a JSON object".into()))?;
+    let obj = val
+        .as_object()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Statement must be a JSON object".into()))?;
 
     // Check unexpected keys on Statement
     for k in obj.keys() {
         match k.as_str() {
-            "id" | "actor" | "verb" | "object" | "result" | "context" | "timestamp" | "stored" | "authority" | "version" | "attachments" => {},
-            _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on Statement: {}", k))),
+            "id" | "actor" | "verb" | "object" | "result" | "context" | "timestamp" | "stored"
+            | "authority" | "version" | "attachments" => {}
+            _ => {
+                return Err(LrsStoreError::InvalidStatement(format!(
+                    "Unexpected property on Statement: {}",
+                    k
+                )))
+            }
         }
     }
 
     // 1. ID
     if let Some(id_val) = obj.get("id") {
-        let id_str = id_val.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("Statement id must be string".into()))?;
+        let id_str = id_val
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("Statement id must be string".into()))?;
         if !is_valid_uuid_str(id_str) {
-            return Err(LrsStoreError::InvalidStatement(format!("Invalid statement UUID: {}", id_str)));
+            return Err(LrsStoreError::InvalidStatement(format!(
+                "Invalid statement UUID: {}",
+                id_str
+            )));
         }
     }
 
     // 2. Actor
-    let actor_val = obj.get("actor").ok_or_else(|| LrsStoreError::InvalidStatement("Missing actor".into()))?;
+    let actor_val = obj
+        .get("actor")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing actor".into()))?;
     validate_actor(actor_val)?;
 
     // 3. Verb
-    let verb_val = obj.get("verb").ok_or_else(|| LrsStoreError::InvalidStatement("Missing verb".into()))?;
+    let verb_val = obj
+        .get("verb")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing verb".into()))?;
     validate_verb(verb_val)?;
 
     // 4. Object
-    let obj_val = obj.get("object").ok_or_else(|| LrsStoreError::InvalidStatement("Missing object".into()))?;
+    let obj_val = obj
+        .get("object")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing object".into()))?;
     validate_statement_object(obj_val, true)?;
-    let main_obj_type = obj_val.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+    let main_obj_type = obj_val
+        .get("objectType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Activity");
 
     // 5. Result
     if let Some(result_val) = obj.get("result") {
@@ -1048,32 +1523,57 @@ pub fn validate_xapi_statement(val: &serde_json::Value) -> Result<(), LrsStoreEr
 
     // 7. Timestamp
     if let Some(ts) = obj.get("timestamp") {
-        let s = ts.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("timestamp must be string".into()))?;
+        let s = ts
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("timestamp must be string".into()))?;
         if chrono_parse_ms(s).is_none() {
-            return Err(LrsStoreError::InvalidStatement("Invalid ISO-8601 timestamp".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Invalid ISO-8601 timestamp".into(),
+            ));
         }
     }
 
     // 8. Stored
     if let Some(st) = obj.get("stored") {
-        let s = st.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("stored must be string".into()))?;
+        let s = st
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("stored must be string".into()))?;
         if chrono_parse_ms(s).is_none() {
-            return Err(LrsStoreError::InvalidStatement("Invalid ISO-8601 stored timestamp".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "Invalid ISO-8601 stored timestamp".into(),
+            ));
         }
     }
 
     // 9. Authority
     if let Some(auth) = obj.get("authority") {
-        let auth_obj = auth.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("authority must be object".into()))?;
-        let ot = auth_obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Agent");
+        let auth_obj = auth
+            .as_object()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("authority must be object".into()))?;
+        let ot = auth_obj
+            .get("objectType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Agent");
         if ot == "Group" {
-            let has_ifi = auth_obj.get("mbox").is_some() || auth_obj.get("mbox_sha1sum").is_some() || auth_obj.get("openid").is_some() || auth_obj.get("account").is_some();
+            let has_ifi = auth_obj.get("mbox").is_some()
+                || auth_obj.get("mbox_sha1sum").is_some()
+                || auth_obj.get("openid").is_some()
+                || auth_obj.get("account").is_some();
             if has_ifi {
-                return Err(LrsStoreError::InvalidStatement("Authority group cannot have Inverse Functional Identifier".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "Authority group cannot have Inverse Functional Identifier".into(),
+                ));
             }
-            let members = auth_obj.get("member").and_then(|v| v.as_array()).ok_or_else(|| LrsStoreError::InvalidStatement("Authority group must have member array".into()))?;
+            let members = auth_obj
+                .get("member")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    LrsStoreError::InvalidStatement("Authority group must have member array".into())
+                })?;
             if members.len() != 2 {
-                return Err(LrsStoreError::InvalidStatement("Authority group must have exactly 2 member agents".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "Authority group must have exactly 2 member agents".into(),
+                ));
             }
             for m in members {
                 validate_agent_object(m)?;
@@ -1081,15 +1581,21 @@ pub fn validate_xapi_statement(val: &serde_json::Value) -> Result<(), LrsStoreEr
         } else if ot == "Agent" {
             validate_agent_object(auth)?;
         } else {
-            return Err(LrsStoreError::InvalidStatement("authority objectType must be 'Agent' or 'Group'".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "authority objectType must be 'Agent' or 'Group'".into(),
+            ));
         }
     }
 
     // 10. Version
     if let Some(ver) = obj.get("version") {
-        let s = ver.as_str().ok_or_else(|| LrsStoreError::InvalidStatement("version must be string".into()))?;
+        let s = ver
+            .as_str()
+            .ok_or_else(|| LrsStoreError::InvalidStatement("version must be string".into()))?;
         if !s.starts_with("1.0") {
-            return Err(LrsStoreError::InvalidStatement("version must start with 1.0".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "version must start with 1.0".into(),
+            ));
         }
     }
 
@@ -1102,68 +1608,118 @@ pub fn validate_xapi_statement(val: &serde_json::Value) -> Result<(), LrsStoreEr
 }
 
 pub fn validate_attachments_value(atts: &serde_json::Value) -> Result<(), LrsStoreError> {
-    let arr = atts.as_array().ok_or_else(|| LrsStoreError::InvalidStatement("attachments must be an array".into()))?;
+    let arr = atts
+        .as_array()
+        .ok_or_else(|| LrsStoreError::InvalidStatement("attachments must be an array".into()))?;
     for att in arr {
-        let att_obj = att.as_object().ok_or_else(|| LrsStoreError::InvalidStatement("attachment must be an object".into()))?;
+        let att_obj = att.as_object().ok_or_else(|| {
+            LrsStoreError::InvalidStatement("attachment must be an object".into())
+        })?;
         for k in att_obj.keys() {
             match k.as_str() {
-                "usageType" | "display" | "description" | "contentType" | "length" | "sha2" | "fileUrl" => {},
-                _ => return Err(LrsStoreError::InvalidStatement(format!("Unexpected property on attachment: {}", k))),
+                "usageType" | "display" | "description" | "contentType" | "length" | "sha2"
+                | "fileUrl" => {}
+                _ => {
+                    return Err(LrsStoreError::InvalidStatement(format!(
+                        "Unexpected property on attachment: {}",
+                        k
+                    )))
+                }
             }
         }
-        let usage = att_obj.get("usageType").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing usageType".into()))?;
+        let usage = att_obj
+            .get("usageType")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                LrsStoreError::InvalidStatement("attachment missing usageType".into())
+            })?;
         if !is_valid_iri(usage) {
-            return Err(LrsStoreError::InvalidStatement("attachment usageType must be IRI".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "attachment usageType must be IRI".into(),
+            ));
         }
-        let display = att_obj.get("display").ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing display".into()))?;
+        let display = att_obj
+            .get("display")
+            .ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing display".into()))?;
         if !is_language_map(display) {
-            return Err(LrsStoreError::InvalidStatement("attachment display must be Language Map".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "attachment display must be Language Map".into(),
+            ));
         }
         if let Some(desc) = att_obj.get("description") {
             if !is_language_map(desc) {
-                return Err(LrsStoreError::InvalidStatement("attachment description must be Language Map".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "attachment description must be Language Map".into(),
+                ));
             }
         }
-        let sha2 = att_obj.get("sha2").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing sha2".into()))?;
+        let sha2 = att_obj
+            .get("sha2")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing sha2".into()))?;
         if sha2.len() != 64 || !sha2.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(LrsStoreError::InvalidStatement("attachment sha2 must be 64 hex characters".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "attachment sha2 must be 64 hex characters".into(),
+            ));
         }
         if let Some(file_url) = att_obj.get("fileUrl").and_then(|v| v.as_str()) {
             if !is_valid_iri(file_url) {
-                return Err(LrsStoreError::InvalidStatement("attachment fileUrl must be a valid IRI".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "attachment fileUrl must be a valid IRI".into(),
+                ));
             }
         }
-        let ct = att_obj.get("contentType").and_then(|v| v.as_str()).ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing contentType".into()))?;
+        let ct = att_obj
+            .get("contentType")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                LrsStoreError::InvalidStatement("attachment missing contentType".into())
+            })?;
         if ct.is_empty() {
-            return Err(LrsStoreError::InvalidStatement("attachment contentType cannot be empty".into()));
+            return Err(LrsStoreError::InvalidStatement(
+                "attachment contentType cannot be empty".into(),
+            ));
         }
-        if usage == "http://adlnet.gov/expapi/attachments/signature" && ct != "application/octet-stream" {
-            return Err(LrsStoreError::InvalidStatement("Signature attachment contentType must be 'application/octet-stream'".into()));
+        if usage == "http://adlnet.gov/expapi/attachments/signature"
+            && ct != "application/octet-stream"
+        {
+            return Err(LrsStoreError::InvalidStatement(
+                "Signature attachment contentType must be 'application/octet-stream'".into(),
+            ));
         }
-        att_obj.get("length").and_then(|v| v.as_u64()).ok_or_else(|| LrsStoreError::InvalidStatement("attachment missing length integer".into()))?;
+        att_obj
+            .get("length")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                LrsStoreError::InvalidStatement("attachment missing length integer".into())
+            })?;
     }
     Ok(())
 }
 
 /// Parse and extract statement index metadata from raw statement JSON.
-pub fn parse_statement_metadata(json_val: &serde_json::Value) -> Result<StatementMetadata, LrsStoreError> {
+pub fn parse_statement_metadata(
+    json_val: &serde_json::Value,
+) -> Result<StatementMetadata, LrsStoreError> {
     // 1. Statement ID
     let statement_id = if let Some(id_str) = json_val.get("id").and_then(|v| v.as_str()) {
         uuid_to_u64_pair(id_str)?
     } else {
-        return Err(LrsStoreError::InvalidStatement("Missing statement ID".into()));
+        return Err(LrsStoreError::InvalidStatement(
+            "Missing statement ID".into(),
+        ));
     };
 
     // 2. Actor
-    let actor_val = json_val.get("actor").ok_or_else(|| {
-        LrsStoreError::InvalidStatement("Missing statement actor".into())
-    })?;
+    let actor_val = json_val
+        .get("actor")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing statement actor".into()))?;
     let actor_hash = hash_actor_value(actor_val);
 
     // 3. Verb
-    let verb_val = json_val.get("verb").ok_or_else(|| {
-        LrsStoreError::InvalidStatement("Missing statement verb".into())
-    })?;
+    let verb_val = json_val
+        .get("verb")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing statement verb".into()))?;
     let verb_iri = verb_val
         .get("id")
         .and_then(|v| v.as_str())
@@ -1172,19 +1728,20 @@ pub fn parse_statement_metadata(json_val: &serde_json::Value) -> Result<Statemen
     let verb_hash = (xxh3_64(verb_iri.as_bytes()) & 0xFFFF_FFFF) as u32;
 
     // 4. Object
-    let obj_val = json_val.get("object").ok_or_else(|| {
-        LrsStoreError::InvalidStatement("Missing statement object".into())
-    })?;
+    let obj_val = json_val
+        .get("object")
+        .ok_or_else(|| LrsStoreError::InvalidStatement("Missing statement object".into()))?;
     let mut object_activity_id = None;
     let mut is_voiding = false;
     let mut voided_target_id = None;
 
     if verb_iri == "http://adlnet.gov/expapi/verbs/voided" {
         is_voiding = true;
-        let target_str = obj_val
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| LrsStoreError::InvalidStatement("Voiding statement object must specify target ID".into()))?;
+        let target_str = obj_val.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+            LrsStoreError::InvalidStatement(
+                "Voiding statement object must specify target ID".into(),
+            )
+        })?;
         voided_target_id = Some(uuid_to_u64_pair(target_str)?);
     } else if let Some(act_id) = obj_val.get("id").and_then(|v| v.as_str()) {
         object_activity_id = Some(act_id.to_string());
@@ -1197,7 +1754,7 @@ pub fn parse_statement_metadata(json_val: &serde_json::Value) -> Result<Statemen
 
     // 5. Timestamp
     let timestamp_ms = if let Some(ts_str) = json_val.get("timestamp").and_then(|v| v.as_str()) {
-        chrono_parse_ms(ts_str).unwrap_or_else(|| now_ms())
+        chrono_parse_ms(ts_str).unwrap_or_else(now_ms)
     } else {
         now_ms()
     };
@@ -1241,13 +1798,18 @@ pub fn parse_statement_metadata(json_val: &serde_json::Value) -> Result<Statemen
     if actor_hash != 0 {
         related_agents.push(actor_hash);
     }
-    if let Some(obj_agent_hash) = obj_val.get("objectType").and_then(|v| v.as_str()).and_then(|ot| {
-        if ot == "Agent" || ot == "Group" {
-            Some(hash_actor_value(obj_val))
-        } else {
-            None
-        }
-    }) {
+    if let Some(obj_agent_hash) =
+        obj_val
+            .get("objectType")
+            .and_then(|v| v.as_str())
+            .and_then(|ot| {
+                if ot == "Agent" || ot == "Group" {
+                    Some(hash_actor_value(obj_val))
+                } else {
+                    None
+                }
+            })
+    {
         if obj_agent_hash != 0 {
             related_agents.push(obj_agent_hash);
         }
@@ -1255,16 +1817,22 @@ pub fn parse_statement_metadata(json_val: &serde_json::Value) -> Result<Statemen
     if let Some(ctx) = json_val.get("context") {
         if let Some(inst) = ctx.get("instructor") {
             let h = hash_actor_value(inst);
-            if h != 0 { related_agents.push(h); }
+            if h != 0 {
+                related_agents.push(h);
+            }
         }
         if let Some(team) = ctx.get("team") {
             let h = hash_actor_value(team);
-            if h != 0 { related_agents.push(h); }
+            if h != 0 {
+                related_agents.push(h);
+            }
         }
     }
     if let Some(auth) = json_val.get("authority") {
         let h = hash_actor_value(auth);
-        if h != 0 { related_agents.push(h); }
+        if h != 0 {
+            related_agents.push(h);
+        }
     }
 
     // 8. Attachments flag
@@ -1399,11 +1967,12 @@ impl LrsStore {
     /// Opens or creates an S3A archive configured for LRS storage.
     pub fn open_or_create<P: AsRef<Path>>(path: P) -> Result<Arc<Self>, LrsStoreError> {
         let path_ref = path.as_ref();
-        let writer = if path_ref.exists() && std::fs::metadata(path_ref)?.len() >= FILE_HEADER_SIZE as u64 {
-            ConcurrentTileWriter::open_append(path_ref)?
-        } else {
-            ConcurrentTileWriter::create(path_ref)?
-        };
+        let writer =
+            if path_ref.exists() && std::fs::metadata(path_ref)?.len() >= FILE_HEADER_SIZE as u64 {
+                ConcurrentTileWriter::open_append(path_ref)?
+            } else {
+                ConcurrentTileWriter::create(path_ref)?
+            };
 
         let store = Arc::new(Self {
             archive_path: path_ref.to_path_buf(),
@@ -1471,8 +2040,10 @@ impl LrsStore {
                     TileType::MARKS => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<MarkRecord>() <= payload.len() {
-                            let mark_slice = &payload[offset..offset + std::mem::size_of::<MarkRecord>()];
-                            let mark: &MarkRecord = &bytemuck::pod_read_unaligned::<MarkRecord>(mark_slice);
+                            let mark_slice =
+                                &payload[offset..offset + std::mem::size_of::<MarkRecord>()];
+                            let mark: &MarkRecord =
+                                &bytemuck::pod_read_unaligned::<MarkRecord>(mark_slice);
                             offset += std::mem::size_of::<MarkRecord>();
                             if mark.target_tile_type == TILE_STATEMENT_INDEX {
                                 let stmt_id = mark._reserved;
@@ -1498,9 +2069,14 @@ impl LrsStore {
                     TILE_DOCUMENT_STORE => {
                         // Scan document records
                         let mut offset = 0;
-                        while offset + std::mem::size_of::<DocumentRecordHeader>() <= payload.len() {
-                            let doc_hdr_slice = &payload[offset..offset + std::mem::size_of::<DocumentRecordHeader>()];
-                            let doc_hdr: &DocumentRecordHeader = &bytemuck::pod_read_unaligned::<DocumentRecordHeader>(doc_hdr_slice);
+                        while offset + std::mem::size_of::<DocumentRecordHeader>() <= payload.len()
+                        {
+                            let doc_hdr_slice = &payload
+                                [offset..offset + std::mem::size_of::<DocumentRecordHeader>()];
+                            let doc_hdr: &DocumentRecordHeader =
+                                &bytemuck::pod_read_unaligned::<DocumentRecordHeader>(
+                                    doc_hdr_slice,
+                                );
                             offset += std::mem::size_of::<DocumentRecordHeader>();
 
                             let key_len = doc_hdr.key_len as usize;
@@ -1517,15 +2093,23 @@ impl LrsStore {
                             if doc_hdr.is_deleted() {
                                 docs.remove(&doc_hdr.key_hash);
                             } else {
-                                docs.insert(doc_hdr.key_hash, (*doc_hdr, content_bytes.to_vec(), key_str));
+                                docs.insert(
+                                    doc_hdr.key_hash,
+                                    (*doc_hdr, content_bytes.to_vec(), key_str),
+                                );
                             }
                         }
                     }
                     TILE_ATTACHMENT_BLOB => {
                         let mut offset = 0;
-                        while offset + std::mem::size_of::<AttachmentBlobHeader>() <= payload.len() {
-                            let att_hdr_slice = &payload[offset..offset + std::mem::size_of::<AttachmentBlobHeader>()];
-                            let att_hdr: &AttachmentBlobHeader = &bytemuck::pod_read_unaligned::<AttachmentBlobHeader>(att_hdr_slice);
+                        while offset + std::mem::size_of::<AttachmentBlobHeader>() <= payload.len()
+                        {
+                            let att_hdr_slice = &payload
+                                [offset..offset + std::mem::size_of::<AttachmentBlobHeader>()];
+                            let att_hdr: &AttachmentBlobHeader =
+                                &bytemuck::pod_read_unaligned::<AttachmentBlobHeader>(
+                                    att_hdr_slice,
+                                );
                             offset += std::mem::size_of::<AttachmentBlobHeader>();
 
                             let chunk_len = att_hdr.chunk_bytes as usize;
@@ -1541,112 +2125,220 @@ impl LrsStore {
                     TILE_ELR_PERSON => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.persons.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(person) = crate::elr::ElrPerson::from_tile_payload(hdr, data) {
-                                self.elr_state.persons.write().unwrap().insert(hdr.entity_id, person);
+                                self.elr_state
+                                    .persons
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(person) =
+                                crate::elr::ElrPerson::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .persons
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, person);
                             }
                         }
                     }
                     TILE_ELR_ORGANIZATION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.organizations.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(org) = crate::elr::ElrOrganization::from_tile_payload(hdr, data) {
-                                self.elr_state.organizations.write().unwrap().insert(hdr.entity_id, org);
+                                self.elr_state
+                                    .organizations
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(org) =
+                                crate::elr::ElrOrganization::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .organizations
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, org);
                             }
                         }
                     }
                     TILE_ELR_LEARNING_RESOURCE => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.learning_resources.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(res) = crate::elr::ElrLearningResource::from_tile_payload(hdr, data) {
-                                self.elr_state.learning_resources.write().unwrap().insert(hdr.entity_id, res);
+                                self.elr_state
+                                    .learning_resources
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(res) =
+                                crate::elr::ElrLearningResource::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .learning_resources
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, res);
                             }
                         }
                     }
                     TILE_ELR_LEARNING_EVENT => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.learning_events.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(event) = crate::elr::ElrLearningEvent::from_tile_payload(hdr, data) {
-                                self.elr_state.learning_events.write().unwrap().insert(hdr.entity_id, event);
+                                self.elr_state
+                                    .learning_events
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(event) =
+                                crate::elr::ElrLearningEvent::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .learning_events
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, event);
                             }
                         }
                     }
                     TILE_ELR_COMPETENCY_ASSERTION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.competencies.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(comp) = crate::elr::ElrCompetencyAssertion::from_tile_payload(hdr, data) {
-                                self.elr_state.competencies.write().unwrap().insert(hdr.entity_id, comp);
+                                self.elr_state
+                                    .competencies
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(comp) =
+                                crate::elr::ElrCompetencyAssertion::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .competencies
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, comp);
                             }
                         }
                     }
                     TILE_ELR_CREDENTIAL_ASSERTION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
-                                self.elr_state.credentials.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(cred) = crate::elr::ElrCredentialAssertion::from_tile_payload(hdr, data) {
-                                self.elr_state.credentials.write().unwrap().insert(hdr.entity_id, cred);
+                                self.elr_state
+                                    .credentials
+                                    .write()
+                                    .unwrap()
+                                    .remove(&hdr.entity_id);
+                            } else if let Ok(cred) =
+                                crate::elr::ElrCredentialAssertion::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .credentials
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, cred);
                             }
                         }
                     }
                     TILE_ELR_GOAL => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<
+                                ElrRecordHeader,
+                            >(
+                                &payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()],
+                            );
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
-                            if offset + len > payload.len() { break; }
+                            if offset + len > payload.len() {
+                                break;
+                            }
                             let data = &payload[offset..offset + len];
                             offset += len;
                             if hdr.is_tombstone() {
                                 self.elr_state.goals.write().unwrap().remove(&hdr.entity_id);
-                            } else if let Ok(goal) = crate::elr::ElrGoal::from_tile_payload(hdr, data) {
-                                self.elr_state.goals.write().unwrap().insert(hdr.entity_id, goal);
+                            } else if let Ok(goal) =
+                                crate::elr::ElrGoal::from_tile_payload(hdr, data)
+                            {
+                                self.elr_state
+                                    .goals
+                                    .write()
+                                    .unwrap()
+                                    .insert(hdr.entity_id, goal);
                             }
                         }
                     }
@@ -1656,7 +2348,7 @@ impl LrsStore {
         }
 
         // For cached statements, load their body JSON to populate relation indexes
-        for (_id, entry) in stmts.iter_mut() {
+        for entry in stmts.values_mut() {
             if entry.raw_json.is_none() {
                 if let Ok(Some(json_str)) = self.read_body_json_from_disk(
                     &reader,
@@ -1672,7 +2364,10 @@ impl LrsStore {
                             entry.related_agents = meta.related_agents;
                             if meta.is_voiding {
                                 if let Some(target_id) = meta.voided_target_id {
-                                    self.voiding_targets.write().unwrap().insert(target_id, meta.statement_id);
+                                    self.voiding_targets
+                                        .write()
+                                        .unwrap()
+                                        .insert(target_id, meta.statement_id);
                                 }
                             }
                         }
@@ -1701,7 +2396,7 @@ impl LrsStore {
             *self.last_committed_ms.read().unwrap(),
             mark_kind,
             if set { MARK_SET } else { MARK_CLEAR },
-            (now_ms() / 1000) as u64,
+            now_ms() / 1000,
             actor_hash,
         );
         mark._reserved = statement_id;
@@ -1727,7 +2422,9 @@ impl LrsStore {
     /// Checks if a statement has an active mark of the given kind.
     pub fn has_mark(&self, statement_id: &[u64; 2], mark_kind: u32) -> bool {
         let sm = self.statement_marks.read().unwrap();
-        sm.get(statement_id).map(|&m| (m & (1 << mark_kind)) != 0).unwrap_or(false)
+        sm.get(statement_id)
+            .map(|&m| (m & (1 << mark_kind)) != 0)
+            .unwrap_or(false)
     }
 
     /// Reads statement body JSON from disk given tile index and offset.
@@ -1742,11 +2439,15 @@ impl LrsStore {
             None => return Ok(None),
         };
 
-        if header.tile_type != TILE_STATEMENT_BODY || payload.len() < std::mem::size_of::<StatementBlobHeader>() {
+        if header.tile_type != TILE_STATEMENT_BODY
+            || payload.len() < std::mem::size_of::<StatementBlobHeader>()
+        {
             return Ok(None);
         }
 
-        let blob_hdr: &StatementBlobHeader = &bytemuck::pod_read_unaligned::<StatementBlobHeader>(&payload[..std::mem::size_of::<StatementBlobHeader>()]);
+        let blob_hdr: &StatementBlobHeader = &bytemuck::pod_read_unaligned::<StatementBlobHeader>(
+            &payload[..std::mem::size_of::<StatementBlobHeader>()],
+        );
         let total_chunks = blob_hdr.total_chunks;
         let mut assembled_bytes = Vec::with_capacity(blob_hdr.total_bytes as usize);
 
@@ -1757,16 +2458,21 @@ impl LrsStore {
             for c in 1..total_chunks {
                 if let Some((_, next_payload)) = reader.get_tile(start_tile + c as usize) {
                     if next_payload.len() >= std::mem::size_of::<StatementBlobHeader>() {
-                        let next_hdr: &StatementBlobHeader = &bytemuck::pod_read_unaligned::<StatementBlobHeader>(&next_payload[..std::mem::size_of::<StatementBlobHeader>()]);
+                        let next_hdr: &StatementBlobHeader =
+                            &bytemuck::pod_read_unaligned::<StatementBlobHeader>(
+                                &next_payload[..std::mem::size_of::<StatementBlobHeader>()],
+                            );
                         let next_data = &next_payload[std::mem::size_of::<StatementBlobHeader>()..];
-                        assembled_bytes.extend_from_slice(&next_data[..next_hdr.chunk_bytes as usize]);
+                        assembled_bytes
+                            .extend_from_slice(&next_data[..next_hdr.chunk_bytes as usize]);
                     }
                 }
             }
         }
 
-        let json_str = String::from_utf8(assembled_bytes)
-            .map_err(|e| LrsStoreError::CorruptedData(format!("Invalid UTF-8 in statement body: {}", e)))?;
+        let json_str = String::from_utf8(assembled_bytes).map_err(|e| {
+            LrsStoreError::CorruptedData(format!("Invalid UTF-8 in statement body: {}", e))
+        })?;
         Ok(Some(json_str))
     }
 
@@ -1803,7 +2509,10 @@ impl LrsStore {
 
         // 4. Normalize contextActivities (parent, grouping, category, other) to arrays
         if let Some(ctx) = val.get_mut("context").and_then(|c| c.as_object_mut()) {
-            if let Some(ca) = ctx.get_mut("contextActivities").and_then(|ca| ca.as_object_mut()) {
+            if let Some(ca) = ctx
+                .get_mut("contextActivities")
+                .and_then(|ca| ca.as_object_mut())
+            {
                 for key in ["parent", "grouping", "category", "other"] {
                     if let Some(item) = ca.get_mut(key) {
                         if item.is_object() {
@@ -1814,8 +2523,15 @@ impl LrsStore {
                 }
             }
         }
-        if let Some(sub_ctx) = val.get_mut("object").and_then(|o| o.get_mut("context")).and_then(|c| c.as_object_mut()) {
-            if let Some(ca) = sub_ctx.get_mut("contextActivities").and_then(|ca| ca.as_object_mut()) {
+        if let Some(sub_ctx) = val
+            .get_mut("object")
+            .and_then(|o| o.get_mut("context"))
+            .and_then(|c| c.as_object_mut())
+        {
+            if let Some(ca) = sub_ctx
+                .get_mut("contextActivities")
+                .and_then(|ca| ca.as_object_mut())
+            {
                 for key in ["parent", "grouping", "category", "other"] {
                     if let Some(item) = ca.get_mut(key) {
                         if item.is_object() {
@@ -1877,7 +2593,9 @@ impl LrsStore {
                 let matches = if existing.sha256_hash == sha256_hash {
                     true
                 } else if let Some(ref existing_json) = existing.raw_json {
-                    if let Ok(mut existing_val) = serde_json::from_str::<serde_json::Value>(existing_json) {
+                    if let Ok(mut existing_val) =
+                        serde_json::from_str::<serde_json::Value>(existing_json)
+                    {
                         let mut compare_val = val.clone();
                         if let Some(obj) = existing_val.as_object_mut() {
                             obj.remove("stored");
@@ -1932,10 +2650,15 @@ impl LrsStore {
                 )));
             }
             let decoded = hex::decode(sha2_hex).map_err(|e| {
-                LrsStoreError::InvalidStatement(format!("Invalid attachment sha2 hex '{}': {}", sha2_hex, e))
+                LrsStoreError::InvalidStatement(format!(
+                    "Invalid attachment sha2 hex '{}': {}",
+                    sha2_hex, e
+                ))
             })?;
             if decoded.len() != 32 {
-                return Err(LrsStoreError::InvalidStatement("Attachment sha2 must decode to 32 bytes".into()));
+                return Err(LrsStoreError::InvalidStatement(
+                    "Attachment sha2 must decode to 32 bytes".into(),
+                ));
             }
             let mut declared_sha2 = [0u8; 32];
             declared_sha2.copy_from_slice(&decoded);
@@ -1955,7 +2678,8 @@ impl LrsStore {
             att_hdr.chunk_bytes = bytes.len() as u32;
             att_hdr.chunk_crc32 = crc32c::crc32c(bytes);
 
-            let mut tile_payload = Vec::with_capacity(std::mem::size_of::<AttachmentBlobHeader>() + bytes.len());
+            let mut tile_payload =
+                Vec::with_capacity(std::mem::size_of::<AttachmentBlobHeader>() + bytes.len());
             tile_payload.extend_from_slice(bytes_of(&att_hdr));
             tile_payload.extend_from_slice(bytes);
 
@@ -1971,9 +2695,10 @@ impl LrsStore {
         }
 
         // 5. Store statement body (Tile 21) with chunking if necessary
-        const MAX_PAYLOAD_CHUNK: usize = HYPER_TILE_PAYLOAD_SIZE - std::mem::size_of::<StatementBlobHeader>();
+        const MAX_PAYLOAD_CHUNK: usize =
+            HYPER_TILE_PAYLOAD_SIZE - std::mem::size_of::<StatementBlobHeader>();
         let total_bytes = canonical_bytes.len();
-        let total_chunks = ((total_bytes + MAX_PAYLOAD_CHUNK - 1) / MAX_PAYLOAD_CHUNK).max(1) as u16;
+        let total_chunks = total_bytes.div_ceil(MAX_PAYLOAD_CHUNK).max(1) as u16;
 
         let mut first_tile_id = 0u32;
         let mut byte_offset = 0;
@@ -1992,7 +2717,8 @@ impl LrsStore {
                 crc32c::crc32c(chunk_slice),
             );
 
-            let mut tile_payload = Vec::with_capacity(std::mem::size_of::<StatementBlobHeader>() + chunk_len);
+            let mut tile_payload =
+                Vec::with_capacity(std::mem::size_of::<StatementBlobHeader>() + chunk_len);
             tile_payload.extend_from_slice(bytes_of(&blob_hdr));
             tile_payload.extend_from_slice(chunk_slice);
 
@@ -2040,7 +2766,10 @@ impl LrsStore {
                     target_entry.index_record.mark_voided();
                     index_records_to_write.push(target_entry.index_record);
                 }
-                self.voiding_targets.write().unwrap().insert(target_id, meta.statement_id);
+                self.voiding_targets
+                    .write()
+                    .unwrap()
+                    .insert(target_id, meta.statement_id);
             }
         }
 
@@ -2051,7 +2780,8 @@ impl LrsStore {
         index_tile_hdr.payload_bytes = index_bytes.len() as u32;
         index_tile_hdr.data_crc32 = crc32c::crc32c(index_bytes);
 
-        self.writer.write_raw_hyper_tile(&index_tile_hdr, index_bytes)?;
+        self.writer
+            .write_raw_hyper_tile(&index_tile_hdr, index_bytes)?;
 
         // Update in-memory index
         {
@@ -2086,7 +2816,14 @@ impl LrsStore {
         &self,
         id: [u64; 2],
         is_voided_query: bool,
-    ) -> Result<(StatementIndexRecord, String, Vec<(AttachmentBlobHeader, Vec<u8>)>), LrsStoreError> {
+    ) -> Result<
+        (
+            StatementIndexRecord,
+            String,
+            Vec<(AttachmentBlobHeader, Vec<u8>)>,
+        ),
+        LrsStoreError,
+    > {
         let stmts = self.statements.read().unwrap();
         let entry = stmts.get(&id).ok_or(LrsStoreError::StatementNotFound)?;
 
@@ -2097,13 +2834,16 @@ impl LrsStore {
             return Err(LrsStoreError::StatementNotVoided);
         }
 
-        let raw_json = entry.raw_json.clone().ok_or(LrsStoreError::StatementNotFound)?;
+        let raw_json = entry
+            .raw_json
+            .clone()
+            .ok_or(LrsStoreError::StatementNotFound)?;
 
         // Collect attachments if requested
         let mut atts = Vec::new();
         if entry.index_record.has_attachments() {
             let att_map = self.attachments.read().unwrap();
-            for (_, (hdr, data)) in att_map.iter() {
+            for (hdr, data) in att_map.values() {
                 atts.push((*hdr, data.clone()));
             }
         }
@@ -2112,7 +2852,10 @@ impl LrsStore {
     }
 
     /// Queries statements using standard xAPI 1.0.3 query parameters.
-    pub fn query_statements(&self, filter: StatementFilter) -> Result<StatementPage, LrsStoreError> {
+    pub fn query_statements(
+        &self,
+        filter: StatementFilter,
+    ) -> Result<StatementPage, LrsStoreError> {
         let stmts = self.statements.read().unwrap();
         let mut matched = Vec::new();
 
@@ -2125,7 +2868,9 @@ impl LrsStore {
                 let mut matches_filter = true;
                 if let Some(agent_hash) = filter.agent_hash {
                     if filter.related_agents {
-                        if !entry.related_agents.contains(&agent_hash) && rec.actor_hash != agent_hash {
+                        if !entry.related_agents.contains(&agent_hash)
+                            && rec.actor_hash != agent_hash
+                        {
                             matches_filter = false;
                         }
                     } else if rec.actor_hash != agent_hash {
@@ -2141,7 +2886,9 @@ impl LrsStore {
                 if let Some(ref act_id) = filter.activity_id {
                     let ah = (xxh3_64(act_id.as_bytes()) & 0xFFFF_FFFF) as u32;
                     if filter.related_activities {
-                        if !entry.related_activities.iter().any(|a| a == act_id) && rec.activity_hash != ah {
+                        if !entry.related_activities.iter().any(|a| a == act_id)
+                            && rec.activity_hash != ah
+                        {
                             matches_filter = false;
                         }
                     } else if rec.activity_hash != ah {
@@ -2171,7 +2918,11 @@ impl LrsStore {
                                     ok = false;
                                 }
                             }
-                            if ok && !matched.iter().any(|e: &CachedIndexEntry| e.index_record.statement_id == voiding_id) {
+                            if ok
+                                && !matched.iter().any(|e: &CachedIndexEntry| {
+                                    e.index_record.statement_id == voiding_id
+                                })
+                            {
                                 matched.push(voiding_entry.clone());
                             }
                         }
@@ -2187,7 +2938,8 @@ impl LrsStore {
                     if (mask & (1 << MARK_CONSENT_WITHDRAWN)) != 0 {
                         continue;
                     }
-                    if (mask & (1 << MARK_QUARANTINE)) != 0 && (mask & (1 << MARK_LEGAL_HOLD)) == 0 {
+                    if (mask & (1 << MARK_QUARANTINE)) != 0 && (mask & (1 << MARK_LEGAL_HOLD)) == 0
+                    {
                         continue;
                     }
                 }
@@ -2258,7 +3010,9 @@ impl LrsStore {
                 }
             }
 
-            if !matched.iter().any(|e: &CachedIndexEntry| e.index_record.statement_id == entry.index_record.statement_id) {
+            if !matched.iter().any(|e: &CachedIndexEntry| {
+                e.index_record.statement_id == entry.index_record.statement_id
+            }) {
                 matched.push(entry.clone());
             }
         }
@@ -2267,12 +3021,20 @@ impl LrsStore {
         if filter.ascending {
             matched.sort_by_key(|e| e.index_record.stored_timestamp_ms);
         } else {
-            matched.sort_by(|a, b| b.index_record.stored_timestamp_ms.cmp(&a.index_record.stored_timestamp_ms));
+            matched.sort_by(|a, b| {
+                b.index_record
+                    .stored_timestamp_ms
+                    .cmp(&a.index_record.stored_timestamp_ms)
+            });
         }
 
         let total_matched = matched.len();
         let limit = if filter.limit == 0 { 50 } else { filter.limit };
-        let page_entries = matched.into_iter().skip(filter.offset).take(limit).collect::<Vec<_>>();
+        let page_entries = matched
+            .into_iter()
+            .skip(filter.offset)
+            .take(limit)
+            .collect::<Vec<_>>();
 
         let mut statement_strings = Vec::with_capacity(page_entries.len());
         let mut atts = Vec::new();
@@ -2283,7 +3045,7 @@ impl LrsStore {
                 statement_strings.push(raw.clone());
             }
             if filter.attachments && entry.index_record.has_attachments() {
-                for (_, (hdr, data)) in att_map.iter() {
+                for (hdr, data) in att_map.values() {
                     atts.push((*hdr, data.clone()));
                 }
             }
@@ -2317,7 +3079,7 @@ impl LrsStore {
 
     /// Calculates document ETag hash (SHA1) and formatted string enclosed in quotes per xAPI 1.0.3 §4.1.3.
     pub fn calculate_etag(content: &[u8]) -> ([u8; 16], String) {
-        use sha1::{Sha1, Digest};
+        use sha1::{Digest, Sha1};
         let mut hasher = Sha1::new();
         hasher.update(content);
         let sha1_bytes = hasher.finalize();
@@ -2328,7 +3090,11 @@ impl LrsStore {
     }
 
     /// Retrieves a document by compound key.
-    pub fn get_document(&self, doc_kind: u32, key: &str) -> Option<(DocumentRecordHeader, Vec<u8>, String)> {
+    pub fn get_document(
+        &self,
+        doc_kind: u32,
+        key: &str,
+    ) -> Option<(DocumentRecordHeader, Vec<u8>, String)> {
         let key_h = Self::document_key_hash(doc_kind, key);
         let docs = self.documents.read().unwrap();
         docs.get(&key_h).cloned()
@@ -2360,7 +3126,9 @@ impl LrsStore {
                     return Err(LrsStoreError::StatementConflict(
                         "Resource already exists; If-Match or If-None-Match required to update (xAPI 1.0.3 §4.1.3)".into(),
                     ));
-                } else if doc_kind == DOC_KIND_ACTIVITY_PROFILE || doc_kind == DOC_KIND_AGENT_PROFILE {
+                } else if doc_kind == DOC_KIND_ACTIVITY_PROFILE
+                    || doc_kind == DOC_KIND_AGENT_PROFILE
+                {
                     return Err(LrsStoreError::InvalidStatement(
                         "PUT to Activity Profile or Agent Profile requires If-Match or If-None-Match header".into(),
                     ));
@@ -2375,11 +3143,15 @@ impl LrsStore {
                         let (_, old_etag) = Self::calculate_etag(old_bytes);
                         let clean_old = old_etag.trim_matches('"');
                         if clean_im != clean_old && clean_im != "*" {
-                            return Err(LrsStoreError::PreconditionFailed("If-Match ETag mismatch".into()));
+                            return Err(LrsStoreError::PreconditionFailed(
+                                "If-Match ETag mismatch".into(),
+                            ));
                         }
                     }
                     None => {
-                        return Err(LrsStoreError::PreconditionFailed("If-Match document does not exist".into()));
+                        return Err(LrsStoreError::PreconditionFailed(
+                            "If-Match document does not exist".into(),
+                        ));
                     }
                 }
             }
@@ -2391,7 +3163,9 @@ impl LrsStore {
                     let (_, old_etag) = Self::calculate_etag(old_bytes);
                     let clean_old = old_etag.trim_matches('"');
                     if clean_inm == clean_old || clean_inm == "*" {
-                        return Err(LrsStoreError::PreconditionFailed("If-None-Match ETag matched existing document".into()));
+                        return Err(LrsStoreError::PreconditionFailed(
+                            "If-None-Match ETag matched existing document".into(),
+                        ));
                     }
                 }
             }
@@ -2407,15 +3181,29 @@ impl LrsStore {
                     }
                     if is_json {
                         let mut old_val: serde_json::Value = serde_json::from_slice(old_bytes)
-                            .map_err(|e| LrsStoreError::InvalidStatement(format!("Existing document is not valid JSON: {}", e)))?;
-                        let new_val: serde_json::Value = serde_json::from_slice(content)
-                            .map_err(|e| LrsStoreError::InvalidStatement(format!("Posted document is not valid JSON: {}", e)))?;
+                            .map_err(|e| {
+                                LrsStoreError::InvalidStatement(format!(
+                                    "Existing document is not valid JSON: {}",
+                                    e
+                                ))
+                            })?;
+                        let new_val: serde_json::Value =
+                            serde_json::from_slice(content).map_err(|e| {
+                                LrsStoreError::InvalidStatement(format!(
+                                    "Posted document is not valid JSON: {}",
+                                    e
+                                ))
+                            })?;
 
                         let old_map = old_val.as_object_mut().ok_or_else(|| {
-                            LrsStoreError::InvalidStatement("Existing document must be a JSON object for merge".into())
+                            LrsStoreError::InvalidStatement(
+                                "Existing document must be a JSON object for merge".into(),
+                            )
                         })?;
                         let new_map = new_val.as_object().ok_or_else(|| {
-                            LrsStoreError::InvalidStatement("Posted document must be a JSON object for merge".into())
+                            LrsStoreError::InvalidStatement(
+                                "Posted document must be a JSON object for merge".into(),
+                            )
                         })?;
 
                         for (k, v) in new_map {
@@ -2426,8 +3214,13 @@ impl LrsStore {
                         }
                     }
                 } else if is_json {
-                    let new_val: serde_json::Value = serde_json::from_slice(content)
-                        .map_err(|e| LrsStoreError::InvalidStatement(format!("Posted document is not valid JSON: {}", e)))?;
+                    let new_val: serde_json::Value =
+                        serde_json::from_slice(content).map_err(|e| {
+                            LrsStoreError::InvalidStatement(format!(
+                                "Posted document is not valid JSON: {}",
+                                e
+                            ))
+                        })?;
                     if !new_val.is_object() {
                         return Err(LrsStoreError::InvalidStatement(
                             "Posted document must be a JSON object".into(),
@@ -2442,7 +3235,11 @@ impl LrsStore {
 
         let mut doc_hdr = DocumentRecordHeader::default();
         doc_hdr.doc_kind = doc_kind;
-        doc_hdr.flags = if is_json { DOC_FLAG_IS_JSON } else { DOC_FLAG_ACTIVE };
+        doc_hdr.flags = if is_json {
+            DOC_FLAG_IS_JSON
+        } else {
+            DOC_FLAG_ACTIVE
+        };
         doc_hdr.key_hash = key_h;
         doc_hdr.etag_hash = etag_bytes;
         doc_hdr.timestamp_ms = now_ms();
@@ -2476,7 +3273,12 @@ impl LrsStore {
     }
 
     /// Deletes a document by compound key (appends a DOC_FLAG_DELETED record).
-    pub fn delete_document(&self, doc_kind: u32, key: &str, if_match: Option<&str>) -> Result<(), LrsStoreError> {
+    pub fn delete_document(
+        &self,
+        doc_kind: u32,
+        key: &str,
+        if_match: Option<&str>,
+    ) -> Result<(), LrsStoreError> {
         let key_h = Self::document_key_hash(doc_kind, key);
 
         {
@@ -2488,7 +3290,9 @@ impl LrsStore {
                 let (_, old_etag) = Self::calculate_etag(&existing.1);
                 let clean_old = old_etag.trim_matches('"');
                 if clean_im != clean_old && clean_im != "*" {
-                    return Err(LrsStoreError::PreconditionFailed("If-Match ETag mismatch".into()));
+                    return Err(LrsStoreError::PreconditionFailed(
+                        "If-Match ETag mismatch".into(),
+                    ));
                 }
             }
         }
@@ -2501,7 +3305,8 @@ impl LrsStore {
         doc_hdr.timestamp_ms = now_ms();
         doc_hdr.key_len = key_bytes.len() as u32;
 
-        let mut tile_payload = Vec::with_capacity(std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len());
+        let mut tile_payload =
+            Vec::with_capacity(std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len());
         tile_payload.extend_from_slice(bytes_of(&doc_hdr));
         tile_payload.extend_from_slice(key_bytes);
 
@@ -2522,11 +3327,16 @@ impl LrsStore {
     }
 
     /// Lists document IDs matching kind and compound prefix, filtered by optional `since` timestamp.
-    pub fn list_document_ids(&self, doc_kind: u32, prefix: &str, since_ms: Option<u64>) -> Vec<String> {
+    pub fn list_document_ids(
+        &self,
+        doc_kind: u32,
+        prefix: &str,
+        since_ms: Option<u64>,
+    ) -> Vec<String> {
         let docs = self.documents.read().unwrap();
         let mut result = Vec::new();
 
-        for (_h, (hdr, _content, key_str)) in docs.iter() {
+        for (hdr, _content, key_str) in docs.values() {
             if hdr.doc_kind == doc_kind && key_str.starts_with(prefix) {
                 if let Some(since) = since_ms {
                     if hdr.timestamp_ms <= since {
@@ -2565,13 +3375,17 @@ impl LrsStore {
     /// Part D: Consent withdrawal and erasure.
     /// Purges statement bodies for statements marked with MARK_CONSENT_WITHDRAWN and NO MARK_LEGAL_HOLD.
     /// Appends a signed purge receipt statement to the archive.
-    pub fn purge_consent_withdrawn_statements(&self, signer_key: &str) -> Result<Vec<[u64; 2]>, LrsStoreError> {
+    pub fn purge_consent_withdrawn_statements(
+        &self,
+        signer_key: &str,
+    ) -> Result<Vec<[u64; 2]>, LrsStoreError> {
         let mut purged = Vec::new();
         let target_ids: Vec<[u64; 2]> = {
             let sm = self.statement_marks.read().unwrap();
             sm.iter()
                 .filter(|(_id, &mask)| {
-                    (mask & (1 << MARK_CONSENT_WITHDRAWN)) != 0 && (mask & (1 << MARK_LEGAL_HOLD)) == 0
+                    (mask & (1 << MARK_CONSENT_WITHDRAWN)) != 0
+                        && (mask & (1 << MARK_LEGAL_HOLD)) == 0
                 })
                 .map(|(&id, _)| id)
                 .collect()
@@ -2590,7 +3404,8 @@ impl LrsStore {
         for id in &purged {
             let target_uuid = u64_pair_to_uuid(*id);
             let receipt_uuid = generate_uuid_v4();
-            let receipt_json = format!(r#"{{
+            let receipt_json = format!(
+                r#"{{
                 "id": "{}",
                 "actor": {{"mbox": "mailto:compliance@s3a.local", "name": "S3A Compliance Purge Daemon"}},
                 "verb": {{"id": "http://adlnet.gov/expapi/verbs/voided", "display": {{"en-US": "purged"}}}},
@@ -2607,7 +3422,9 @@ impl LrsStore {
                         "https://s3a.local/ext/purge-signer": "{}"
                     }}
                 }}
-            }}"#, receipt_uuid, target_uuid, signer_key);
+            }}"#,
+                receipt_uuid, target_uuid, signer_key
+            );
 
             let _ = self.store_statement(&receipt_json, &[])?;
         }
@@ -2632,7 +3449,9 @@ impl LrsStore {
             for (&id, entry) in stmts.iter() {
                 let mask = marks.get(&id).copied().unwrap_or(0);
                 // Skip if already purged by retention
-                if (mask & (1 << MARK_RETENTION_EXPIRED)) != 0 && entry.raw_json.as_deref() == Some("{\"purged\":true}") {
+                if (mask & (1 << MARK_RETENTION_EXPIRED)) != 0
+                    && entry.raw_json.as_deref() == Some("{\"purged\":true}")
+                {
                     continue;
                 }
                 // Skip if protected by legal hold
@@ -2660,7 +3479,8 @@ impl LrsStore {
 
             let target_uuid = u64_pair_to_uuid(id);
             let receipt_uuid = generate_uuid_v4();
-            let receipt_json = format!(r#"{{
+            let receipt_json = format!(
+                r#"{{
                 "id": "{}",
                 "actor": {{"mbox": "mailto:retention@s3a.local", "name": "S3A Retention Purge Daemon"}},
                 "verb": {{"id": "http://adlnet.gov/expapi/verbs/voided", "display": {{"en-US": "purged"}}}},
@@ -2680,7 +3500,9 @@ impl LrsStore {
                         "https://s3a.local/ext/purge-reason": "retention_expired"
                     }}
                 }}
-            }}"#, receipt_uuid, target_uuid, signer_key, retention_days, cutoff_ms);
+            }}"#,
+                receipt_uuid, target_uuid, signer_key, retention_days, cutoff_ms
+            );
 
             let _ = self.store_statement(&receipt_json, &[])?;
 
@@ -2689,7 +3511,10 @@ impl LrsStore {
                 target_statement_id: target_uuid,
                 timestamp_ms: now_ms(),
                 signer: signer_key.to_string(),
-                reason: format!("Retention policy expired (> {} days, MARK_RETENTION_EXPIRED)", retention_days),
+                reason: format!(
+                    "Retention policy expired (> {} days, MARK_RETENTION_EXPIRED)",
+                    retention_days
+                ),
             });
         }
 
@@ -2731,7 +3556,9 @@ impl LrsStore {
                                 if let Some(name) = acc.get("name").and_then(|n| n.as_str()) {
                                     if name == account_name_or_device_id {
                                         if let Some(hp) = home_page {
-                                            if acc.get("homePage").and_then(|h| h.as_str()) == Some(hp) {
+                                            if acc.get("homePage").and_then(|h| h.as_str())
+                                                == Some(hp)
+                                            {
                                                 matched = true;
                                             }
                                         } else {
@@ -2742,7 +3569,9 @@ impl LrsStore {
                             }
                             if !matched {
                                 if let Some(mbox) = actor.get("mbox").and_then(|m| m.as_str()) {
-                                    if mbox.trim_start_matches("mailto:") == account_name_or_device_id {
+                                    if mbox.trim_start_matches("mailto:")
+                                        == account_name_or_device_id
+                                    {
                                         matched = true;
                                     }
                                 }
@@ -2751,11 +3580,14 @@ impl LrsStore {
 
                         // Also check context extensions for device ID
                         if !matched {
-                            if let Some(dev) = val.get("context")
+                            if let Some(dev) = val
+                                .get("context")
                                 .and_then(|c| c.get("extensions"))
-                                .and_then(|e| e.get("https://s3a.local/ext/device-id")
-                                    .or_else(|| e.get("https://s3a.local/ext/purged-device-id"))
-                                    .or_else(|| e.get("deviceId")))
+                                .and_then(|e| {
+                                    e.get("https://s3a.local/ext/device-id")
+                                        .or_else(|| e.get("https://s3a.local/ext/purged-device-id"))
+                                        .or_else(|| e.get("deviceId"))
+                                })
                                 .and_then(|d| d.as_str())
                             {
                                 if dev == account_name_or_device_id {
@@ -2785,7 +3617,8 @@ impl LrsStore {
 
             let target_uuid = u64_pair_to_uuid(id);
             let receipt_uuid = generate_uuid_v4();
-            let receipt_json = format!(r#"{{
+            let receipt_json = format!(
+                r#"{{
                 "id": "{}",
                 "actor": {{"mbox": "mailto:compliance@s3a.local", "name": "S3A Compliance Purge Daemon"}},
                 "verb": {{"id": "http://adlnet.gov/expapi/verbs/voided", "display": {{"en-US": "purged"}}}},
@@ -2803,7 +3636,9 @@ impl LrsStore {
                         "https://s3a.local/ext/purge-signer": "{}"
                     }}
                 }}
-            }}"#, receipt_uuid, target_uuid, account_name_or_device_id, signer_key);
+            }}"#,
+                receipt_uuid, target_uuid, account_name_or_device_id, signer_key
+            );
 
             let _ = self.store_statement(&receipt_json, &[])?;
 
@@ -2812,14 +3647,19 @@ impl LrsStore {
                 target_statement_id: target_uuid,
                 timestamp_ms: now_ms(),
                 signer: signer_key.to_string(),
-                reason: format!("Consent withdrawal for device ID '{}'", account_name_or_device_id),
+                reason: format!(
+                    "Consent withdrawal for device ID '{}'",
+                    account_name_or_device_id
+                ),
             });
         }
 
         // Also check if any ELR Person projection matches this account/device
         let elr_persons = self.elr_state.persons.read().unwrap().clone();
         for (person_id, person) in elr_persons {
-            if person.name == account_name_or_device_id || person.identifier == account_name_or_device_id {
+            if person.name == account_name_or_device_id
+                || person.identifier == account_name_or_device_id
+            {
                 let _ = self.mark_person(person_id, MARK_CONSENT_WITHDRAWN, true, 0);
             }
         }
@@ -2830,7 +3670,10 @@ impl LrsStore {
 
     /// Part D: Registration Export.
     /// Exports all statements associated with a registration UUID as a standard xAPI JSON array.
-    pub fn export_registration_xapi_json(&self, registration: [u64; 2]) -> Result<String, LrsStoreError> {
+    pub fn export_registration_xapi_json(
+        &self,
+        registration: [u64; 2],
+    ) -> Result<String, LrsStoreError> {
         let page = self.query_statements(StatementFilter {
             registration: Some(registration),
             limit: 10000,
@@ -2893,7 +3736,8 @@ impl LrsStore {
         hdr: &ElrRecordHeader,
         payload: &[u8],
     ) -> Result<(), LrsStoreError> {
-        let mut tile_payload = Vec::with_capacity(std::mem::size_of::<ElrRecordHeader>() + payload.len());
+        let mut tile_payload =
+            Vec::with_capacity(std::mem::size_of::<ElrRecordHeader>() + payload.len());
         tile_payload.extend_from_slice(bytes_of(hdr));
         tile_payload.extend_from_slice(payload);
 
@@ -2918,7 +3762,11 @@ impl LrsStore {
             }
             if let Some(ref json_str) = entry.raw_json {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                    let delta = crate::elr::project_statement_to_elr(&val, *stmt_id, entry.index_record.timestamp_ms);
+                    let delta = crate::elr::project_statement_to_elr(
+                        &val,
+                        *stmt_id,
+                        entry.index_record.timestamp_ms,
+                    );
                     rebuilt.apply_delta(delta);
                 }
             } else if let Ok(Some(json_str)) = self.read_body_json_from_disk(
@@ -2927,7 +3775,11 @@ impl LrsStore {
                 entry.index_record.body_offset as usize,
             ) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    let delta = crate::elr::project_statement_to_elr(&val, *stmt_id, entry.index_record.timestamp_ms);
+                    let delta = crate::elr::project_statement_to_elr(
+                        &val,
+                        *stmt_id,
+                        entry.index_record.timestamp_ms,
+                    );
                     rebuilt.apply_delta(delta);
                 }
             }
@@ -2951,7 +3803,7 @@ impl LrsStore {
             *self.last_committed_ms.read().unwrap(),
             mark_kind,
             if set { MARK_SET } else { MARK_CLEAR },
-            (now_ms() / 1000) as u64,
+            now_ms() / 1000,
             actor_hash,
         );
         mark._reserved = person_id;
@@ -2977,13 +3829,17 @@ impl LrsStore {
 
     /// Part 5: Purges projections for persons marked with CONSENT_WITHDRAWN (without LEGAL_HOLD)
     /// and appends a signed compliance purge receipt.
-    pub fn purge_consent_withdrawn_persons(&self, signer_key: &str) -> Result<Vec<[u64; 2]>, LrsStoreError> {
+    pub fn purge_consent_withdrawn_persons(
+        &self,
+        signer_key: &str,
+    ) -> Result<Vec<[u64; 2]>, LrsStoreError> {
         let mut purged = Vec::new();
         let target_ids: Vec<[u64; 2]> = {
             let pm = self.elr_state.person_marks.read().unwrap();
             pm.iter()
                 .filter(|(_id, &mask)| {
-                    (mask & (1 << MARK_CONSENT_WITHDRAWN)) != 0 && (mask & (1 << MARK_LEGAL_HOLD)) == 0
+                    (mask & (1 << MARK_CONSENT_WITHDRAWN)) != 0
+                        && (mask & (1 << MARK_LEGAL_HOLD)) == 0
                 })
                 .map(|(&id, _)| id)
                 .collect()
@@ -2996,7 +3852,11 @@ impl LrsStore {
 
             // Tombstone related events, competencies, credentials, goals
             {
-                let events: Vec<[u64; 2]> = self.elr_state.learning_events.read().unwrap()
+                let events: Vec<[u64; 2]> = self
+                    .elr_state
+                    .learning_events
+                    .read()
+                    .unwrap()
                     .values()
                     .filter(|e| e.person_id == id)
                     .map(|e| e.id)
@@ -3006,7 +3866,11 @@ impl LrsStore {
                 }
             }
             {
-                let comps: Vec<[u64; 2]> = self.elr_state.competencies.read().unwrap()
+                let comps: Vec<[u64; 2]> = self
+                    .elr_state
+                    .competencies
+                    .read()
+                    .unwrap()
                     .values()
                     .filter(|c| c.person_id == id)
                     .map(|c| c.id)
@@ -3016,7 +3880,11 @@ impl LrsStore {
                 }
             }
             {
-                let creds: Vec<[u64; 2]> = self.elr_state.credentials.read().unwrap()
+                let creds: Vec<[u64; 2]> = self
+                    .elr_state
+                    .credentials
+                    .read()
+                    .unwrap()
                     .values()
                     .filter(|c| c.person_id == id)
                     .map(|c| c.id)
@@ -3026,7 +3894,11 @@ impl LrsStore {
                 }
             }
             {
-                let goals: Vec<[u64; 2]> = self.elr_state.goals.read().unwrap()
+                let goals: Vec<[u64; 2]> = self
+                    .elr_state
+                    .goals
+                    .read()
+                    .unwrap()
                     .values()
                     .filter(|g| g.person_id == id)
                     .map(|g| g.id)
@@ -3039,7 +3911,8 @@ impl LrsStore {
             // Append signed purge receipt statement
             let target_uuid = u64_pair_to_uuid(id);
             let receipt_uuid = generate_uuid_v4();
-            let receipt_json = format!(r#"{{
+            let receipt_json = format!(
+                r#"{{
                 "id": "{}",
                 "actor": {{"mbox": "mailto:compliance@s3a.local", "name": "S3A ELR Compliance Purge Daemon"}},
                 "verb": {{"id": "https://w3id.org/xapi/tla/verbs/purged", "display": {{"en-US": "purged"}}}},
@@ -3056,7 +3929,9 @@ impl LrsStore {
                         "https://s3a.local/ext/purge-signer": "{}"
                     }}
                 }}
-            }}"#, receipt_uuid, target_uuid, signer_key);
+            }}"#,
+                receipt_uuid, target_uuid, signer_key
+            );
 
             let _ = self.store_statement(&receipt_json, &[])?;
         }
@@ -3067,7 +3942,8 @@ impl LrsStore {
     // --- Person CRUD ---
     pub fn list_persons(&self, include_hidden: bool) -> Vec<crate::elr::ElrPerson> {
         let persons = self.elr_state.persons.read().unwrap();
-        persons.values()
+        persons
+            .values()
             .filter(|p| include_hidden || !self.elr_state.is_person_consent_withdrawn(&p.id))
             .cloned()
             .collect()
@@ -3083,7 +3959,11 @@ impl LrsStore {
     pub fn put_person(&self, person: crate::elr::ElrPerson) -> Result<(), LrsStoreError> {
         let (hdr, payload) = person.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_PERSON, &hdr, &payload)?;
-        self.elr_state.persons.write().unwrap().insert(person.id, person);
+        self.elr_state
+            .persons
+            .write()
+            .unwrap()
+            .insert(person.id, person);
         Ok(())
     }
 
@@ -3099,17 +3979,32 @@ impl LrsStore {
 
     // --- Organization CRUD ---
     pub fn list_organizations(&self) -> Vec<crate::elr::ElrOrganization> {
-        self.elr_state.organizations.read().unwrap().values().cloned().collect()
+        self.elr_state
+            .organizations
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn get_organization(&self, id: [u64; 2]) -> Option<crate::elr::ElrOrganization> {
-        self.elr_state.organizations.read().unwrap().get(&id).cloned()
+        self.elr_state
+            .organizations
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
     }
 
     pub fn put_organization(&self, org: crate::elr::ElrOrganization) -> Result<(), LrsStoreError> {
         let (hdr, payload) = org.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_ORGANIZATION, &hdr, &payload)?;
-        self.elr_state.organizations.write().unwrap().insert(org.id, org);
+        self.elr_state
+            .organizations
+            .write()
+            .unwrap()
+            .insert(org.id, org);
         Ok(())
     }
 
@@ -3125,17 +4020,35 @@ impl LrsStore {
 
     // --- LearningResource CRUD ---
     pub fn list_learning_resources(&self) -> Vec<crate::elr::ElrLearningResource> {
-        self.elr_state.learning_resources.read().unwrap().values().cloned().collect()
+        self.elr_state
+            .learning_resources
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn get_learning_resource(&self, id: [u64; 2]) -> Option<crate::elr::ElrLearningResource> {
-        self.elr_state.learning_resources.read().unwrap().get(&id).cloned()
+        self.elr_state
+            .learning_resources
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()
     }
 
-    pub fn put_learning_resource(&self, res: crate::elr::ElrLearningResource) -> Result<(), LrsStoreError> {
+    pub fn put_learning_resource(
+        &self,
+        res: crate::elr::ElrLearningResource,
+    ) -> Result<(), LrsStoreError> {
         let (hdr, payload) = res.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_LEARNING_RESOURCE, &hdr, &payload)?;
-        self.elr_state.learning_resources.write().unwrap().insert(res.id, res);
+        self.elr_state
+            .learning_resources
+            .write()
+            .unwrap()
+            .insert(res.id, res);
         Ok(())
     }
 
@@ -3145,32 +4058,58 @@ impl LrsStore {
         hdr.flags = ELR_FLAG_TOMBSTONE;
         hdr.timestamp_ms = now_ms();
         self.write_elr_tile_payload(TILE_ELR_LEARNING_RESOURCE, &hdr, &[])?;
-        self.elr_state.learning_resources.write().unwrap().remove(&id);
+        self.elr_state
+            .learning_resources
+            .write()
+            .unwrap()
+            .remove(&id);
         Ok(())
     }
 
     // --- LearningEvent CRUD ---
-    pub fn list_learning_events(&self, person_id: Option<[u64; 2]>, include_hidden: bool) -> Vec<crate::elr::ElrLearningEvent> {
+    pub fn list_learning_events(
+        &self,
+        person_id: Option<[u64; 2]>,
+        include_hidden: bool,
+    ) -> Vec<crate::elr::ElrLearningEvent> {
         let events = self.elr_state.learning_events.read().unwrap();
-        events.values()
+        events
+            .values()
             .filter(|e| person_id.map(|pid| e.person_id == pid).unwrap_or(true))
             .filter(|e| include_hidden || !self.elr_state.is_person_consent_withdrawn(&e.person_id))
             .cloned()
             .collect()
     }
 
-    pub fn get_learning_event(&self, id: [u64; 2], include_hidden: bool) -> Option<crate::elr::ElrLearningEvent> {
-        let event = self.elr_state.learning_events.read().unwrap().get(&id).cloned()?;
+    pub fn get_learning_event(
+        &self,
+        id: [u64; 2],
+        include_hidden: bool,
+    ) -> Option<crate::elr::ElrLearningEvent> {
+        let event = self
+            .elr_state
+            .learning_events
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()?;
         if !include_hidden && self.elr_state.is_person_consent_withdrawn(&event.person_id) {
             return None;
         }
         Some(event)
     }
 
-    pub fn put_learning_event(&self, ev: crate::elr::ElrLearningEvent) -> Result<(), LrsStoreError> {
+    pub fn put_learning_event(
+        &self,
+        ev: crate::elr::ElrLearningEvent,
+    ) -> Result<(), LrsStoreError> {
         let (hdr, payload) = ev.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_LEARNING_EVENT, &hdr, &payload)?;
-        self.elr_state.learning_events.write().unwrap().insert(ev.id, ev);
+        self.elr_state
+            .learning_events
+            .write()
+            .unwrap()
+            .insert(ev.id, ev);
         Ok(())
     }
 
@@ -3185,27 +4124,49 @@ impl LrsStore {
     }
 
     // --- CompetencyAssertion CRUD ---
-    pub fn list_competencies(&self, person_id: Option<[u64; 2]>, include_hidden: bool) -> Vec<crate::elr::ElrCompetencyAssertion> {
+    pub fn list_competencies(
+        &self,
+        person_id: Option<[u64; 2]>,
+        include_hidden: bool,
+    ) -> Vec<crate::elr::ElrCompetencyAssertion> {
         let comps = self.elr_state.competencies.read().unwrap();
-        comps.values()
+        comps
+            .values()
             .filter(|c| person_id.map(|pid| c.person_id == pid).unwrap_or(true))
             .filter(|c| include_hidden || !self.elr_state.is_person_consent_withdrawn(&c.person_id))
             .cloned()
             .collect()
     }
 
-    pub fn get_competency(&self, id: [u64; 2], include_hidden: bool) -> Option<crate::elr::ElrCompetencyAssertion> {
-        let comp = self.elr_state.competencies.read().unwrap().get(&id).cloned()?;
+    pub fn get_competency(
+        &self,
+        id: [u64; 2],
+        include_hidden: bool,
+    ) -> Option<crate::elr::ElrCompetencyAssertion> {
+        let comp = self
+            .elr_state
+            .competencies
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()?;
         if !include_hidden && self.elr_state.is_person_consent_withdrawn(&comp.person_id) {
             return None;
         }
         Some(comp)
     }
 
-    pub fn put_competency(&self, comp: crate::elr::ElrCompetencyAssertion) -> Result<(), LrsStoreError> {
+    pub fn put_competency(
+        &self,
+        comp: crate::elr::ElrCompetencyAssertion,
+    ) -> Result<(), LrsStoreError> {
         let (hdr, payload) = comp.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_COMPETENCY_ASSERTION, &hdr, &payload)?;
-        self.elr_state.competencies.write().unwrap().insert(comp.id, comp);
+        self.elr_state
+            .competencies
+            .write()
+            .unwrap()
+            .insert(comp.id, comp);
         Ok(())
     }
 
@@ -3220,27 +4181,49 @@ impl LrsStore {
     }
 
     // --- CredentialAssertion CRUD ---
-    pub fn list_credentials(&self, person_id: Option<[u64; 2]>, include_hidden: bool) -> Vec<crate::elr::ElrCredentialAssertion> {
+    pub fn list_credentials(
+        &self,
+        person_id: Option<[u64; 2]>,
+        include_hidden: bool,
+    ) -> Vec<crate::elr::ElrCredentialAssertion> {
         let creds = self.elr_state.credentials.read().unwrap();
-        creds.values()
+        creds
+            .values()
             .filter(|c| person_id.map(|pid| c.person_id == pid).unwrap_or(true))
             .filter(|c| include_hidden || !self.elr_state.is_person_consent_withdrawn(&c.person_id))
             .cloned()
             .collect()
     }
 
-    pub fn get_credential(&self, id: [u64; 2], include_hidden: bool) -> Option<crate::elr::ElrCredentialAssertion> {
-        let cred = self.elr_state.credentials.read().unwrap().get(&id).cloned()?;
+    pub fn get_credential(
+        &self,
+        id: [u64; 2],
+        include_hidden: bool,
+    ) -> Option<crate::elr::ElrCredentialAssertion> {
+        let cred = self
+            .elr_state
+            .credentials
+            .read()
+            .unwrap()
+            .get(&id)
+            .cloned()?;
         if !include_hidden && self.elr_state.is_person_consent_withdrawn(&cred.person_id) {
             return None;
         }
         Some(cred)
     }
 
-    pub fn put_credential(&self, cred: crate::elr::ElrCredentialAssertion) -> Result<(), LrsStoreError> {
+    pub fn put_credential(
+        &self,
+        cred: crate::elr::ElrCredentialAssertion,
+    ) -> Result<(), LrsStoreError> {
         let (hdr, payload) = cred.to_tile_bytes();
         self.write_elr_tile_payload(TILE_ELR_CREDENTIAL_ASSERTION, &hdr, &payload)?;
-        self.elr_state.credentials.write().unwrap().insert(cred.id, cred);
+        self.elr_state
+            .credentials
+            .write()
+            .unwrap()
+            .insert(cred.id, cred);
         Ok(())
     }
 
@@ -3255,9 +4238,14 @@ impl LrsStore {
     }
 
     // --- Goal CRUD ---
-    pub fn list_goals(&self, person_id: Option<[u64; 2]>, include_hidden: bool) -> Vec<crate::elr::ElrGoal> {
+    pub fn list_goals(
+        &self,
+        person_id: Option<[u64; 2]>,
+        include_hidden: bool,
+    ) -> Vec<crate::elr::ElrGoal> {
         let goals = self.elr_state.goals.read().unwrap();
-        goals.values()
+        goals
+            .values()
             .filter(|g| person_id.map(|pid| g.person_id == pid).unwrap_or(true))
             .filter(|g| include_hidden || !self.elr_state.is_person_consent_withdrawn(&g.person_id))
             .cloned()
@@ -3298,8 +4286,16 @@ mod tests {
     impl TempArchive {
         fn new(name: &str) -> Self {
             let mut p = std::env::temp_dir();
-            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            p.push(format!("s3a_lrs_{}_{}_{}.s3a", name, std::process::id(), nonce));
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            p.push(format!(
+                "s3a_lrs_{}_{}_{}.s3a",
+                name,
+                std::process::id(),
+                nonce
+            ));
             let _ = std::fs::remove_file(&p);
             TempArchive(p)
         }
@@ -3384,19 +4380,23 @@ mod tests {
         let store = LrsStore::open_or_create(temp_archive.path()).unwrap();
 
         let target_uuid = "11111111-2222-3333-4444-555555555555";
-        let target_json = format!(r#"{{
+        let target_json = format!(
+            r#"{{
             "id": "{}",
             "actor": {{"mbox": "mailto:learner@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/attempted"}},
             "object": {{"id": "http://example.com/activity/test"}}
-        }}"#, target_uuid);
+        }}"#,
+            target_uuid
+        );
 
         let target_id = store.store_statement(&target_json, &[]).unwrap();
         assert!(store.get_statement(target_id, false).is_ok());
 
         // Void the statement
         let voiding_uuid = "99999999-8888-7777-6666-555555555555";
-        let voiding_json = format!(r#"{{
+        let voiding_json = format!(
+            r#"{{
             "id": "{}",
             "actor": {{"mbox": "mailto:admin@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/voided"}},
@@ -3404,7 +4404,9 @@ mod tests {
                 "objectType": "StatementRef",
                 "id": "{}"
             }}
-        }}"#, voiding_uuid, target_uuid);
+        }}"#,
+            voiding_uuid, target_uuid
+        );
 
         let _voiding_id = store.store_statement(&voiding_json, &[]).unwrap();
 
@@ -3424,7 +4426,8 @@ mod tests {
         assert!(query_res.statements[0].contains(voiding_uuid));
 
         // 4. Voiding a voiding statement must fail closed
-        let illegal_void_json = format!(r#"{{
+        let illegal_void_json = format!(
+            r#"{{
             "id": "88888888-7777-6666-5555-444444444444",
             "actor": {{"mbox": "mailto:admin@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/voided"}},
@@ -3432,10 +4435,15 @@ mod tests {
                 "objectType": "StatementRef",
                 "id": "{}"
             }}
-        }}"#, voiding_uuid);
+        }}"#,
+            voiding_uuid
+        );
 
         let illegal_err = store.store_statement(&illegal_void_json, &[]).unwrap_err();
-        assert!(matches!(illegal_err, LrsStoreError::CannotVoidVoidingStatement));
+        assert!(matches!(
+            illegal_err,
+            LrsStoreError::CannotVoidVoidingStatement
+        ));
     }
 
     #[test]
@@ -3445,7 +4453,8 @@ mod tests {
 
         // Create a large statement (> 150 KB)
         let large_desc = "x".repeat(160 * 1024);
-        let large_json = format!(r#"{{
+        let large_json = format!(
+            r#"{{
             "id": "77777777-8888-9999-aaaa-bbbbccccdddd",
             "actor": {{"mbox": "mailto:large@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/passed"}},
@@ -3453,7 +4462,9 @@ mod tests {
                 "id": "http://example.com/large",
                 "definition": {{"description": {{"en": "{}"}}}}
             }}
-        }}"#, large_desc);
+        }}"#,
+            large_desc
+        );
 
         let id = store.store_statement(&large_json, &[]).unwrap();
 
@@ -3472,7 +4483,9 @@ mod tests {
         let content1 = br#"{"page": 42, "chapter": "Introduction"}"#;
 
         // PUT document
-        let etag1 = store.put_document(doc_kind, key, content1, true, None, None, false).unwrap();
+        let etag1 = store
+            .put_document(doc_kind, key, content1, true, None, None, false)
+            .unwrap();
         assert!(!etag1.is_empty());
 
         // GET document
@@ -3483,16 +4496,38 @@ mod tests {
 
         // Precondition failure on If-Match with wrong etag
         let wrong_etag = "\"0000000000000000\"";
-        let err = store.put_document(doc_kind, key, br#"{"page": 43}"#, true, Some(wrong_etag), None, false).unwrap_err();
+        let err = store
+            .put_document(
+                doc_kind,
+                key,
+                br#"{"page": 43}"#,
+                true,
+                Some(wrong_etag),
+                None,
+                false,
+            )
+            .unwrap_err();
         assert!(matches!(err, LrsStoreError::PreconditionFailed(_)));
 
         // If-Match with correct etag succeeds
-        let etag2 = store.put_document(doc_kind, key, br#"{"page": 43}"#, true, Some(&etag1), None, false).unwrap();
+        let etag2 = store
+            .put_document(
+                doc_kind,
+                key,
+                br#"{"page": 43}"#,
+                true,
+                Some(&etag1),
+                None,
+                false,
+            )
+            .unwrap();
         assert_ne!(etag1, etag2);
 
         // POST with JSON merge
         let merge_update = br#"{"notes": "good chapter"}"#;
-        let etag3 = store.put_document(doc_kind, key, merge_update, true, None, None, true).unwrap();
+        let etag3 = store
+            .put_document(doc_kind, key, merge_update, true, None, None, true)
+            .unwrap();
         let (_, merged_bytes, _) = store.get_document(doc_kind, key).unwrap();
         let merged_str = String::from_utf8(merged_bytes).unwrap();
         assert!(merged_str.contains("\"page\":43") || merged_str.contains("\"page\": 43"));
@@ -3516,7 +4551,8 @@ mod tests {
         let att_bytes = b"Hello xAPI Attachment World!";
         let sha2_hex = hex::encode(Sha256::digest(att_bytes));
 
-        let stmt_json = format!(r#"{{
+        let stmt_json = format!(
+            r#"{{
             "id": "55555555-4444-3333-2222-111111111111",
             "actor": {{"mbox": "mailto:attachment@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/commented"}},
@@ -3528,9 +4564,14 @@ mod tests {
                 "length": {},
                 "sha2": "{}"
             }}]
-        }}"#, att_bytes.len(), sha2_hex);
+        }}"#,
+            att_bytes.len(),
+            sha2_hex
+        );
 
-        let id = store.store_statement(&stmt_json, &[(sha2_hex.clone(), att_bytes.to_vec())]).unwrap();
+        let id = store
+            .store_statement(&stmt_json, &[(sha2_hex.clone(), att_bytes.to_vec())])
+            .unwrap();
 
         let (idx, _, atts) = store.get_statement(id, false).unwrap();
         assert!(idx.has_attachments());
@@ -3552,7 +4593,9 @@ mod tests {
         let att_bytes = b"Sample attachment bytes";
         let valid_sha2 = hex::encode(Sha256::digest(att_bytes));
 
-        let make_stmt = |sha: &str| format!(r#"{{
+        let make_stmt = |sha: &str| {
+            format!(
+                r#"{{
             "id": "11112222-3333-4444-5555-666677778888",
             "actor": {{"mbox": "mailto:tester@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/commented"}},
@@ -3564,20 +4607,35 @@ mod tests {
                 "length": {},
                 "sha2": "{}"
             }}]
-        }}"#, att_bytes.len(), sha);
+        }}"#,
+                att_bytes.len(),
+                sha
+            )
+        };
 
         // 1. Bad hex (invalid characters or bad length)
         let bad_hex = "not-a-valid-hex-string-at-all-0000000000000000000000000000000000";
-        let err1 = store.store_statement(&make_stmt(bad_hex), &[(bad_hex.to_string(), att_bytes.to_vec())]).unwrap_err();
+        let err1 = store
+            .store_statement(
+                &make_stmt(bad_hex),
+                &[(bad_hex.to_string(), att_bytes.to_vec())],
+            )
+            .unwrap_err();
         assert!(matches!(err1, LrsStoreError::InvalidStatement(_)));
 
         // 2. Mismatched sha2 (valid 64-hex string, but doesn't match content)
         let wrong_sha2 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let err2 = store.store_statement(&make_stmt(wrong_sha2), &[(wrong_sha2.to_string(), att_bytes.to_vec())]).unwrap_err();
+        let err2 = store
+            .store_statement(
+                &make_stmt(wrong_sha2),
+                &[(wrong_sha2.to_string(), att_bytes.to_vec())],
+            )
+            .unwrap_err();
         assert!(matches!(err2, LrsStoreError::InvalidStatement(_)));
 
         // 3. Exact matching sha2 succeeds
-        let ok = store.store_statement(&make_stmt(&valid_sha2), &[(valid_sha2, att_bytes.to_vec())]);
+        let ok =
+            store.store_statement(&make_stmt(&valid_sha2), &[(valid_sha2, att_bytes.to_vec())]);
         assert!(ok.is_ok());
     }
 
@@ -3613,10 +4671,12 @@ mod tests {
 
         // Query for verb-alpha: the 32-bit prefilter passes both id1 and id2,
         // but the full string confirmation must filter out id2
-        let page = store.query_statements(StatementFilter {
-            verb_iri: Some("http://example.com/verbs/verb-alpha".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let page = store
+            .query_statements(StatementFilter {
+                verb_iri: Some("http://example.com/verbs/verb-alpha".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
 
         assert_eq!(page.statements.len(), 1);
         assert!(page.statements[0].contains("11111111-0000-0000-0000-000000000001"));
@@ -3642,7 +4702,9 @@ mod tests {
         assert_eq!(p1.statements.len(), 1);
 
         // 2. Mark statement with MARK_CONSENT_WITHDRAWN via Tile 19 MARKS
-        store.mark_statement(id, MARK_CONSENT_WITHDRAWN, true, 42).unwrap();
+        store
+            .mark_statement(id, MARK_CONSENT_WITHDRAWN, true, 42)
+            .unwrap();
         assert!(store.has_mark(&id, MARK_CONSENT_WITHDRAWN));
 
         // 3. Default query now hides the consent-withdrawn statement
@@ -3650,14 +4712,18 @@ mod tests {
         assert_eq!(p2.statements.len(), 0);
 
         // 4. Query with include_hidden = true reveals the statement
-        let p3 = store.query_statements(StatementFilter {
-            include_hidden: true,
-            ..Default::default()
-        }).unwrap();
+        let p3 = store
+            .query_statements(StatementFilter {
+                include_hidden: true,
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(p3.statements.len(), 1);
 
         // 5. Clear MARK_CONSENT_WITHDRAWN
-        store.mark_statement(id, MARK_CONSENT_WITHDRAWN, false, 42).unwrap();
+        store
+            .mark_statement(id, MARK_CONSENT_WITHDRAWN, false, 42)
+            .unwrap();
         assert!(!store.has_mark(&id, MARK_CONSENT_WITHDRAWN));
 
         // 6. Default query reveals it again
@@ -3678,9 +4744,13 @@ mod tests {
         }"#;
 
         let id = store.store_statement(stmt_json, &[]).unwrap();
-        store.mark_statement(id, MARK_CONSENT_WITHDRAWN, true, 99).unwrap();
+        store
+            .mark_statement(id, MARK_CONSENT_WITHDRAWN, true, 99)
+            .unwrap();
 
-        let purged = store.purge_consent_withdrawn_statements("ed25519-sig-test-key").unwrap();
+        let purged = store
+            .purge_consent_withdrawn_statements("ed25519-sig-test-key")
+            .unwrap();
         assert_eq!(purged.len(), 1);
         assert_eq!(purged[0], id);
 
@@ -3689,11 +4759,16 @@ mod tests {
         assert_eq!(body, "{\"purged\":true}");
 
         // Purge receipt statement was appended
-        let all = store.query_statements(StatementFilter {
-            include_hidden: true,
-            ..Default::default()
-        }).unwrap();
-        assert!(all.statements.iter().any(|s| s.contains("S3A Compliance Purge Daemon")));
+        let all = store
+            .query_statements(StatementFilter {
+                include_hidden: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(all
+            .statements
+            .iter()
+            .any(|s| s.contains("S3A Compliance Purge Daemon")));
     }
 
     #[test]
@@ -3704,21 +4779,27 @@ mod tests {
         let reg_uuid_str = "abcdef01-2345-6789-abcd-ef0123456789";
         let reg_pair = uuid_to_u64_pair(reg_uuid_str).unwrap();
 
-        let stmt1 = format!(r#"{{
+        let stmt1 = format!(
+            r#"{{
             "id": "11111111-aaaa-bbbb-cccc-000000000001",
             "actor": {{"mbox": "mailto:student@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/launched"}},
             "object": {{"id": "http://example.com/course/1"}},
             "context": {{"registration": "{}"}}
-        }}"#, reg_uuid_str);
+        }}"#,
+            reg_uuid_str
+        );
 
-        let stmt2 = format!(r#"{{
+        let stmt2 = format!(
+            r#"{{
             "id": "22222222-aaaa-bbbb-cccc-000000000002",
             "actor": {{"mbox": "mailto:student@example.com"}},
             "verb": {{"id": "http://adlnet.gov/expapi/verbs/completed"}},
             "object": {{"id": "http://example.com/course/1"}},
             "context": {{"registration": "{}"}}
-        }}"#, reg_uuid_str);
+        }}"#,
+            reg_uuid_str
+        );
 
         store.store_statement(&stmt1, &[]).unwrap();
         store.store_statement(&stmt2, &[]).unwrap();
@@ -3819,12 +4900,30 @@ mod tests {
         let rebuilt = store.rebuild_elr_projections().unwrap();
         let live = &store.elr_state;
 
-        assert_eq!(rebuilt.persons.read().unwrap().len(), live.persons.read().unwrap().len());
-        assert_eq!(rebuilt.learning_resources.read().unwrap().len(), live.learning_resources.read().unwrap().len());
-        assert_eq!(rebuilt.learning_events.read().unwrap().len(), live.learning_events.read().unwrap().len());
-        assert_eq!(rebuilt.competencies.read().unwrap().len(), live.competencies.read().unwrap().len());
-        assert_eq!(rebuilt.credentials.read().unwrap().len(), live.credentials.read().unwrap().len());
-        assert_eq!(rebuilt.goals.read().unwrap().len(), live.goals.read().unwrap().len());
+        assert_eq!(
+            rebuilt.persons.read().unwrap().len(),
+            live.persons.read().unwrap().len()
+        );
+        assert_eq!(
+            rebuilt.learning_resources.read().unwrap().len(),
+            live.learning_resources.read().unwrap().len()
+        );
+        assert_eq!(
+            rebuilt.learning_events.read().unwrap().len(),
+            live.learning_events.read().unwrap().len()
+        );
+        assert_eq!(
+            rebuilt.competencies.read().unwrap().len(),
+            live.competencies.read().unwrap().len()
+        );
+        assert_eq!(
+            rebuilt.credentials.read().unwrap().len(),
+            live.credentials.read().unwrap().len()
+        );
+        assert_eq!(
+            rebuilt.goals.read().unwrap().len(),
+            live.goals.read().unwrap().len()
+        );
 
         for (k, v) in rebuilt.persons.read().unwrap().iter() {
             assert_eq!(live.persons.read().unwrap().get(k), Some(v));
@@ -3855,7 +4954,10 @@ mod tests {
         let reopened_store = LrsStore::open_or_create(temp_archive.path()).unwrap();
         let disk_state = &reopened_store.elr_state;
         assert_eq!(disk_state.persons.read().unwrap().len(), live_p_len);
-        assert_eq!(disk_state.learning_events.read().unwrap().len(), live_le_len);
+        assert_eq!(
+            disk_state.learning_events.read().unwrap().len(),
+            live_le_len
+        );
         assert_eq!(disk_state.competencies.read().unwrap().len(), live_ca_len);
     }
 
@@ -3891,7 +4993,9 @@ mod tests {
         assert_eq!(store.list_learning_events(Some(bob_id), false).len(), 1);
 
         // Mark Alice with CONSENT_WITHDRAWN
-        store.mark_person(alice_id, MARK_CONSENT_WITHDRAWN, true, 42).unwrap();
+        store
+            .mark_person(alice_id, MARK_CONSENT_WITHDRAWN, true, 42)
+            .unwrap();
 
         // After withdrawal: Alice is hidden from normal queries
         assert!(store.get_person(alice_id, false).is_none());
@@ -3906,7 +5010,9 @@ mod tests {
         assert_eq!(store.list_learning_events(Some(alice_id), true).len(), 1);
 
         // Purge Alice
-        let purged = store.purge_consent_withdrawn_persons("compliance-ed25519-key").unwrap();
+        let purged = store
+            .purge_consent_withdrawn_persons("compliance-ed25519-key")
+            .unwrap();
         assert_eq!(purged, vec![alice_id]);
 
         // Alice is now tombstoned and gone even with include_hidden
@@ -3917,11 +5023,16 @@ mod tests {
         assert!(store.get_person(bob_id, false).is_some());
 
         // Compliance purge receipt statement is stored in the archive
-        let all = store.query_statements(StatementFilter {
-            include_hidden: true,
-            ..Default::default()
-        }).unwrap();
-        assert!(all.statements.iter().any(|s| s.contains("S3A ELR Compliance Purge Daemon")));
+        let all = store
+            .query_statements(StatementFilter {
+                include_hidden: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(all
+            .statements
+            .iter()
+            .any(|s| s.contains("S3A ELR Compliance Purge Daemon")));
     }
 
     #[test]
@@ -3956,14 +5067,16 @@ mod tests {
             "actor": {"mbox": "mailto:old@example.com"},
             "verb": {"id": "http://adlnet.gov/expapi/verbs/experienced"},
             "object": {"id": "http://example.com/act/old"}
-        }).to_string();
+        })
+        .to_string();
 
         let stmt_new = serde_json::json!({
             "id": "22222222-0000-0000-0000-000000000002",
             "actor": {"mbox": "mailto:new@example.com"},
             "verb": {"id": "http://adlnet.gov/expapi/verbs/experienced"},
             "object": {"id": "http://example.com/act/new"}
-        }).to_string();
+        })
+        .to_string();
 
         let old_id = store.store_statement(&stmt_old, &[]).unwrap();
         let new_id = store.store_statement(&stmt_new, &[]).unwrap();
@@ -3978,14 +5091,26 @@ mod tests {
         }
 
         // Run retention purge for > 90 days
-        let result = store.purge_and_compact_retention(90, "ed25519-compliance-signer").unwrap();
+        let result = store
+            .purge_and_compact_retention(90, "ed25519-compliance-signer")
+            .unwrap();
         assert_eq!(result.purged_count, 1);
         assert_eq!(result.receipts.len(), 1);
-        assert_eq!(result.receipts[0].target_statement_id, u64_pair_to_uuid(old_id));
+        assert_eq!(
+            result.receipts[0].target_statement_id,
+            u64_pair_to_uuid(old_id)
+        );
 
         // Old statement body is erased
         assert_eq!(
-            store.statements.read().unwrap().get(&old_id).unwrap().raw_json.as_deref(),
+            store
+                .statements
+                .read()
+                .unwrap()
+                .get(&old_id)
+                .unwrap()
+                .raw_json
+                .as_deref(),
             Some("{\"purged\":true}")
         );
 
@@ -3994,11 +5119,16 @@ mod tests {
         assert!(new_body.contains("mailto:new@example.com"));
 
         // Retention purge receipt statement was appended to archive
-        let all = store.query_statements(StatementFilter {
-            limit: 100,
-            ..Default::default()
-        }).unwrap();
-        assert!(all.statements.iter().any(|s| s.contains("S3A Retention Purge Daemon")));
+        let all = store
+            .query_statements(StatementFilter {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(all
+            .statements
+            .iter()
+            .any(|s| s.contains("S3A Retention Purge Daemon")));
     }
 
     #[test]
@@ -4018,7 +5148,8 @@ mod tests {
             },
             "verb": {"id": "https://ashecribb.dev/xapi/verbs/reviewed"},
             "object": {"id": "https://example.com/act/review-doc"}
-        }).to_string();
+        })
+        .to_string();
 
         let stmt_other = serde_json::json!({
             "id": "44444444-0000-0000-0000-000000000004",
@@ -4030,36 +5161,56 @@ mod tests {
             },
             "verb": {"id": "https://ashecribb.dev/xapi/verbs/reviewed"},
             "object": {"id": "https://example.com/act/review-doc"}
-        }).to_string();
+        })
+        .to_string();
 
         let target_id = store.store_statement(&stmt_target, &[]).unwrap();
         let other_id = store.store_statement(&stmt_other, &[]).unwrap();
 
         // Purge target device
-        let receipts = store.purge_by_actor_account(target_device, None, "admin-signer").unwrap();
+        let receipts = store
+            .purge_by_actor_account(target_device, None, "admin-signer")
+            .unwrap();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].target_statement_id, u64_pair_to_uuid(target_id));
 
         // Target statement is marked consent-withdrawn and body erased
         assert_eq!(
-            store.statements.read().unwrap().get(&target_id).unwrap().raw_json.as_deref(),
+            store
+                .statements
+                .read()
+                .unwrap()
+                .get(&target_id)
+                .unwrap()
+                .raw_json
+                .as_deref(),
             Some("{\"purged\":true}")
         );
         // Target statement is hidden from default queries (its top-level id is not returned)
-        let queried = store.query_statements(StatementFilter {
-            limit: 10,
-            ..Default::default()
-        }).unwrap();
+        let queried = store
+            .query_statements(StatementFilter {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
         for s in &queried.statements {
             let parsed: serde_json::Value = serde_json::from_str(s).unwrap();
-            assert_ne!(parsed.get("id").and_then(|i| i.as_str()), Some("33333333-0000-0000-0000-000000000003"));
+            assert_ne!(
+                parsed.get("id").and_then(|i| i.as_str()),
+                Some("33333333-0000-0000-0000-000000000003")
+            );
         }
-        assert!(queried.statements.iter().any(|s| s.contains("44444444-0000-0000-0000-000000000004")));
-        assert!(queried.statements.iter().any(|s| s.contains("S3A Compliance Purge Daemon")));
+        assert!(queried
+            .statements
+            .iter()
+            .any(|s| s.contains("44444444-0000-0000-0000-000000000004")));
+        assert!(queried
+            .statements
+            .iter()
+            .any(|s| s.contains("S3A Compliance Purge Daemon")));
 
         // Other statement is completely untouched
         let (_, other_body, _) = store.get_statement(other_id, false).unwrap();
         assert!(other_body.contains("other_device_5555"));
     }
 }
-

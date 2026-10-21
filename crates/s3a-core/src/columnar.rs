@@ -36,16 +36,16 @@ impl ColumnDataType {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct ColumnarTileHeader {
-    pub magic: [u8; 4],                  // *b"S3AC"
-    pub version: u16,                    // Version 1
-    pub column_count: u16,               // Number of columns
-    pub record_count: u32,               // Total rows/records
-    pub compression_codec: u16,          // 0 = Raw
-    pub _reserved16: u16,                // Alignment padding
-    pub column_descriptors_offset: u32,  // Offset from payload start
-    pub null_bitmap_offset: u32,         // Offset from payload start
-    pub source_tile_type: u32,           // Source row tile type (e.g. TileType::TELEMETRY)
-    pub _reserved: [u8; 4],              // Padding to 32 bytes
+    pub magic: [u8; 4],                 // *b"S3AC"
+    pub version: u16,                   // Version 1
+    pub column_count: u16,              // Number of columns
+    pub record_count: u32,              // Total rows/records
+    pub compression_codec: u16,         // 0 = Raw
+    pub _reserved16: u16,               // Alignment padding
+    pub column_descriptors_offset: u32, // Offset from payload start
+    pub null_bitmap_offset: u32,        // Offset from payload start
+    pub source_tile_type: u32,          // Source row tile type (e.g. TileType::TELEMETRY)
+    pub _reserved: [u8; 4],             // Padding to 32 bytes
 }
 
 impl ColumnarTileHeader {
@@ -114,7 +114,11 @@ impl ColumnDescriptor {
     }
 
     pub fn name_as_str(&self) -> &str {
-        let len = self.name.iter().position(|&b| b == 0).unwrap_or(self.name.len());
+        let len = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.name.len());
         std::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
 }
@@ -155,7 +159,7 @@ impl ColumnarTileBuilder {
         desc.data_bytes = data_raw.len() as u32;
 
         let num_records = self.header.record_count as usize;
-        let bitmap_bytes_len = (num_records + 7) / 8;
+        let bitmap_bytes_len = num_records.div_ceil(8);
         let mut null_map = vec![0xFFu8; bitmap_bytes_len]; // Default all valid
 
         if let Some(v_mask) = validity {
@@ -244,22 +248,38 @@ pub struct ColumnarTileView<'a> {
 impl<'a> ColumnarTileView<'a> {
     pub fn parse(payload: &'a [u8]) -> io::Result<Self> {
         if payload.len() < ColumnarTileHeader::SIZE {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Payload too small for ColumnarTileHeader"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Payload too small for ColumnarTileHeader",
+            ));
         }
-        let header: &ColumnarTileHeader = bytemuck::try_from_bytes::<ColumnarTileHeader>(&payload[..ColumnarTileHeader::SIZE])
-            // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "misaligned tile header (A4: borrowed view requires 8-byte alignment)"))?;
+        let header: &ColumnarTileHeader =
+            bytemuck::try_from_bytes::<ColumnarTileHeader>(&payload[..ColumnarTileHeader::SIZE])
+                // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "misaligned tile header (A4: borrowed view requires 8-byte alignment)",
+                    )
+                })?;
         if !header.is_valid() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid ColumnarTileHeader magic/version"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid ColumnarTileHeader magic/version",
+            ));
         }
 
         let desc_start = header.column_descriptors_offset as usize;
         let desc_len = header.column_count as usize * ColumnDescriptor::SIZE;
         if payload.len() < desc_start + desc_len {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Payload truncated before column descriptors"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Payload truncated before column descriptors",
+            ));
         }
 
-        let descriptors: &[ColumnDescriptor] = bytemuck::cast_slice(&payload[desc_start..desc_start + desc_len]);
+        let descriptors: &[ColumnDescriptor] =
+            bytemuck::cast_slice(&payload[desc_start..desc_start + desc_len]);
         Ok(Self {
             header,
             descriptors,
@@ -301,7 +321,10 @@ impl<'a> ColumnarTileView<'a> {
         let start = desc.data_offset as usize;
         let end = start + desc.data_bytes as usize;
         if end > self.payload.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Column data truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Column data truncated",
+            ));
         }
         Ok(&self.payload[start..end])
     }
@@ -310,15 +333,20 @@ impl<'a> ColumnarTileView<'a> {
     pub fn read_column_slice<T: Pod>(&self, desc: &ColumnDescriptor) -> io::Result<&'a [T]> {
         let bytes = self.read_column_data(desc)?;
         bytemuck::try_cast_slice(bytes).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Cast failed for column slice: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Cast failed for column slice: {}", e),
+            )
         })
     }
 
     /// Verifies the cryptographic SHA-256 hash of a column descriptor against on-disk bytes.
     pub fn verify_column_hash(&self, desc: &ColumnDescriptor) -> bool {
-        let Ok(data) = self.read_column_data(desc) else { return false; };
+        let Ok(data) = self.read_column_data(desc) else {
+            return false;
+        };
         let num_records = self.header.record_count as usize;
-        let bitmap_len = (num_records + 7) / 8;
+        let bitmap_len = num_records.div_ceil(8);
         let bm_start = desc.null_bitmap_offset as usize;
         if bm_start + bitmap_len > self.payload.len() {
             return false;

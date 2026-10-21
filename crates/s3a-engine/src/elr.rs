@@ -13,8 +13,8 @@ use std::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_128;
 
-use s3a_core::*;
 use crate::lrs_store::u64_pair_to_uuid;
+use s3a_core::*;
 
 /// Version of the ELRR aggregator ruleset.
 pub const ELR_RULESET_VERSION_V1: u32 = 1;
@@ -52,7 +52,8 @@ impl ElrPerson {
         let payload = serde_json::to_vec(&serde_json::json!({
             "name": self.name,
             "identifier": self.identifier,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -75,8 +76,16 @@ impl ElrPerson {
             .map_err(|e| format!("Invalid Person JSON payload: {}", e))?;
         Ok(Self {
             id: hdr.entity_id,
-            name: val.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            identifier: val.get("identifier").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            name: val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            identifier: val
+                .get("identifier")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -101,7 +110,8 @@ impl ElrOrganization {
         let payload = serde_json::to_vec(&serde_json::json!({
             "name": self.name,
             "org_type": self.org_type,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -124,8 +134,16 @@ impl ElrOrganization {
             .map_err(|e| format!("Invalid Organization JSON payload: {}", e))?;
         Ok(Self {
             id: hdr.entity_id,
-            name: val.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            org_type: val.get("org_type").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            name: val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            org_type: val
+                .get("org_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -154,7 +172,8 @@ impl ElrLearningResource {
             "name": self.name,
             "description": self.description,
             "resource_type": self.resource_type,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -177,10 +196,26 @@ impl ElrLearningResource {
             .map_err(|e| format!("Invalid LearningResource JSON payload: {}", e))?;
         Ok(Self {
             id: hdr.entity_id,
-            iri: val.get("iri").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            name: val.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            description: val.get("description").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            resource_type: val.get("resource_type").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            iri: val
+                .get("iri")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            name: val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            description: val
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            resource_type: val
+                .get("resource_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -212,7 +247,8 @@ impl ElrLearningEvent {
             "success": self.success,
             "completion": self.completion,
             "verb_iri": self.verb_iri,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -238,10 +274,17 @@ impl ElrLearningEvent {
             person_id: hdr.related_id,
             resource_id: hdr._reserved,
             status: hdr.status,
-            score_scaled: val.get("score_scaled").and_then(|v| v.as_f64()).map(|f| f as f32),
+            score_scaled: val
+                .get("score_scaled")
+                .and_then(|v| v.as_f64())
+                .map(|f| f as f32),
             success: val.get("success").and_then(|v| v.as_bool()),
             completion: val.get("completion").and_then(|v| v.as_bool()),
-            verb_iri: val.get("verb_iri").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            verb_iri: val
+                .get("verb_iri")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -271,7 +314,8 @@ impl ElrCompetencyAssertion {
             "competency_id": self.competency_id,
             "framework": self.framework,
             "asserted_by": self.asserted_by,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -295,10 +339,22 @@ impl ElrCompetencyAssertion {
         Ok(Self {
             id: hdr.entity_id,
             person_id: hdr.related_id,
-            competency_id: val.get("competency_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            framework: val.get("framework").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            competency_id: val
+                .get("competency_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            framework: val
+                .get("framework")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             confidence: hdr.numeric_value,
-            asserted_by: val.get("asserted_by").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            asserted_by: val
+                .get("asserted_by")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             status: hdr.status,
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
@@ -327,7 +383,8 @@ impl ElrCredentialAssertion {
             "credential_id": self.credential_id,
             "issuer": self.issuer,
             "badge_url": self.badge_url,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -351,9 +408,21 @@ impl ElrCredentialAssertion {
         Ok(Self {
             id: hdr.entity_id,
             person_id: hdr.related_id,
-            credential_id: val.get("credential_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            issuer: val.get("issuer").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            badge_url: val.get("badge_url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            credential_id: val
+                .get("credential_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            issuer: val
+                .get("issuer")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            badge_url: val
+                .get("badge_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -383,7 +452,8 @@ impl ElrGoal {
             "name": self.name,
             "description": self.description,
             "target_date_ms": self.target_date_ms,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let hdr = ElrRecordHeader {
             entity_id: self.id,
@@ -409,9 +479,20 @@ impl ElrGoal {
             person_id: hdr.related_id,
             goal_type: hdr.sub_type,
             status: hdr.status,
-            target_date_ms: val.get("target_date_ms").and_then(|v| v.as_u64()).unwrap_or(0),
-            name: val.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            description: val.get("description").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            target_date_ms: val
+                .get("target_date_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            name: val
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            description: val
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             source_statement_id: hdr.source_statement_id,
             timestamp_ms: hdr.timestamp_ms,
             flags: hdr.flags,
@@ -451,7 +532,10 @@ impl ElrStoreState {
 
     pub fn is_person_consent_withdrawn(&self, person_id: &[u64; 2]) -> bool {
         let marks = self.person_marks.read().unwrap();
-        marks.get(person_id).map(|&m| (m & (1 << MARK_CONSENT_WITHDRAWN)) != 0).unwrap_or(false)
+        marks
+            .get(person_id)
+            .map(|&m| (m & (1 << MARK_CONSENT_WITHDRAWN)) != 0)
+            .unwrap_or(false)
     }
 
     pub fn apply_delta(&self, delta: ElrProjectionDelta) {
@@ -483,7 +567,11 @@ fn truncate_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         s
     } else {
-        match s.char_indices().take_while(|(idx, _)| *idx < max_len).last() {
+        match s
+            .char_indices()
+            .take_while(|(idx, _)| *idx < max_len)
+            .last()
+        {
             Some((idx, ch)) => &s[..idx + ch.len_utf8()],
             None => "",
         }
@@ -512,14 +600,18 @@ pub fn project_statement_to_elr(
     } else if let Some(openid) = actor.get("openid").and_then(|v| v.as_str()) {
         openid.to_string()
     } else if let Some(acc) = actor.get("account") {
-        let hp = acc.get("homePage").and_then(|v| v.as_str()).unwrap_or_default();
+        let hp = acc
+            .get("homePage")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         let name = acc.get("name").and_then(|v| v.as_str()).unwrap_or_default();
         format!("{}:{}", hp, name)
     } else {
         "anonymous".to_string()
     };
 
-    let name = actor.get("name")
+    let name = actor
+        .get("name")
         .and_then(|n| n.as_str())
         .unwrap_or(&identifier)
         .to_string();
@@ -541,7 +633,10 @@ pub fn project_statement_to_elr(
         None => return delta,
     };
 
-    let obj_type = obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+    let obj_type = obj
+        .get("objectType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Activity");
     let obj_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or_default();
 
     let is_activity = obj_type == "Activity";
@@ -549,19 +644,22 @@ pub fn project_statement_to_elr(
 
     let resource_id = if is_activity {
         let res_id = deterministic_uuid("resource", obj_id);
-        let raw_res_name = obj.get("definition")
+        let raw_res_name = obj
+            .get("definition")
             .and_then(|d| d.get("name"))
             .and_then(|n| n.as_object())
             .and_then(|m| m.values().next())
             .and_then(|v| v.as_str())
             .unwrap_or(obj_id);
-        let raw_res_desc = obj.get("definition")
+        let raw_res_desc = obj
+            .get("definition")
             .and_then(|d| d.get("description"))
             .and_then(|n| n.as_object())
             .and_then(|m| m.values().next())
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let res_type = obj.get("definition")
+        let res_type = obj
+            .get("definition")
             .and_then(|d| d.get("type"))
             .and_then(|v| v.as_str())
             .unwrap_or("http://adlnet.gov/expapi/activities/course");
@@ -585,15 +683,21 @@ pub fn project_statement_to_elr(
     };
 
     // Extract Verb & Result
-    let verb_iri = statement_val.get("verb")
+    let verb_iri = statement_val
+        .get("verb")
         .and_then(|v| v.get("id"))
         .and_then(|v| v.as_str())
         .unwrap_or_default();
 
     let result = statement_val.get("result");
-    let success = result.and_then(|r| r.get("success")).and_then(|s| s.as_bool());
-    let completion = result.and_then(|r| r.get("completion")).and_then(|c| c.as_bool());
-    let score_scaled = result.and_then(|r| r.get("score"))
+    let success = result
+        .and_then(|r| r.get("success"))
+        .and_then(|s| s.as_bool());
+    let completion = result
+        .and_then(|r| r.get("completion"))
+        .and_then(|c| c.as_bool());
+    let score_scaled = result
+        .and_then(|r| r.get("score"))
         .and_then(|s| s.get("scaled"))
         .and_then(|sc| sc.as_f64())
         .map(|f| f as f32);
@@ -605,37 +709,43 @@ pub fn project_statement_to_elr(
 
     if verb_iri.ends_with("/completed") {
         match success {
-            None => learning_event_status = Some(ELR_STATUS_COMPLETED),      // Rule 1.1
-            Some(true) => learning_event_status = Some(ELR_STATUS_PASSED),   // Rule 1.2
-            Some(false) => learning_event_status = Some(ELR_STATUS_FAILED),  // Rule 1.3
+            None => learning_event_status = Some(ELR_STATUS_COMPLETED), // Rule 1.1
+            Some(true) => learning_event_status = Some(ELR_STATUS_PASSED), // Rule 1.2
+            Some(false) => learning_event_status = Some(ELR_STATUS_FAILED), // Rule 1.3
         }
     } else if verb_iri.ends_with("/passed") {
-        learning_event_status = Some(ELR_STATUS_PASSED);                     // Rule 1.4
+        learning_event_status = Some(ELR_STATUS_PASSED); // Rule 1.4
     } else if verb_iri.ends_with("/failed") {
-        learning_event_status = Some(ELR_STATUS_FAILED);                     // Rule 1.5
+        learning_event_status = Some(ELR_STATUS_FAILED); // Rule 1.5
     } else if verb_iri.ends_with("/satisfied") {
-        learning_event_status = Some(ELR_STATUS_SATISFIED);                  // Rule 1.6
+        learning_event_status = Some(ELR_STATUS_SATISFIED); // Rule 1.6
     } else if verb_iri.ends_with("/attempted") {
-        learning_event_status = Some(ELR_STATUS_ATTEMPTED);                  // Rule 1.7
+        learning_event_status = Some(ELR_STATUS_ATTEMPTED); // Rule 1.7
     } else if verb_iri.ends_with("/registered") {
-        learning_event_status = Some(ELR_STATUS_REGISTERED);                 // Rule 1.8
+        learning_event_status = Some(ELR_STATUS_REGISTERED); // Rule 1.8
     } else if verb_iri.ends_with("/scheduled") {
-        learning_event_status = Some(ELR_STATUS_SCHEDULED);                  // Rule 1.9
+        learning_event_status = Some(ELR_STATUS_SCHEDULED); // Rule 1.9
     }
 
     // =========================================================================
     // =========================================================================
     // SECTION 2: COMPETENCIES & CREDENTIALS (rules.md 2.1 - 2.3)
     // =========================================================================
-    let instructor_name = statement_val.get("context")
+    let instructor_name = statement_val
+        .get("context")
         .and_then(|c| c.get("instructor"))
         .and_then(|i| i.get("name"))
         .and_then(|n| n.as_str());
 
     if verb_iri.ends_with("/mastered") || verb_iri.ends_with("/achieved") {
         // Rule 2.1: Mastered / Achieved Competency
-        let comp_id = deterministic_uuid("competency", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-        let asserted_by = instructor_name.unwrap_or("LRS Aggregator Rules Engine").to_string();
+        let comp_id = deterministic_uuid(
+            "competency",
+            &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+        );
+        let asserted_by = instructor_name
+            .unwrap_or("LRS Aggregator Rules Engine")
+            .to_string();
         delta.competency_assertion = Some(ElrCompetencyAssertion {
             id: comp_id,
             person_id,
@@ -650,8 +760,13 @@ pub fn project_statement_to_elr(
         });
     } else if verb_iri.ends_with("/earned") || verb_iri.ends_with("/conferred") {
         // Rule 2.2: Earned / Conferred Credential
-        let cred_id = deterministic_uuid("credential", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-        let issuer = instructor_name.unwrap_or("ADL Credential Registry").to_string();
+        let cred_id = deterministic_uuid(
+            "credential",
+            &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+        );
+        let issuer = instructor_name
+            .unwrap_or("ADL Credential Registry")
+            .to_string();
         delta.credential_assertion = Some(ElrCredentialAssertion {
             id: cred_id,
             person_id,
@@ -664,8 +779,13 @@ pub fn project_statement_to_elr(
         });
     } else if verb_iri.ends_with("/waived") {
         // Rule 2.3: Waived Competency
-        let comp_id = deterministic_uuid("competency", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-        let asserted_by = instructor_name.unwrap_or("LRS Aggregator Rules Engine (Waived)").to_string();
+        let comp_id = deterministic_uuid(
+            "competency",
+            &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+        );
+        let asserted_by = instructor_name
+            .unwrap_or("LRS Aggregator Rules Engine (Waived)")
+            .to_string();
         delta.competency_assertion = Some(ElrCompetencyAssertion {
             id: comp_id,
             person_id,
@@ -683,8 +803,16 @@ pub fn project_statement_to_elr(
     // =========================================================================
     // SECTION 3: GOALS (rules.md 3.1 - 3.4)
     // =========================================================================
-    if is_goal_obj || verb_iri.contains("goal") || verb_iri.ends_with("/assigned") || verb_iri.ends_with("/pursued") || verb_iri.ends_with("/chose") || verb_iri.ends_with("/planned") || verb_iri.ends_with("/dismissed") {
-        let raw_goal_name = obj.get("definition")
+    if is_goal_obj
+        || verb_iri.contains("goal")
+        || verb_iri.ends_with("/assigned")
+        || verb_iri.ends_with("/pursued")
+        || verb_iri.ends_with("/chose")
+        || verb_iri.ends_with("/planned")
+        || verb_iri.ends_with("/dismissed")
+    {
+        let raw_goal_name = obj
+            .get("definition")
             .and_then(|d| d.get("name"))
             .and_then(|n| n.as_object())
             .and_then(|m| m.values().next())
@@ -692,7 +820,8 @@ pub fn project_statement_to_elr(
             .unwrap_or(obj_id);
         let goal_name = truncate_str(raw_goal_name, 1024).to_string();
 
-        let raw_goal_desc = obj.get("definition")
+        let raw_goal_desc = obj
+            .get("definition")
             .and_then(|d| d.get("description"))
             .and_then(|n| n.as_object())
             .and_then(|m| m.values().next())
@@ -702,8 +831,15 @@ pub fn project_statement_to_elr(
 
         if verb_iri.ends_with("/assigned") {
             // Rule 3.1: Goal assigned
-            let goal_id = deterministic_uuid("goal", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-            let desc = if goal_desc.is_empty() { "Assigned organizational learning goal".to_string() } else { goal_desc };
+            let goal_id = deterministic_uuid(
+                "goal",
+                &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+            );
+            let desc = if goal_desc.is_empty() {
+                "Assigned organizational learning goal".to_string()
+            } else {
+                goal_desc
+            };
             delta.goal = Some(ElrGoal {
                 id: goal_id,
                 person_id,
@@ -716,10 +852,20 @@ pub fn project_statement_to_elr(
                 timestamp_ms,
                 flags: ELR_FLAG_ACTIVE,
             });
-        } else if verb_iri.ends_with("/pursued") || verb_iri.ends_with("/chose") || verb_iri.ends_with("/planned") {
+        } else if verb_iri.ends_with("/pursued")
+            || verb_iri.ends_with("/chose")
+            || verb_iri.ends_with("/planned")
+        {
             // Rule 3.2: Self-selected goal
-            let goal_id = deterministic_uuid("goal", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-            let desc = if goal_desc.is_empty() { "Self-directed learning goal".to_string() } else { goal_desc };
+            let goal_id = deterministic_uuid(
+                "goal",
+                &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+            );
+            let desc = if goal_desc.is_empty() {
+                "Self-directed learning goal".to_string()
+            } else {
+                goal_desc
+            };
             delta.goal = Some(ElrGoal {
                 id: goal_id,
                 person_id,
@@ -734,8 +880,15 @@ pub fn project_statement_to_elr(
             });
         } else if verb_iri.ends_with("/recommended") {
             // Rule 3.3: Recommended goal
-            let goal_id = deterministic_uuid("goal", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-            let desc = if goal_desc.is_empty() { "Recommended learning goal".to_string() } else { goal_desc };
+            let goal_id = deterministic_uuid(
+                "goal",
+                &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+            );
+            let desc = if goal_desc.is_empty() {
+                "Recommended learning goal".to_string()
+            } else {
+                goal_desc
+            };
             delta.goal = Some(ElrGoal {
                 id: goal_id,
                 person_id,
@@ -748,10 +901,20 @@ pub fn project_statement_to_elr(
                 timestamp_ms,
                 flags: ELR_FLAG_ACTIVE,
             });
-        } else if verb_iri.ends_with("/abandoned") || verb_iri.ends_with("/dismissed") || verb_iri.ends_with("/removed") {
+        } else if verb_iri.ends_with("/abandoned")
+            || verb_iri.ends_with("/dismissed")
+            || verb_iri.ends_with("/removed")
+        {
             // Rule 3.4: Goal removed / abandoned
-            let goal_id = deterministic_uuid("goal", &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id));
-            let desc = if goal_desc.is_empty() { "Abandoned/removed goal".to_string() } else { goal_desc };
+            let goal_id = deterministic_uuid(
+                "goal",
+                &format!("{}:{}", u64_pair_to_uuid(person_id), obj_id),
+            );
+            let desc = if goal_desc.is_empty() {
+                "Abandoned/removed goal".to_string()
+            } else {
+                goal_desc
+            };
             delta.goal = Some(ElrGoal {
                 id: goal_id,
                 person_id,
@@ -772,7 +935,10 @@ pub fn project_statement_to_elr(
     // =========================================================================
     if verb_iri == "https://ashecribb.dev/xapi/verbs/reviewed" {
         learning_event_status = Some(ELR_STATUS_COMPLETED);
-        let comp_id = deterministic_uuid("competency", &format!("{}:peer-review", u64_pair_to_uuid(person_id)));
+        let comp_id = deterministic_uuid(
+            "competency",
+            &format!("{}:peer-review", u64_pair_to_uuid(person_id)),
+        );
         delta.competency_assertion = Some(ElrCompetencyAssertion {
             id: comp_id,
             person_id,
@@ -790,7 +956,10 @@ pub fn project_statement_to_elr(
     } else if verb_iri == "https://ashecribb.dev/xapi/verbs/rejected" {
         learning_event_status = Some(ELR_STATUS_FAILED);
     } else if verb_iri == "https://ashecribb.dev/xapi/verbs/flagged-hallucination" {
-        let comp_id = deterministic_uuid("competency", &format!("{}:hallucination-detection", u64_pair_to_uuid(person_id)));
+        let comp_id = deterministic_uuid(
+            "competency",
+            &format!("{}:hallucination-detection", u64_pair_to_uuid(person_id)),
+        );
         delta.competency_assertion = Some(ElrCompetencyAssertion {
             id: comp_id,
             person_id,
@@ -804,7 +973,10 @@ pub fn project_statement_to_elr(
             flags: ELR_FLAG_ACTIVE,
         });
     } else if verb_iri == "https://ashecribb.dev/xapi/verbs/ta-approved-draft" {
-        let comp_id = deterministic_uuid("competency", &format!("{}:research-methodology", u64_pair_to_uuid(person_id)));
+        let comp_id = deterministic_uuid(
+            "competency",
+            &format!("{}:research-methodology", u64_pair_to_uuid(person_id)),
+        );
         delta.competency_assertion = Some(ElrCompetencyAssertion {
             id: comp_id,
             person_id,
@@ -824,7 +996,12 @@ pub fn project_statement_to_elr(
     }
 
     if let Some(st) = learning_event_status {
-        let ev_key = format!("{}:{}:{}", u64_pair_to_uuid(person_id), u64_pair_to_uuid(resource_id), u64_pair_to_uuid(statement_id));
+        let ev_key = format!(
+            "{}:{}:{}",
+            u64_pair_to_uuid(person_id),
+            u64_pair_to_uuid(resource_id),
+            u64_pair_to_uuid(statement_id)
+        );
         let ev_id = deterministic_uuid("event", &ev_key);
         delta.learning_event = Some(ElrLearningEvent {
             id: ev_id,
@@ -854,13 +1031,28 @@ mod tests {
         let t_ms = 1_700_000_000_000;
 
         let verbs_and_expected = vec![
-            ("http://adlnet.gov/expapi/verbs/completed", ELR_STATUS_COMPLETED),
+            (
+                "http://adlnet.gov/expapi/verbs/completed",
+                ELR_STATUS_COMPLETED,
+            ),
             ("http://adlnet.gov/expapi/verbs/passed", ELR_STATUS_PASSED),
             ("http://adlnet.gov/expapi/verbs/failed", ELR_STATUS_FAILED),
-            ("http://adlnet.gov/expapi/verbs/satisfied", ELR_STATUS_SATISFIED),
-            ("http://adlnet.gov/expapi/verbs/attempted", ELR_STATUS_ATTEMPTED),
-            ("http://adlnet.gov/expapi/verbs/registered", ELR_STATUS_REGISTERED),
-            ("http://adlnet.gov/expapi/verbs/scheduled", ELR_STATUS_SCHEDULED),
+            (
+                "http://adlnet.gov/expapi/verbs/satisfied",
+                ELR_STATUS_SATISFIED,
+            ),
+            (
+                "http://adlnet.gov/expapi/verbs/attempted",
+                ELR_STATUS_ATTEMPTED,
+            ),
+            (
+                "http://adlnet.gov/expapi/verbs/registered",
+                ELR_STATUS_REGISTERED,
+            ),
+            (
+                "http://adlnet.gov/expapi/verbs/scheduled",
+                ELR_STATUS_SCHEDULED,
+            ),
         ];
 
         for (verb_iri, expected_status) in verbs_and_expected {
@@ -939,7 +1131,10 @@ mod tests {
         let delta = project_statement_to_elr(&comp_val, stmt_id, t_ms);
         assert!(delta.competency_assertion.is_some());
         let ca = delta.competency_assertion.unwrap();
-        assert_eq!(ca.competency_id, "https://example.com/competencies/rust-memory-safety");
+        assert_eq!(
+            ca.competency_id,
+            "https://example.com/competencies/rust-memory-safety"
+        );
         assert_eq!(ca.confidence, 0.98);
         assert_eq!(ca.asserted_by, "Prof. Smith");
         assert_eq!(ca.status, ELR_STATUS_PASSED);
@@ -964,7 +1159,10 @@ mod tests {
         let delta_cred = project_statement_to_elr(&cred_val, stmt_id, t_ms);
         assert!(delta_cred.credential_assertion.is_some());
         let cr = delta_cred.credential_assertion.unwrap();
-        assert_eq!(cr.credential_id, "https://badges.example.com/badge/systems-architect");
+        assert_eq!(
+            cr.credential_id,
+            "https://badges.example.com/badge/systems-architect"
+        );
         assert_eq!(cr.issuer, "Accreditation Board");
     }
 
@@ -1060,7 +1258,10 @@ mod tests {
         });
         let d_flag = project_statement_to_elr(&flag_val, stmt_id, t_ms);
         let ca = d_flag.competency_assertion.unwrap();
-        assert_eq!(ca.competency_id, "https://ashecribb.dev/competencies/hallucination-detection");
+        assert_eq!(
+            ca.competency_id,
+            "https://ashecribb.dev/competencies/hallucination-detection"
+        );
         assert_eq!(ca.framework, "Scholar Research Integrity Framework");
 
         // TA approved draft
@@ -1072,7 +1273,10 @@ mod tests {
         });
         let d_ta = project_statement_to_elr(&ta_val, stmt_id, t_ms);
         let ca_ta = d_ta.competency_assertion.unwrap();
-        assert_eq!(ca_ta.competency_id, "https://ashecribb.dev/competencies/research-methodology");
+        assert_eq!(
+            ca_ta.competency_id,
+            "https://ashecribb.dev/competencies/research-methodology"
+        );
     }
 
     #[test]
@@ -1084,7 +1288,8 @@ mod tests {
             source_statement_id: [10, 20],
             timestamp_ms: 12345678,
             flags: 0,
-        }.to_tile_bytes();
+        }
+        .to_tile_bytes();
         let decoded_p = ElrPerson::from_tile_payload(&hdr_p, &payload_p).unwrap();
         assert_eq!(decoded_p.name, "Ada Lovelace");
         assert_eq!(decoded_p.identifier, "mailto:ada@example.com");
@@ -1100,7 +1305,8 @@ mod tests {
             source_statement_id: [10, 20],
             timestamp_ms: 12345678,
             flags: 0,
-        }.to_tile_bytes();
+        }
+        .to_tile_bytes();
         let decoded_g = ElrGoal::from_tile_payload(&hdr_g, &payload_g).unwrap();
         assert_eq!(decoded_g.name, "Complete Project");
         assert_eq!(decoded_g.goal_type, ELR_GOAL_TYPE_ASSIGNED);

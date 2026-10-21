@@ -1,13 +1,14 @@
-use std::io;
-use std::path::Path;
 use s3a_core::{S3ACoordinate, S3AError, HYPER_TILE_PAYLOAD_SIZE};
 use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine, TileWriter};
 use s3a_simd::{can_reject_tile_bloom, can_reject_tile_time};
+use std::io;
+use std::path::Path;
 
 use crate::pack::ScholarTileType;
 use crate::records::{
-    AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, HumanLrsRecord, ResearchGraphEdgeRecord,
-    ScholarNoteClaimRecord, SrsManifestHeader, SrsWorkspaceRecord, CitationFingerprintRecord,
+    AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, CitationFingerprintRecord,
+    HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord, SrsManifestHeader,
+    SrsWorkspaceRecord,
 };
 use crate::snapshot::{export_srs_snapshot, SrsSnapshotBundle};
 
@@ -20,13 +21,19 @@ pub trait ScholarCrudExt {
     fn create_srs_workspace(&self, record: &SrsWorkspaceRecord) -> io::Result<u64>;
     fn create_agent_registry(&self, records: &[AgentRegistryRecord]) -> io::Result<u64>;
     fn create_note_claims(&self, records: &[ScholarNoteClaimRecord]) -> io::Result<u64>;
-    fn create_citation_fingerprints(&self, records: &[CitationFingerprintRecord]) -> io::Result<u64>;
+    fn create_citation_fingerprints(
+        &self,
+        records: &[CitationFingerprintRecord],
+    ) -> io::Result<u64>;
     fn trace_ai_from_human(&self, human_coord: &S3ACoordinate) -> Result<AiTraceRecord, S3AError>;
     fn trace_human_from_ai(&self, ai_coord: &S3ACoordinate) -> Result<HumanLrsRecord, S3AError>;
     fn query_session_bundle(
         &self,
         session_uuid: [u64; 2],
-    ) -> io::Result<(Vec<(HumanLrsRecord, S3ACoordinate)>, Vec<(AiTraceRecord, S3ACoordinate)>)>;
+    ) -> io::Result<(
+        Vec<(HumanLrsRecord, S3ACoordinate)>,
+        Vec<(AiTraceRecord, S3ACoordinate)>,
+    )>;
     fn export_srs_snapshot<P: AsRef<Path>>(
         &self,
         dest_path: P,
@@ -50,7 +57,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<HumanLrsRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -76,7 +86,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AiTraceRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -102,7 +115,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AcademicPaperRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -128,7 +144,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ResearchGraphEdgeRecord>();
         if edges.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -169,7 +188,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<AgentRegistryRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -196,7 +218,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<ScholarNoteClaimRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -209,7 +234,10 @@ impl ScholarCrudExt for S3ACrudEngine {
         )
     }
 
-    fn create_citation_fingerprints(&self, records: &[CitationFingerprintRecord]) -> io::Result<u64> {
+    fn create_citation_fingerprints(
+        &self,
+        records: &[CitationFingerprintRecord],
+    ) -> io::Result<u64> {
         if records.is_empty() {
             return Ok(0);
         }
@@ -222,7 +250,10 @@ impl ScholarCrudExt for S3ACrudEngine {
 
         let capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<CitationFingerprintRecord>();
         if records.len() > capacity {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Records exceed single tile capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Records exceed single tile capacity",
+            ));
         }
 
         let mut writer = TileWriter::open_append(self.file_path())?;
@@ -248,7 +279,10 @@ impl ScholarCrudExt for S3ACrudEngine {
     fn query_session_bundle(
         &self,
         session_uuid: [u64; 2],
-    ) -> io::Result<(Vec<(HumanLrsRecord, S3ACoordinate)>, Vec<(AiTraceRecord, S3ACoordinate)>)> {
+    ) -> io::Result<(
+        Vec<(HumanLrsRecord, S3ACoordinate)>,
+        Vec<(AiTraceRecord, S3ACoordinate)>,
+    )> {
         let reader = MmapReader::open(self.file_path())?;
         let sieve = QuerySieve::new(&reader);
         let human_records = sieve.query_human_lrs(Some(session_uuid), None, 0, u64::MAX);
@@ -263,7 +297,13 @@ impl ScholarCrudExt for S3ACrudEngine {
         workspace: Option<&SrsWorkspaceRecord>,
         project_uuid: Option<[u64; 2]>,
     ) -> io::Result<SrsSnapshotBundle> {
-        export_srs_snapshot(self.file_path(), dest_path, manifest, workspace, project_uuid)
+        export_srs_snapshot(
+            self.file_path(),
+            dest_path,
+            manifest,
+            workspace,
+            project_uuid,
+        )
     }
 }
 
@@ -299,9 +339,15 @@ pub trait ScholarQueryExt {
         predicate_id: Option<u32>,
     ) -> Vec<(ResearchGraphEdgeRecord, S3ACoordinate)>;
 
-    fn query_srs_workspace(&self, project_uuid: Option<[u64; 2]>) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)>;
+    fn query_srs_workspace(
+        &self,
+        project_uuid: Option<[u64; 2]>,
+    ) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)>;
 
-    fn query_agent_registry(&self, agent_id: Option<u64>) -> Vec<(AgentRegistryRecord, S3ACoordinate)>;
+    fn query_agent_registry(
+        &self,
+        agent_id: Option<u64>,
+    ) -> Vec<(AgentRegistryRecord, S3ACoordinate)>;
 
     fn query_note_claims(
         &self,
@@ -350,7 +396,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[HumanLrsRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
@@ -407,7 +455,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[AiTraceRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if rec.timestamp_sec >= min_ts && rec.timestamp_sec <= max_ts {
@@ -454,7 +504,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if rec.year >= min_year
@@ -501,7 +553,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if let Some(s) = subject_hash {
@@ -522,7 +576,10 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
         results
     }
 
-    fn query_srs_workspace(&self, project_uuid: Option<[u64; 2]>) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)> {
+    fn query_srs_workspace(
+        &self,
+        project_uuid: Option<[u64; 2]>,
+    ) -> Vec<(SrsWorkspaceRecord, S3ACoordinate)> {
         let mut results = Vec::new();
         let tile_count = self.reader().tile_count() as usize;
 
@@ -544,7 +601,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[SrsWorkspaceRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if let Some(p) = project_uuid {
@@ -560,7 +619,10 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
         results
     }
 
-    fn query_agent_registry(&self, agent_id: Option<u64>) -> Vec<(AgentRegistryRecord, S3ACoordinate)> {
+    fn query_agent_registry(
+        &self,
+        agent_id: Option<u64>,
+    ) -> Vec<(AgentRegistryRecord, S3ACoordinate)> {
         let mut results = Vec::new();
         let tile_count = self.reader().tile_count() as usize;
 
@@ -582,7 +644,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[AgentRegistryRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if let Some(id) = agent_id {
@@ -626,7 +690,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[ScholarNoteClaimRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if let Some(s) = session_uuid {
@@ -692,7 +758,9 @@ impl<'a> ScholarQueryExt for QuerySieve<'a> {
 
             let records: &[CitationFingerprintRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in records.iter().enumerate() {
-                if !self.include_hidden() && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32) {
+                if !self.include_hidden()
+                    && self.is_record_hidden(header.tile_type, header.tile_id, rec_idx as u32)
+                {
                     continue;
                 }
                 if let Some(pid) = paper_id {

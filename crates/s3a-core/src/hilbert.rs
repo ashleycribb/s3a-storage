@@ -13,7 +13,10 @@
 /// Transforms 3D coordinates (x, y, z) into a 1D scalar Hilbert index of `bits` resolution per axis.
 /// Supports up to bits=21 (3 * 21 = 63 bits fit into u64).
 pub fn point_to_hilbert_3d(x: u32, y: u32, z: u32, bits: u32) -> u64 {
-    assert!(bits > 0 && bits <= 21, "bits must be in 1..=21 for 64-bit Hilbert index");
+    assert!(
+        bits > 0 && bits <= 21,
+        "bits must be in 1..=21 for 64-bit Hilbert index"
+    );
     let mut coords = [x, y, z];
     axes_to_transpose(&mut coords, bits as usize, 3);
     interleave_transposed_bits(&coords, bits as usize, 3)
@@ -21,7 +24,10 @@ pub fn point_to_hilbert_3d(x: u32, y: u32, z: u32, bits: u32) -> u64 {
 
 /// Transforms a 1D scalar Hilbert index back into 3D coordinates (x, y, z) of `bits` resolution.
 pub fn hilbert_to_point_3d(index: u64, bits: u32) -> (u32, u32, u32) {
-    assert!(bits > 0 && bits <= 21, "bits must be in 1..=21 for 64-bit Hilbert index");
+    assert!(
+        bits > 0 && bits <= 21,
+        "bits must be in 1..=21 for 64-bit Hilbert index"
+    );
     let mut coords = [0u32; 3];
     deinterleave_transposed_bits(index, &mut coords, bits as usize, 3);
     transpose_to_axes(&mut coords, bits as usize, 3);
@@ -119,7 +125,11 @@ fn deinterleave_transposed_bits(index: u64, coords: &mut [u32], bits: usize, n: 
 
 /// Calculates spatial locality metrics comparing Hilbert vs Morton Z-curve for a set of points.
 /// Returns (avg_hilbert_jump, avg_morton_jump) in 1D index space between consecutive Euclidean neighbors.
-pub fn compare_hilbert_vs_morton_locality(points: &[[f32; 3]], max_coord: f32, bits: u32) -> (f64, f64) {
+pub fn compare_hilbert_vs_morton_locality(
+    points: &[[f32; 3]],
+    max_coord: f32,
+    bits: u32,
+) -> (f64, f64) {
     if points.len() < 2 {
         return (0.0, 0.0);
     }
@@ -225,9 +235,9 @@ pub fn s3a_morton_3d(x: u32, y: u32, z: u32) -> u64 {
         let mut n64 = n as u64;
         n64 = (n64 | (n64 << 32)) & 0x001f00000000ffff;
         n64 = (n64 | (n64 << 16)) & 0x001f0000ff0000ff;
-        n64 = (n64 | (n64 << 8))  & 0x100f00f00f00f00f;
-        n64 = (n64 | (n64 << 4))  & 0x10c30c30c30c30c3;
-        n64 = (n64 | (n64 << 2))  & 0x1249249249249249;
+        n64 = (n64 | (n64 << 8)) & 0x100f00f00f00f00f;
+        n64 = (n64 | (n64 << 4)) & 0x10c30c30c30c30c3;
+        n64 = (n64 | (n64 << 2)) & 0x1249249249249249;
         n64
     }
     part1by2(x) | (part1by2(y) << 1) | (part1by2(z) << 2)
@@ -246,7 +256,15 @@ mod tests {
                 for z in 0..16u32 {
                     let h = point_to_hilbert_3d(x, y, z, bits);
                     let (rx, ry, rz) = hilbert_to_point_3d(h, bits);
-                    assert_eq!((rx, ry, rz), (x, y, z), "Failed at ({}, {}, {}), h={}", x, y, z, h);
+                    assert_eq!(
+                        (rx, ry, rz),
+                        (x, y, z),
+                        "Failed at ({}, {}, {}), h={}",
+                        x,
+                        y,
+                        z,
+                        h
+                    );
                 }
             }
         }
@@ -262,8 +280,22 @@ mod tests {
 
             // Along a true Hilbert curve, consecutive indices MUST be face-adjacent Manhattan neighbors:
             // |x1-x2| + |y1-y2| + |z1-z2| == 1
-            let manhattan = (x1 as i32 - x2 as i32).abs() + (y1 as i32 - y2 as i32).abs() + (z1 as i32 - z2 as i32).abs();
-            assert_eq!(manhattan, 1, "Discontinuous Hilbert step between h={} ({},{},{}) and h={} ({},{},{})", h, x1, y1, z1, h + 1, x2, y2, z2);
+            let manhattan = (x1 as i32 - x2 as i32).abs()
+                + (y1 as i32 - y2 as i32).abs()
+                + (z1 as i32 - z2 as i32).abs();
+            assert_eq!(
+                manhattan,
+                1,
+                "Discontinuous Hilbert step between h={} ({},{},{}) and h={} ({},{},{})",
+                h,
+                x1,
+                y1,
+                z1,
+                h + 1,
+                x2,
+                y2,
+                z2
+            );
         }
     }
 

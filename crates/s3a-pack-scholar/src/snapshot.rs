@@ -1,15 +1,16 @@
+use s3a_core::{MarkRecord, TileType, ADDON_EDU, MARK_TARGET_ALL_RECORDS};
+use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine, TileWriter};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use s3a_core::{ADDON_EDU, MarkRecord, TileType, MARK_TARGET_ALL_RECORDS};
-use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine, TileWriter};
 
+use crate::ext::{ScholarCrudExt, ScholarQueryExt};
 use crate::pack::ScholarTileType;
 use crate::records::{
-    AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, HumanLrsRecord, ResearchGraphEdgeRecord,
-    ScholarNoteClaimRecord, SrsManifestHeader, SrsWorkspaceRecord, SCHOLAR_LAYOUT_VERSION_V1,
+    AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, HumanLrsRecord,
+    ResearchGraphEdgeRecord, ScholarNoteClaimRecord, SrsManifestHeader, SrsWorkspaceRecord,
+    SCHOLAR_LAYOUT_VERSION_V1,
 };
-use crate::ext::{ScholarCrudExt, ScholarQueryExt};
 
 /// SCHOLAR RESEARCH SNAPSHOT (SRS) BUNDLE.
 /// Represents a fully reified, portable research project milestone containing
@@ -52,7 +53,8 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
     } else {
         sieve.query_srs_workspace(project_uuid)
     };
-    let paper_pairs = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
+    let paper_pairs =
+        sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
     let edge_pairs = sieve.query_research_graph(None, None);
     let human_pairs = sieve.query_human_lrs(None, None, 0, u64::MAX);
     let ai_pairs = sieve.query_ai_traces(None, None, 0, u64::MAX);
@@ -72,78 +74,160 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
     writer.enable_addon(ADDON_EDU)?;
 
     if !ws_records.is_empty() {
-        let written_tid = writer.write_hyper_tile(ScholarTileType::SRS_WORKSPACE, &ws_records, None, None)?;
+        let written_tid =
+            writer.write_hyper_tile(ScholarTileType::SRS_WORKSPACE, &ws_records, None, None)?;
         for (idx, (_, ptr)) in ws_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !papers.is_empty() {
         let timestamps: Vec<u64> = papers.iter().map(|p| p.timestamp_sec).collect();
-        let written_tid = writer.write_hyper_tile(ScholarTileType::ACADEMIC_PAPERS, &papers, Some(&timestamps), None)?;
+        let written_tid = writer.write_hyper_tile(
+            ScholarTileType::ACADEMIC_PAPERS,
+            &papers,
+            Some(&timestamps),
+            None,
+        )?;
         for (idx, (_, ptr)) in paper_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !edges.is_empty() {
         let timestamps: Vec<u64> = edges.iter().map(|e| e.timestamp_sec).collect();
-        let written_tid = writer.write_hyper_tile(ScholarTileType::RESEARCH_GRAPH, &edges, Some(&timestamps), None)?;
+        let written_tid = writer.write_hyper_tile(
+            ScholarTileType::RESEARCH_GRAPH,
+            &edges,
+            Some(&timestamps),
+            None,
+        )?;
         for (idx, (_, ptr)) in edge_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !human.is_empty() {
         let timestamps: Vec<u64> = human.iter().map(|h| h.timestamp_sec).collect();
-        let written_tid = writer.write_hyper_tile(ScholarTileType::HUMAN_LRS, &human, Some(&timestamps), None)?;
+        let written_tid =
+            writer.write_hyper_tile(ScholarTileType::HUMAN_LRS, &human, Some(&timestamps), None)?;
         for (idx, (_, ptr)) in human_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !ai.is_empty() {
         let timestamps: Vec<u64> = ai.iter().map(|a| a.timestamp_sec).collect();
-        let written_tid = writer.write_hyper_tile(ScholarTileType::AI_TRACE_LOG, &ai, Some(&timestamps), None)?;
+        let written_tid =
+            writer.write_hyper_tile(ScholarTileType::AI_TRACE_LOG, &ai, Some(&timestamps), None)?;
         for (idx, (_, ptr)) in ai_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !agents.is_empty() {
-        let written_tid = writer.write_hyper_tile(ScholarTileType::AGENT_REGISTRY, &agents, None, None)?;
+        let written_tid =
+            writer.write_hyper_tile(ScholarTileType::AGENT_REGISTRY, &agents, None, None)?;
         for (idx, (_, ptr)) in agent_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
     if !claims.is_empty() {
         let timestamps: Vec<u64> = claims.iter().map(|c| c.timestamp_sec).collect();
-        let written_tid = writer.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claims, Some(&timestamps), None)?;
+        let written_tid = writer.write_hyper_tile(
+            ScholarTileType::NOTE_CLAIMS,
+            &claims,
+            Some(&timestamps),
+            None,
+        )?;
         for (idx, (_, ptr)) in claim_pairs.iter().enumerate() {
-            let actual_old_tid = reader.get_tile(ptr.tile_id as usize).map(|(h, _)| h.tile_id).unwrap_or(ptr.tile_id as u64);
+            let actual_old_tid = reader
+                .get_tile(ptr.tile_id as usize)
+                .map(|(h, _)| h.tile_id)
+                .unwrap_or(ptr.tile_id as u64);
             tile_remap.insert(ptr.tile_id as u64, written_tid);
             tile_remap.insert(actual_old_tid, written_tid);
-            record_remap.insert((ptr.tile_id as u64, ptr.record_offset), (written_tid, idx as u32));
-            record_remap.insert((actual_old_tid, ptr.record_offset), (written_tid, idx as u32));
+            record_remap.insert(
+                (ptr.tile_id as u64, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
+            record_remap.insert(
+                (actual_old_tid, ptr.record_offset),
+                (written_tid, idx as u32),
+            );
         }
     }
 
@@ -160,7 +244,9 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
                 remapped.target_tile_id = new_tid;
                 policy_marks.push(remapped);
             }
-        } else if let Some(&(new_tid, new_idx)) = record_remap.get(&(mark.target_tile_id, mark.record_index)) {
+        } else if let Some(&(new_tid, new_idx)) =
+            record_remap.get(&(mark.target_tile_id, mark.record_index))
+        {
             remapped.target_tile_id = new_tid;
             remapped.record_index = new_idx;
             policy_marks.push(remapped);
@@ -173,7 +259,14 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
 
     let payload_tiles = writer.tile_count();
     let final_tile_count = payload_tiles + 1; // including Tile 15 (manifest)
-    let total_records = (ws_records.len() + papers.len() + edges.len() + human.len() + ai.len() + agents.len() + claims.len() + policy_marks.len()) as u64;
+    let total_records = (ws_records.len()
+        + papers.len()
+        + edges.len()
+        + human.len()
+        + ai.len()
+        + agents.len()
+        + claims.len()
+        + policy_marks.len()) as u64;
 
     let mut final_manifest = *manifest;
     final_manifest.magic = SrsManifestHeader::MAGIC;
@@ -188,7 +281,12 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
 
     // Snapshot exports are sealed by default per S3A spec v1.1-draft
     let temp_seal = dest_path.as_ref().with_extension("tmp.seal");
-    s3a_engine::seal_archive(&dest_path, &temp_seal, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &dest_path,
+        &temp_seal,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     s3a_engine::atomic_replace(&temp_seal, &dest_path)?;
 
     Ok(SrsSnapshotBundle {
@@ -215,9 +313,12 @@ pub fn export_srs_snapshot<P1: AsRef<Path>, P2: AsRef<Path>>(
 /// 3. Authoritative Tile 15 (SrsManifestHeader) existence, magic, schema version, and checksum.
 pub fn intake_srs_snapshot<P: AsRef<Path>>(snapshot_path: P) -> io::Result<SrsSnapshotBundle> {
     let reader = MmapReader::open(snapshot_path)?;
-    reader
-        .verify_checksums()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Checksum failure: {}", e)))?;
+    reader.verify_checksums().map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Checksum failure: {}", e),
+        )
+    })?;
 
     let header = reader.file_header();
     if (header.addon_mask & ADDON_EDU) == 0 {
@@ -272,7 +373,11 @@ pub fn intake_srs_snapshot<P: AsRef<Path>>(snapshot_path: P) -> io::Result<SrsSn
         ));
     }
 
-    let ws = sieve.query_srs_workspace(None).into_iter().next().map(|(r, _)| r);
+    let ws = sieve
+        .query_srs_workspace(None)
+        .into_iter()
+        .next()
+        .map(|(r, _)| r);
     let papers: Vec<AcademicPaperRecord> = sieve
         .query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
         .into_iter()

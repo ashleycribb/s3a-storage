@@ -1,7 +1,7 @@
 //! Edge Profile Record Structs and Encodings (§5, §6, §7).
 
-use bytemuck::{bytes_of, Pod, Zeroable};
 use crate::crc::{crc16_ccitt, crc32c};
+use bytemuck::{bytes_of, Pod, Zeroable};
 
 // --- Quality Flags (§5.1.1) ---
 pub const QUALITY_OK: u16 = 0;
@@ -47,13 +47,13 @@ pub const SCOPE_OPERATOR_IDENTITY: u32 = 0x0008;
 #[repr(C, align(4))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CompactEdgeSensorRecord {
-    pub delta_ts_ms: u16,   // Delta milliseconds from tile min_timestamp (offset 0..2)
-    pub sensor_id: u8,      // Physical sensor channel (0..255) (offset 2..3)
-    pub metric_id: u8,      // Metric type (e.g. 1=Temp, 2=Vibration, 3=Current) (offset 3..4)
+    pub delta_ts_ms: u16, // Delta milliseconds from tile min_timestamp (offset 0..2)
+    pub sensor_id: u8,    // Physical sensor channel (0..255) (offset 2..3)
+    pub metric_id: u8,    // Metric type (e.g. 1=Temp, 2=Vibration, 3=Current) (offset 3..4)
     pub quantized_val: i32, // Fixed-point value (offset 4..8)
     pub quality_flags: u16, // Hardware status: 0=OK, 1=Clipped, 2=Degraded (offset 8..10)
     pub _reserved: [u8; 4], // Alignment padding (offset 10..14)
-    pub record_crc16: u16,  // CCITT CRC16 over preceding 14 bytes (offset 14..16)
+    pub record_crc16: u16, // CCITT CRC16 over preceding 14 bytes (offset 14..16)
 }
 
 impl CompactEdgeSensorRecord {
@@ -200,7 +200,7 @@ pub struct DeviceIdentityRecord {
     pub provisioned_at: u64,
     pub boot_count: u64,
     pub _reserved: u32,
-    pub record_crc32: u32,          // Castagnoli CRC32C over bytes 0..92
+    pub record_crc32: u32, // Castagnoli CRC32C over bytes 0..92
 }
 
 impl DeviceIdentityRecord {

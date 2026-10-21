@@ -1,8 +1,8 @@
 //! Metrics calculation and export to demo/results.json.
 
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use serde::{Deserialize, Serialize};
 
 /// Repair loop metrics tracking autonomous self-healing.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -126,13 +126,22 @@ impl SwarmMetrics {
         println!("============================================================");
         println!("  Simulated Agents:       {:>12}", self.agents);
         println!("  Total Commits:          {:>12}", self.commits);
-        println!("  Elapsed Duration:       {:>12.2} s", self.total_duration_secs);
-        println!("  Throughput:             {:>12.2} commits/sec", self.commits_per_sec);
+        println!(
+            "  Elapsed Duration:       {:>12.2} s",
+            self.total_duration_secs
+        );
+        println!(
+            "  Throughput:             {:>12.2} commits/sec",
+            self.commits_per_sec
+        );
         println!("  p50 Push Latency:       {:>12.3} ms", self.p50_latency_ms);
         println!("  p99 Push Latency:       {:>12.3} ms", self.p99_latency_ms);
         println!("  Auto-Merged (Union/LWW):{:>12}", self.auto_merged);
         println!("  Rejected by Grant:      {:>12}", self.rejected_by_grant);
-        println!("  Rejected (Bad Sig):     {:>12}", self.rejected_bad_signature);
+        println!(
+            "  Rejected (Bad Sig):     {:>12}",
+            self.rejected_bad_signature
+        );
         println!("  Sent to Human Queue:    {:>12}", self.sent_to_human);
         println!("  Verified Signatures:    {:>12}", self.verified_signatures);
         println!("  Shadow Mode Active:     {:>12}", self.shadow_mode);
@@ -147,9 +156,8 @@ impl SwarmMetrics {
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-        })?;
+        let json =
+            serde_json::to_string_pretty(self).map_err(|e| std::io::Error::other(e.to_string()))?;
         fs::write(p, json)?;
         Ok(())
     }

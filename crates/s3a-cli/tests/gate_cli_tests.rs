@@ -20,7 +20,8 @@ fn test_gate_register_and_resolve_against_local_directory() {
     let directory_url = format!("http://127.0.0.1:{}/gate/", port);
 
     let active_challenge = Arc::new(Mutex::new(String::new()));
-    let registry: Arc<Mutex<HashMap<String, DirectoryEntry>>> = Arc::new(Mutex::new(HashMap::new()));
+    let registry: Arc<Mutex<HashMap<String, DirectoryEntry>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     let srv_challenge = active_challenge.clone();
     let srv_registry = registry.clone();
@@ -41,7 +42,9 @@ fn test_gate_register_and_resolve_against_local_directory() {
                 let bytes = serde_json::to_vec(&json).unwrap();
                 let _ = req.respond(Response::new(
                     StatusCode(200),
-                    vec![Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()],
+                    vec![
+                        Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
+                    ],
                     Cursor::new(bytes),
                     None,
                     None,
@@ -70,13 +73,26 @@ fn test_gate_register_and_resolve_against_local_directory() {
                         if hex::decode_to_slice(&r.public_key, &mut pk_bytes).is_err()
                             || hex::decode_to_slice(&r.signature, &mut sig_bytes).is_err()
                         {
-                            let _ = req.respond(Response::new(StatusCode(400), vec![], Cursor::new(vec![]), None, None));
+                            let _ = req.respond(Response::new(
+                                StatusCode(400),
+                                vec![],
+                                Cursor::new(vec![]),
+                                None,
+                                None,
+                            ));
                             continue;
                         }
 
-                        let expected_addr = GateAddress::from_public_key(&pk_bytes).to_address_string();
+                        let expected_addr =
+                            GateAddress::from_public_key(&pk_bytes).to_address_string();
                         if r.address != expected_addr {
-                            let _ = req.respond(Response::new(StatusCode(400), vec![], Cursor::new(vec![]), None, None));
+                            let _ = req.respond(Response::new(
+                                StatusCode(400),
+                                vec![],
+                                Cursor::new(vec![]),
+                                None,
+                                None,
+                            ));
                             continue;
                         }
 
@@ -105,18 +121,31 @@ fn test_gate_register_and_resolve_against_local_directory() {
                             valid_until: 2000,
                         };
 
-                        srv_registry.lock().unwrap().insert(r.name.to_lowercase(), entry.clone());
+                        srv_registry
+                            .lock()
+                            .unwrap()
+                            .insert(r.name.to_lowercase(), entry.clone());
                         let bytes = serde_json::to_vec(&entry).unwrap();
                         let _ = req.respond(Response::new(
                             StatusCode(200),
-                            vec![Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()],
+                            vec![Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/json"[..],
+                            )
+                            .unwrap()],
                             Cursor::new(bytes),
                             None,
                             None,
                         ));
                     }
                     Err(_) => {
-                        let _ = req.respond(Response::new(StatusCode(400), vec![], Cursor::new(vec![]), None, None));
+                        let _ = req.respond(Response::new(
+                            StatusCode(400),
+                            vec![],
+                            Cursor::new(vec![]),
+                            None,
+                            None,
+                        ));
                     }
                 }
             } else if path.starts_with("/gate/resolve/") && method == Method::Get {
@@ -125,7 +154,10 @@ fn test_gate_register_and_resolve_against_local_directory() {
                     let bytes = serde_json::to_vec(entry).unwrap();
                     let _ = req.respond(Response::new(
                         StatusCode(200),
-                        vec![Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()],
+                        vec![
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap(),
+                        ],
                         Cursor::new(bytes),
                         None,
                         None,
@@ -133,14 +165,23 @@ fn test_gate_register_and_resolve_against_local_directory() {
                 } else {
                     let _ = req.respond(Response::new(
                         StatusCode(404),
-                        vec![Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap()],
+                        vec![
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap(),
+                        ],
                         Cursor::new(b"{\"error\":\"Gate not found\"}".to_vec()),
                         None,
                         None,
                     ));
                 }
             } else {
-                let _ = req.respond(Response::new(StatusCode(405), vec![], Cursor::new(vec![]), None, None));
+                let _ = req.respond(Response::new(
+                    StatusCode(405),
+                    vec![],
+                    Cursor::new(vec![]),
+                    None,
+                    None,
+                ));
             }
         }
     });
@@ -151,10 +192,13 @@ fn test_gate_register_and_resolve_against_local_directory() {
     let ks_path = temp_dir.join("test_identity.keystore");
     let passphrase = "test-argon2-secure-passphrase";
 
-    let mut ks = FileKeyStore::open_or_create(&ks_path, passphrase).expect("Failed to create FileKeyStore");
+    let mut ks =
+        FileKeyStore::open_or_create(&ks_path, passphrase).expect("Failed to create FileKeyStore");
     let mut identity_id = [0u8; 16];
     OsRng.fill_bytes(&mut identity_id);
-    let pubkey = ks.generate_keypair(&identity_id).expect("Keypair generation failed");
+    let pubkey = ks
+        .generate_keypair(&identity_id)
+        .expect("Keypair generation failed");
     ks.save(passphrase).expect("Keystore save failed");
 
     let expected_address = GateAddress::from_public_key(&pubkey).to_address_string();

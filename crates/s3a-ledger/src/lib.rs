@@ -37,10 +37,10 @@ pub struct CostRates {
 impl Default for CostRates {
     fn default() -> Self {
         Self {
-            cost_per_llm_token: 0.000002,     // $2.00 / 1M tokens
-            cost_per_sandbox_second: 0.0001,  // $0.006 / min
-            cost_per_browser_second: 0.0002,  // $0.012 / min
-            cost_per_r2_operation: 0.00005,   // $0.05 / 1000 ops
+            cost_per_llm_token: 0.000002,    // $2.00 / 1M tokens
+            cost_per_sandbox_second: 0.0001, // $0.006 / min
+            cost_per_browser_second: 0.0002, // $0.012 / min
+            cost_per_r2_operation: 0.00005,  // $0.05 / 1000 ops
         }
     }
 }
@@ -139,8 +139,8 @@ impl Ledger {
             self.last_reset_day = current_day;
             self.spent_today = 0.0;
             // Drain deferred queue on reset
-            let resumed = std::mem::take(&mut self.deferred_queue);
-            resumed
+
+            std::mem::take(&mut self.deferred_queue)
         } else {
             Vec::new()
         }
@@ -268,7 +268,8 @@ mod tests {
         assert!(ledger.status(1792100000).cap_reached);
 
         // Next paid action gets deferred
-        let paid_deferred = ledger.record_action(1792100001, "TASK-2", "agent-1", ActionKind::Sandbox, 10.0);
+        let paid_deferred =
+            ledger.record_action(1792100001, "TASK-2", "agent-1", ActionKind::Sandbox, 10.0);
         assert!(matches!(paid_deferred, RecordResult::Deferred(_)));
 
         // Free action (planning/triage/review) still executes green!

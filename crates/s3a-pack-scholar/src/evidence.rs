@@ -6,7 +6,9 @@ use bytemuck::cast_slice;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use s3a_core::{HyperTileHeader, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, TileType};
+use s3a_core::{
+    HyperTileHeader, TileType, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+};
 use s3a_engine::anchor::{compute_sealed_bytes_fingerprint, AnchorProof};
 use s3a_engine::verify_sealed_archive;
 
@@ -101,14 +103,25 @@ impl ClaimProofChain {
 
     /// Prints a human-readable verified trust chain report to stdout.
     pub fn print_human_readable(&self) {
-        println!("════════════════════════════════════════════════════════════════════════════════");
-        println!("       S3A SCHOLAR PACK CLAIM EVIDENCE CHAIN (Verified Research Trust)          ");
-        println!("════════════════════════════════════════════════════════════════════════════════");
+        println!(
+            "════════════════════════════════════════════════════════════════════════════════"
+        );
+        println!(
+            "       S3A SCHOLAR PACK CLAIM EVIDENCE CHAIN (Verified Research Trust)          "
+        );
+        println!(
+            "════════════════════════════════════════════════════════════════════════════════"
+        );
         println!(
             "Claim ID:              #{} (Kind: {}, Confidence: {:.1}%)",
-            self.claim_id, self.claim_kind, self.confidence * 100.0
+            self.claim_id,
+            self.claim_kind,
+            self.confidence * 100.0
         );
-        println!("Producer:              Researcher/Agent 0x{:016x}", self.producer_id);
+        println!(
+            "Producer:              Researcher/Agent 0x{:016x}",
+            self.producer_id
+        );
         println!(
             "Passage Locator:       Page {}, Chars {}..{}",
             self.passage_page,
@@ -122,7 +135,10 @@ impl ClaimProofChain {
         );
         println!("Source DOI:            {}", self.source_doi);
         println!("Source Content SHA256: {}", self.source_content_sha256);
-        println!("Verifier:              {} (Statement: {})", self.verification_verb, self.verification_statement_id);
+        println!(
+            "Verifier:              {} (Statement: {})",
+            self.verification_verb, self.verification_statement_id
+        );
         println!("Verifier Actor:        {}", self.verifier_actor);
         println!("Snapshot Fingerprint:  {}", self.snapshot_fingerprint);
         let anchor_desc = match (&self.anchor_method, &self.anchor_status) {
@@ -136,15 +152,23 @@ impl ClaimProofChain {
             _ => "none (unanchored)".to_string(),
         };
         println!("Trust Anchor:          {}", anchor_desc);
-        println!("════════════════════════════════════════════════════════════════════════════════");
+        println!(
+            "════════════════════════════════════════════════════════════════════════════════"
+        );
     }
 }
 
 /// Resolves the complete claim evidence chain from an S3A archive.
-pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::Result<ClaimProofChain> {
+pub fn build_claim_proof<P: AsRef<Path>>(
+    archive_path: P,
+    claim_id: u64,
+) -> io::Result<ClaimProofChain> {
     let file_bytes = fs::read(archive_path.as_ref())?;
     if file_bytes.len() < FILE_HEADER_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too small for S3A header"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too small for S3A header",
+        ));
     }
 
     // 1. Root Snapshot Fingerprint & Anchor
@@ -170,10 +194,12 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
     let mut offset = FILE_HEADER_SIZE;
     while offset + HYPER_TILE_SIZE <= file_bytes.len() {
         let tile_bytes = &file_bytes[offset..offset + HYPER_TILE_SIZE];
-        let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let tile_header: &HyperTileHeader =
+            &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
 
         if tile_header.tile_type == ScholarTileType::NOTE_CLAIMS {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[ScholarNoteClaimRecord] = cast_slice(payload);
             for rec in recs {
                 if rec.claim_id == claim_id {
@@ -181,7 +207,8 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
                 }
             }
         } else if tile_header.tile_type == ScholarTileType::CITATION_FINGERPRINT {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[CitationFingerprintRecord] = cast_slice(payload);
             for rec in recs {
                 if rec.is_active() {
@@ -189,13 +216,15 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
                 }
             }
         } else if tile_header.tile_type == ScholarTileType::ACADEMIC_PAPERS {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[AcademicPaperRecord] = cast_slice(payload);
             for rec in recs {
                 paper_dois.insert(rec.paper_id, format!("10.1000/{}", rec.paper_id));
             }
         } else if tile_header.tile_type == TileType::STATEMENT_BODY {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             if payload.len() >= 64 {
                 let json_slice = &payload[64..];
                 if let Ok(val) = serde_json::from_slice::<serde_json::Value>(json_slice) {
@@ -208,7 +237,10 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
     }
 
     let claim = target_claim.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, format!("Claim ID {} not found in archive", claim_id))
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Claim ID {} not found in archive", claim_id),
+        )
     })?;
 
     // 3. Resolve matching CitationFingerprint
@@ -217,30 +249,31 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
         .find(|fp| fp.paper_id == claim.citation_fingerprint_id || fp.paper_id == claim.claim_id)
         .or_else(|| fingerprints.first());
 
-    let (source_paper_id, source_doi, source_kind, source_sha, source_ver, source_fetched) = match matching_fp {
-        Some(fp) => {
-            let doi = paper_dois
-                .get(&fp.paper_id)
-                .cloned()
-                .unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
-            (
-                fp.paper_id,
-                doi,
-                fp.content_kind_str().to_string(),
-                fp.content_sha256_hex(),
-                fp.crossref_version,
-                fp.fetched_at,
-            )
-        }
-        None => (
-            claim.citation_fingerprint_id,
-            format!("10.1000/{}", claim.citation_fingerprint_id),
-            "pdf".to_string(),
-            claim.quote_sha256_hex(),
-            1,
-            claim.timestamp_sec,
-        ),
-    };
+    let (source_paper_id, source_doi, source_kind, source_sha, source_ver, source_fetched) =
+        match matching_fp {
+            Some(fp) => {
+                let doi = paper_dois
+                    .get(&fp.paper_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
+                (
+                    fp.paper_id,
+                    doi,
+                    fp.content_kind_str().to_string(),
+                    fp.content_sha256_hex(),
+                    fp.crossref_version,
+                    fp.fetched_at,
+                )
+            }
+            None => (
+                claim.citation_fingerprint_id,
+                format!("10.1000/{}", claim.citation_fingerprint_id),
+                "pdf".to_string(),
+                claim.quote_sha256_hex(),
+                1,
+                claim.timestamp_sec,
+            ),
+        };
 
     // 4. Resolve verifier statement
     let claim_uuid_str = claim.verification_statement_uuid_string();
@@ -256,10 +289,22 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
     for stmt in &statements {
         let stmt_id = stmt.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if !verification_statement_id.is_empty() && stmt_id == verification_statement_id {
-            if let Some(verb_obj) = stmt.get("verb").and_then(|v| v.get("id")).and_then(|i| i.as_str()) {
-                verifier_verb = verb_obj.split('/').last().unwrap_or(verb_obj).to_string();
+            if let Some(verb_obj) = stmt
+                .get("verb")
+                .and_then(|v| v.get("id"))
+                .and_then(|i| i.as_str())
+            {
+                verifier_verb = verb_obj
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(verb_obj)
+                    .to_string();
             }
-            if let Some(actor_mbox) = stmt.get("actor").and_then(|a| a.get("mbox")).and_then(|m| m.as_str()) {
+            if let Some(actor_mbox) = stmt
+                .get("actor")
+                .and_then(|a| a.get("mbox"))
+                .and_then(|m| m.as_str())
+            {
                 verifier_actor = actor_mbox.to_string();
             }
             if let Some(_ts_str) = stmt.get("timestamp").and_then(|t| t.as_str()) {
@@ -328,7 +373,10 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
 ) -> io::Result<()> {
     let file_bytes = fs::read(archive_path.as_ref())?;
     if file_bytes.len() < FILE_HEADER_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too small for S3A header"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too small for S3A header",
+        ));
     }
 
     let verify_rep = verify_sealed_archive(archive_path.as_ref(), None).ok();
@@ -349,10 +397,12 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
     let mut offset = FILE_HEADER_SIZE;
     while offset + HYPER_TILE_SIZE <= file_bytes.len() {
         let tile_bytes = &file_bytes[offset..offset + HYPER_TILE_SIZE];
-        let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let tile_header: &HyperTileHeader =
+            &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
 
         if tile_header.tile_type == ScholarTileType::CITATION_FINGERPRINT {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[CitationFingerprintRecord] = cast_slice(payload);
             for rec in recs {
                 if rec.is_active() {
@@ -360,7 +410,8 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
                 }
             }
         } else if tile_header.tile_type == ScholarTileType::ACADEMIC_PAPERS {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[AcademicPaperRecord] = cast_slice(payload);
             for rec in recs {
                 paper_dois.insert(rec.paper_id, format!("10.1000/{}", rec.paper_id));
@@ -372,7 +423,10 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
 
     let mut proof_items: Vec<BibliographyProofItem> = Vec::new();
     for fp in &fingerprints {
-        let doi = paper_dois.get(&fp.paper_id).cloned().unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
+        let doi = paper_dois
+            .get(&fp.paper_id)
+            .cloned()
+            .unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
         proof_items.push(BibliographyProofItem {
             paper_id: fp.paper_id,
             doi: doi.clone(),
@@ -399,7 +453,10 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
             bib_content.push_str(&format!("PY  - {}\n", item.year));
             bib_content.push_str(&format!("DO  - {}\n", item.doi));
             bib_content.push_str(&format!("UR  - {}\n", item.source_url));
-            bib_content.push_str(&format!("N1  - S3A Content SHA-256: {}\n", item.content_sha256));
+            bib_content.push_str(&format!(
+                "N1  - S3A Content SHA-256: {}\n",
+                item.content_sha256
+            ));
             bib_content.push_str("ER  - \n\n");
         }
     } else {
@@ -411,7 +468,10 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
             bib_content.push_str(&format!("  year = {{{}}},\n", item.year));
             bib_content.push_str(&format!("  doi = {{{}}},\n", item.doi));
             bib_content.push_str(&format!("  url = {{{}}},\n", item.source_url));
-            bib_content.push_str(&format!("  note = {{S3A SHA-256: {}, Crossref v{}}}\n", item.content_sha256, item.crossref_version));
+            bib_content.push_str(&format!(
+                "  note = {{S3A SHA-256: {}, Crossref v{}}}\n",
+                item.content_sha256, item.crossref_version
+            ));
             bib_content.push_str("}\n\n");
         }
     }
@@ -421,7 +481,13 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
     fs::write(out_path_ref, bib_content.as_bytes())?;
 
     // Write companion .proof.json
-    let companion_path = out_path_ref.with_extension(format!("{}.proof.json", out_path_ref.extension().and_then(|e| e.to_str()).unwrap_or("bib")));
+    let companion_path = out_path_ref.with_extension(format!(
+        "{}.proof.json",
+        out_path_ref
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("bib")
+    ));
     let companion = BibliographyCompanionProof {
         snapshot_fingerprint,
         snapshot_anchor: primary_anchor,
@@ -436,15 +502,18 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use s3a_engine::S3ACrudEngine;
-    use s3a_core::ADDON_EDU;
     use crate::ext::ScholarCrudExt;
     use crate::records::CLAIM_KIND_EMPIRICAL;
+    use s3a_core::ADDON_EDU;
+    use s3a_engine::S3ACrudEngine;
 
     #[test]
     fn test_claim_proof_chain_end_to_end() {
         let temp_dir = std::env::temp_dir();
-        let archive_path = temp_dir.join(format!("test_evidence_chain_{}.s3a", s3a_engine::lrs_store::now_ms()));
+        let archive_path = temp_dir.join(format!(
+            "test_evidence_chain_{}.s3a",
+            s3a_engine::lrs_store::now_ms()
+        ));
         let _guard = FileGuard(archive_path.clone());
 
         let engine = S3ACrudEngine::open_or_create(&archive_path).unwrap();
@@ -472,7 +541,8 @@ mod tests {
             0.98,
             CLAIM_KIND_EMPIRICAL,
             "Zero bias conductance peak observed at 0.5 T magnetic field",
-        ).with_evidence(
+        )
+        .with_evidence(
             201,
             7,
             120,
@@ -491,7 +561,8 @@ mod tests {
         let cal1 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
         let cal2 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
         let fp_bytes = s3a_engine::compute_sealed_file_fingerprint(&archive_path).unwrap();
-        let ots_proofs = s3a_engine::anchor::submit_ots(fp_bytes, &[cal1.url(), cal2.url()]).unwrap();
+        let ots_proofs =
+            s3a_engine::anchor::submit_ots(fp_bytes, &[cal1.url(), cal2.url()]).unwrap();
         for p in ots_proofs {
             s3a_engine::anchor::attach_anchor_to_file(&archive_path, p).unwrap();
         }
@@ -508,7 +579,10 @@ mod tests {
         assert_eq!(proof.passage_char_offset, 120);
         assert_eq!(proof.passage_char_length, 64);
         assert_eq!(proof.quote_sha256.len(), 64);
-        assert_eq!(proof.verification_statement_id, "11112222-3333-4444-5555-666677778888");
+        assert_eq!(
+            proof.verification_statement_id,
+            "11112222-3333-4444-5555-666677778888"
+        );
         assert!(proof.snapshot_fingerprint.len() == 64);
         assert_eq!(proof.anchor_method.as_deref(), Some("opentimestamps"));
         assert_eq!(proof.anchor_status.as_deref(), Some("pending"));
@@ -518,19 +592,24 @@ mod tests {
         assert_eq!(json_ld["@type"], "prov:Entity");
         assert_eq!(json_ld["claim"]["id"], 42);
         assert_eq!(json_ld["passage"]["page"], 7);
-        assert_eq!(json_ld["sourceFingerprint"]["contentSha256"], fp.content_sha256_hex());
+        assert_eq!(
+            json_ld["sourceFingerprint"]["contentSha256"],
+            fp.content_sha256_hex()
+        );
 
         // Bibliography export test
         let bib_path = temp_dir.join(format!("test_bib_{}.bib", s3a_engine::lrs_store::now_ms()));
         let _g_bib = FileGuard(bib_path.clone());
         let _g_proof = FileGuard(bib_path.with_extension("bib.proof.json"));
 
-        export_bibliography_with_proof(&archive_path, &bib_path, "bibtex").expect("Must export bib");
+        export_bibliography_with_proof(&archive_path, &bib_path, "bibtex")
+            .expect("Must export bib");
         let bib_text = fs::read_to_string(&bib_path).expect("read bib");
         assert!(bib_text.contains("@article{paper_201,"));
         assert!(bib_text.contains(&fp.content_sha256_hex()));
 
-        let proof_json_text = fs::read_to_string(bib_path.with_extension("bib.proof.json")).expect("read companion");
+        let proof_json_text =
+            fs::read_to_string(bib_path.with_extension("bib.proof.json")).expect("read companion");
         assert!(proof_json_text.contains(&proof.snapshot_fingerprint));
         assert!(proof_json_text.contains(&fp.content_sha256_hex()));
     }

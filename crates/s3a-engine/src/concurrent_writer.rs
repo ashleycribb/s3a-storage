@@ -1,8 +1,8 @@
+use bytemuck::Pod;
+use s3a_core::{HyperTileHeader, SimplexHull};
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use bytemuck::Pod;
-use s3a_core::{HyperTileHeader, SimplexHull};
 
 use crate::ring_buffer::{BackpressurePolicy, IngestError, L0RingBuffer};
 use crate::TileWriter;
@@ -23,7 +23,10 @@ impl ConcurrentTileWriter {
         writer.try_lock_exclusive().map_err(|e| {
             // Windows ERROR_LOCK_VIOLATION = 33; Unix EWOULDBLOCK / EAGAIN
             if e.raw_os_error() == Some(33) || e.kind() == io::ErrorKind::WouldBlock {
-                io::Error::new(io::ErrorKind::WouldBlock, "Archive file is already locked by another process")
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Archive file is already locked by another process",
+                )
             } else {
                 e
             }
@@ -45,7 +48,10 @@ impl ConcurrentTileWriter {
     pub fn open_append<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let writer = TileWriter::open_append(path).map_err(|e| {
             if e.raw_os_error() == Some(33) || e.kind() == io::ErrorKind::WouldBlock {
-                io::Error::new(io::ErrorKind::WouldBlock, "Archive file is already locked by another process")
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Archive file is already locked by another process",
+                )
             } else {
                 e
             }
@@ -66,41 +72,46 @@ impl ConcurrentTileWriter {
 
     /// Enables an addon capability bitmask (e.g. `ADDON_EDU`) across all concurrent writers.
     pub fn enable_addon(&self, mask: u32) -> io::Result<()> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.enable_addon(mask)
     }
 
     /// Returns the currently committed tile count, reporting an error if lock acquisition fails.
     pub fn tile_count(&self) -> io::Result<u32> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.tile_count())
     }
 
     /// Reads all committed archive bytes safely under the write lock.
     pub fn read_all_bytes(&self) -> io::Result<Vec<u8>> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.read_all_bytes()
     }
 
     /// Returns the current header generation counter, reporting an error if lock acquisition fails.
     pub fn generation(&self) -> io::Result<u64> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.generation())
     }
 
     /// Returns the active addon mask, reporting an error if lock acquisition fails.
     pub fn addon_mask(&self) -> io::Result<u32> {
-        let writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         Ok(writer.addon_mask())
     }
 
@@ -114,9 +125,10 @@ impl ConcurrentTileWriter {
         timestamps: Option<&[u64]>,
         hull: Option<SimplexHull>,
     ) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_hyper_tile(tile_type, records, timestamps, hull)
     }
 
@@ -129,17 +141,23 @@ impl ConcurrentTileWriter {
         hull: Option<SimplexHull>,
         filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_hyper_tile_ext(tile_type, records, timestamps, hull, filter_keys)
     }
 
     /// Atomically appends a raw variable-length payload Hyper-Tile to disk, advancing the header generation.
-    pub fn write_raw_hyper_tile(&self, header: &HyperTileHeader, payload: &[u8]) -> io::Result<u64> {
-        let mut writer = self.writer.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "Failed to acquire TileWriter lock")
-        })?;
+    pub fn write_raw_hyper_tile(
+        &self,
+        header: &HyperTileHeader,
+        payload: &[u8],
+    ) -> io::Result<u64> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| io::Error::other("Failed to acquire TileWriter lock"))?;
         writer.write_raw_hyper_tile(header, payload)
     }
 
@@ -211,7 +229,9 @@ impl<T: Pod + Copy + Default + Send + 'static> ConcurrentRecordIngester<T> {
             return Ok(None);
         }
 
-        let tile_id = self.writer.write_hyper_tile(self.tile_type, &drained, None, None)?;
+        let tile_id = self
+            .writer
+            .write_hyper_tile(self.tile_type, &drained, None, None)?;
         Ok(Some(tile_id))
     }
 }
@@ -219,15 +239,21 @@ impl<T: Pod + Copy + Default + Send + 'static> ConcurrentRecordIngester<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MmapReader;
+    use s3a_core::TelemetryRecord;
     use std::sync::Barrier;
     use std::thread;
-    use s3a_core::TelemetryRecord;
-    use crate::MmapReader;
 
     #[test]
     fn test_concurrent_tile_writer_parallel_threads() {
         let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join(format!("s3a_concurrent_test_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = temp_dir.join(format!(
+            "s3a_concurrent_test_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let writer = ConcurrentTileWriter::create(&path).expect("create concurrent writer");
 
@@ -243,10 +269,16 @@ mod tests {
                 b.wait();
                 for i in 0..tiles_per_thread {
                     let records = vec![
-                        TelemetryRecord::new((t_idx * 1000 + i) as u64, t_idx as u32, 1, (t_idx * 10 + i) as f64);
+                        TelemetryRecord::new(
+                            (t_idx * 1000 + i) as u64,
+                            t_idx as u32,
+                            1,
+                            (t_idx * 10 + i) as f64
+                        );
                         16
                     ];
-                    w.write_hyper_tile(0, &records, None, None).expect("write hyper tile");
+                    w.write_hyper_tile(0, &records, None, None)
+                        .expect("write hyper tile");
                 }
             }));
         }
@@ -255,12 +287,21 @@ mod tests {
             h.join().expect("thread failed");
         }
 
-        assert_eq!(writer.tile_count().unwrap(), (thread_count * tiles_per_thread) as u32);
-        assert_eq!(writer.generation().unwrap(), (thread_count * tiles_per_thread + 1) as u64);
+        assert_eq!(
+            writer.tile_count().unwrap(),
+            (thread_count * tiles_per_thread) as u32
+        );
+        assert_eq!(
+            writer.generation().unwrap(),
+            (thread_count * tiles_per_thread + 1) as u64
+        );
 
         // Verify with MmapReader
         let reader = MmapReader::open(&path).expect("open reader");
-        assert_eq!(reader.tile_count(), (thread_count * tiles_per_thread) as u32);
+        assert_eq!(
+            reader.tile_count(),
+            (thread_count * tiles_per_thread) as u32
+        );
         for i in 0..reader.tile_count() as usize {
             let (hdr, payload) = reader.get_tile(i).expect("get tile");
             assert_eq!(hdr.tile_type, 0);
@@ -274,7 +315,13 @@ mod tests {
     #[test]
     fn test_concurrent_tile_writer_second_open_fails_with_would_block() {
         let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join(format!("s3a_lock_test_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = temp_dir.join(format!(
+            "s3a_lock_test_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let writer1 = ConcurrentTileWriter::create(&path).expect("create first writer");
         assert_eq!(writer1.tile_count().unwrap(), 0);
@@ -297,10 +344,17 @@ mod tests {
     #[test]
     fn test_concurrent_ingester_batching() {
         let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join(format!("s3a_ingester_test_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = temp_dir.join(format!(
+            "s3a_ingester_test_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
 
         let writer = ConcurrentTileWriter::create(&path).expect("create concurrent writer");
-        let ingester = writer.create_ingester::<TelemetryRecord>(0, 1024, BackpressurePolicy::Block);
+        let ingester =
+            writer.create_ingester::<TelemetryRecord>(0, 1024, BackpressurePolicy::Block);
 
         let thread_count = 4;
         let records_per_thread = 50;
@@ -330,4 +384,3 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
-

@@ -33,9 +33,7 @@ pub enum RecordMergeOutcome {
         rule_applied: &'static str,
     },
     /// Same-record edit rejected because incoming version is older than current version.
-    SameRecordPreservedExisting {
-        rule_applied: &'static str,
-    },
+    SameRecordPreservedExisting { rule_applied: &'static str },
     /// Conflict on claim/evidence requires signed human judgment.
     EpistemicConflictNeedsHuman {
         record_id: String,
@@ -59,10 +57,7 @@ pub struct RepoRecordEntry {
 
 impl RepoRecordEntry {
     /// Applies deterministic merge rules when comparing existing record vs incoming record edit.
-    pub fn merge_with(
-        &self,
-        incoming: &RepoRecordEntry,
-    ) -> RecordMergeOutcome {
+    pub fn merge_with(&self, incoming: &RepoRecordEntry) -> RecordMergeOutcome {
         // 1. Identical payloads: idempotent no-op
         if self.payload_hash == incoming.payload_hash {
             return RecordMergeOutcome::SameRecordPreservedExisting {

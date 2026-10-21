@@ -40,9 +40,9 @@ impl Default for GateDirectoryLimits {
     fn default() -> Self {
         Self {
             max_mailbox_items_per_address: 100,
-            max_item_size: 1024 * 1024,                  // 1 MB
+            max_item_size: 1024 * 1024,                 // 1 MB
             max_total_mailbox_bytes: 100 * 1024 * 1024, // 100 MB
-            mailbox_item_expiry_secs: 30 * 86400,        // 30 days
+            mailbox_item_expiry_secs: 30 * 86400,       // 30 days
             registrations_per_client_per_minute: 10,
         }
     }
@@ -239,14 +239,17 @@ impl GateDirectoryService {
                         .unwrap_or_default()
                         .as_secs();
 
-                    let mut temp_chunks: HashMap<String, (MailboxChunkHeader, Vec<(u32, Vec<u8>)>)> =
-                        HashMap::new();
+                    let mut temp_chunks: HashMap<
+                        String,
+                        (MailboxChunkHeader, Vec<(u32, Vec<u8>)>),
+                    > = HashMap::new();
                     let mut erased_hashes: HashSet<[u8; 32]> = HashSet::new();
 
                     for i in 0..reader.tile_count() as usize {
                         if let Some((hdr, payload)) = reader.get_tile(i) {
                             if hdr.tile_type == TileType::GATE_DIRECTORY {
-                                if let Ok(entry) = serde_json::from_slice::<DirectoryEntry>(payload) {
+                                if let Ok(entry) = serde_json::from_slice::<DirectoryEntry>(payload)
+                                {
                                     let clean_name = entry.name.trim().to_ascii_lowercase();
                                     dir.names.insert(clean_name, entry.clone());
                                     dir.addresses.insert(entry.address.clone(), entry);
@@ -254,7 +257,9 @@ impl GateDirectoryService {
                             } else if hdr.tile_type == TileType::GATE_MAILBOX {
                                 if let Some(sep) = payload.iter().position(|&b| b == 0) {
                                     if let Ok(chunk_hdr) =
-                                        serde_json::from_slice::<MailboxChunkHeader>(&payload[..sep])
+                                        serde_json::from_slice::<MailboxChunkHeader>(
+                                            &payload[..sep],
+                                        )
                                     {
                                         let chunk_bytes = payload[sep + 1..].to_vec();
                                         let entry = temp_chunks
@@ -269,7 +274,9 @@ impl GateDirectoryService {
                                 for e in 0..count {
                                     if (e + 1) * rec_size <= payload.len() {
                                         let rec: &ErasureRecord =
-                                            &bytemuck::pod_read_unaligned::<ErasureRecord>(&payload[e * rec_size..(e + 1) * rec_size]);
+                                            &bytemuck::pod_read_unaligned::<ErasureRecord>(
+                                                &payload[e * rec_size..(e + 1) * rec_size],
+                                            );
                                         erased_hashes.insert(rec.erased_record_hash);
                                     }
                                 }
@@ -286,7 +293,9 @@ impl GateDirectoryService {
                         if erased_hashes.contains(&item_hash) {
                             continue; // Erased via acknowledged pickup or purge
                         }
-                        if now.saturating_sub(chunk_hdr.deposited_at) > limits.mailbox_item_expiry_secs {
+                        if now.saturating_sub(chunk_hdr.deposited_at)
+                            > limits.mailbox_item_expiry_secs
+                        {
                             continue; // Expired
                         }
                         chunks.sort_by_key(|(idx, _)| *idx);
@@ -327,13 +336,15 @@ impl GateDirectoryService {
         }
 
         if !path.exists() {
-            let writer = TileWriter::create(path)
-                .map_err(|e| GateDirectoryError::Internal(format!("Failed to create archive: {}", e)))?;
+            let writer = TileWriter::create(path).map_err(|e| {
+                GateDirectoryError::Internal(format!("Failed to create archive: {}", e))
+            })?;
             drop(writer);
         }
 
-        let mut writer = TileWriter::open_append(path)
-            .map_err(|e| GateDirectoryError::Internal(format!("Failed to open archive for append: {}", e)))?;
+        let mut writer = TileWriter::open_append(path).map_err(|e| {
+            GateDirectoryError::Internal(format!("Failed to open archive for append: {}", e))
+        })?;
 
         for (tile_type, payload) in tiles {
             let mut hdr = HyperTileHeader::new(0, *tile_type);
@@ -344,9 +355,9 @@ impl GateDirectoryService {
             };
             hdr.payload_bytes = payload.len() as u32;
             hdr.data_crc32 = crc32c::crc32c(payload);
-            writer
-                .write_raw_hyper_tile(&hdr, payload)
-                .map_err(|e| GateDirectoryError::Internal(format!("Failed to write hyper tile: {}", e)))?;
+            writer.write_raw_hyper_tile(&hdr, payload).map_err(|e| {
+                GateDirectoryError::Internal(format!("Failed to write hyper tile: {}", e))
+            })?;
         }
         drop(writer);
 
@@ -360,8 +371,9 @@ impl GateDirectoryService {
         let sealed_bytes = seal_buffer_v2(&in_bytes[..active_len], &opts)
             .map_err(|e| GateDirectoryError::Internal(format!("Failed to seal archive: {}", e)))?;
 
-        fs::write(path, sealed_bytes)
-            .map_err(|e| GateDirectoryError::Internal(format!("Failed to write sealed archive: {}", e)))?;
+        fs::write(path, sealed_bytes).map_err(|e| {
+            GateDirectoryError::Internal(format!("Failed to write sealed archive: {}", e))
+        })?;
 
         Ok(())
     }
@@ -414,8 +426,8 @@ impl GateDirectoryService {
         let sig = Signature::from_bytes(&sig_bytes);
 
         // 4. Verify Ed25519 signature
-        let vk = VerifyingKey::from_bytes(public_key_bytes)
-            .map_err(|_| "Invalid public key format")?;
+        let vk =
+            VerifyingKey::from_bytes(public_key_bytes).map_err(|_| "Invalid public key format")?;
 
         vk.verify_strict(&challenge_bytes, &sig)
             .map_err(|_| "Forged challenge rejected: signature verification failed")?;
@@ -480,7 +492,11 @@ impl GateDirectoryService {
             }
         }
 
-        let seq = self.names.get(&clean_name).map(|e| e.sequence + 1).unwrap_or(1);
+        let seq = self
+            .names
+            .get(&clean_name)
+            .map(|e| e.sequence + 1)
+            .unwrap_or(1);
 
         let dir_entry = DirectoryEntry {
             name: clean_name.clone(),
@@ -554,7 +570,11 @@ impl GateDirectoryService {
 
         // 4. Mailbox items per address check
         let clean_addr = target_address.trim().to_ascii_lowercase();
-        let current_count = self.mailboxes.get(&clean_addr).map(|q| q.len()).unwrap_or(0);
+        let current_count = self
+            .mailboxes
+            .get(&clean_addr)
+            .map(|q| q.len())
+            .unwrap_or(0);
         if current_count >= self.limits.max_mailbox_items_per_address {
             return Err(GateDirectoryError::MailboxItemLimitExceeded(format!(
                 "Mailbox items limit exceeded for address {} (maximum {})",
@@ -613,8 +633,9 @@ impl GateDirectoryService {
         // 1. Resolve verifying key: from request or stored directory entry
         let pk_bytes = if let Some(ref pk_hex) = req.public_key {
             let mut pk = [0u8; 32];
-            hex::decode_to_slice(pk_hex, &mut pk)
-                .map_err(|_| GateDirectoryError::BadRequest("Invalid public key hex format".into()))?;
+            hex::decode_to_slice(pk_hex, &mut pk).map_err(|_| {
+                GateDirectoryError::BadRequest("Invalid public key hex format".into())
+            })?;
             let derived = GateAddress::from_public_key(&pk).to_address_string();
             if derived != clean_addr {
                 return Err(GateDirectoryError::BadRequest(
@@ -676,7 +697,7 @@ impl GateDirectoryService {
         let mut purged_count = 0;
         let mut erasures = Vec::new();
 
-        for (_addr, queue) in self.mailboxes.iter_mut() {
+        for queue in self.mailboxes.values_mut() {
             let mut active = Vec::new();
             for item in queue.drain(..) {
                 if now.saturating_sub(item.deposited_at) > expiry {
@@ -741,23 +762,20 @@ pub fn handle_gate_directory(
         if method == &Method::Post {
             let req: Result<RegisterGateRequest, _> = serde_json::from_slice(body);
             match req {
-                Ok(r) => {
-                    match service.lock().unwrap().register_gate(r, client_id) {
-                        Ok(entry) => {
-                            let bytes = serde_json::to_vec(&entry).unwrap_or_default();
-                            make_json_response(200, &bytes)
-                        }
-                        Err(err) => make_gate_error_response(&err),
+                Ok(r) => match service.lock().unwrap().register_gate(r, client_id) {
+                    Ok(entry) => {
+                        let bytes = serde_json::to_vec(&entry).unwrap_or_default();
+                        make_json_response(200, &bytes)
                     }
-                }
+                    Err(err) => make_gate_error_response(&err),
+                },
                 Err(_) => make_err_response(400, "Invalid JSON payload for RegisterGateRequest"),
             }
         } else {
             make_err_response(405, "Method Not Allowed")
         }
-    } else if path.starts_with("/gate/resolve/") {
+    } else if let Some(target) = path.strip_prefix("/gate/resolve/") {
         if method == &Method::Get || method == &Method::Head {
-            let target = &path["/gate/resolve/".len()..];
             if let Some(entry) = service.lock().unwrap().resolve(target) {
                 let bytes = serde_json::to_vec(&entry).unwrap_or_default();
                 make_json_response(200, &bytes)
@@ -767,23 +785,20 @@ pub fn handle_gate_directory(
         } else {
             make_err_response(405, "Method Not Allowed")
         }
-    } else if path.starts_with("/gate/mailbox/") {
-        let rest = &path["/gate/mailbox/".len()..];
-        if rest.ends_with("/retrieve") {
-            let target_addr = &rest[..rest.len() - "/retrieve".len()];
+    } else if let Some(rest) = path.strip_prefix("/gate/mailbox/") {
+        if let Some(target_addr) = rest.strip_suffix("/retrieve") {
             if method == &Method::Post {
                 let req: Result<RetrieveMailboxRequest, _> = serde_json::from_slice(body);
                 match req {
-                    Ok(r) => {
-                        match service.lock().unwrap().retrieve_mailbox(target_addr, r) {
-                            Ok(tiles) => {
-                                let hex_tiles: Vec<String> = tiles.into_iter().map(hex::encode).collect();
-                                let bytes = serde_json::to_vec(&hex_tiles).unwrap_or_default();
-                                make_json_response(200, &bytes)
-                            }
-                            Err(err) => make_gate_error_response(&err),
+                    Ok(r) => match service.lock().unwrap().retrieve_mailbox(target_addr, r) {
+                        Ok(tiles) => {
+                            let hex_tiles: Vec<String> =
+                                tiles.into_iter().map(hex::encode).collect();
+                            let bytes = serde_json::to_vec(&hex_tiles).unwrap_or_default();
+                            make_json_response(200, &bytes)
                         }
-                    }
+                        Err(err) => make_gate_error_response(&err),
+                    },
                     Err(_) => make_err_response(400, "Invalid JSON for RetrieveMailboxRequest"),
                 }
             } else {
@@ -793,12 +808,17 @@ pub fn handle_gate_directory(
             // Deposit mailbox
             let target_addr = rest;
             if method == &Method::Post {
-                match service.lock().unwrap().deposit_mailbox(target_addr, body.to_vec()) {
+                match service
+                    .lock()
+                    .unwrap()
+                    .deposit_mailbox(target_addr, body.to_vec())
+                {
                     Ok(_) => Response::new(
                         StatusCode(202),
                         vec![
                             Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..]).unwrap(),
-                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])
+                                .unwrap(),
                         ],
                         Cursor::new(b"Accepted".to_vec()),
                         Some(8),
@@ -844,7 +864,11 @@ mod tests {
 
     fn temp_archive_path(label: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("s3a_gate_dir_test_{}_{}.s3a", label, std::process::id()));
+        p.push(format!(
+            "s3a_gate_dir_test_{}_{}.s3a",
+            label,
+            std::process::id()
+        ));
         p
     }
 
@@ -874,7 +898,9 @@ mod tests {
             signature: sig_hex.clone(),
         };
 
-        let registered = dir.register_gate(reg_req, "127.0.0.1").expect("Registration must succeed");
+        let registered = dir
+            .register_gate(reg_req, "127.0.0.1")
+            .expect("Registration must succeed");
         assert_eq!(registered.name, "station-alpha");
         assert_eq!(registered.address, addr);
 
@@ -896,7 +922,9 @@ mod tests {
             signature: bad_sig_hex,
         };
         assert_eq!(
-            dir.register_gate(forged_req, "127.0.0.1").unwrap_err().status_code(),
+            dir.register_gate(forged_req, "127.0.0.1")
+                .unwrap_err()
+                .status_code(),
             401
         );
 
@@ -954,7 +982,8 @@ mod tests {
 
         // 1. First session: register and re-point name, deposit mailbox item
         {
-            let mut dir = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+            let mut dir =
+                GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
 
             // Initial registration
             let c1 = dir.create_challenge();
@@ -992,16 +1021,20 @@ mod tests {
             assert_eq!(repointed.endpoints, vec!["gate://127.0.0.1:9999"]);
 
             // Deposit mailbox item
-            dir.deposit_mailbox(&addr, b"PERSISTED_MAILBOX_TILE_DATA".to_vec()).unwrap();
+            dir.deposit_mailbox(&addr, b"PERSISTED_MAILBOX_TILE_DATA".to_vec())
+                .unwrap();
             assert_eq!(dir.mailbox_item_count(&addr), 1);
         }
 
         // 2. Restart session: re-open from disk
         {
-            let dir = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+            let dir =
+                GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
 
             // Name preserved and latest wins (endpoints updated, sequence 2)
-            let resolved = dir.resolve("vault-one").expect("Name must be preserved across restart");
+            let resolved = dir
+                .resolve("vault-one")
+                .expect("Name must be preserved across restart");
             assert_eq!(resolved.address, addr);
             assert_eq!(resolved.sequence, 2);
             assert_eq!(resolved.endpoints, vec!["gate://127.0.0.1:9999"]);
@@ -1096,7 +1129,8 @@ mod tests {
         let addr = GateAddress::from_public_key(&pubkey_bytes).to_address_string();
         let limits = GateDirectoryLimits::default();
 
-        let mut dir = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+        let mut dir =
+            GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
 
         // Register gate
         let c = dir.create_challenge();
@@ -1115,7 +1149,8 @@ mod tests {
         .unwrap();
 
         // Deposit item
-        dir.deposit_mailbox(&addr, b"SENSITIVE_SEALED_PAYLOAD".to_vec()).unwrap();
+        dir.deposit_mailbox(&addr, b"SENSITIVE_SEALED_PAYLOAD".to_vec())
+            .unwrap();
         assert_eq!(dir.mailbox_item_count(&addr), 1);
 
         // 1. Pickup without proof (forged signature) is rejected with 401
@@ -1156,7 +1191,8 @@ mod tests {
         drop(dir);
 
         // 3. Restart: erasure record guarantees item is deleted and not restored
-        let restarted = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+        let restarted =
+            GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
         assert_eq!(restarted.mailbox_item_count(&addr), 0);
 
         let _ = fs::remove_file(&archive_path);
@@ -1179,8 +1215,10 @@ mod tests {
         let pubkey_bytes = signing_key.verifying_key().to_bytes();
         let addr = GateAddress::from_public_key(&pubkey_bytes).to_address_string();
 
-        let mut dir = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
-        dir.deposit_mailbox(&addr, b"SHORT_LIVED_TILE".to_vec()).unwrap();
+        let mut dir =
+            GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+        dir.deposit_mailbox(&addr, b"SHORT_LIVED_TILE".to_vec())
+            .unwrap();
         assert_eq!(dir.mailbox_item_count(&addr), 1);
 
         // Advance simulated time past expiry (now + 10s)
@@ -1196,7 +1234,8 @@ mod tests {
         drop(dir);
 
         // On restart, item was erased in archive and remains absent
-        let restarted = GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
+        let restarted =
+            GateDirectoryService::open_or_create(Some(archive_path.clone()), limits).unwrap();
         assert_eq!(restarted.mailbox_item_count(&addr), 0);
 
         let _ = fs::remove_file(&archive_path);

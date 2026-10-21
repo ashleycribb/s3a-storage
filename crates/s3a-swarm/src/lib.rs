@@ -9,11 +9,11 @@ pub mod human_queue;
 pub mod merge;
 pub mod metrics;
 
+use ed25519_dalek::SigningKey;
+use rand_core::{OsRng, RngCore};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use ed25519_dalek::SigningKey;
-use rand_core::{OsRng, RngCore};
 use tokio::sync::Mutex;
 
 pub use agent::SimulatedAgent;
@@ -28,10 +28,16 @@ pub async fn run_swarm(
     shadow_mode: bool,
     out_archive_path: Option<PathBuf>,
 ) -> Result<(SwarmMetrics, SharedRepoCoordinator), Box<dyn std::error::Error + Send + Sync>> {
-    println!(">>> Initializing S3A Swarm: {} agents, {} commits each (total: {} commits)...",
-        agents_count, commits_per_agent, agents_count * commits_per_agent);
+    println!(
+        ">>> Initializing S3A Swarm: {} agents, {} commits each (total: {} commits)...",
+        agents_count,
+        commits_per_agent,
+        agents_count * commits_per_agent
+    );
     if shadow_mode {
-        println!(">>> Mode: SHADOW ENABLED (commits quarantined on shadow branches until eval passes)");
+        println!(
+            ">>> Mode: SHADOW ENABLED (commits quarantined on shadow branches until eval passes)"
+        );
     } else {
         println!(">>> Mode: DIRECT CONCURRENT PUSH (disjoint union + deterministic merge)");
     }
@@ -93,7 +99,10 @@ pub async fn run_swarm(
 
     println!(">>> Verifying all commit cryptographic signatures in repository history...");
     let (verified_sigs, total_commits) = coord_final.verify_all_commit_signatures();
-    println!(">>> Verified {} / {} commit signatures successfully.", verified_sigs, total_commits);
+    println!(
+        ">>> Verified {} / {} commit signatures successfully.",
+        verified_sigs, total_commits
+    );
 
     // 7. Finalize archive if path provided
     let final_seal_hash = if let Some(ref path) = out_archive_path {
@@ -136,10 +145,18 @@ pub async fn run_remote_swarm(
     commits_per_agent: usize,
     max_concurrency: usize,
 ) -> Result<SwarmMetrics, Box<dyn std::error::Error + Send + Sync>> {
-    println!(">>> Initializing Remote S3A Swarm against Cloudflare Worker: {}", remote_url);
+    println!(
+        ">>> Initializing Remote S3A Swarm against Cloudflare Worker: {}",
+        remote_url
+    );
     println!(">>> Project ID: {}", project_id);
-    println!(">>> Agents: {}, Commits/Agent: {} (Total: {}), Max Concurrency: {}",
-        agents_count, commits_per_agent, agents_count * commits_per_agent, max_concurrency);
+    println!(
+        ">>> Agents: {}, Commits/Agent: {} (Total: {}), Max Concurrency: {}",
+        agents_count,
+        commits_per_agent,
+        agents_count * commits_per_agent,
+        max_concurrency
+    );
 
     let clean_url = remote_url.trim_end_matches('/');
     let client = reqwest::Client::builder()
@@ -244,7 +261,9 @@ pub async fn run_remote_swarm(
                     if status == 200 {
                         auto_m.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if let Ok(json_body) = r.json::<serde_json::Value>().await {
-                            if let Some(seal_str) = json_body.get("seal_hash").and_then(|s| s.as_str()) {
+                            if let Some(seal_str) =
+                                json_body.get("seal_hash").and_then(|s| s.as_str())
+                            {
                                 if let Ok(bytes) = hex::decode(seal_str) {
                                     if bytes.len() == 32 {
                                         parent_seal.copy_from_slice(&bytes);
@@ -285,19 +304,42 @@ pub async fn run_remote_swarm(
         if let Ok(status_json) = res.json::<serde_json::Value>().await {
             if let Some(seal) = status_json.get("head_seal").and_then(|s| s.as_str()) {
                 final_seal = seal.to_string();
-            } else if let Some(recent) = status_json.get("recent_merges").and_then(|m| m.as_array()) {
-                if let Some(first) = recent.first().and_then(|r| r.get("seal_hash")).and_then(|s| s.as_str()) {
+            } else if let Some(recent) = status_json.get("recent_merges").and_then(|m| m.as_array())
+            {
+                if let Some(first) = recent
+                    .first()
+                    .and_then(|r| r.get("seal_hash"))
+                    .and_then(|s| s.as_str())
+                {
                     final_seal = first.to_string();
                 }
             }
             if let Some(rep) = status_json.get("repair") {
                 repair_metrics = Some(crate::metrics::RepairLoopMetrics {
-                    failures_detected: rep.get("failures_detected").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
-                    auto_repaired: rep.get("auto_repaired").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
-                    escalated_to_human: rep.get("escalated_to_human").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                    mean_attempts: rep.get("mean_attempts").and_then(|v| v.as_f64()).unwrap_or(1.0),
-                    shadow_branches_evaluated: rep.get("shadow_branches_evaluated").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
-                    promoted_after_green: rep.get("promoted_after_green").and_then(|v| v.as_u64()).unwrap_or(1) as usize,
+                    failures_detected: rep
+                        .get("failures_detected")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize,
+                    auto_repaired: rep
+                        .get("auto_repaired")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize,
+                    escalated_to_human: rep
+                        .get("escalated_to_human")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize,
+                    mean_attempts: rep
+                        .get("mean_attempts")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(1.0),
+                    shadow_branches_evaluated: rep
+                        .get("shadow_branches_evaluated")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize,
+                    promoted_after_green: rep
+                        .get("promoted_after_green")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(1) as usize,
                 });
             }
         }

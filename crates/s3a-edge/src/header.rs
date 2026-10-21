@@ -1,7 +1,7 @@
 //! S3A Edge Profile Header Definitions and Flag Constants.
 
-use bytemuck::{bytes_of, Pod, Zeroable};
 use crate::crc::{crc32c, crc32c_append};
+use bytemuck::{bytes_of, Pod, Zeroable};
 
 /// Magic ASCII bytes identifying an S3A archive: `S3A1`.
 pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
@@ -31,12 +31,12 @@ pub const MICRO_TILE_4KB_SIZE: usize = 4096;
 pub const MICRO_TILE_8KB_SIZE: usize = 8192;
 
 // --- Archive Flags Bitmask (`FileHeader.flags`, §2.2.2) ---
-pub const FLAG_PROFILE_EDGE: u16 = 1 << 0;       // 0x0001: Identifies archive as Edge Micro-Tile container
-pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1;      // 0x0002: Explicit flag for 4,096-byte tile stride
-pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2;      // 0x0004: Explicit flag for 8,192-byte tile stride
-pub const FLAG_COMPACT_HEADER: u16 = 1 << 3;     // 0x0008: Flash-page aligned compact header variant
-pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4;  // 0x0010: Cryptographic seal hash chain active
-pub const FLAG_ED25519_SIGNED: u16 = 1 << 5;     // 0x0020: Hardware Ed25519 signatures present
+pub const FLAG_PROFILE_EDGE: u16 = 1 << 0; // 0x0001: Identifies archive as Edge Micro-Tile container
+pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1; // 0x0002: Explicit flag for 4,096-byte tile stride
+pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2; // 0x0004: Explicit flag for 8,192-byte tile stride
+pub const FLAG_COMPACT_HEADER: u16 = 1 << 3; // 0x0008: Flash-page aligned compact header variant
+pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4; // 0x0010: Cryptographic seal hash chain active
+pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020: Hardware Ed25519 signatures present
 
 // --- Tile Flags Bitmask (`CommonTileHeader.flags`, §2.4.1) ---
 pub const TILE_FLAG_ACTIVE: u16 = 0;
@@ -47,12 +47,12 @@ pub const TILE_FLAG_CRC_CHAIN: u16 = 2;
 pub const ADDON_WEARABLE: u32 = 0x0008;
 
 // --- Tile Type Wire Identifiers (§12.2) ---
-pub const TILE_TYPE_RECORD: u16 = 64;        // 0x0040: Industrial equipment event log
-pub const TILE_TYPE_SEAL: u16 = 70;          // 0x0046: Cryptographic seal
-pub const TILE_TYPE_CONSENT: u16 = 71;       // 0x0047: Participant consent & ownership
-pub const TILE_TYPE_PROVENANCE: u16 = 72;    // 0x0048: Merge provenance wrapper
-pub const TILE_TYPE_TIME_SERIES: u16 = 75;   // 0x004B: Time-series telemetry
-pub const TILE_TYPE_CONFIG: u16 = 77;        // 0x004D: Key-value configuration snapshot
+pub const TILE_TYPE_RECORD: u16 = 64; // 0x0040: Industrial equipment event log
+pub const TILE_TYPE_SEAL: u16 = 70; // 0x0046: Cryptographic seal
+pub const TILE_TYPE_CONSENT: u16 = 71; // 0x0047: Participant consent & ownership
+pub const TILE_TYPE_PROVENANCE: u16 = 72; // 0x0048: Merge provenance wrapper
+pub const TILE_TYPE_TIME_SERIES: u16 = 75; // 0x004B: Time-series telemetry
+pub const TILE_TYPE_CONFIG: u16 = 77; // 0x004D: Key-value configuration snapshot
 pub const TILE_TYPE_WEARABLE_MICRO: u16 = 3; // 0x0003: Legacy Wearable micro
 
 /// S3A File Header Slot (64 bytes, 8-byte aligned, Pod/Zeroable).
@@ -160,16 +160,16 @@ pub fn compute_file_header_crc32(header: &FileHeader) -> u32 {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CommonTileHeader {
-    pub type_id: u16,          // Canonical wire tile type ID (offset 0..2)
-    pub type_version: u16,     // Record layout version (offset 2..4)
-    pub flags: u16,            // Tile flags (offset 4..6)
-    pub _reserved1: u16,       // Explicit alignment padding (offset 6..8)
-    pub record_count: u32,     // Number of logical records (offset 8..12)
-    pub data_crc32: u32,       // Castagnoli CRC32C over payload bytes (offset 12..16)
-    pub payload_len: u64,      // Byte length of active payload (offset 16..24)
-    pub payload_hash: [u8; 32],// SHA-256 digest over active payload bytes (offset 24..56)
-    pub header_crc32: u32,     // Castagnoli CRC32C over bytes 0..56 and 60..64 (offset 56..60)
-    pub generation: u32,       // Monotonic commit generation counter (offset 60..64)
+    pub type_id: u16,           // Canonical wire tile type ID (offset 0..2)
+    pub type_version: u16,      // Record layout version (offset 2..4)
+    pub flags: u16,             // Tile flags (offset 4..6)
+    pub _reserved1: u16,        // Explicit alignment padding (offset 6..8)
+    pub record_count: u32,      // Number of logical records (offset 8..12)
+    pub data_crc32: u32,        // Castagnoli CRC32C over payload bytes (offset 12..16)
+    pub payload_len: u64,       // Byte length of active payload (offset 16..24)
+    pub payload_hash: [u8; 32], // SHA-256 digest over active payload bytes (offset 24..56)
+    pub header_crc32: u32,      // Castagnoli CRC32C over bytes 0..56 and 60..64 (offset 56..60)
+    pub generation: u32,        // Monotonic commit generation counter (offset 60..64)
 }
 
 impl CommonTileHeader {

@@ -46,13 +46,13 @@ impl Dop14Hull {
         let y = pt[1];
         let z = pt[2];
         [
-            x,              // Axis 0: X
-            y,              // Axis 1: Y
-            z,              // Axis 2: Z
-            x + y + z,      // Axis 3: X + Y + Z
-            x + y - z,      // Axis 4: X + Y - Z
-            x - y + z,      // Axis 5: X - Y + Z
-            x - y - z,      // Axis 6: X - Y - Z
+            x,         // Axis 0: X
+            y,         // Axis 1: Y
+            z,         // Axis 2: Z
+            x + y + z, // Axis 3: X + Y + Z
+            x + y - z, // Axis 4: X + Y - Z
+            x - y + z, // Axis 5: X - Y + Z
+            x - y - z, // Axis 6: X - Y - Z
         ]
     }
 
@@ -224,7 +224,11 @@ pub fn core_sqrt_f32(val: f32) -> f32 {
 #[inline(always)]
 pub fn core_rem_euclid_f32(val: f32, period: f32) -> f32 {
     let m = val % period;
-    if m < 0.0 { m + period } else { m }
+    if m < 0.0 {
+        m + period
+    } else {
+        m
+    }
 }
 
 /// Computes the geodesic distance on a 3D Flat Torus (S^1 x S^1 x S^1) for periodic state spaces.
@@ -288,10 +292,7 @@ mod tests {
     #[test]
     fn test_dop14_pruning_rejection() {
         // Hull enclosing trajectory near origin
-        let points = [
-            [1.0, 1.0, 1.0],
-            [2.0, 2.0, 2.0],
-        ];
+        let points = [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]];
         let dop = Dop14Hull::from_points(&points);
 
         // Query box far away (10, 10, 10) to (12, 12, 12)
@@ -314,8 +315,18 @@ mod tests {
         assert!((dist - 0.2).abs() < 1e-4, "Expected 0.2, got {}", dist);
 
         // Cyclic interval check: from PI-0.2 to -PI+0.2 wrapping over seam
-        assert!(toroidal_interval_contains(PI - 0.2, -PI + 0.2, PI - 0.05, p));
-        assert!(toroidal_interval_contains(PI - 0.2, -PI + 0.2, -PI + 0.05, p));
+        assert!(toroidal_interval_contains(
+            PI - 0.2,
+            -PI + 0.2,
+            PI - 0.05,
+            p
+        ));
+        assert!(toroidal_interval_contains(
+            PI - 0.2,
+            -PI + 0.2,
+            -PI + 0.05,
+            p
+        ));
         assert!(!toroidal_interval_contains(PI - 0.2, -PI + 0.2, 0.0, p));
     }
 }

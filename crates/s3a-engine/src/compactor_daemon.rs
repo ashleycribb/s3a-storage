@@ -82,21 +82,31 @@ impl BackgroundCompactor {
             .spawn(move || {
                 let mut last_flush = Instant::now();
                 let mut last_compaction = Instant::now();
-                let tile_rec_capacity = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
+                let tile_rec_capacity =
+                    HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
 
                 while running.load(Ordering::Relaxed) {
                     let buf_len = ring_buffer.len();
                     let elapsed = last_flush.elapsed();
 
-                    let should_flush = buf_len >= batch_threshold
-                        || (buf_len > 0 && elapsed >= flush_interval);
+                    let should_flush =
+                        buf_len >= batch_threshold || (buf_len > 0 && elapsed >= flush_interval);
 
                     if should_flush {
                         let records = ring_buffer.drain(tile_rec_capacity);
                         if !records.is_empty() {
                             if let Ok(mut writer) = TileWriter::open_append(&archive_path) {
-                                let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp).collect();
-                                if writer.write_hyper_tile(TileType::TELEMETRY, &records, Some(&timestamps), None).is_ok() {
+                                let timestamps: Vec<u64> =
+                                    records.iter().map(|r| r.timestamp).collect();
+                                if writer
+                                    .write_hyper_tile(
+                                        TileType::TELEMETRY,
+                                        &records,
+                                        Some(&timestamps),
+                                        None,
+                                    )
+                                    .is_ok()
+                                {
                                     let mut s = stats.lock().unwrap();
                                     s.flushed_tiles += 1;
                                     s.flushed_records += records.len() as u64;
@@ -133,14 +143,19 @@ impl BackgroundCompactor {
                 }
 
                 // Final drain upon termination
-                while ring_buffer.len() > 0 {
+                while !ring_buffer.is_empty() {
                     let records = ring_buffer.drain(tile_rec_capacity);
                     if records.is_empty() {
                         break;
                     }
                     if let Ok(mut writer) = TileWriter::open_append(&archive_path) {
                         let timestamps: Vec<u64> = records.iter().map(|r| r.timestamp).collect();
-                        let _ = writer.write_hyper_tile(TileType::TELEMETRY, &records, Some(&timestamps), None);
+                        let _ = writer.write_hyper_tile(
+                            TileType::TELEMETRY,
+                            &records,
+                            Some(&timestamps),
+                            None,
+                        );
                         let mut s = stats.lock().unwrap();
                         s.flushed_tiles += 1;
                         s.flushed_records += records.len() as u64;
@@ -180,7 +195,8 @@ impl BackgroundCompactor {
         }
 
         let mut s = self.stats.lock().unwrap();
-        s.flushed_tiles += (records.len() + tile_rec_capacity - 1) as u64 / tile_rec_capacity as u64;
+        s.flushed_tiles +=
+            (records.len() + tile_rec_capacity - 1) as u64 / tile_rec_capacity as u64;
         s.flushed_records += total_flushed as u64;
         s.last_flush_time = Some(Instant::now());
 
@@ -249,7 +265,8 @@ impl BackgroundCompactor {
         }
 
         // 3. Resolve versioned updates and tombstones ("alive-before-scoring")
-        let mut map: std::collections::BTreeMap<(u32, u32, u64), TelemetryRecord> = std::collections::BTreeMap::new();
+        let mut map: std::collections::BTreeMap<(u32, u32, u64), TelemetryRecord> =
+            std::collections::BTreeMap::new();
         for rec in all_records {
             let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
             if rec.is_tombstone() {

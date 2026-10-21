@@ -123,7 +123,7 @@ pub fn run_doctor(
         let root = sandbox.root();
         if root.exists() {
             let exports = sandbox.exports_dir();
-            if exports.exists() || std::fs::create_dir_all(&exports).is_ok() {
+            if exports.exists() || std::fs::create_dir_all(exports).is_ok() {
                 CheckResult {
                     name: "Sandbox Integrity".to_string(),
                     passed: true,

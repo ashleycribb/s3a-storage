@@ -13,10 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use s3a_core::consent::ConsentPurpose;
-use s3a_core::{HyperTileHeader, TileType, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE};
+use s3a_core::{
+    HyperTileHeader, TileType, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+};
 use s3a_engine::sealed::{
-    seal_archive_v2, seal_archive_with_manifest, verify_sealed_archive,
-    SealOptionsV2, SPEC_MARKDOWN,
+    seal_archive_v2, seal_archive_with_manifest, verify_sealed_archive, SealOptionsV2,
+    SPEC_MARKDOWN,
 };
 use s3a_engine::{MmapReader, S3ACrudEngine, TelemetryRecord, TileWriter};
 
@@ -64,7 +66,9 @@ fn test_manifest_present_and_plain_text_readable_after_seal() {
     let recs: Vec<TelemetryRecord> = (0..5)
         .map(|i| TelemetryRecord::new(1000 + i as u64, 10 + i as u32, 1, 42.0 + i as f64))
         .collect();
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let opts = SealOptionsV2 {
@@ -98,7 +102,9 @@ fn test_manifest_present_and_plain_text_readable_after_seal() {
 
     // Verify required contents per specification
     assert!(manifest_str.contains("THIS IS AN S3A FILE"));
-    assert!(manifest_str.contains("https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md"));
+    assert!(manifest_str.contains(
+        "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md"
+    ));
     assert!(manifest_str.contains("Title / Purpose:  Biomedical Telemetry Trial"));
     assert!(manifest_str.contains("Creator:          gate://vault-alpha-1234"));
     assert!(manifest_str.contains("how to read: s3a-cli tour <file> or the S3A reader app"));
@@ -111,7 +117,9 @@ fn test_manifest_present_and_plain_text_readable_after_seal() {
     // Verify reader opens cleanly
     let reader = MmapReader::open(sealed.path()).unwrap();
     assert_eq!(reader.tile_count(), 2); // 1 manifest + 1 telemetry
-    let manifest_from_reader = reader.get_manifest().expect("Must read manifest via MmapReader");
+    let manifest_from_reader = reader
+        .get_manifest()
+        .expect("Must read manifest via MmapReader");
     assert_eq!(manifest_from_reader, manifest_str);
 
     // Verify sealed verification
@@ -133,8 +141,12 @@ fn test_manifest_matches_tile_list_and_record_counts() {
     let recs2: Vec<TelemetryRecord> = (0..7)
         .map(|i| TelemetryRecord::new(200 + i as u64, 2, 2, 2.0))
         .collect();
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None).unwrap();
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)
+        .unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)
+        .unwrap();
     drop(writer);
 
     seal_archive_with_manifest(raw.path(), sealed.path(), 16, 2, false).unwrap();
@@ -160,7 +172,10 @@ fn test_manifest_no_restricted_data_leaks_counts_only() {
     let engine = S3ACrudEngine::open_or_create(raw.path()).unwrap();
 
     // Secret subject identifier and confidential parameters
-    let secret_subject_uuid = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    let secret_subject_uuid = [
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+        0x88,
+    ];
     let secret_subject_hex = hex::encode(secret_subject_uuid);
 
     engine
@@ -214,7 +229,9 @@ fn test_old_files_without_manifest_open_and_verify() {
 
     let mut writer = TileWriter::create(raw.path()).unwrap();
     let recs = vec![TelemetryRecord::new(500, 1, 1, 100.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     // Explicitly seal without manifest (simulating legacy v1.0/v1.1 file)
@@ -248,7 +265,9 @@ fn test_embedded_spec_tile_roundtrip() {
 
     let mut writer = TileWriter::create(raw.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 5.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let opts = SealOptionsV2 {
@@ -276,7 +295,9 @@ fn test_embedded_spec_tile_roundtrip() {
     let (hdr2, _) = reader.get_tile(2).unwrap();
     assert_eq!(hdr2.tile_type, TileType::TELEMETRY);
 
-    let decompressed_spec = reader.get_embedded_spec().expect("Must decompress embedded spec");
+    let decompressed_spec = reader
+        .get_embedded_spec()
+        .expect("Must decompress embedded spec");
     assert!(decompressed_spec.starts_with("# S3A Hyper-Tile Storage Format Specification"));
     assert_eq!(decompressed_spec, SPEC_MARKDOWN);
 

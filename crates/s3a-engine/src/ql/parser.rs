@@ -192,7 +192,10 @@ impl Parser {
             Token::Identifier(s) => s.clone(),
             other => {
                 return Err(QlError::Parse {
-                    message: format!("Expected S3A coordinate (e.g. L0:T4:R12), found {:?}", other),
+                    message: format!(
+                        "Expected S3A coordinate (e.g. L0:T4:R12), found {:?}",
+                        other
+                    ),
                     line: 0,
                     col: 0,
                 });

@@ -6,41 +6,36 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use s3a_core::{
-    compare_hilbert_vs_morton_curve_continuity,
-    Dop14Hull, toroidal_distance_3d,
-    ADDON_EDU, ADDON_FINTECH, ADDON_ROBOTICS, ADDON_WEARABLE, ADDON_GIS, ADDON_DA, ADDON_ONTOLOGY, S3AAddon,
+    compare_hilbert_vs_morton_curve_continuity, toroidal_distance_3d, Dop14Hull, S3AAddon,
+    ADDON_DA, ADDON_EDU, ADDON_FINTECH, ADDON_GIS, ADDON_ONTOLOGY, ADDON_ROBOTICS, ADDON_WEARABLE,
+};
+use s3a_engine::{
+    archive_cold_tiles, execute_query, generate_delta_metadata, generate_iceberg_metadata,
+    handle_snowflake_batch_request, load_shards_from_dir, save_shards_to_dir, BackgroundCompactor,
+    BackpressurePolicy, Compactor, HullBvh, L0RingBuffer, LearningActivityRecord,
+    LocalStorageAdapter, MicroTileBuffer, MmapReader, QueryResult, QuerySieve, ReedSolomonCodec,
+    S3AClient, S3ACoordinate, S3ACrudEngine, S3AProtocolServer, SimplexHull, TelemetryRecord,
+    TileFusionEngine, TileShard, TileType, TileWriter,
+};
+use s3a_pack_da::{DACommitmentRecord, DaPack, DaQueryExt, DaTileType};
+use s3a_pack_gis::{GISSurveyPointRecord, GisPack, GisQueryExt, GisTileType};
+use s3a_pack_ontology::OntologyPack;
+use s3a_pack_robotics::{
+    RoboticsKinematicRecord, RoboticsPack, RoboticsQueryExt, RoboticsStreamWriter, RoboticsTileType,
 };
 use s3a_pack_scholar::{
-    ScholarPack, ScholarTileType, ScholarCrudExt, ScholarQueryExt,
-    AcademicPaperRecord, AiTraceRecord, HumanLrsRecord,
-    CitationFingerprintRecord, ScholarNoteClaimRecord,
-    CONTENT_KIND_PDF, CLAIM_KIND_EMPIRICAL,
-    SrsManifestHeader, SCHOLAR_LAYOUT_VERSION_V1,
-    intake_srs_snapshot, intake_srs_snapshot_into_live,
-    ingest_scholar_intermediate_dir,
-    build_claim_proof, export_bibliography_with_proof,
+    build_claim_proof, export_bibliography_with_proof, ingest_scholar_intermediate_dir,
+    intake_srs_snapshot, intake_srs_snapshot_into_live, AcademicPaperRecord, AiTraceRecord,
+    CitationFingerprintRecord, HumanLrsRecord, ScholarCrudExt, ScholarNoteClaimRecord, ScholarPack,
+    ScholarQueryExt, ScholarTileType, SrsManifestHeader, CLAIM_KIND_EMPIRICAL, CONTENT_KIND_PDF,
+    SCHOLAR_LAYOUT_VERSION_V1,
 };
-use s3a_pack_wearable::{WearablePack, WearableTileType, CompactWearableRecord};
-use s3a_pack_robotics::{RoboticsPack, RoboticsTileType, RoboticsKinematicRecord, RoboticsStreamWriter, RoboticsQueryExt};
-use s3a_pack_gis::{GisPack, GisTileType, GISSurveyPointRecord, GisQueryExt};
-use s3a_pack_da::{DaPack, DaTileType, DACommitmentRecord, DaQueryExt};
-use s3a_pack_ontology::OntologyPack;
-use s3a_engine::{
-    Compactor, TileFusionEngine, MicroTileBuffer, MmapReader, QuerySieve, S3ACrudEngine,
-    TelemetryRecord, LearningActivityRecord, SimplexHull, TileType, TileWriter, S3ACoordinate,
-    execute_query, QueryResult, HullBvh,
-    L0RingBuffer, BackpressurePolicy, BackgroundCompactor,
-    S3AClient, S3AProtocolServer,
-    ReedSolomonCodec, TileShard, save_shards_to_dir, load_shards_from_dir,
-    LocalStorageAdapter, archive_cold_tiles,
-    handle_snowflake_batch_request, generate_iceberg_metadata, generate_delta_metadata,
-};
+use s3a_pack_wearable::{CompactWearableRecord, WearablePack, WearableTileType};
 
+mod gate_cli;
 mod mcp;
 mod tour;
 mod vcs_cli;
-mod gate_cli;
-
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
@@ -324,7 +319,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 "#;
 
 fn register_all_types() {
-    let _ = s3a_core::registry::with_global_registry_mut(|reg| {
+    s3a_core::registry::with_global_registry_mut(|reg| {
         let _ = s3a_pack_wearable::register_pack_types(reg);
         let _ = s3a_pack_robotics::register_pack_types(reg);
         let _ = s3a_pack_gis::register_pack_types(reg);
@@ -454,10 +449,21 @@ fn main() {
                 println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--title <title>] [--creator <creator>]");
                 return;
             }
-            seal_file(positional[0], positional[1], parity, embed_spec, title, creator);
+            seal_file(
+                positional[0],
+                positional[1],
+                parity,
+                embed_spec,
+                title,
+                creator,
+            );
         }
         "repair" => {
-            let positional: Vec<&str> = args[2..].iter().filter(|a| !a.starts_with("--")).map(|s| s.as_str()).collect();
+            let positional: Vec<&str> = args[2..]
+                .iter()
+                .filter(|a| !a.starts_with("--"))
+                .map(|s| s.as_str())
+                .collect();
             if positional.len() < 2 {
                 println!("Usage: s3a-cli repair <in_file> <out_file>");
                 return;
@@ -514,15 +520,42 @@ fn main() {
                 return;
             }
             let hex = |b: &[u8]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
-            match s3a_engine::migrate::migrate_file(std::path::Path::new(pos[0]), std::path::Path::new(pos[1]), dry_run) {
+            match s3a_engine::migrate::migrate_file(
+                std::path::Path::new(pos[0]),
+                std::path::Path::new(pos[1]),
+                dry_run,
+            ) {
                 Ok(r) => {
-                    println!("{} {} -> {}", if r.dry_run { "DRY RUN OK:" } else { "MIGRATED + VERIFIED:" }, pos[0], pos[1]);
+                    println!(
+                        "{} {} -> {}",
+                        if r.dry_run {
+                            "DRY RUN OK:"
+                        } else {
+                            "MIGRATED + VERIFIED:"
+                        },
+                        pos[0],
+                        pos[1]
+                    );
                     println!("  source version: {}", r.source_version.as_str());
-                    println!("  tiles: {}  records: {}  generation: {}", r.tile_count, r.record_count, r.generation);
+                    println!(
+                        "  tiles: {}  records: {}  generation: {}",
+                        r.tile_count, r.record_count, r.generation
+                    );
                     println!("  source sha256: {}", hex(&r.source_sha256));
-                    println!("  output sha256: {}{}", hex(&r.output_sha256), if r.dry_run { " (uuid differs on real run)" } else { "" });
+                    println!(
+                        "  output sha256: {}{}",
+                        hex(&r.output_sha256),
+                        if r.dry_run {
+                            " (uuid differs on real run)"
+                        } else {
+                            ""
+                        }
+                    );
                     if !r.dry_run {
-                        println!("  new file_uuid: {:016x}{:016x}", r.new_file_uuid[0], r.new_file_uuid[1]);
+                        println!(
+                            "  new file_uuid: {:016x}{:016x}",
+                            r.new_file_uuid[0], r.new_file_uuid[1]
+                        );
                     }
                 }
                 Err(e) => {
@@ -547,7 +580,8 @@ fn main() {
                 if args[i] == "--repair" && i + 1 < args.len() {
                     repair_out = Some(args[i + 1].as_str());
                     skip_next = true;
-                } else if (args[i] == "--trust-store" || args[i] == "--trust") && i + 1 < args.len() {
+                } else if (args[i] == "--trust-store" || args[i] == "--trust") && i + 1 < args.len()
+                {
                     trust_store = Some(args[i + 1].as_str());
                     skip_next = true;
                 } else if args[i] == "--esplora" && i + 1 < args.len() {
@@ -564,12 +598,22 @@ fn main() {
         }
         "status" => {
             let json_mode = args.iter().any(|a| a == "--json");
-            let file = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str()).unwrap_or("test.s3a");
+            let file = args
+                .iter()
+                .skip(2)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str())
+                .unwrap_or("test.s3a");
             run_status(file, json_mode);
         }
         "doctor" => {
             let json_mode = args.iter().any(|a| a == "--json");
-            let file = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str()).unwrap_or("test.s3a");
+            let file = args
+                .iter()
+                .skip(2)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str())
+                .unwrap_or("test.s3a");
             run_doctor(file, json_mode);
         }
         "recover" => {
@@ -588,14 +632,18 @@ fn main() {
         }
         "insert" => {
             if args.len() < 7 {
-                println!("Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
+                println!(
+                    "Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>"
+                );
                 return;
             }
             insert_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
         }
         "get" => {
             if args.len() < 7 {
-                println!("Usage: s3a-cli get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
+                println!(
+                    "Usage: s3a-cli get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>"
+                );
                 return;
             }
             get_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
@@ -643,9 +691,21 @@ fn main() {
             run_lrs_benchmark();
         }
         "stream-ingest" | "stream" => {
-            let file = if args.len() >= 3 { &args[2] } else { "live_stream.s3a" };
-            let duration = if args.len() >= 4 { args[3].parse().unwrap_or(3) } else { 3 };
-            let rate = if args.len() >= 5 { args[4].parse().unwrap_or(10_000) } else { 10_000 };
+            let file = if args.len() >= 3 {
+                &args[2]
+            } else {
+                "live_stream.s3a"
+            };
+            let duration = if args.len() >= 4 {
+                args[3].parse().unwrap_or(3)
+            } else {
+                3
+            };
+            let rate = if args.len() >= 5 {
+                args[4].parse().unwrap_or(10_000)
+            } else {
+                10_000
+            };
             run_stream_ingest_benchmark(file, duration, rate);
         }
         "query" => {
@@ -665,7 +725,11 @@ fn main() {
             run_server(port);
         }
         "serve-tcp" => {
-            let addr = if args.len() >= 3 { &args[2] } else { "127.0.0.1:9333" };
+            let addr = if args.len() >= 3 {
+                &args[2]
+            } else {
+                "127.0.0.1:9333"
+            };
             run_tcp_server(addr);
         }
         "remote-query" => {
@@ -674,15 +738,27 @@ fn main() {
                 return;
             }
             let query = &args[2];
-            let addr = if args.len() >= 4 { &args[3] } else { "127.0.0.1:9333" };
+            let addr = if args.len() >= 4 {
+                &args[3]
+            } else {
+                "127.0.0.1:9333"
+            };
             run_remote_query(addr, query);
         }
         "mcp-server" | "mcp" => {
-            let file = if args.len() >= 3 { &args[2] } else { "test.s3a" };
+            let file = if args.len() >= 3 {
+                &args[2]
+            } else {
+                "test.s3a"
+            };
             mcp::run_mcp_server(file);
         }
         "mcp-client" => {
-            let file = if args.len() >= 3 { &args[2] } else { "test.s3a" };
+            let file = if args.len() >= 3 {
+                &args[2]
+            } else {
+                "test.s3a"
+            };
             mcp::run_mcp_client_test(file);
         }
         "shell" | "sqlcmd" | "sql" => {
@@ -695,12 +771,18 @@ fn main() {
             }
             match args[2].as_str() {
                 "list" => {
-                    let file = if args.len() >= 4 { &args[3] } else { "test.s3a" };
+                    let file = if args.len() >= 4 {
+                        &args[3]
+                    } else {
+                        "test.s3a"
+                    };
                     run_addon_list(file);
                 }
                 "enable" => {
                     if args.len() < 5 {
-                        println!("Usage: s3a-cli addon enable <archive_file> <edu|fintech|robotics>");
+                        println!(
+                            "Usage: s3a-cli addon enable <archive_file> <edu|fintech|robotics>"
+                        );
                         return;
                     }
                     let file = &args[3];
@@ -717,8 +799,16 @@ fn main() {
                 println!("Usage: s3a-cli ec-shard <archive_file> <out_dir> [k] [m]");
                 return;
             }
-            let k: usize = if args.len() >= 5 { args[4].parse().unwrap_or(4) } else { 4 };
-            let m: usize = if args.len() >= 6 { args[5].parse().unwrap_or(2) } else { 2 };
+            let k: usize = if args.len() >= 5 {
+                args[4].parse().unwrap_or(4)
+            } else {
+                4
+            };
+            let m: usize = if args.len() >= 6 {
+                args[5].parse().unwrap_or(2)
+            } else {
+                2
+            };
             run_ec_shard(&args[2], &args[3], k, m);
         }
         "ec-recover" => {
@@ -726,8 +816,16 @@ fn main() {
                 println!("Usage: s3a-cli ec-recover <shards_dir> <out_archive> [k] [m]");
                 return;
             }
-            let k: usize = if args.len() >= 5 { args[4].parse().unwrap_or(4) } else { 4 };
-            let m: usize = if args.len() >= 6 { args[5].parse().unwrap_or(2) } else { 2 };
+            let k: usize = if args.len() >= 5 {
+                args[4].parse().unwrap_or(4)
+            } else {
+                4
+            };
+            let m: usize = if args.len() >= 6 {
+                args[5].parse().unwrap_or(2)
+            } else {
+                2
+            };
             run_ec_recover(&args[2], &args[3], k, m);
         }
         "storage-analysis" | "storage-efficiency" | "storage" => {
@@ -738,7 +836,11 @@ fn main() {
                 println!("Usage: s3a-cli tier-archive <archive_file> <cold_dir> [min_stratum]");
                 return;
             }
-            let min_stratum: u8 = if args.len() >= 5 { args[4].parse().unwrap_or(2) } else { 2 };
+            let min_stratum: u8 = if args.len() >= 5 {
+                args[4].parse().unwrap_or(2)
+            } else {
+                2
+            };
             run_tier_archive(&args[2], &args[3], min_stratum);
         }
         "benchmark-3d" => {
@@ -749,7 +851,11 @@ fn main() {
                 println!("Usage: s3a-cli export-iceberg <archive_file> <out_dir> [table_name]");
                 return;
             }
-            let table_name = if args.len() >= 5 { &args[4] } else { "s3a_table" };
+            let table_name = if args.len() >= 5 {
+                &args[4]
+            } else {
+                "s3a_table"
+            };
             run_export_iceberg(&args[2], &args[3], table_name);
         }
         "snowflake-serve" => {
@@ -790,7 +896,9 @@ fn main() {
                 }
                 "intake" => {
                     if args.len() < 4 {
-                        println!("Usage: s3a-cli snapshot intake <snapshot_file> [--into <live_db>]");
+                        println!(
+                            "Usage: s3a-cli snapshot intake <snapshot_file> [--into <live_db>]"
+                        );
                         return;
                     }
                     let into_live = if args.len() >= 6 && args[4] == "--into" {
@@ -817,14 +925,20 @@ fn main() {
                 println!("Usage:");
                 println!("  s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]");
                 println!("  s3a-cli scholar recheck <archive.s3a> [--online] [--endpoint <url>] [--out <output.s3a>]");
-                println!("  s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]");
-                println!("  s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]");
+                println!(
+                    "  s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]"
+                );
+                println!(
+                    "  s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]"
+                );
                 return;
             }
             match args[2].as_str() {
                 "ingest" => {
                     if args.len() < 5 {
-                        println!("Usage: s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]");
+                        println!(
+                            "Usage: s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]"
+                        );
                         return;
                     }
                     let fresh = args.len() >= 6 && args[5] == "--fresh";
@@ -860,8 +974,10 @@ fn main() {
                                 if i + 1 < args.len() {
                                     if let Some((pid_s, rest)) = args[i + 1].split_once('=') {
                                         if let Ok(pid) = pid_s.parse::<u64>() {
-                                            let (doi, url) = rest.split_once(',').unwrap_or((rest, rest));
-                                            url_overrides.insert(pid, (doi.to_string(), url.to_string()));
+                                            let (doi, url) =
+                                                rest.split_once(',').unwrap_or((rest, rest));
+                                            url_overrides
+                                                .insert(pid, (doi.to_string(), url.to_string()));
                                         }
                                     }
                                     i += 2;
@@ -869,15 +985,13 @@ fn main() {
                                     i += 1;
                                 }
                             }
-                            "--out" => {
-                                if i + 1 < args.len() {
-                                    out_path = Some(args[i + 1].clone());
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--out" if i + 1 < args.len() => {
+                                out_path = Some(args[i + 1].clone());
+                                i += 2;
                             }
-                            _ => { i += 1; }
+                            _ => {
+                                i += 1;
+                            }
                         }
                     }
 
@@ -908,15 +1022,13 @@ fn main() {
                                 json_ld = true;
                                 i += 1;
                             }
-                            "--out" => {
-                                if i + 1 < args.len() {
-                                    out_path = Some(args[i + 1].clone());
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--out" if i + 1 < args.len() => {
+                                out_path = Some(args[i + 1].clone());
+                                i += 2;
                             }
-                            _ => { i += 1; }
+                            _ => {
+                                i += 1;
+                            }
                         }
                     }
 
@@ -949,15 +1061,13 @@ fn main() {
                                     i += 1;
                                 }
                             }
-                            "--format" => {
-                                if i + 1 < args.len() {
-                                    format = args[i + 1].to_lowercase();
-                                    i += 2;
-                                } else {
-                                    i += 1;
-                                }
+                            "--format" if i + 1 < args.len() => {
+                                format = args[i + 1].to_lowercase();
+                                i += 2;
                             }
-                            _ => { i += 1; }
+                            _ => {
+                                i += 1;
+                            }
                         }
                     }
 
@@ -984,7 +1094,9 @@ fn main() {
         }
         "import-academic-bundle" | "import-academic" => {
             if args.len() < 4 {
-                println!("Usage: s3a-cli import-academic-bundle <json_dir> <out_archive> [--fresh]");
+                println!(
+                    "Usage: s3a-cli import-academic-bundle <json_dir> <out_archive> [--fresh]"
+                );
                 return;
             }
             let fresh = args.len() >= 5 && args[4] == "--fresh";
@@ -992,7 +1104,9 @@ fn main() {
         }
         "snapshot-export" => {
             if args.len() < 4 {
-                println!("Usage: s3a-cli snapshot-export <live_db> <snapshot_file> [project_uuid_hex]");
+                println!(
+                    "Usage: s3a-cli snapshot-export <live_db> <snapshot_file> [project_uuid_hex]"
+                );
                 return;
             }
             let project_uuid = if args.len() >= 5 {
@@ -1045,10 +1159,16 @@ fn print_usage() {
     println!("  s3a-cli vcs commit <archive> -m \"<msg>\"           Seal archive with signed commit record");
     println!("  s3a-cli vcs log <archive> [--json] [ref]          Display commit DAG log history");
     println!("  s3a-cli vcs branch <archive> [branch]             List or create branch pointer");
-    println!("  s3a-cli vcs tag <archive> [tag] [seal]            List or create immutable snapshot tag");
-    println!("  s3a-cli vcs checkout <archive> <ref_or_commit>    Checkout read-only view at ref/commit");
+    println!(
+        "  s3a-cli vcs tag <archive> [tag] [seal]            List or create immutable snapshot tag"
+    );
+    println!(
+        "  s3a-cli vcs checkout <archive> <ref_or_commit>    Checkout read-only view at ref/commit"
+    );
     println!("  s3a-cli vcs diff <archive> [commit_a] [commit_b]  Aggregate record diffs without privacy leaks");
-    println!("  s3a-cli vcs merge <archive> <src> <target>        Append-only union merge branches");
+    println!(
+        "  s3a-cli vcs merge <archive> <src> <target>        Append-only union merge branches"
+    );
     println!("  s3a-cli vcs push <src> <target> [--merge]         Inventory sync push transmitting missing tiles");
     println!("  s3a-cli vcs export-git <archive> <out_dir>        Export commit DAG to real Git repository");
     println!();
@@ -1073,7 +1193,9 @@ fn print_usage() {
     println!("  s3a-cli snapshot inspect <snapshot>               Inspect SRS manifest header, sector CRC32, and inventory");
     println!();
     println!("DEVELOPER REPL, WIRE SERVER & PROTOCOLS:");
-    println!("  s3a-cli shell                                     Interactive SQL-style REPL shell");
+    println!(
+        "  s3a-cli shell                                     Interactive SQL-style REPL shell"
+    );
     println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
     println!("  s3a-cli serve-tcp [host:port]                     Start low-latency binary S3AP wire protocol server (default: 127.0.0.1:9333)");
     println!("  s3a-cli remote-query \"<STMT>\" [host:port]          Query remote S3A server via binary S3AP wire protocol");
@@ -1137,13 +1259,66 @@ fn run_addon_list(archive_file: &str) {
     let ontology_pack = OntologyPack;
 
     println!("Registered Domain Packs & Addons:");
-    println!("  [1] {} (v{}): {}", scholar_pack.name(), scholar_pack.version(), if is_edu { "ACTIVE (Tiles 10..=15)" } else { "INACTIVE" });
-    println!("  [2] {} (v{}): {}", wearable_pack.name(), wearable_pack.version(), if is_wearable { "ACTIVE (Tile 3)" } else { "INACTIVE" });
-    println!("  [3] {} (v{}): {}", robotics_pack.name(), robotics_pack.version(), if is_robotics { "ACTIVE (Tile 4)" } else { "INACTIVE" });
-    println!("  [4] {} (v{}): {}", gis_pack.name(), gis_pack.version(), if is_gis { "ACTIVE (Tile 5)" } else { "INACTIVE" });
-    println!("  [5] {} (v{}): {}", da_pack.name(), da_pack.version(), if is_da { "ACTIVE (Tile 6)" } else { "INACTIVE" });
-    println!("  [6] {} (v{}): {}", ontology_pack.name(), ontology_pack.version(), if is_ontology { "ACTIVE (Tiles 16..=17)" } else { "INACTIVE" });
-    println!("  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}", if is_fintech { "ACTIVE" } else { "INACTIVE" });
+    println!(
+        "  [1] {} (v{}): {}",
+        scholar_pack.name(),
+        scholar_pack.version(),
+        if is_edu {
+            "ACTIVE (Tiles 10..=15)"
+        } else {
+            "INACTIVE"
+        }
+    );
+    println!(
+        "  [2] {} (v{}): {}",
+        wearable_pack.name(),
+        wearable_pack.version(),
+        if is_wearable {
+            "ACTIVE (Tile 3)"
+        } else {
+            "INACTIVE"
+        }
+    );
+    println!(
+        "  [3] {} (v{}): {}",
+        robotics_pack.name(),
+        robotics_pack.version(),
+        if is_robotics {
+            "ACTIVE (Tile 4)"
+        } else {
+            "INACTIVE"
+        }
+    );
+    println!(
+        "  [4] {} (v{}): {}",
+        gis_pack.name(),
+        gis_pack.version(),
+        if is_gis {
+            "ACTIVE (Tile 5)"
+        } else {
+            "INACTIVE"
+        }
+    );
+    println!(
+        "  [5] {} (v{}): {}",
+        da_pack.name(),
+        da_pack.version(),
+        if is_da { "ACTIVE (Tile 6)" } else { "INACTIVE" }
+    );
+    println!(
+        "  [6] {} (v{}): {}",
+        ontology_pack.name(),
+        ontology_pack.version(),
+        if is_ontology {
+            "ACTIVE (Tiles 16..=17)"
+        } else {
+            "INACTIVE"
+        }
+    );
+    println!(
+        "  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}",
+        if is_fintech { "ACTIVE" } else { "INACTIVE" }
+    );
 
     if mask == 0 {
         println!();
@@ -1178,7 +1353,10 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
 
     match engine.enable_addon(mask) {
         Ok(()) => {
-            println!("✓ Successfully enabled Addon '{}' (mask 0x{:04X}) on {}", addon_name, mask, archive_file);
+            println!(
+                "✓ Successfully enabled Addon '{}' (mask 0x{:04X}) on {}",
+                addon_name, mask, archive_file
+            );
         }
         Err(e) => {
             eprintln!("Failed to enable addon: {}", e);
@@ -1187,12 +1365,20 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
 }
 
 fn run_storage_analysis() {
-    println!("=========================================================================================");
-    println!("             S3A STORAGE DENSITY & CLUSTER DURABILITY BENCHMARK REPORT                   ");
-    println!("=========================================================================================");
+    println!(
+        "========================================================================================="
+    );
+    println!(
+        "             S3A STORAGE DENSITY & CLUSTER DURABILITY BENCHMARK REPORT                   "
+    );
+    println!(
+        "========================================================================================="
+    );
     println!();
     println!("1. ADDRESSING THE '3x STORAGE COST' DISTINCTION:");
-    println!("-----------------------------------------------------------------------------------------");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
     println!("  - Myth: 'Adopting S3A requires 3x the storage for the database.'");
     println!("  - Reality: S3A embedded / single-node footprint is strictly 1.0x (ZERO replication overhead).");
     println!("  - In fact, S3A binary Morton-packing and SIMD layout uses ~52% LESS space than JSON/SQL!");
@@ -1218,9 +1404,13 @@ fn run_storage_analysis() {
     println!("---------------------------------------------------------------------------------------------------------");
     println!();
     println!("KEY TAKEAWAY FOR ENTERPRISE ADOPTION:");
-    println!("  -> An S3A cluster with 8+2 Erasure Coding consumes 40% LESS total physical disk than");
+    println!(
+        "  -> An S3A cluster with 8+2 Erasure Coding consumes 40% LESS total physical disk than"
+    );
     println!("     a single un-replicated JSON/SQL database, while surviving 2 catastrophic drive failures!");
-    println!("=========================================================================================");
+    println!(
+        "========================================================================================="
+    );
 }
 
 fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
@@ -1264,13 +1454,30 @@ fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
 
     println!("=========================================================================");
     println!("Reed-Solomon Erasure Coding Complete:");
-    println!("  Original File Size:   {} bytes ({:.2} KB)", data.len(), data.len() as f64 / 1024.0);
-    println!("  Codec Scheme:         K = {} data shards, M = {} parity shards", k, m);
-    println!("  Total Shards Written: {} files in '{}'", paths.len(), out_dir);
-    println!("  Shard Payload Size:   {} bytes each", shards[0].payload.len());
+    println!(
+        "  Original File Size:   {} bytes ({:.2} KB)",
+        data.len(),
+        data.len() as f64 / 1024.0
+    );
+    println!(
+        "  Codec Scheme:         K = {} data shards, M = {} parity shards",
+        k, m
+    );
+    println!(
+        "  Total Shards Written: {} files in '{}'",
+        paths.len(),
+        out_dir
+    );
+    println!(
+        "  Shard Payload Size:   {} bytes each",
+        shards[0].payload.len()
+    );
     println!("  Total Sharded Size:   {} bytes", total_shard_bytes);
     println!("  Durability Overhead:  {:.2}x (Only {:.1}% additional disk vs 200% for 3-way replication!)", overhead, (overhead - 1.0) * 100.0);
-    println!("  Fault Tolerance:      Can survive ANY {} drive/shard failures without loss", m);
+    println!(
+        "  Fault Tolerance:      Can survive ANY {} drive/shard failures without loss",
+        m
+    );
     println!("  Encoding Time:        {:.2?}", encode_duration);
     println!("=========================================================================");
 }
@@ -1293,14 +1500,33 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
         }
     };
 
-    println!("Found {} valid shards on disk (K={}, M={}):", shards.len(), k, m);
+    println!(
+        "Found {} valid shards on disk (K={}, M={}):",
+        shards.len(),
+        k,
+        m
+    );
     for s in &shards {
-        let type_str = if (s.header.shard_idx as usize) < k { "DATA" } else { "PARITY" };
-        println!("  ├─ Shard #{:02}: [{}] ({} bytes, CRC32C: 0x{:08X})", s.header.shard_idx, type_str, s.payload.len(), s.header.shard_crc32c);
+        let type_str = if (s.header.shard_idx as usize) < k {
+            "DATA"
+        } else {
+            "PARITY"
+        };
+        println!(
+            "  ├─ Shard #{:02}: [{}] ({} bytes, CRC32C: 0x{:08X})",
+            s.header.shard_idx,
+            type_str,
+            s.payload.len(),
+            s.header.shard_crc32c
+        );
     }
 
     if shards.len() < k {
-        eprintln!("Error: Cannot recover. Found {} shards, but at least K={} are required.", shards.len(), k);
+        eprintln!(
+            "Error: Cannot recover. Found {} shards, but at least K={} are required.",
+            shards.len(),
+            k
+        );
         return;
     }
 
@@ -1331,7 +1557,11 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
     println!("=========================================================================");
     println!("Archive Reconstruction Successful:");
     println!("  Output File:          {}", out_archive);
-    println!("  Reconstructed Bytes:  {} bytes ({:.2} KB)", reconstructed.len(), reconstructed.len() as f64 / 1024.0);
+    println!(
+        "  Reconstructed Bytes:  {} bytes ({:.2} KB)",
+        reconstructed.len(),
+        reconstructed.len() as f64 / 1024.0
+    );
     println!("  Data Integrity:       100% BIT-EXACT CRC32C VERIFIED");
     println!("  Reconstruction Time:  {:.2?}", recovery_duration);
     println!("=========================================================================");
@@ -1346,14 +1576,21 @@ fn run_tier_archive(archive_path: &str, cold_dir: &str, min_stratum: u8) {
         }
     };
 
-    println!("Cold-tiering archive '{}' to '{}' (min_stratum = {})...", archive_path, cold_dir, min_stratum);
+    println!(
+        "Cold-tiering archive '{}' to '{}' (min_stratum = {})...",
+        archive_path, cold_dir, min_stratum
+    );
     match archive_cold_tiles(archive_path, &adapter, min_stratum) {
         Ok(report) => {
             println!("=========================================================================");
             println!("Cold Tiering Complete:");
             println!("  Hyper-Tiles Scanned:  {}", report.tiles_scanned);
             println!("  Hyper-Tiles Offloaded:{}", report.tiles_archived);
-            println!("  Storage Offloaded:    {} bytes ({:.2} KB)", report.bytes_offloaded, report.bytes_offloaded as f64 / 1024.0);
+            println!(
+                "  Storage Offloaded:    {} bytes ({:.2} KB)",
+                report.bytes_offloaded,
+                report.bytes_offloaded as f64 / 1024.0
+            );
             println!("  Target Bucket/Dir:    {}", cold_dir);
             println!("=========================================================================");
         }
@@ -1364,24 +1601,43 @@ fn run_tier_archive(archive_path: &str, cold_dir: &str, min_stratum: u8) {
 }
 
 fn run_3d_spatial_benchmark() {
-    println!("=========================================================================================");
-    println!("        S3A 3D SPATIAL INDEXING & BOUNDING GEOMETRY BENCHMARK (IEEE / ARXIV)             ");
-    println!("=========================================================================================");
+    println!(
+        "========================================================================================="
+    );
+    println!(
+        "        S3A 3D SPATIAL INDEXING & BOUNDING GEOMETRY BENCHMARK (IEEE / ARXIV)             "
+    );
+    println!(
+        "========================================================================================="
+    );
     println!();
     println!("1. 3D SKILLING HILBERT SPACE-FILLING CURVE VS MORTON Z-ORDER (AIP / IEEE):");
-    println!("-----------------------------------------------------------------------------------------");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
     let (h_max, h_avg, m_max, m_avg) = compare_hilbert_vs_morton_curve_continuity(10, 4096);
     println!("  Continuity & Locality along 1D Space-Filling Curves (4,096 consecutive steps at 10-bit resolution):");
-    println!("    - 3D Hilbert Curve Maximum Step Distance:    {:.2} voxels (STRICTLY CONTIGUOUS)", h_max);
-    println!("    - 3D Hilbert Curve Average Step Distance:    {:.2} voxels", h_avg);
+    println!(
+        "    - 3D Hilbert Curve Maximum Step Distance:    {:.2} voxels (STRICTLY CONTIGUOUS)",
+        h_max
+    );
+    println!(
+        "    - 3D Hilbert Curve Average Step Distance:    {:.2} voxels",
+        h_avg
+    );
     println!("    - 3D Morton Z-Order Maximum Step Distance:  {:.2} voxels (CATASTROPHIC OCTANT SEAM TEAR)", m_max);
-    println!("    - 3D Morton Z-Order Average Step Distance:  {:.2} voxels", m_avg);
+    println!(
+        "    - 3D Morton Z-Order Average Step Distance:  {:.2} voxels",
+        m_avg
+    );
     let advantage = ((m_avg - h_avg) / m_avg) * 100.0;
     println!("    - Locality Preservation Advantage:          +{:.2}% tighter average locality (no octant seam tears!)", advantage);
     println!();
 
     println!("2. KLOSOWSKI 14-DOP BOUNDING POLYTOPE VS STANDARD AABB 6-DOP (IEEE TVCG):");
-    println!("-----------------------------------------------------------------------------------------");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
     let diag_points = [
         [0.0, 0.0, 0.0],
         [2.5, 2.3, 2.7],
@@ -1395,27 +1651,49 @@ fn run_3d_spatial_benchmark() {
     let vol_reduction = dop14.volume_reduction_percentage();
 
     println!("  Diagonal Trajectory Bounding Volume (10m x 10m x 10m space):");
-    println!("    - Standard Axis-Aligned Bounding Box (AABB / 6-DOP): {:.2} m³", aabb_vol);
-    println!("    - Klosowski 14-DOP (7-axis diagonal beveled hull):  {:.2} m³", dop_vol);
-    println!("    - Empty Space Elimination:                           {:.2}% wasted volume eliminated!", vol_reduction);
+    println!(
+        "    - Standard Axis-Aligned Bounding Box (AABB / 6-DOP): {:.2} m³",
+        aabb_vol
+    );
+    println!(
+        "    - Klosowski 14-DOP (7-axis diagonal beveled hull):  {:.2} m³",
+        dop_vol
+    );
+    println!(
+        "    - Empty Space Elimination:                           {:.2}% wasted volume eliminated!",
+        vol_reduction
+    );
     println!("    - SIMD Sieve Rejection Efficiency:                   Rejects ~{:.1}% more non-matching Hyper-Tiles", vol_reduction);
     println!();
 
     println!("3. HYPER-TOROIDAL ANGULAR METRIC (RIEMANNIAN FLAT TORUS T^3):");
-    println!("-----------------------------------------------------------------------------------------");
+    println!(
+        "-----------------------------------------------------------------------------------------"
+    );
     use std::f32::consts::PI;
     let joint_a = [PI - 0.05, 0.0, 0.0];
     let joint_b = [-PI + 0.05, 0.0, 0.0];
     let euclidean_d = ((joint_a[0] - joint_b[0]).powi(2)).sqrt();
     let toroidal_d = toroidal_distance_3d(&joint_a, &joint_b, 2.0 * PI);
     println!("  Joint Angle Coordinates across Seam boundary [+PI - 0.05] and [-PI + 0.05]:");
-    println!("    - Erroneous Euclidean Distance: {:.4} rad (false penalty across seam!)", euclidean_d);
-    println!("    - Exact Toroidal Geodesic:       {:.4} rad (seamless continuous wrapping)", toroidal_d);
-    println!("=========================================================================================");
+    println!(
+        "    - Erroneous Euclidean Distance: {:.4} rad (false penalty across seam!)",
+        euclidean_d
+    );
+    println!(
+        "    - Exact Toroidal Geodesic:       {:.4} rad (seamless continuous wrapping)",
+        toroidal_d
+    );
+    println!(
+        "========================================================================================="
+    );
 }
 
 fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
-    println!("Inspecting archive '{}' for Apache Iceberg & Delta Lake export...", archive_path);
+    println!(
+        "Inspecting archive '{}' for Apache Iceberg & Delta Lake export...",
+        archive_path
+    );
     let reader = match MmapReader::open(archive_path) {
         Ok(r) => r,
         Err(e) => {
@@ -1432,7 +1710,8 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
         }
     }
 
-    let iceberg_meta = generate_iceberg_metadata(table_name, archive_path, tile_count, total_records);
+    let iceberg_meta =
+        generate_iceberg_metadata(table_name, archive_path, tile_count, total_records);
     let delta_meta = generate_delta_metadata(table_name, tile_count, total_records);
 
     let dest_dir = Path::new(out_dir);
@@ -1440,7 +1719,9 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
     let _ = std::fs::create_dir_all(dest_dir.join("_delta_log"));
 
     let iceberg_file = dest_dir.join("v1.metadata.json");
-    let delta_file = dest_dir.join("_delta_log").join("00000000000000000000.json");
+    let delta_file = dest_dir
+        .join("_delta_log")
+        .join("00000000000000000000.json");
 
     if let Err(e) = std::fs::write(&iceberg_file, iceberg_meta) {
         eprintln!("Error writing Iceberg metadata: {}", e);
@@ -1458,19 +1739,33 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
     println!("  Total Records Mapped:      {}", total_records);
     println!("  Apache Iceberg Metadata:   {}", iceberg_file.display());
     println!("  Linux Foundation Delta:    {}", delta_file.display());
-    println!("  Supported Lakehouses:      Snowflake EXTERNAL TABLE, Databricks, DuckDB, Trino, Athena");
+    println!(
+        "  Supported Lakehouses:      Snowflake EXTERNAL TABLE, Databricks, DuckDB, Trino, Athena"
+    );
     println!("=========================================================================");
 }
 
 fn run_snowflake_server(port: u16) {
-    println!("Starting Snowflake External Function HTTP Gateway on http://0.0.0.0:{}", port);
-    println!("Snowflake Endpoint: POST http://<host>:{}/api/v1/snowflake", port);
+    println!(
+        "Starting Snowflake External Function HTTP Gateway on http://0.0.0.0:{}",
+        port
+    );
+    println!(
+        "Snowflake Endpoint: POST http://<host>:{}/api/v1/snowflake",
+        port
+    );
     run_server(port);
 }
 
 fn run_tcp_server(addr: &str) {
-    println!("Starting S3A Binary TCP Wire Protocol Server (S3AP v1) on {}", addr);
-    let ring_buffer = Arc::new(L0RingBuffer::<TelemetryRecord>::new(100_000, BackpressurePolicy::Block));
+    println!(
+        "Starting S3A Binary TCP Wire Protocol Server (S3AP v1) on {}",
+        addr
+    );
+    let ring_buffer = Arc::new(L0RingBuffer::<TelemetryRecord>::new(
+        100_000,
+        BackpressurePolicy::Block,
+    ));
     let _server = match S3AProtocolServer::bind(addr, Some(ring_buffer)) {
         Ok(s) => s,
         Err(e) => {
@@ -1478,7 +1773,10 @@ fn run_tcp_server(addr: &str) {
             return;
         }
     };
-    println!("S3AP Server listening on {}. Press Ctrl+C to terminate.", addr);
+    println!(
+        "S3AP Server listening on {}. Press Ctrl+C to terminate.",
+        addr
+    );
     // Keep main thread alive until interrupt
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -1549,13 +1847,15 @@ fn run_interactive_shell() {
     }
 }
 
-
-
 fn inspect_file(path: &str, json_mode: bool) {
     match MmapReader::open(path) {
         Ok(reader) => {
             let file_header = reader.file_header();
-            let slot_name = if reader.active_slot() == 0 { "Slot A" } else { "Slot B" };
+            let slot_name = if reader.active_slot() == 0 {
+                "Slot A"
+            } else {
+                "Slot B"
+            };
 
             if json_mode {
                 let mut tiles_json = Vec::new();
@@ -1588,7 +1888,6 @@ fn inspect_file(path: &str, json_mode: bool) {
             println!("  Total Tiles: {}", file_header.tile_count);
             println!("----------------------------------------");
 
-
             for i in 0..reader.tile_count() as usize {
                 if let Some((header, _)) = reader.get_tile(i) {
                     let resolved_schema_name = reader.resolve_tile_type_name(header.tile_type);
@@ -1602,15 +1901,21 @@ fn inspect_file(path: &str, json_mode: bool) {
                         DaTileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
-                        TileType::LEARNING_RECORD_STORE => "LEARNING_RECORD_STORE (xAPI / RL Trajectory)",
+                        TileType::RESERVED_BOUNDARY => "RESERVED_BOUNDARY",
                         TileType::COLUMNAR => "COLUMNAR (Vertically Partitioned Columnar Tile)",
                         TileType::ARRAY => "ARRAY (N-Dimensional Array / Tensor Tile)",
                         TileType::CONSENT => "CONSENT (Subject Privacy & Governance)",
-                        TileType::ERASURE => "ERASURE (Right-to-be-Forgotten Cryptographic Audit Receipt)",
+                        TileType::ERASURE => {
+                            "ERASURE (Right-to-be-Forgotten Cryptographic Audit Receipt)"
+                        }
                         TileType::SCHEMA => "SCHEMA (Embedded Schema Registry)",
                         ScholarTileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
-                        ScholarTileType::AI_TRACE_LOG => "AI_TRACE_LOG (Reasoning / Hallucination / Tool)",
-                        ScholarTileType::ACADEMIC_PAPERS => "ACADEMIC_PAPERS (Literature 3D Slices)",
+                        ScholarTileType::AI_TRACE_LOG => {
+                            "AI_TRACE_LOG (Reasoning / Hallucination / Tool)"
+                        }
+                        ScholarTileType::ACADEMIC_PAPERS => {
+                            "ACADEMIC_PAPERS (Literature 3D Slices)"
+                        }
                         ScholarTileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
                         ScholarTileType::SRS_WORKSPACE => "SRS_WORKSPACE (Workspace Pod)",
                         ScholarTileType::SRS_MANIFEST => "SRS_MANIFEST (Manifest Pod)",
@@ -1622,7 +1927,12 @@ fn inspect_file(path: &str, json_mode: bool) {
                             }
                         }
                     };
-                    let bloom_occupied = header.filter.bits.iter().map(|b| b.count_ones()).sum::<u32>();
+                    let bloom_occupied = header
+                        .filter
+                        .bits
+                        .iter()
+                        .map(|b| b.count_ones())
+                        .sum::<u32>();
                     let layout_str = if header.record_layout_version == 0 {
                         "layout_v0 (legacy)".to_string()
                     } else {
@@ -1637,8 +1947,10 @@ fn inspect_file(path: &str, json_mode: bool) {
                     }
                     println!(
                         "  ├─ Provenance Merkle Root: 0x{:02X}{:02X}{:02X}{:02X}...",
-                        header.provenance.merkle_root[0], header.provenance.merkle_root[1],
-                        header.provenance.merkle_root[2], header.provenance.merkle_root[3]
+                        header.provenance.merkle_root[0],
+                        header.provenance.merkle_root[1],
+                        header.provenance.merkle_root[2],
+                        header.provenance.merkle_root[3]
                     );
                     println!(
                         "  ├─ SIMD Bloom Filter: {}/960 bits set (Seed: 0x{:04X})",
@@ -1646,7 +1958,9 @@ fn inspect_file(path: &str, json_mode: bool) {
                     );
                     println!(
                         "  ├─ Lifecycle: Tombstones={}, StratumTier={}, CompactionEpoch={}",
-                        header.lifecycle.tombstone_count, header.lifecycle.stratum_tier, header.lifecycle.compaction_epoch
+                        header.lifecycle.tombstone_count,
+                        header.lifecycle.stratum_tier,
+                        header.lifecycle.compaction_epoch
                     );
                     println!(
                         "  └─ Learned Index: Spline Slope={:.4}, Intercept={:.2}",
@@ -1657,7 +1971,11 @@ fn inspect_file(path: &str, json_mode: bool) {
         }
         Err(e) => {
             if json_mode {
-                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+                println!(
+                    r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
             } else {
                 eprintln!("Error opening file: {}", e);
             }
@@ -1673,15 +1991,18 @@ fn run_lrs_benchmark() {
 
     let temp_lrs_path = Path::new("benchmark_lrs.s3a");
     let num_records = 100_000;
-    println!("Generating {} Learning / Agent Experience records...", num_records);
+    println!(
+        "Generating {} Learning / Agent Experience records...",
+        num_records
+    );
 
     let mut records = Vec::with_capacity(num_records);
     let mut json_bytes = Vec::new();
 
     for i in 0..num_records {
         let actor_id = 1000 + ((i % 50) as u64); // 50 distinct students / AI agents
-        let verb_id = ((i % 5) + 1) as u32;      // 1=Completed, 2=Attempted, 3=ToolCall, 4=Stepped, 5=Failed
-        let object_id = 2000 + ((i % 200) as u32);// 200 distinct courses / tools / environments
+        let verb_id = ((i % 5) + 1) as u32; // 1=Completed, 2=Attempted, 3=ToolCall, 4=Stepped, 5=Failed
+        let object_id = 2000 + ((i % 200) as u32); // 200 distinct courses / tools / environments
         let timestamp_sec = 1700000000 + (i as u64) * 5;
         let result_score = ((i % 100) as f32) / 100.0;
         let duration_ms = 50 + ((i % 500) as u32);
@@ -1711,23 +2032,41 @@ fn run_lrs_benchmark() {
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_lrs_path).unwrap();
     writer.enable_addon(ADDON_EDU).unwrap();
-    let recs_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<LearningActivityRecord>();
+    let recs_per_tile =
+        s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<LearningActivityRecord>();
 
     for chunk in records.chunks(recs_per_tile) {
         let ts: Vec<u64> = chunk.iter().map(|r| r.timestamp_sec).collect();
-        writer.write_hyper_tile(ScholarTileType::HUMAN_LRS, chunk, Some(&ts), None).unwrap();
+        writer
+            .write_hyper_tile(ScholarTileType::HUMAN_LRS, chunk, Some(&ts), None)
+            .unwrap();
     }
     let write_duration = start_write.elapsed();
     let s3a_file_size = std::fs::metadata(temp_lrs_path).unwrap().len() as usize;
 
     println!("\n--- LRS STORAGE DENSITY & COMPACTION COMPARISON ---");
-    println!("Standard xAPI JSON Size:   {:10} bytes ({:.2} MB)", json_size, json_size as f64 / 1_048_576.0);
-    println!("Raw Binary Record Size:    {:10} bytes ({:.2} MB)", raw_size, raw_size as f64 / 1_048_576.0);
-    println!("S3A Hyper-Tile LRS Size:   {:10} bytes ({:.2} MB)", s3a_file_size, s3a_file_size as f64 / 1_048_576.0);
+    println!(
+        "Standard xAPI JSON Size:   {:10} bytes ({:.2} MB)",
+        json_size,
+        json_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Raw Binary Record Size:    {:10} bytes ({:.2} MB)",
+        raw_size,
+        raw_size as f64 / 1_048_576.0
+    );
+    println!(
+        "S3A Hyper-Tile LRS Size:   {:10} bytes ({:.2} MB)",
+        s3a_file_size,
+        s3a_file_size as f64 / 1_048_576.0
+    );
     let savings = (1.0 - (s3a_file_size as f64 / json_size as f64)) * 100.0;
     println!("Space Savings vs xAPI JSON:{:10.2}%", savings);
     println!("S3A LRS Ingest Duration:   {:?}", write_duration);
-    println!("Ingest Throughput:         {:.2} million activities/sec", (num_records as f64 / write_duration.as_secs_f64()) / 1_000_000.0);
+    println!(
+        "Ingest Throughput:         {:.2} million activities/sec",
+        (num_records as f64 / write_duration.as_secs_f64()) / 1_000_000.0
+    );
 
     // Benchmark SIMD Bloom Filter Pruning Speed on Specific Agent ID
     println!("\n--- SIMD BLOOM FILTER DISCRETE ID PRUNING ---");
@@ -1740,7 +2079,12 @@ fn run_lrs_benchmark() {
     let agent_activities = sieve.query_learning_activities(0, u64::MAX, Some(target_agent), None);
     let query_duration = start_query.elapsed();
 
-    println!("Query for Agent #{}: Matched {} records in {:?}", target_agent, agent_activities.len(), query_duration);
+    println!(
+        "Query for Agent #{}: Matched {} records in {:?}",
+        target_agent,
+        agent_activities.len(),
+        query_duration
+    );
     println!("SIMD Blocked-Bloom Filter pruned non-matching 128KB Hyper-Tiles instantly!");
 
     let _ = std::fs::remove_file(temp_lrs_path);
@@ -1830,7 +2174,10 @@ fn verify_file(
     let p = Path::new(path);
     if !p.exists() {
         if json_mode {
-            println!(r#"{{"ok":false,"file":"{}","status":"error","error":"File not found"}}"#, escape_cli_json(path));
+            println!(
+                r#"{{"ok":false,"file":"{}","status":"error","error":"File not found"}}"#,
+                escape_cli_json(path)
+            );
         } else {
             eprintln!("Error: file '{}' not found", path);
         }
@@ -1860,15 +2207,18 @@ fn verify_file(
             let computed_fp_hex = hex::encode(computed_fp);
 
             if anchor_mode {
-                let trust_certs = trust_store.and_then(|tp| s3a_engine::load_pem_certificates(tp).ok());
-                let esplora_src = esplora_url.map(|u| s3a_engine::BlockHeaderSource::Esplora(u.to_string()));
+                let trust_certs =
+                    trust_store.and_then(|tp| s3a_engine::load_pem_certificates(tp).ok());
+                let esplora_src =
+                    esplora_url.map(|u| s3a_engine::BlockHeaderSource::Esplora(u.to_string()));
                 let mut anchor_results = Vec::new();
                 for a in &report.anchors {
                     let fp_match = a.fingerprint.to_lowercase() == computed_fp_hex.to_lowercase();
                     let proof_valid = if a.method == "opentimestamps" {
                         s3a_engine::verify_ots(a, &computed_fp, esplora_src.as_ref()).is_ok()
                     } else if a.method == "rfc3161" {
-                        s3a_engine::verify_rfc3161(a, &computed_fp, trust_certs.as_deref()).unwrap_or(false)
+                        s3a_engine::verify_rfc3161(a, &computed_fp, trust_certs.as_deref())
+                            .unwrap_or(false)
                     } else {
                         false
                     };
@@ -1912,20 +2262,31 @@ fn verify_file(
                     println!("  Archive Fingerprint: {}", computed_fp_hex);
                     println!("  Anchors Found:       {}", report.anchors.len());
                     if report.anchors.is_empty() {
-                        println!("  Notice: No cryptographic trust anchors recorded in sealed footer.");
+                        println!(
+                            "  Notice: No cryptographic trust anchors recorded in sealed footer."
+                        );
                     } else {
                         for (idx, res) in anchor_results.iter().enumerate() {
                             println!("  - Anchor #{}:", idx + 1);
-                            println!("      Method:      {}", res["method"].as_str().unwrap_or(""));
+                            println!(
+                                "      Method:      {}",
+                                res["method"].as_str().unwrap_or("")
+                            );
                             println!("      Anchored At: {} (epoch sec)", res["anchored_at"]);
-                            println!("      Status:      {}", res["status"].as_str().unwrap_or(""));
+                            println!(
+                                "      Status:      {}",
+                                res["status"].as_str().unwrap_or("")
+                            );
                             if let Some(uri) = res["uri"].as_str() {
                                 println!("      URI:         {}", uri);
                             }
                             if let Some(height) = res["block_height"].as_u64() {
                                 println!("      Bitcoin Blk: {}", height);
                             }
-                            println!("      Match:       {}", res["match"].as_str().unwrap_or("no"));
+                            println!(
+                                "      Match:       {}",
+                                res["match"].as_str().unwrap_or("no")
+                            );
                         }
                     }
                 }
@@ -1934,7 +2295,8 @@ fn verify_file(
 
             if json_mode {
                 let warnings_json = serde_json::to_string(&report.warnings).unwrap_or("[]".into());
-                let repaired_json = serde_json::to_string(&report.repaired_tiles).unwrap_or("[]".into());
+                let repaired_json =
+                    serde_json::to_string(&report.repaired_tiles).unwrap_or("[]".into());
                 println!(
                     r#"{{"ok":true,"file":"{}","status":"{}","is_sealed":{},"tile_count":{},"repaired_tiles":{},"warnings":{}}}"#,
                     escape_cli_json(path),
@@ -1946,9 +2308,15 @@ fn verify_file(
                 );
             } else {
                 if report.is_sealed {
-                    println!("Sealed verification SUCCESS: {} tiles verified in '{}'", report.tile_count, path);
+                    println!(
+                        "Sealed verification SUCCESS: {} tiles verified in '{}'",
+                        report.tile_count, path
+                    );
                 } else {
-                    println!("Archive verification SUCCESS: {} tiles verified in '{}'", report.tile_count, path);
+                    println!(
+                        "Archive verification SUCCESS: {} tiles verified in '{}'",
+                        report.tile_count, path
+                    );
                 }
                 if !report.repaired_tiles.is_empty() {
                     println!("Notice: Repaired {} damaged tiles in memory using Reed-Solomon parity: {:?}", report.repaired_tiles.len(), report.repaired_tiles);
@@ -2006,11 +2374,17 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
             }
         }
     } else {
-        let (_guards, calendars): (Vec<s3a_engine::anchor::mock_calendar::MockOtsCalendar>, Vec<String>) = if mock_mode {
+        let (_guards, calendars): (
+            Vec<s3a_engine::anchor::mock_calendar::MockOtsCalendar>,
+            Vec<String>,
+        ) = if mock_mode {
             let m1 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
             let m2 = s3a_engine::anchor::mock_calendar::MockOtsCalendar::start();
             let urls = vec![m1.url(), m2.url()];
-            println!("Started ephemeral local mock calendars: {}, {}", urls[0], urls[1]);
+            println!(
+                "Started ephemeral local mock calendars: {}, {}",
+                urls[0], urls[1]
+            );
             (vec![m1, m2], urls)
         } else if let Some(c) = cal_opt {
             let urls = c.split(',').map(|s| s.trim().to_string()).collect();
@@ -2033,7 +2407,10 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
                         attached_count += 1;
                     }
                 }
-                println!("Successfully anchored '{}' to {} OpenTimestamps calendar(s) (status: pending)", path, attached_count);
+                println!(
+                    "Successfully anchored '{}' to {} OpenTimestamps calendar(s) (status: pending)",
+                    path, attached_count
+                );
             }
             Err(e) => {
                 eprintln!("OpenTimestamps anchoring failed: {}", e);
@@ -2072,8 +2449,7 @@ fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
                     } else {
                         println!(
                             "Upgraded OTS anchor to confirmed at Bitcoin block {:?} ({:?})",
-                            anchor.block_height,
-                            anchor.block_hash
+                            anchor.block_height, anchor.block_hash
                         );
                         upgraded_count += 1;
                     }
@@ -2089,7 +2465,10 @@ fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
     }
 
     if upgraded_count > 0 {
-        println!("Successfully upgraded {} anchor(s) in '{}'", upgraded_count, path);
+        println!(
+            "Successfully upgraded {} anchor(s) in '{}'",
+            upgraded_count, path
+        );
     }
 }
 
@@ -2097,7 +2476,10 @@ fn run_status(path: &str, json_mode: bool) {
     let p = Path::new(path);
     if !p.exists() {
         if json_mode {
-            println!(r#"{{"ok":false,"file":"{}","error":"File not found"}}"#, escape_cli_json(path));
+            println!(
+                r#"{{"ok":false,"file":"{}","error":"File not found"}}"#,
+                escape_cli_json(path)
+            );
         } else {
             eprintln!("Error: archive file '{}' does not exist", path);
         }
@@ -2108,7 +2490,11 @@ fn run_status(path: &str, json_mode: bool) {
         Ok(m) => m.len(),
         Err(e) => {
             if json_mode {
-                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+                println!(
+                    r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
             } else {
                 eprintln!("Error reading metadata: {}", e);
             }
@@ -2122,15 +2508,31 @@ fn run_status(path: &str, json_mode: bool) {
             let slot_name = if reader.active_slot() == 0 { "A" } else { "B" };
             let mask = header.addon_mask;
             let mut addons = Vec::new();
-            if mask & ADDON_EDU != 0 { addons.push("scholar"); }
-            if mask & ADDON_WEARABLE != 0 { addons.push("wearable"); }
-            if mask & ADDON_ROBOTICS != 0 { addons.push("robotics"); }
-            if mask & ADDON_GIS != 0 { addons.push("gis"); }
-            if mask & ADDON_DA != 0 { addons.push("da"); }
-            if mask & ADDON_FINTECH != 0 { addons.push("fintech"); }
+            if mask & ADDON_EDU != 0 {
+                addons.push("scholar");
+            }
+            if mask & ADDON_WEARABLE != 0 {
+                addons.push("wearable");
+            }
+            if mask & ADDON_ROBOTICS != 0 {
+                addons.push("robotics");
+            }
+            if mask & ADDON_GIS != 0 {
+                addons.push("gis");
+            }
+            if mask & ADDON_DA != 0 {
+                addons.push("da");
+            }
+            if mask & ADDON_FINTECH != 0 {
+                addons.push("fintech");
+            }
 
             if json_mode {
-                let addons_json = addons.iter().map(|a| format!("\"{}\"", a)).collect::<Vec<_>>().join(",");
+                let addons_json = addons
+                    .iter()
+                    .map(|a| format!("\"{}\"", a))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 println!(
                     r#"{{"ok":true,"file":"{}","size_bytes":{},"version":{},"generation":{},"active_slot":"{}","header_crc32":"0x{:08X}","tile_count":{},"addon_mask":"0x{:04X}","active_addons":[{}]}}"#,
                     escape_cli_json(path),
@@ -2144,23 +2546,47 @@ fn run_status(path: &str, json_mode: bool) {
                     addons_json
                 );
             } else {
-                println!("=========================================================================");
-                println!("                     S3A ARCHIVE STATUS REPORT                           ");
-                println!("=========================================================================");
+                println!(
+                    "========================================================================="
+                );
+                println!(
+                    "                     S3A ARCHIVE STATUS REPORT                           "
+                );
+                println!(
+                    "========================================================================="
+                );
                 println!("Archive:                {}", path);
-                println!("File Size:              {} bytes ({:.2} KB)", file_len, file_len as f64 / 1024.0);
+                println!(
+                    "File Size:              {} bytes ({:.2} KB)",
+                    file_len,
+                    file_len as f64 / 1024.0
+                );
                 println!("Storage Version:        {}", header.version);
                 println!("Committed Generation:   {}", header.generation);
                 println!("Active Metadata Slot:   Slot {}", slot_name);
                 println!("Header CRC32:           0x{:08X}", header.header_crc32);
                 println!("Committed Tiles:        {}", header.tile_count);
-                println!("Capability Addon Mask:  0x{:04X} ({})", mask, if addons.is_empty() { "none (pure general db)".to_string() } else { addons.join(", ") });
-                println!("=========================================================================");
+                println!(
+                    "Capability Addon Mask:  0x{:04X} ({})",
+                    mask,
+                    if addons.is_empty() {
+                        "none (pure general db)".to_string()
+                    } else {
+                        addons.join(", ")
+                    }
+                );
+                println!(
+                    "========================================================================="
+                );
             }
         }
         Err(e) => {
             if json_mode {
-                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+                println!(
+                    r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
             } else {
                 eprintln!("Error inspecting status for '{}': {}", path, e);
             }
@@ -2172,7 +2598,10 @@ fn run_doctor(path: &str, json_mode: bool) {
     let p = Path::new(path);
     if !p.exists() {
         if json_mode {
-            println!(r#"{{"ok":false,"file":"{}","health":"MISSING","error":"File not found"}}"#, escape_cli_json(path));
+            println!(
+                r#"{{"ok":false,"file":"{}","health":"MISSING","error":"File not found"}}"#,
+                escape_cli_json(path)
+            );
         } else {
             eprintln!("Doctor Error: Archive file '{}' does not exist", path);
         }
@@ -2183,7 +2612,11 @@ fn run_doctor(path: &str, json_mode: bool) {
         Ok(m) => m.len(),
         Err(e) => {
             if json_mode {
-                println!(r#"{{"ok":false,"file":"{}","health":"ERROR","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+                println!(
+                    r#"{{"ok":false,"file":"{}","health":"ERROR","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
             } else {
                 eprintln!("Doctor Error: {}", e);
             }
@@ -2193,9 +2626,17 @@ fn run_doctor(path: &str, json_mode: bool) {
 
     if file_len < s3a_core::FILE_HEADER_SIZE as u64 {
         if json_mode {
-            println!(r#"{{"ok":false,"file":"{}","health":"CORRUPTED","error":"File smaller than S3A header ({} bytes)"}}"#, escape_cli_json(path), file_len);
+            println!(
+                r#"{{"ok":false,"file":"{}","health":"CORRUPTED","error":"File smaller than S3A header ({} bytes)"}}"#,
+                escape_cli_json(path),
+                file_len
+            );
         } else {
-            eprintln!("Doctor: File too small ({} bytes < {} required header bytes)", file_len, s3a_core::FILE_HEADER_SIZE);
+            eprintln!(
+                "Doctor: File too small ({} bytes < {} required header bytes)",
+                file_len,
+                s3a_core::FILE_HEADER_SIZE
+            );
         }
         return;
     }
@@ -2204,7 +2645,11 @@ fn run_doctor(path: &str, json_mode: bool) {
         Ok(f) => f,
         Err(e) => {
             if json_mode {
-                println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+                println!(
+                    r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                    escape_cli_json(path),
+                    escape_cli_json(&e.to_string())
+                );
             } else {
                 eprintln!("Doctor Error opening file: {}", e);
             }
@@ -2215,15 +2660,25 @@ fn run_doctor(path: &str, json_mode: bool) {
     let mut header_buf = [0u8; s3a_core::FILE_HEADER_SIZE];
     if let Err(e) = file.read_exact(&mut header_buf) {
         if json_mode {
-            println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, escape_cli_json(path), escape_cli_json(&e.to_string()));
+            println!(
+                r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                escape_cli_json(path),
+                escape_cli_json(&e.to_string())
+            );
         } else {
             eprintln!("Doctor Error reading header: {}", e);
         }
         return;
     }
 
-    let slot_a: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(&header_buf[s3a_core::FILE_HEADER_SLOT_A_OFFSET..s3a_core::FILE_HEADER_SLOT_A_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
-    let slot_b: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(&header_buf[s3a_core::FILE_HEADER_SLOT_B_OFFSET..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE]);
+    let slot_a: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(
+        &header_buf[s3a_core::FILE_HEADER_SLOT_A_OFFSET
+            ..s3a_core::FILE_HEADER_SLOT_A_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE],
+    );
+    let slot_b: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(
+        &header_buf[s3a_core::FILE_HEADER_SLOT_B_OFFSET
+            ..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE],
+    );
 
     let slot_a_valid = s3a_engine::verify_header_slot(slot_a);
     let slot_b_valid = s3a_engine::verify_header_slot(slot_b);
@@ -2260,7 +2715,8 @@ fn run_doctor(path: &str, json_mode: bool) {
 
     if let Some(hdr) = active_header {
         active_tile_count = hdr.tile_count;
-        let expected_size = s3a_core::FILE_HEADER_SIZE as u64 + active_tile_count as u64 * s3a_core::HYPER_TILE_SIZE as u64;
+        let expected_size = s3a_core::FILE_HEADER_SIZE as u64
+            + active_tile_count as u64 * s3a_core::HYPER_TILE_SIZE as u64;
         if file_len > expected_size {
             torn_bytes = file_len - expected_size;
             health = "DEGRADED";
@@ -2301,7 +2757,9 @@ fn run_doctor(path: &str, json_mode: bool) {
             slot_a.generation,
             slot_b_valid,
             slot_b.generation,
-            active_slot_idx.map(|idx| if idx == 0 { "A" } else { "B" }).unwrap_or("NONE"),
+            active_slot_idx
+                .map(|idx| if idx == 0 { "A" } else { "B" })
+                .unwrap_or("NONE"),
             active_tile_count,
             torn_bytes,
             truncated_bytes,
@@ -2313,15 +2771,29 @@ fn run_doctor(path: &str, json_mode: bool) {
         println!("                     S3A ARCHIVE DOCTOR DIAGNOSTIC                       ");
         println!("=========================================================================");
         println!("Archive Target:         {}", path);
-        println!("Overall Health:         {}", match health {
-            "HEALTHY" => "✅ HEALTHY (All checks passed)",
-            "DEGRADED" => "⚠️  DEGRADED (Recoverable - run `s3a-cli recover <file>`)",
-            _ => "❌ CORRUPTED (Fatal integrity loss)",
-        });
+        println!(
+            "Overall Health:         {}",
+            match health {
+                "HEALTHY" => "✅ HEALTHY (All checks passed)",
+                "DEGRADED" => "⚠️  DEGRADED (Recoverable - run `s3a-cli recover <file>`)",
+                _ => "❌ CORRUPTED (Fatal integrity loss)",
+            }
+        );
         println!("-------------------------------------------------------------------------");
-        println!("Slot A Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}", slot_a_valid, slot_a.generation, slot_a.header_crc32);
-        println!("Slot B Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}", slot_b_valid, slot_b.generation, slot_b.header_crc32);
-        println!("Active Committed Slot:  {}", active_slot_idx.map(|idx| if idx == 0 { "Slot A" } else { "Slot B" }).unwrap_or("NONE"));
+        println!(
+            "Slot A Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}",
+            slot_a_valid, slot_a.generation, slot_a.header_crc32
+        );
+        println!(
+            "Slot B Metadata:        Valid={}, Generation={}, HeaderCRC=0x{:08X}",
+            slot_b_valid, slot_b.generation, slot_b.header_crc32
+        );
+        println!(
+            "Active Committed Slot:  {}",
+            active_slot_idx
+                .map(|idx| if idx == 0 { "Slot A" } else { "Slot B" })
+                .unwrap_or("NONE")
+        );
         println!("Committed Tile Count:   {}", active_tile_count);
         println!("File Size on Disk:      {} bytes", file_len);
         println!("Torn Uncommitted Bytes: {} bytes", torn_bytes);
@@ -2361,7 +2833,10 @@ fn lookup_coordinate(path: &str, coord_str: &str) {
     let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
     match engine.read_by_coordinate::<TelemetryRecord>(&coord) {
         Ok(r) => {
-            println!("Direct O(1) Fetch at {}: timestamp={}, sensor={}, metric={}, value={}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value);
+            println!(
+                "Direct O(1) Fetch at {}: timestamp={}, sensor={}, metric={}, value={}",
+                coord, r.timestamp, r.sensor_id, r.metric_id, r.value
+            );
         }
         Err(e) => eprintln!("Fetch failed at {}: {}", coord, e),
     }
@@ -2375,21 +2850,37 @@ fn insert_telemetry(path: &str, ts_str: &str, sensor_str: &str, metric_str: &str
 
     let rec = TelemetryRecord::new(ts, sensor_id, metric_id, value);
     let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
-    engine.create_telemetry(&[rec]).expect("Failed to insert record");
-    println!("Inserted record into {}: timestamp={}, sensor={}, metric={}, val={}", path, ts, sensor_id, metric_id, value);
+    engine
+        .create_telemetry(&[rec])
+        .expect("Failed to insert record");
+    println!(
+        "Inserted record into {}: timestamp={}, sensor={}, metric={}, val={}",
+        path, ts, sensor_id, metric_id, value
+    );
 }
 
-fn get_telemetry(path: &str, sensor_str: &str, metric_str: &str, min_ts_str: &str, max_ts_str: &str) {
+fn get_telemetry(
+    path: &str,
+    sensor_str: &str,
+    metric_str: &str,
+    min_ts_str: &str,
+    max_ts_str: &str,
+) {
     let sensor_id: u32 = sensor_str.parse().expect("Invalid sensor ID");
     let metric_id: u32 = metric_str.parse().expect("Invalid metric ID");
     let min_ts: u64 = min_ts_str.parse().expect("Invalid min timestamp");
     let max_ts: u64 = max_ts_str.parse().expect("Invalid max timestamp");
 
     let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
-    let results = engine.read_telemetry_with_coords(sensor_id, metric_id, min_ts, max_ts).expect("Failed to query records");
+    let results = engine
+        .read_telemetry_with_coords(sensor_id, metric_id, min_ts, max_ts)
+        .expect("Failed to query records");
     println!("Found {} record(s) matching criteria:", results.len());
     for (r, coord) in results {
-        println!("  Record [{}]: timestamp={}, sensor={}, metric={}, value={}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value);
+        println!(
+            "  Record [{}]: timestamp={}, sensor={}, metric={}, value={}",
+            coord, r.timestamp, r.sensor_id, r.metric_id, r.value
+        );
     }
 }
 
@@ -2399,7 +2890,9 @@ fn delete_telemetry(path: &str, sensor_str: &str, metric_str: &str, ts_str: &str
     let ts: u64 = ts_str.parse().expect("Invalid timestamp");
 
     let engine = S3ACrudEngine::open_or_create(path).expect("Failed to open archive");
-    let deleted = engine.delete_telemetry(sensor_id, metric_id, ts).expect("Failed to delete record");
+    let deleted = engine
+        .delete_telemetry(sensor_id, metric_id, ts)
+        .expect("Failed to delete record");
     if deleted {
         println!("Soft-deleted record (tombstone appended) in {}", path);
     } else {
@@ -2410,7 +2903,10 @@ fn delete_telemetry(path: &str, sensor_str: &str, metric_str: &str, ts_str: &str
 fn compact_files(output_path: &str, input_paths: &[String]) {
     let refs: Vec<&str> = input_paths.iter().map(|s| s.as_str()).collect();
     match Compactor::compact(&refs, output_path) {
-        Ok(count) => println!("Compaction SUCCESS: Wrote {} Hyper-Tiles to {}", count, output_path),
+        Ok(count) => println!(
+            "Compaction SUCCESS: Wrote {} Hyper-Tiles to {}",
+            count, output_path
+        ),
         Err(e) => eprintln!("Compaction FAILED: {}", e),
     }
 }
@@ -2418,7 +2914,10 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
 fn fuse_files(output_path: &str, input_paths: &[String]) {
     let refs: Vec<&str> = input_paths.iter().map(|s| s.as_str()).collect();
     match TileFusionEngine::fuse_telemetry_tiles(&refs, output_path) {
-        Ok(count) => println!("Multi-Tile Fusion SUCCESS: Consolidated into {} Hyper-Tile(s) in {}", count, output_path),
+        Ok(count) => println!(
+            "Multi-Tile Fusion SUCCESS: Consolidated into {} Hyper-Tile(s) in {}",
+            count, output_path
+        ),
         Err(e) => eprintln!("Multi-Tile Fusion FAILED: {}", e),
     }
 }
@@ -2431,7 +2930,10 @@ fn run_da_benchmark() {
 
     let temp_da_path = Path::new("da_commitments.s3a");
     let num_commitments = 100_000;
-    println!("Generating {} L2 block state commitments & KZG roots...", num_commitments);
+    println!(
+        "Generating {} L2 block state commitments & KZG roots...",
+        num_commitments
+    );
 
     let mut da_records = Vec::with_capacity(num_commitments);
     for i in 0..num_commitments {
@@ -2440,17 +2942,31 @@ fn run_da_benchmark() {
         state_root[0..8].copy_from_slice(&(i as u64).to_le_bytes());
         let quorum_mask = 0xFFFFFFFF; // 100% validator quorum
 
-        da_records.push(DACommitmentRecord::new(block, state_root, 1600000000 + (i as u32), quorum_mask, 250));
+        da_records.push(DACommitmentRecord::new(
+            block,
+            state_root,
+            1600000000 + (i as u32),
+            quorum_mask,
+            250,
+        ));
     }
 
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_da_path).unwrap();
     writer.enable_addon(ADDON_DA).unwrap();
 
-    let recs_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<DACommitmentRecord>();
+    let recs_per_tile =
+        s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<DACommitmentRecord>();
     for chunk in da_records.chunks(recs_per_tile) {
         let block_heights: Vec<u64> = chunk.iter().map(|r| r.block_height).collect();
-        writer.write_hyper_tile(DaTileType::DATA_AVAILABILITY, chunk, Some(&block_heights), None).unwrap();
+        writer
+            .write_hyper_tile(
+                DaTileType::DATA_AVAILABILITY,
+                chunk,
+                Some(&block_heights),
+                None,
+            )
+            .unwrap();
     }
     let write_duration = start_write.elapsed();
 
@@ -2459,7 +2975,11 @@ fn run_da_benchmark() {
     println!("\n--- DATA AVAILABILITY STORAGE & COMMITMENT INGEST ---");
     println!("Total L2 State Commitments:   {}", num_commitments);
     println!("Write Duration (100k blocks): {:?}", write_duration);
-    println!("S3A DA Archive File Size:     {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+    println!(
+        "S3A DA Archive File Size:     {} bytes ({:.2} MB)",
+        file_size,
+        file_size as f64 / 1_048_576.0
+    );
     println!("Commitments per Hyper-Tile:   {} blocks", recs_per_tile);
 
     // Benchmark SIMD Data Availability Block Range Search
@@ -2473,7 +2993,10 @@ fn run_da_benchmark() {
     let query_duration = start_query.elapsed();
 
     println!("Block Range Query Duration:   {:?}", query_duration);
-    println!("Matched State Commitments:    {} blocks", queried_blocks.len());
+    println!(
+        "Matched State Commitments:    {} blocks",
+        queried_blocks.len()
+    );
     println!("Single-cycle SIMD time filter instantly sifted through 100,000 blocks!");
 
     let _ = std::fs::remove_file(temp_da_path);
@@ -2488,24 +3011,34 @@ fn run_gis_benchmark() {
 
     let temp_gis_path = Path::new("gis_survey.s3a");
     let num_points = 100_000;
-    println!("Generating {} 3D LiDAR/Subsurface survey points...", num_points);
+    println!(
+        "Generating {} 3D LiDAR/Subsurface survey points...",
+        num_points
+    );
 
     let mut points = Vec::with_capacity(num_points);
     for i in 0..num_points {
         let lat = 37.774929 + ((i % 1000) as f64) * 0.0001;
         let lon = -122.419416 + ((i / 1000) as f64) * 0.0001;
-        let elev = if i % 2 == 0 { 50.0 + (i as f64) * 0.001 } else { -100.0 - (i as f64) * 0.001 }; // Surface & Subsurface strata
+        let elev = if i % 2 == 0 {
+            50.0 + (i as f64) * 0.001
+        } else {
+            -100.0 - (i as f64) * 0.001
+        }; // Surface & Subsurface strata
         let cls = (i % 4) as u16;
         let intensity = (i % 255) as u16;
 
-        points.push(GISSurveyPointRecord::new(lat, lon, elev, cls, intensity, 1600000000));
+        points.push(GISSurveyPointRecord::new(
+            lat, lon, elev, cls, intensity, 1600000000,
+        ));
     }
 
     let start_write = Instant::now();
     let mut writer = TileWriter::create(temp_gis_path).unwrap();
     writer.enable_addon(ADDON_GIS).unwrap();
 
-    let points_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<GISSurveyPointRecord>();
+    let points_per_tile =
+        s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<GISSurveyPointRecord>();
     for chunk in points.chunks(points_per_tile) {
         let mut hull = SimplexHull::empty();
         hull.dim = 3;
@@ -2522,12 +3055,24 @@ fn run_gis_benchmark() {
             let lon_micro = p.longitude_microdeg as f32;
             let elev_mm = p.elevation_mm as f32;
 
-            if lat_micro < min_lat { min_lat = lat_micro; }
-            if lat_micro > max_lat { max_lat = lat_micro; }
-            if lon_micro < min_lon { min_lon = lon_micro; }
-            if lon_micro > max_lon { max_lon = lon_micro; }
-            if elev_mm < min_elev { min_elev = elev_mm; }
-            if elev_mm > max_elev { max_elev = elev_mm; }
+            if lat_micro < min_lat {
+                min_lat = lat_micro;
+            }
+            if lat_micro > max_lat {
+                max_lat = lat_micro;
+            }
+            if lon_micro < min_lon {
+                min_lon = lon_micro;
+            }
+            if lon_micro > max_lon {
+                max_lon = lon_micro;
+            }
+            if elev_mm < min_elev {
+                min_elev = elev_mm;
+            }
+            if elev_mm > max_elev {
+                max_elev = elev_mm;
+            }
         }
 
         hull.min_bounds[0] = min_lat;
@@ -2537,7 +3082,9 @@ fn run_gis_benchmark() {
         hull.min_bounds[2] = min_elev;
         hull.max_bounds[2] = max_elev;
 
-        writer.write_hyper_tile(GisTileType::GIS_SURVEY_MESH, chunk, None, Some(hull)).unwrap();
+        writer
+            .write_hyper_tile(GisTileType::GIS_SURVEY_MESH, chunk, None, Some(hull))
+            .unwrap();
     }
     let write_duration = start_write.elapsed();
 
@@ -2546,7 +3093,11 @@ fn run_gis_benchmark() {
     println!("\n--- GIS MESH STORAGE DENSITY & INGEST PERFORMANCE ---");
     println!("Total Survey Points:          {}", num_points);
     println!("Write Duration (100k points): {:?}", write_duration);
-    println!("S3A Mesh Archive File Size:   {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+    println!(
+        "S3A Mesh Archive File Size:   {} bytes ({:.2} MB)",
+        file_size,
+        file_size as f64 / 1_048_576.0
+    );
     println!("Points per 128KB Hyper-Tile:  {} points", points_per_tile);
 
     // Benchmark SIMD 3D Topographic Sifting
@@ -2556,15 +3107,14 @@ fn run_gis_benchmark() {
 
     let start_query = Instant::now();
     // Query 3D bounding box for Subsurface Strata sector [Lat: 37.77..37.78, Lon: -122.42..-122.41, Elev: -200m..0m]
-    let query_results = sieve.query_gis_mesh_3d(
-        37.77, 37.78,
-        -122.42, -122.41,
-        -200.0, 0.0,
-    );
+    let query_results = sieve.query_gis_mesh_3d(37.77, 37.78, -122.42, -122.41, -200.0, 0.0);
     let query_duration = start_query.elapsed();
 
     println!("3D Subsurface Query Time:     {:?}", query_duration);
-    println!("Matched Topography Points:    {} points", query_results.len());
+    println!(
+        "Matched Topography Points:    {} points",
+        query_results.len()
+    );
     println!("Simplicial Convex Hull SIMD rejection sifted through 100k points instantly!");
 
     let _ = std::fs::remove_file(temp_gis_path);
@@ -2579,7 +3129,10 @@ fn run_robotics_benchmark() {
 
     let temp_robotics_path = Path::new("robotics_stream.s3a");
     let num_samples = 50_000; // 50 seconds of 1 kHz IMU/joint state telemetry
-    println!("Streaming {} high-frequency 1 kHz kinematics samples...", num_samples);
+    println!(
+        "Streaming {} high-frequency 1 kHz kinematics samples...",
+        num_samples
+    );
 
     let start_ingest = Instant::now();
     let mut writer = RoboticsStreamWriter::create(temp_robotics_path).unwrap();
@@ -2610,8 +3163,15 @@ fn run_robotics_benchmark() {
     println!("Kinematic Stream Duration:    50.0 seconds @ 1,000 Hz");
     println!("Total Samples Processed:      {} samples", num_samples);
     println!("Stream Ingest Duration:       {:?}", ingest_duration);
-    println!("Stream Throughput:            {:.2} million samples/sec", (num_samples as f64 / ingest_duration.as_secs_f64()) / 1_000_000.0);
-    println!("S3A Archive File Size:        {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
+    println!(
+        "Stream Throughput:            {:.2} million samples/sec",
+        (num_samples as f64 / ingest_duration.as_secs_f64()) / 1_000_000.0
+    );
+    println!(
+        "S3A Archive File Size:        {} bytes ({:.2} MB)",
+        file_size,
+        file_size as f64 / 1_048_576.0
+    );
 
     // Benchmark SIMD 3D Trajectory Bounding Box Search
     println!("\n--- SIMD 3D SPATIAL TRAJECTORY QUERY PERFORMANCE ---");
@@ -2620,16 +3180,15 @@ fn run_robotics_benchmark() {
 
     let start_query = Instant::now();
     // Query 3D bounding box for workspace sector [0.0..10.0, 0.0..2.0, 0.0..2.0]
-    let trajectory_matches = sieve.query_robotics_trajectory_3d(
-        [0.0, 0.0, 0.0],
-        [10.0, 2.0, 2.0],
-        0,
-        50_000_000,
-    );
+    let trajectory_matches =
+        sieve.query_robotics_trajectory_3d([0.0, 0.0, 0.0], [10.0, 2.0, 2.0], 0, 50_000_000);
     let query_duration = start_query.elapsed();
 
     println!("3D Bounding Box Query Time:   {:?}", query_duration);
-    println!("Matched Trajectory Positions: {} samples", trajectory_matches.len());
+    println!(
+        "Matched Trajectory Positions: {} samples",
+        trajectory_matches.len()
+    );
     println!("SIMD 3D trajectory sifting bypassed non-intersecting Hyper-Tiles instantly!");
 
     let _ = std::fs::remove_file(temp_robotics_path);
@@ -2647,7 +3206,10 @@ fn run_wearable_benchmark() {
     println!("==================================================================");
 
     let num_wearable_recs = 10_000;
-    println!("Generating {} PPG/IMU sensor samples for wearable target...", num_wearable_recs);
+    println!(
+        "Generating {} PPG/IMU sensor samples for wearable target...",
+        num_wearable_recs
+    );
 
     let start_time = Instant::now();
     let mut micro_buf = MicroTileBuffer::new(1);
@@ -2670,7 +3232,8 @@ fn run_wearable_benchmark() {
     let elapsed = start_time.elapsed();
 
     let total_bytes = (filled_pages as usize) * s3a_core::MICRO_TILE_SIZE;
-    let rec_per_page = s3a_core::MICRO_TILE_PAYLOAD_SIZE / std::mem::size_of::<CompactWearableRecord>();
+    let rec_per_page =
+        s3a_core::MICRO_TILE_PAYLOAD_SIZE / std::mem::size_of::<CompactWearableRecord>();
 
     println!("\n--- WEARABLE DEVICE BENCHMARK RESULTS ---");
     println!("Total Samples Processed:      {}", num_wearable_recs);
@@ -2678,9 +3241,16 @@ fn run_wearable_benchmark() {
     println!("SPI NOR Flash Page Size:       4,096 bytes (4 KB Sector Aligned)");
     println!("Records per 4KB Flash Sector:  {} samples", rec_per_page);
     println!("Total 4KB Flash Pages Used:    {}", filled_pages);
-    println!("Total Flash Storage Used:      {} bytes ({:.2} KB)", total_bytes, total_bytes as f64 / 1024.0);
+    println!(
+        "Total Flash Storage Used:      {} bytes ({:.2} KB)",
+        total_bytes,
+        total_bytes as f64 / 1024.0
+    );
     println!("Total Stream Ingest Duration:  {:?}", elapsed);
-    println!("Ingest Throughput Rate:        {:.2} million samples/sec", (num_wearable_recs as f64 / elapsed.as_secs_f64()) / 1_000_000.0);
+    println!(
+        "Ingest Throughput Rate:        {:.2} million samples/sec",
+        (num_wearable_recs as f64 / elapsed.as_secs_f64()) / 1_000_000.0
+    );
     println!("==================================================================");
 }
 
@@ -2690,7 +3260,10 @@ fn run_benchmark() {
     println!("==================================================================");
 
     let num_records = 100_000;
-    println!("Generating {} telemetry records for benchmark...", num_records);
+    println!(
+        "Generating {} telemetry records for benchmark...",
+        num_records
+    );
 
     let mut telemetry_records = Vec::with_capacity(num_records);
     let mut json_bytes = Vec::new();
@@ -2723,16 +3296,30 @@ fn run_benchmark() {
     let rec_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
     for chunk in telemetry_records.chunks(rec_per_tile) {
         let ts: Vec<u64> = chunk.iter().map(|r| r.timestamp).collect();
-        writer.write_hyper_tile(TileType::TELEMETRY, chunk, Some(&ts), None).unwrap();
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, chunk, Some(&ts), None)
+            .unwrap();
     }
     let write_duration = start_write.elapsed();
 
     let s3a_file_size = std::fs::metadata(temp_s3a_path).unwrap().len() as usize;
 
     println!("\n--- STORAGE DENSITY & FILE SIZE COMPARISON ---");
-    println!("JSON Format Size:          {:10} bytes ({:.2} MB)", json_size, json_size as f64 / 1_048_576.0);
-    println!("Raw Binary Data Size:      {:10} bytes ({:.2} MB)", raw_binary_size, raw_binary_size as f64 / 1_048_576.0);
-    println!("S3A Hyper-Tile File Size:  {:10} bytes ({:.2} MB)", s3a_file_size, s3a_file_size as f64 / 1_048_576.0);
+    println!(
+        "JSON Format Size:          {:10} bytes ({:.2} MB)",
+        json_size,
+        json_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Raw Binary Data Size:      {:10} bytes ({:.2} MB)",
+        raw_binary_size,
+        raw_binary_size as f64 / 1_048_576.0
+    );
+    println!(
+        "S3A Hyper-Tile File Size:  {:10} bytes ({:.2} MB)",
+        s3a_file_size,
+        s3a_file_size as f64 / 1_048_576.0
+    );
     let compression_vs_json = (1.0 - (s3a_file_size as f64 / json_size as f64)) * 100.0;
     println!("Space Savings vs JSON:     {:.2}%", compression_vs_json);
     println!("S3A Write Time (100k recs): {:?}", write_duration);
@@ -2747,7 +3334,11 @@ fn run_benchmark() {
     let results = sieve.query_telemetry(5000, 6000, Some(42), None);
     let query_duration = start_query.elapsed();
 
-    println!("Query Time Range [5000, 6000]: Found {} records in {:?}", results.len(), query_duration);
+    println!(
+        "Query Time Range [5000, 6000]: Found {} records in {:?}",
+        results.len(),
+        query_duration
+    );
     println!("Single-cycle SIMD tile rejection allowed skipping non-matching 128KB Hyper-Tiles instantly!");
 
     // Cleanup
@@ -2765,11 +3356,18 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                     if json_mode {
                         println!(
                             r#"{{"ok":true,"type":"fetch_telemetry","elapsed_us":{},"timestamp":{},"sensor_id":{},"metric_id":{},"value":{}}}"#,
-                            elapsed.as_micros(), rec.timestamp, rec.sensor_id, rec.metric_id, rec.value
+                            elapsed.as_micros(),
+                            rec.timestamp,
+                            rec.sensor_id,
+                            rec.metric_id,
+                            rec.value
                         );
                     } else {
                         println!("--- S3A-QL FETCH RESULT (in {:?}) ---", elapsed);
-                        println!("Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
+                        println!(
+                            "Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}",
+                            rec.timestamp, rec.sensor_id, rec.metric_id, rec.value
+                        );
                     }
                 }
                 QueryResult::TelemetryList(list) => {
@@ -2777,24 +3375,55 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                         let records_json = list.iter().map(|(r, c)| {
                             format!(r#"{{"coord":"{}","timestamp":{},"sensor_id":{},"metric_id":{},"value":{}}}"#, c, r.timestamp, r.sensor_id, r.metric_id, r.value)
                         }).collect::<Vec<_>>().join(",");
-                        println!(r#"{{"ok":true,"type":"sift_telemetry","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                        println!(
+                            r#"{{"ok":true,"type":"sift_telemetry","elapsed_us":{},"count":{},"records":[{}]}}"#,
+                            elapsed.as_micros(),
+                            list.len(),
+                            records_json
+                        );
                     } else {
-                        println!("--- S3A-QL SIFT RESULT ({} records in {:?}) ---", list.len(), elapsed);
+                        println!(
+                            "--- S3A-QL SIFT RESULT ({} records in {:?}) ---",
+                            list.len(),
+                            elapsed
+                        );
                         for (rec, coord) in list {
-                            println!("  {} -> Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}", coord, rec.timestamp, rec.sensor_id, rec.metric_id, rec.value);
+                            println!(
+                                "  {} -> Timestamp: {}, Sensor: {}, Metric: {}, Value: {:.2}",
+                                coord, rec.timestamp, rec.sensor_id, rec.metric_id, rec.value
+                            );
                         }
                     }
                 }
                 QueryResult::EmbeddingList(list) => {
                     if json_mode {
-                        let records_json = list.iter().map(|(r, score, c)| {
-                            format!(r#"{{"coord":"{}","id":{},"timestamp":{},"score":{}}}"#, c, r.id, r.timestamp, score)
-                        }).collect::<Vec<_>>().join(",");
-                        println!(r#"{{"ok":true,"type":"sift_embeddings","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                        let records_json = list
+                            .iter()
+                            .map(|(r, score, c)| {
+                                format!(
+                                    r#"{{"coord":"{}","id":{},"timestamp":{},"score":{}}}"#,
+                                    c, r.id, r.timestamp, score
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        println!(
+                            r#"{{"ok":true,"type":"sift_embeddings","elapsed_us":{},"count":{},"records":[{}]}}"#,
+                            elapsed.as_micros(),
+                            list.len(),
+                            records_json
+                        );
                     } else {
-                        println!("--- S3A-QL SIFT EMBEDDINGS ({} matches in {:?}) ---", list.len(), elapsed);
+                        println!(
+                            "--- S3A-QL SIFT EMBEDDINGS ({} matches in {:?}) ---",
+                            list.len(),
+                            elapsed
+                        );
                         for (rec, score, coord) in list {
-                            println!("  {} -> ID: {}, Timestamp: {}, Similarity Score: {:.4}", coord, rec.id, rec.timestamp, score);
+                            println!(
+                                "  {} -> ID: {}, Timestamp: {}, Similarity Score: {:.4}",
+                                coord, rec.id, rec.timestamp, score
+                            );
                         }
                     }
                 }
@@ -2803,15 +3432,29 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                         let records_json = list.iter().map(|(r, c)| {
                             format!(r#"{{"coord":"{}","actor_id":{},"verb_id":{},"object_id":{},"score":{},"duration_ms":{}}}"#, c, r.actor_id, r.verb_id, r.object_id, r.result_score, r.duration_ms)
                         }).collect::<Vec<_>>().join(",");
-                        println!(r#"{{"ok":true,"type":"sift_learning_activities","elapsed_us":{},"count":{},"records":[{}]}}"#, elapsed.as_micros(), list.len(), records_json);
+                        println!(
+                            r#"{{"ok":true,"type":"sift_learning_activities","elapsed_us":{},"count":{},"records":[{}]}}"#,
+                            elapsed.as_micros(),
+                            list.len(),
+                            records_json
+                        );
                     } else {
-                        println!("--- S3A-QL SIFT LEARNING_ACTIVITIES ({} records in {:?}) ---", list.len(), elapsed);
+                        println!(
+                            "--- S3A-QL SIFT LEARNING_ACTIVITIES ({} records in {:?}) ---",
+                            list.len(),
+                            elapsed
+                        );
                         for (rec, coord) in list {
                             println!("  {} -> Actor: {}, Verb: {}, Object: {}, Score: {:.2}, Latency: {}ms", coord, rec.actor_id, rec.verb_id, rec.object_id, rec.result_score, rec.duration_ms);
                         }
                     }
                 }
-                QueryResult::PackData { domain, count, summary, json_payload } => {
+                QueryResult::PackData {
+                    domain,
+                    count,
+                    summary,
+                    json_payload,
+                } => {
                     if json_mode {
                         let payload_frag = match json_payload {
                             Some(p) => format!(r#","payload":{}"#, p),
@@ -2819,16 +3462,29 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                         };
                         println!(
                             r#"{{"ok":true,"type":"pack_data","elapsed_us":{},"domain":"{}","count":{},"summary":"{}"{}}}"#,
-                            elapsed.as_micros(), domain.as_str(), count, escape_cli_json(&summary), payload_frag
+                            elapsed.as_micros(),
+                            domain.as_str(),
+                            count,
+                            escape_cli_json(&summary),
+                            payload_frag
                         );
                     } else {
-                        println!("--- S3A-QL SIFT PACK [{}] ({} records in {:?}) ---", domain.as_str(), count, elapsed);
+                        println!(
+                            "--- S3A-QL SIFT PACK [{}] ({} records in {:?}) ---",
+                            domain.as_str(),
+                            count,
+                            elapsed
+                        );
                         println!("{}", summary);
                     }
                 }
                 QueryResult::Inserted { coordinate } => {
                     if json_mode {
-                        println!(r#"{{"ok":true,"type":"insert","elapsed_us":{},"coordinate":"{}"}}"#, elapsed.as_micros(), coordinate);
+                        println!(
+                            r#"{{"ok":true,"type":"insert","elapsed_us":{},"coordinate":"{}"}}"#,
+                            elapsed.as_micros(),
+                            coordinate
+                        );
                     } else {
                         println!("--- S3A-QL INSERT SUCCESS (in {:?}) ---", elapsed);
                         println!("Record stored at coordinate: {}", coordinate);
@@ -2836,7 +3492,11 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                 }
                 QueryResult::Deleted { success } => {
                     if json_mode {
-                        println!(r#"{{"ok":true,"type":"delete","elapsed_us":{},"success":{}}}"#, elapsed.as_micros(), success);
+                        println!(
+                            r#"{{"ok":true,"type":"delete","elapsed_us":{},"success":{}}}"#,
+                            elapsed.as_micros(),
+                            success
+                        );
                     } else {
                         println!("--- S3A-QL DELETE RESULT (in {:?}) ---", elapsed);
                         println!("Deleted successfully: {}", success);
@@ -2844,7 +3504,11 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                 }
                 QueryResult::Compacted { new_tile_count } => {
                     if json_mode {
-                        println!(r#"{{"ok":true,"type":"compact","elapsed_us":{},"new_tile_count":{}}}"#, elapsed.as_micros(), new_tile_count);
+                        println!(
+                            r#"{{"ok":true,"type":"compact","elapsed_us":{},"new_tile_count":{}}}"#,
+                            elapsed.as_micros(),
+                            new_tile_count
+                        );
                     } else {
                         println!("--- S3A-QL COMPACT COMPLETE (in {:?}) ---", elapsed);
                         println!("Consolidated archive tile count: {}", new_tile_count);
@@ -2852,7 +3516,11 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                 }
                 QueryResult::Fused { new_tile_count } => {
                     if json_mode {
-                        println!(r#"{{"ok":true,"type":"fuse","elapsed_us":{},"new_tile_count":{}}}"#, elapsed.as_micros(), new_tile_count);
+                        println!(
+                            r#"{{"ok":true,"type":"fuse","elapsed_us":{},"new_tile_count":{}}}"#,
+                            elapsed.as_micros(),
+                            new_tile_count
+                        );
                     } else {
                         println!("--- S3A-QL FUSE COMPLETE (in {:?}) ---", elapsed);
                         println!("Fused archive tile count: {}", new_tile_count);
@@ -2878,7 +3546,10 @@ fn run_bvh_benchmark() {
     let mut writer = TileWriter::create(temp_file).unwrap();
 
     let num_tiles = 64;
-    println!("Populating {} Hyper-Tiles (~8.3 MB) for multi-level BVH test...", num_tiles);
+    println!(
+        "Populating {} Hyper-Tiles (~8.3 MB) for multi-level BVH test...",
+        num_tiles
+    );
     for i in 0..num_tiles {
         let base_ts = (1000 + i * 500) as u64;
         let mut recs = Vec::with_capacity(500);
@@ -2888,7 +3559,9 @@ fn run_bvh_benchmark() {
             recs.push(TelemetryRecord::new(t, 1, 10, (i * 10 + j) as f64));
             ts.push(t);
         }
-        writer.write_hyper_tile(TileType::TELEMETRY, &recs, Some(&ts), None).unwrap();
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, &recs, Some(&ts), None)
+            .unwrap();
     }
     drop(writer);
 
@@ -2896,7 +3569,10 @@ fn run_bvh_benchmark() {
     let bvh = HullBvh::build_with_branch_factor(&reader, 8);
     let sieve = QuerySieve::new(&reader);
 
-    println!("BVH Tree built: {} total tiles, branch factor {}", bvh.total_tiles, bvh.branch_factor);
+    println!(
+        "BVH Tree built: {} total tiles, branch factor {}",
+        bvh.total_tiles, bvh.branch_factor
+    );
 
     let query_min = 15000;
     let query_max = 16000;
@@ -2920,8 +3596,14 @@ fn run_bvh_benchmark() {
     let bvh_duration = start_bvh.elapsed();
 
     println!("--- 1,000 RANGE QUERIES PERFORMANCE ---");
-    println!("Linear Sieve Time:     {:?} (found {} records)", linear_duration, linear_matches);
-    println!("BVH Accelerated Time:  {:?} (found {} records)", bvh_duration, bvh_matches);
+    println!(
+        "Linear Sieve Time:     {:?} (found {} records)",
+        linear_duration, linear_matches
+    );
+    println!(
+        "BVH Accelerated Time:  {:?} (found {} records)",
+        bvh_duration, bvh_matches
+    );
     let speedup = linear_duration.as_nanos() as f64 / bvh_duration.as_nanos().max(1) as f64;
     println!("BVH Hierarchical Pruning Speedup: {:.2}x faster!", speedup);
     println!("==================================================================");
@@ -2937,7 +3619,10 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
     println!("Stream Duration:       {} seconds", duration_secs);
     println!("Target Ingest Rate:    {} records/sec", target_hz);
 
-    let ring_buffer = Arc::new(L0RingBuffer::<TelemetryRecord>::new(32768, BackpressurePolicy::Block));
+    let ring_buffer = Arc::new(L0RingBuffer::<TelemetryRecord>::new(
+        32768,
+        BackpressurePolicy::Block,
+    ));
     let mut compactor = BackgroundCompactor::new(
         file_path,
         Arc::clone(&ring_buffer),
@@ -2946,7 +3631,9 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
         Some(std::time::Duration::from_secs(2)),
     );
 
-    compactor.start().expect("Failed to start background compactor daemon");
+    compactor
+        .start()
+        .expect("Failed to start background compactor daemon");
     println!("Background Compactor Daemon started (Worker Thread active)");
 
     let buf_producer = Arc::clone(&ring_buffer);
@@ -2969,7 +3656,10 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
     }
 
     let producer_elapsed = start_time.elapsed();
-    println!("Stream finished. Total records pushed: {} in {:?}", total_produced, producer_elapsed);
+    println!(
+        "Stream finished. Total records pushed: {} in {:?}",
+        total_produced, producer_elapsed
+    );
     println!("Flushing remaining L0 records to disk...");
     compactor.stop();
 
@@ -2982,8 +3672,15 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
     println!("Hyper-Tiles Generated:     {}", stats.flushed_tiles);
     println!("Active Tiles in Archive:   {}", reader.tile_count());
     println!("Active Header Generation:  {}", reader.generation());
-    println!("Archive File Size:         {} bytes ({:.2} MB)", file_size, file_size as f64 / 1_048_576.0);
-    println!("Sustained Ingest Rate:     {:.2} records/sec", stats.flushed_records as f64 / producer_elapsed.as_secs_f64());
+    println!(
+        "Archive File Size:         {} bytes ({:.2} MB)",
+        file_size,
+        file_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Sustained Ingest Rate:     {:.2} records/sec",
+        stats.flushed_records as f64 / producer_elapsed.as_secs_f64()
+    );
 
     reader.verify_checksums().expect("CRC verification failed");
     println!("Hardware CRC32C Integrity: 100% VERIFIED across all Hyper-Tiles!");
@@ -2993,14 +3690,14 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
 }
 
 fn run_server(port: u16) {
-
     let listener = TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind TCP listener");
-    println!("S3A Web Dashboard & Agent Function Calling Server listening on http://0.0.0.0:{}", port);
+    println!(
+        "S3A Web Dashboard & Agent Function Calling Server listening on http://0.0.0.0:{}",
+        port
+    );
 
-    for stream in listener.incoming() {
-        if let Ok(mut stream) = stream {
-            handle_connection(&mut stream);
-        }
+    for mut stream in listener.incoming().flatten() {
+        handle_connection(&mut stream);
     }
 }
 
@@ -3042,10 +3739,13 @@ fn handle_connection(stream: &mut TcpStream) {
         return;
     }
 
-    if method == "POST" && (url == "/api/snapshot/ingest" || url.starts_with("/api/snapshot/ingest?")) {
+    if method == "POST"
+        && (url == "/api/snapshot/ingest" || url.starts_with("/api/snapshot/ingest?"))
+    {
         let body = extract_body(&request);
-        let dest_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
-        
+        let dest_db = extract_query_param(url, "target_db")
+            .unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+
         // Parse incoming JSON from Scholar Explorer Web or Browser Extension
         let query = parse_json_str(&body, "query").unwrap_or_default();
         let mut papers_raw = extract_json_array(&body, "papers").unwrap_or_default();
@@ -3057,14 +3757,22 @@ fn handle_connection(stream: &mut TcpStream) {
             Ok(e) => e,
             Err(e) => {
                 let err = format!("{{\"error\":\"Failed to open target database: {}\"}}", e);
-                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                send_response(
+                    stream,
+                    "500 Internal Error",
+                    "application/json",
+                    err.as_bytes(),
+                );
                 return;
             }
         };
 
         // Ingest papers into live S3A archive with 3D Skilling Hilbert mapping
         let mut ingested_papers = Vec::new();
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         for paper_str in &papers_raw {
             let title = parse_json_str(paper_str, "title").unwrap_or_default();
@@ -3072,17 +3780,34 @@ fn handle_connection(stream: &mut TcpStream) {
             let year = parse_json_u64(paper_str, "year").unwrap_or(2024) as u16;
             let pid = if !doi.is_empty() {
                 let mut h: u64 = 0xcbf29ce484222325;
-                for b in doi.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+                for b in doi.as_bytes() {
+                    h ^= *b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
                 h
             } else {
                 let mut h: u64 = 0xcbf29ce484222325;
-                for b in title.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+                for b in title.as_bytes() {
+                    h ^= *b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
                 h
             };
 
             let h_idx = s3a_core::point_to_hilbert_3d(512, 512, 512, 10);
             ingested_papers.push(AcademicPaperRecord::new(
-                pid, ts, h_idx, 0.5, 0.5, 0.5, 0, year, 1, 1, 0, pid >> 32
+                pid,
+                ts,
+                h_idx,
+                0.5,
+                0.5,
+                0.5,
+                0,
+                year,
+                1,
+                1,
+                0,
+                pid >> 32,
             ));
         }
 
@@ -3116,12 +3841,18 @@ fn handle_connection(stream: &mut TcpStream) {
     }
 
     if method == "GET" && (url == "/api/addons" || url.starts_with("/api/addons?")) {
-        let target_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let target_db = extract_query_param(url, "target_db")
+            .unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
         let engine = match S3ACrudEngine::open_or_create(&target_db) {
             Ok(e) => e,
             Err(e) => {
                 let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
-                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                send_response(
+                    stream,
+                    "500 Internal Error",
+                    "application/json",
+                    err.as_bytes(),
+                );
                 return;
             }
         };
@@ -3143,12 +3874,18 @@ fn handle_connection(stream: &mut TcpStream) {
 
     if method == "POST" && (url == "/api/lrs/log" || url.starts_with("/api/lrs/log?")) {
         let body = extract_body(&request);
-        let dest_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let dest_db = extract_query_param(url, "target_db")
+            .unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
         let engine = match S3ACrudEngine::open_or_create(&dest_db) {
             Ok(e) => e,
             Err(e) => {
                 let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
-                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                send_response(
+                    stream,
+                    "500 Internal Error",
+                    "application/json",
+                    err.as_bytes(),
+                );
                 return;
             }
         };
@@ -3156,14 +3893,20 @@ fn handle_connection(stream: &mut TcpStream) {
         // Enable educational addon
         let _ = engine.enable_addon(s3a_core::ADDON_EDU);
 
-        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let event_type = parse_json_str(&body, "event_type").unwrap_or_else(|| "human".to_string());
 
         if event_type == "human" || parse_json_str(&body, "verb").is_some() {
             let verb = parse_json_str(&body, "verb").unwrap_or_else(|| "searched".to_string());
             let query_text = parse_json_str(&body, "query").unwrap_or_default();
             let mut h: u64 = 0xcbf29ce484222325;
-            for b in query_text.as_bytes() { h ^= *b as u64; h = h.wrapping_mul(0x100000001b3); }
+            for b in query_text.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
 
             let verb_id = match verb.as_str() {
                 "searched" => 1,
@@ -3186,9 +3929,13 @@ fn handle_connection(stream: &mut TcpStream) {
             );
             let _ = engine.create_human_lrs(&[human_rec]);
         } else if event_type == "ai_trace" || parse_json_str(&body, "prompt").is_some() {
-            let agent_name = parse_json_str(&body, "agent_id").unwrap_or_else(|| "scholar-advisor".to_string());
+            let agent_name =
+                parse_json_str(&body, "agent_id").unwrap_or_else(|| "scholar-advisor".to_string());
             let mut agent_hash: u64 = 0xcbf29ce484222325;
-            for b in agent_name.as_bytes() { agent_hash ^= *b as u64; agent_hash = agent_hash.wrapping_mul(0x100000001b3); }
+            for b in agent_name.as_bytes() {
+                agent_hash ^= *b as u64;
+                agent_hash = agent_hash.wrapping_mul(0x100000001b3);
+            }
 
             let step_type = parse_json_u64(&body, "step_type").unwrap_or(1) as u32;
             let confidence = parse_json_f64(&body, "confidence").unwrap_or(0.95) as f32;
@@ -3214,12 +3961,18 @@ fn handle_connection(stream: &mut TcpStream) {
     }
 
     if method == "GET" && (url == "/api/lrs/records" || url.starts_with("/api/lrs/records?")) {
-        let target_db = extract_query_param(url, "target_db").unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
+        let target_db = extract_query_param(url, "target_db")
+            .unwrap_or_else(|| "scholar_live_lab.s3a".to_string());
         let engine = match S3ACrudEngine::open_or_create(&target_db) {
             Ok(e) => e,
             Err(e) => {
                 let err = format!("{{\"error\":\"Failed to open database: {}\"}}", e);
-                send_response(stream, "500 Internal Error", "application/json", err.as_bytes());
+                send_response(
+                    stream,
+                    "500 Internal Error",
+                    "application/json",
+                    err.as_bytes(),
+                );
                 return;
             }
         };
@@ -3254,18 +4007,29 @@ fn handle_connection(stream: &mut TcpStream) {
                 }
                 Err(e) => {
                     let err = format!("{{\"error\":\"{}\"}}", e);
-                    send_response(stream, "500 Internal Server Error", "application/json", err.as_bytes());
+                    send_response(
+                        stream,
+                        "500 Internal Server Error",
+                        "application/json",
+                        err.as_bytes(),
+                    );
                 }
             }
         } else {
-            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to open archive\"}");
+            send_response(
+                stream,
+                "400 Bad Request",
+                "application/json",
+                b"{\"error\":\"Failed to open archive\"}",
+            );
         }
         return;
     }
 
     if url.starts_with("/api/lookup") {
         let file = extract_query_param(url, "file").unwrap_or_else(|| "test.s3a".to_string());
-        let coord_str = extract_query_param(url, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
+        let coord_str =
+            extract_query_param(url, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
 
         let _ = S3ACrudEngine::open_or_create(&file);
         let coord: Result<S3ACoordinate, _> = coord_str.parse();
@@ -3285,10 +4049,20 @@ fn handle_connection(stream: &mut TcpStream) {
                     }
                 }
             } else {
-                send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to open archive\"}");
+                send_response(
+                    stream,
+                    "400 Bad Request",
+                    "application/json",
+                    b"{\"error\":\"Failed to open archive\"}",
+                );
             }
         } else {
-            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Invalid coordinate format\"}");
+            send_response(
+                stream,
+                "400 Bad Request",
+                "application/json",
+                b"{\"error\":\"Invalid coordinate format\"}",
+            );
         }
         return;
     }
@@ -3306,18 +4080,31 @@ fn handle_connection(stream: &mut TcpStream) {
                     ));
                 }
             }
-            let resp = format!("{{\"tile_count\":{},\"tiles\":[{}]}}", reader.tile_count(), tiles_json.join(","));
+            let resp = format!(
+                "{{\"tile_count\":{},\"tiles\":[{}]}}",
+                reader.tile_count(),
+                tiles_json.join(",")
+            );
             send_response(stream, "200 OK", "application/json", resp.as_bytes());
         } else {
-            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to open file\"}");
+            send_response(
+                stream,
+                "400 Bad Request",
+                "application/json",
+                b"{\"error\":\"Failed to open file\"}",
+            );
         }
         return;
     }
 
     if url.starts_with("/api/query") {
         let file = extract_query_param(url, "file").unwrap_or_else(|| "test.s3a".to_string());
-        let min_ts: u64 = extract_query_param(url, "min_ts").and_then(|s| s.parse().ok()).unwrap_or(0);
-        let max_ts: u64 = extract_query_param(url, "max_ts").and_then(|s| s.parse().ok()).unwrap_or(u64::MAX);
+        let min_ts: u64 = extract_query_param(url, "min_ts")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let max_ts: u64 = extract_query_param(url, "max_ts")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::MAX);
 
         let _ = S3ACrudEngine::open_or_create(&file);
         if let Ok(reader) = MmapReader::open(&file) {
@@ -3333,10 +4120,19 @@ fn handle_connection(stream: &mut TcpStream) {
                 )
             }).collect();
 
-            let resp = format!("{{\"duration_micros\":{},\"records\":[{}]}}", duration, rec_json.join(","));
+            let resp = format!(
+                "{{\"duration_micros\":{},\"records\":[{}]}}",
+                duration,
+                rec_json.join(",")
+            );
             send_response(stream, "200 OK", "application/json", resp.as_bytes());
         } else {
-            send_response(stream, "400 Bad Request", "application/json", b"{\"error\":\"Failed to query archive\"}");
+            send_response(
+                stream,
+                "400 Bad Request",
+                "application/json",
+                b"{\"error\":\"Failed to query archive\"}",
+            );
         }
         return;
     }
@@ -3352,9 +4148,19 @@ fn handle_connection(stream: &mut TcpStream) {
         let rec = TelemetryRecord::new(ts, sensor, metric, val);
         if let Ok(engine) = S3ACrudEngine::open_or_create(&file) {
             let _ = engine.create_telemetry(&[rec]);
-            send_response(stream, "200 OK", "application/json", b"{\"status\":\"inserted\"}");
+            send_response(
+                stream,
+                "200 OK",
+                "application/json",
+                b"{\"status\":\"inserted\"}",
+            );
         } else {
-            send_response(stream, "500 Internal Error", "application/json", b"{\"error\":\"Failed to insert\"}");
+            send_response(
+                stream,
+                "500 Internal Error",
+                "application/json",
+                b"{\"error\":\"Failed to insert\"}",
+            );
         }
         return;
     }
@@ -3368,11 +4174,20 @@ fn handle_connection(stream: &mut TcpStream) {
 
         if let Ok(engine) = S3ACrudEngine::open_or_create(&file) {
             let deleted = engine.delete_telemetry(sensor, metric, ts).unwrap_or(false);
-            let status = if deleted { "tombstone_appended" } else { "not_found" };
+            let status = if deleted {
+                "tombstone_appended"
+            } else {
+                "not_found"
+            };
             let resp = format!("{{\"status\":\"{}\"}}", status);
             send_response(stream, "200 OK", "application/json", resp.as_bytes());
         } else {
-            send_response(stream, "500 Internal Error", "application/json", b"{\"error\":\"Failed to delete\"}");
+            send_response(
+                stream,
+                "500 Internal Error",
+                "application/json",
+                b"{\"error\":\"Failed to delete\"}",
+            );
         }
         return;
     }
@@ -3386,7 +4201,12 @@ fn handle_connection(stream: &mut TcpStream) {
             let resp = format!("{{\"tile_count\":{}}}", tiles);
             send_response(stream, "200 OK", "application/json", resp.as_bytes());
         } else {
-            send_response(stream, "500 Internal Error", "application/json", b"{\"error\":\"Failed to compact\"}");
+            send_response(
+                stream,
+                "500 Internal Error",
+                "application/json",
+                b"{\"error\":\"Failed to compact\"}",
+            );
         }
         return;
     }
@@ -3401,7 +4221,12 @@ fn handle_connection(stream: &mut TcpStream) {
             }
             Err(e) => {
                 let resp = format!("{{\"status\":\"error\",\"error\":\"{}\"}}", e);
-                send_response(stream, "400 Bad Request", "application/json", resp.as_bytes());
+                send_response(
+                    stream,
+                    "400 Bad Request",
+                    "application/json",
+                    resp.as_bytes(),
+                );
             }
         }
         return;
@@ -3415,19 +4240,22 @@ fn handle_connection(stream: &mut TcpStream) {
         let engine = S3ACrudEngine::open_or_create(&file).unwrap();
 
         let response_json = if tool_name == "s3a_lookup_coordinate" {
-            let coord_str = parse_json_str(&body, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
+            let coord_str =
+                parse_json_str(&body, "coordinate").unwrap_or_else(|| "L0:T0:R0".to_string());
             if let Ok(coord) = coord_str.parse::<S3ACoordinate>() {
                 match engine.read_by_coordinate::<TelemetryRecord>(&coord) {
                     Ok(r) => format!("{{\"status\":\"success\",\"tool\":\"s3a_lookup_coordinate\",\"coordinate\":\"{}\",\"record\":{{\"timestamp\":{},\"sensor_id\":{},\"metric_id\":{},\"value\":{}}}}}", coord, r.timestamp, r.sensor_id, r.metric_id, r.value),
                     Err(e) => format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"{}\"}}", e),
                 }
             } else {
-                format!("{{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"Invalid coordinate format\"}}")
+                "{\"status\":\"error\",\"tool\":\"s3a_lookup_coordinate\",\"error\":\"Invalid coordinate format\"}".to_string()
             }
         } else if tool_name == "s3a_query_telemetry" {
             let min_ts = parse_json_u64(&body, "min_ts").unwrap_or(0);
             let max_ts = parse_json_u64(&body, "max_ts").unwrap_or(u64::MAX);
-            let records = engine.read_telemetry_with_coords(1, 101, min_ts, max_ts).unwrap_or_default();
+            let records = engine
+                .read_telemetry_with_coords(1, 101, min_ts, max_ts)
+                .unwrap_or_default();
             format!("{{\"status\":\"success\",\"tool\":\"s3a_query_telemetry\",\"matched_records\":{}}}", records.len())
         } else if tool_name == "s3a_insert_telemetry" {
             let ts = parse_json_u64(&body, "timestamp").unwrap_or(1000);
@@ -3436,21 +4264,32 @@ fn handle_connection(stream: &mut TcpStream) {
             let val = parse_json_f64(&body, "value").unwrap_or(42.5);
             let rec = TelemetryRecord::new(ts, sensor, metric, val);
             engine.create_telemetry(&[rec]).unwrap();
-            format!("{{\"status\":\"success\",\"tool\":\"s3a_insert_telemetry\",\"message\":\"Record appended to 128KB Hyper-Tile\"}}")
+            "{\"status\":\"success\",\"tool\":\"s3a_insert_telemetry\",\"message\":\"Record appended to 128KB Hyper-Tile\"}".to_string()
         } else if tool_name == "s3a_delete_telemetry" {
             let ts = parse_json_u64(&body, "timestamp").unwrap_or(1000);
             let sensor = parse_json_u64(&body, "sensor_id").unwrap_or(1) as u32;
             let metric = parse_json_u64(&body, "metric_id").unwrap_or(101) as u32;
             let deleted = engine.delete_telemetry(sensor, metric, ts).unwrap_or(false);
-            format!("{{\"status\":\"success\",\"tool\":\"s3a_delete_telemetry\",\"deleted\":{}}}", deleted)
+            format!(
+                "{{\"status\":\"success\",\"tool\":\"s3a_delete_telemetry\",\"deleted\":{}}}",
+                deleted
+            )
         } else if tool_name == "s3a_compact_archive" {
             let tile_count = engine.purge_and_compact().unwrap_or(0);
-            format!("{{\"status\":\"success\",\"tool\":\"s3a_compact_archive\",\"new_tile_count\":{}}}", tile_count)
+            format!(
+                "{{\"status\":\"success\",\"tool\":\"s3a_compact_archive\",\"new_tile_count\":{}}}",
+                tile_count
+            )
         } else {
             format!("{{\"error\":\"Unknown tool name: {}\"}}", tool_name)
         };
 
-        send_response(stream, "200 OK", "application/json", response_json.as_bytes());
+        send_response(
+            stream,
+            "200 OK",
+            "application/json",
+            response_json.as_bytes(),
+        );
         return;
     }
 
@@ -3511,7 +4350,9 @@ fn parse_json_u64(json: &str, key: &str) -> Option<u64> {
     let search = format!("\"{}\":", key);
     if let Some(pos) = json.find(&search) {
         let rest = json[pos + search.len()..].trim();
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     } else {
         None
@@ -3522,7 +4363,9 @@ fn parse_json_f64(json: &str, key: &str) -> Option<f64> {
     let search = format!("\"{}\":", key);
     if let Some(pos) = json.find(&search) {
         let rest = json[pos + search.len()..].trim();
-        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     } else {
         None
@@ -3579,7 +4422,10 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     println!("=========================================================================");
     println!("Target Archive: {}", archive_file);
     println!("Session UUID:   {}", uuid_str);
-    println!("UUID Integers:  High=0x{:016X}, Low=0x{:016X}", session_uuid[0], session_uuid[1]);
+    println!(
+        "UUID Integers:  High=0x{:016X}, Low=0x{:016X}",
+        session_uuid[0], session_uuid[1]
+    );
     println!("-------------------------------------------------------------------------");
 
     let engine = match S3ACrudEngine::open_or_create(archive_file) {
@@ -3602,12 +4448,14 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
 
     println!("Matched Human LRS Activity Records: {}", humans.len());
     for (i, (h, coord)) in humans.iter().enumerate() {
-        println!("  [{}] Coord: {} | Actor: 0x{:X} | Verb: {} | Score: {:.2} | Linked AI Trace: {}",
+        println!(
+            "  [{}] Coord: {} | Actor: 0x{:X} | Verb: {} | Score: {:.2} | Linked AI Trace: {}",
             i, coord, h.actor_hash, h.verb_id, h.decision_score, h.ai_trace_coord
         );
         // Test O(1) dereference to linked AI trace
         if let Ok(ai_trace) = engine.trace_ai_from_human(coord) {
-            println!("      -> Dereferenced AI Event [O(1)]: Agent: 0x{:X}, Step: {}, Conf: {:.2}",
+            println!(
+                "      -> Dereferenced AI Event [O(1)]: Agent: 0x{:X}, Step: {}, Conf: {:.2}",
                 ai_trace.agent_id, ai_trace.step_type, ai_trace.confidence
             );
         }
@@ -3616,19 +4464,24 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     println!();
     println!("Matched AI Agent Traceable Log Metadata: {}", ais.len());
     for (i, (a, coord)) in ais.iter().enumerate() {
-        println!("  [{}] Coord: {} | Agent: 0x{:X} | Step: {} | Conf: {:.2} | Linked Human Decision: {}",
+        println!(
+            "  [{}] Coord: {} | Agent: 0x{:X} | Step: {} | Conf: {:.2} | Linked Human Decision: {}",
             i, coord, a.agent_id, a.step_type, a.confidence, a.human_coord
         );
         // Test O(1) dereference to linked human record
         if let Ok(human_rec) = engine.trace_human_from_ai(coord) {
-            println!("      -> Dereferenced Human Review [O(1)]: Actor: 0x{:X}, Verb: {}, Score: {:.2}",
+            println!(
+                "      -> Dereferenced Human Review [O(1)]: Actor: 0x{:X}, Verb: {}, Score: {:.2}",
                 human_rec.actor_hash, human_rec.verb_id, human_rec.decision_score
             );
         }
     }
 
     println!("-------------------------------------------------------------------------");
-    println!("Query & Dereference Time: {:.3} ms (Zero SQL JOINs required!)", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "Query & Dereference Time: {:.3} ms (Zero SQL JOINs required!)",
+        elapsed.as_secs_f64() * 1000.0
+    );
     println!("=========================================================================");
 }
 
@@ -3641,7 +4494,6 @@ fn parse_uuid_to_u64_pair(s: &str) -> Option<[u64; 2]> {
     let low = u64::from_str_radix(&clean[16..32], 16).ok()?;
     Some([high, low])
 }
-
 
 fn parse_hex_uuid_128(s: &str) -> Option<[u64; 2]> {
     let clean = s.replace('-', "");
@@ -3669,36 +4521,53 @@ fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<
     };
 
     let start = Instant::now();
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
 
     let p_uuid = project_uuid.unwrap_or([0x1020304050607080, 0x90A0B0C0D0E0F001]);
     let snap_uuid = [0x554433221100FFEE, ts];
 
-    let manifest = SrsManifestHeader::new(
-        p_uuid,
-        snap_uuid,
-        [0, 0],
-        [0, 0],
-        ts,
-        0,
-        0,
-    );
+    let manifest = SrsManifestHeader::new(p_uuid, snap_uuid, [0, 0], [0, 0], ts, 0, 0);
 
     match engine.export_srs_snapshot(snapshot_file, &manifest, None, project_uuid) {
         Ok(bundle) => {
             let elapsed = start.elapsed();
-            let size = std::fs::metadata(snapshot_file).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(snapshot_file)
+                .map(|m| m.len())
+                .unwrap_or(0);
             println!("Snapshot Export Successful!");
             println!("  Project UUID:     {:016X}{:016X}", p_uuid[0], p_uuid[1]);
-            println!("  Snapshot UUID:    {:016X}{:016X}", snap_uuid[0], snap_uuid[1]);
-            println!("  File Size:        {} bytes ({:.2} KB)", size, size as f64 / 1024.0);
+            println!(
+                "  Snapshot UUID:    {:016X}{:016X}",
+                snap_uuid[0], snap_uuid[1]
+            );
+            println!(
+                "  File Size:        {} bytes ({:.2} KB)",
+                size,
+                size as f64 / 1024.0
+            );
             println!("  Export Latency:   {:.2?}", elapsed);
             println!("-------------------------------------------------------------------------");
             println!("Inventory:");
-            println!("  Workspace Header: {}", if bundle.workspace.is_some() { "Present (Sector 0 Profile)" } else { "None" });
+            println!(
+                "  Workspace Header: {}",
+                if bundle.workspace.is_some() {
+                    "Present (Sector 0 Profile)"
+                } else {
+                    "None"
+                }
+            );
             println!("  Academic Papers:  {} records", bundle.papers.len());
-            println!("  Evidence Edges:   {} records", bundle.evidence_edges.len());
-            println!("  Human Decisions:  {} records", bundle.human_decisions.len());
+            println!(
+                "  Evidence Edges:   {} records",
+                bundle.evidence_edges.len()
+            );
+            println!(
+                "  Human Decisions:  {} records",
+                bundle.human_decisions.len()
+            );
             println!("  AI Agent Traces:  {} records", bundle.ai_traces.len());
             println!("  Total Records:    {}", bundle.manifest.total_records);
             println!("=========================================================================");
@@ -3715,7 +4584,14 @@ fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
     println!("=========================================================================");
     println!("Source Intermediate Directory: {}", intermediate_dir);
     println!("Target S3A Archive:            {}", out_file);
-    println!("Idempotency (Fresh Archive):   {}", if fresh { "YES (--fresh)" } else { "NO (append)" });
+    println!(
+        "Idempotency (Fresh Archive):   {}",
+        if fresh {
+            "YES (--fresh)"
+        } else {
+            "NO (append)"
+        }
+    );
     println!("-------------------------------------------------------------------------");
 
     let start = Instant::now();
@@ -3724,9 +4600,18 @@ fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
             let duration = start.elapsed();
             println!("Ingestion Successful in {:.2?}!", duration);
             println!("  Workspace Context:  {} records", stats.workspace_count);
-            println!("  Academic Papers:    {} records (Tile 12)", stats.papers_count);
-            println!("  Knowledge Edges:    {} records (Tile 13)", stats.edges_count);
-            println!("  Human LRS Ledger:   {} records (Tile 10)", stats.human_count);
+            println!(
+                "  Academic Papers:    {} records (Tile 12)",
+                stats.papers_count
+            );
+            println!(
+                "  Knowledge Edges:    {} records (Tile 13)",
+                stats.edges_count
+            );
+            println!(
+                "  Human LRS Ledger:   {} records (Tile 10)",
+                stats.human_count
+            );
             println!("  AI Trace Logs:      {} records (Tile 11)", stats.ai_count);
             println!("  Total Tiles:        {}", stats.total_tiles);
             println!("  Capability:         ADDON_EDU Enabled (0x0001)");
@@ -3749,7 +4634,14 @@ fn run_scholar_recheck(
     println!("       S3A SCHOLAR PACK CITATION RECHECK (Verified Research Trust)              ");
     println!("════════════════════════════════════════════════════════════════════════════════");
     println!("Target Archive:     {}", archive_path);
-    println!("Verification Mode:  {}", if online { "ONLINE (re-fetch source & Crossref API)" } else { "OFFLINE (structural & cryptographic integrity)" });
+    println!(
+        "Verification Mode:  {}",
+        if online {
+            "ONLINE (re-fetch source & Crossref API)"
+        } else {
+            "OFFLINE (structural & cryptographic integrity)"
+        }
+    );
     if let Some(ref ep) = endpoint {
         println!("Crossref Endpoint:  {}", ep);
     }
@@ -3767,10 +4659,20 @@ fn run_scholar_recheck(
 
     match s3a_pack_scholar::recheck_archive(archive_path, &opts) {
         Ok(report) => {
-            println!("Found {} citation fingerprint(s) on Hyper-Tile 32.", report.items.len());
-            println!("--------------------------------------------------------------------------------");
-            println!("{:<14} {:<6} {:<18} {:<12} {:<18}", "Paper ID", "Kind", "Stored SHA-256", "Status", "Action Taken");
-            println!("--------------------------------------------------------------------------------");
+            println!(
+                "Found {} citation fingerprint(s) on Hyper-Tile 32.",
+                report.items.len()
+            );
+            println!(
+                "--------------------------------------------------------------------------------"
+            );
+            println!(
+                "{:<14} {:<6} {:<18} {:<12} {:<18}",
+                "Paper ID", "Kind", "Stored SHA-256", "Status", "Action Taken"
+            );
+            println!(
+                "--------------------------------------------------------------------------------"
+            );
             for item in &report.items {
                 let sha_short = if item.stored_sha256.len() > 16 {
                     format!("{}...", &item.stored_sha256[..16])
@@ -3791,16 +4693,23 @@ fn run_scholar_recheck(
                     action,
                 );
             }
-            println!("--------------------------------------------------------------------------------");
+            println!(
+                "--------------------------------------------------------------------------------"
+            );
             println!(
                 "Summary: {} unchanged, {} changed, {} retracted, {} unreachable.",
-                report.unchanged_count, report.changed_count, report.retracted_count, report.unreachable_count
+                report.unchanged_count,
+                report.changed_count,
+                report.retracted_count,
+                report.unreachable_count
             );
             println!(
                 "Mutations: {} policy marks appended, {} xAPI statements recorded.",
                 report.marks_appended, report.statements_appended
             );
-            println!("════════════════════════════════════════════════════════════════════════════════");
+            println!(
+                "════════════════════════════════════════════════════════════════════════════════"
+            );
         }
         Err(e) => {
             eprintln!("[ERROR] Scholar citation recheck failed: {}", e);
@@ -3860,25 +4769,15 @@ fn run_scholar_export_bib(archive_path: &str, out_path: &str, format: &str) {
 fn run_scholar_demo_seed(out_path: &str) {
     println!("Seeding demo Scholar snapshot at '{}'...", out_path);
     let engine = S3ACrudEngine::open_or_create(out_path).expect("failed to create archive");
-    engine.enable_addon(ADDON_EDU).expect("failed to enable ADDON_EDU");
+    engine
+        .enable_addon(ADDON_EDU)
+        .expect("failed to enable ADDON_EDU");
 
-    let paper = AcademicPaperRecord::new(
-        1001,
-        1600000000,
-        1,
-        0.1,
-        0.2,
-        0.3,
-        10,
-        2024,
-        1,
-        1,
-        0,
-        0,
-    );
+    let paper = AcademicPaperRecord::new(1001, 1600000000, 1, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 0);
     engine.create_academic_papers(&[paper]).expect("papers");
 
-    let content_bytes = b"%PDF-1.4 Key empirical finding: neural topological memory achieves O(1) recall";
+    let content_bytes =
+        b"%PDF-1.4 Key empirical finding: neural topological memory achieves O(1) recall";
     let fp = CitationFingerprintRecord::from_content(
         1001,
         "10.1000/1001",
@@ -3888,7 +4787,9 @@ fn run_scholar_demo_seed(out_path: &str) {
         2,
         1600000000,
     );
-    engine.create_citation_fingerprints(&[fp]).expect("fingerprints");
+    engine
+        .create_citation_fingerprints(&[fp])
+        .expect("fingerprints");
 
     let quote = "Key empirical finding: neural topological memory achieves O(1) recall";
     let claim = ScholarNoteClaimRecord::new(
@@ -3899,7 +4800,8 @@ fn run_scholar_demo_seed(out_path: &str) {
         0.99,
         CLAIM_KIND_EMPIRICAL,
         quote,
-    ).with_evidence(
+    )
+    .with_evidence(
         1001,
         4,
         120,
@@ -3931,24 +4833,55 @@ fn run_snapshot_intake(snapshot_file: &str, into_live_db: Option<&str>) {
     match res {
         Ok(bundle) => {
             let intake_duration = start.elapsed();
-            let size = std::fs::metadata(snapshot_file).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(snapshot_file)
+                .map(|m| m.len())
+                .unwrap_or(0);
             let m = bundle.manifest;
-            println!("Zero-Copy Intake Successful in {:.3} ms (sub-millisecond target met)!", intake_duration.as_secs_f64() * 1000.0);
-            println!("  Project UUID:     {:016X}{:016X}", m.project_uuid[0], m.project_uuid[1]);
-            println!("  Snapshot UUID:    {:016X}{:016X}", m.snapshot_uuid[0], m.snapshot_uuid[1]);
+            println!(
+                "Zero-Copy Intake Successful in {:.3} ms (sub-millisecond target met)!",
+                intake_duration.as_secs_f64() * 1000.0
+            );
+            println!(
+                "  Project UUID:     {:016X}{:016X}",
+                m.project_uuid[0], m.project_uuid[1]
+            );
+            println!(
+                "  Snapshot UUID:    {:016X}{:016X}",
+                m.snapshot_uuid[0], m.snapshot_uuid[1]
+            );
             println!("  Created Timestamp:{}", m.created_at_sec);
             println!("  Sector Alignment: 512-byte physical disk boundary verified");
             println!("  Integrity:        100% Hardware CRC32C Verified");
-            println!("  Container Size:   {} bytes ({:.2} KB)", size, size as f64 / 1024.0);
+            println!(
+                "  Container Size:   {} bytes ({:.2} KB)",
+                size,
+                size as f64 / 1024.0
+            );
             if let Some(target) = into_live_db {
-                println!("  Live DB Mounted:  {} (ADDON_EDU Capability Active)", target);
+                println!(
+                    "  Live DB Mounted:  {} (ADDON_EDU Capability Active)",
+                    target
+                );
             }
             println!("-------------------------------------------------------------------------");
             println!("Mounted In-Memory Records:");
-            println!("  Workspace:        {}", if bundle.workspace.is_some() { "1 Record (Indexed)" } else { "0 Records" });
+            println!(
+                "  Workspace:        {}",
+                if bundle.workspace.is_some() {
+                    "1 Record (Indexed)"
+                } else {
+                    "0 Records"
+                }
+            );
             println!("  Academic Papers:  {} records", bundle.papers.len());
-            println!("  Evidence Edges:   {} records", bundle.evidence_edges.len());
-            println!("  Human Decisions:  {} records", bundle.human_decisions.len());
+            println!(
+                "  Evidence Edges:   {} records",
+                bundle.evidence_edges.len()
+            );
+            println!(
+                "  Human Decisions:  {} records",
+                bundle.human_decisions.len()
+            );
             println!("  AI Agent Traces:  {} records", bundle.ai_traces.len());
             println!("=========================================================================");
         }
@@ -3980,10 +4913,21 @@ fn run_snapshot_inspect(snapshot_file: &str) {
 
     let hdr = reader.file_header();
     println!("File Header:");
-    println!("  Magic:            {:?}", std::str::from_utf8(&hdr.magic).unwrap_or("????"));
+    println!(
+        "  Magic:            {:?}",
+        std::str::from_utf8(&hdr.magic).unwrap_or("????")
+    );
     println!("  Format Version:   {}", hdr.version);
     println!("  Active Slot:      {}", reader.active_slot());
-    println!("  Addon Capability: 0x{:08X} (ADDON_EDU: {})", hdr.addon_mask, if (hdr.addon_mask & ADDON_EDU) != 0 { "ACTIVE" } else { "INACTIVE" });
+    println!(
+        "  Addon Capability: 0x{:08X} (ADDON_EDU: {})",
+        hdr.addon_mask,
+        if (hdr.addon_mask & ADDON_EDU) != 0 {
+            "ACTIVE"
+        } else {
+            "INACTIVE"
+        }
+    );
     println!("  Tile Count:       {}", reader.tile_count());
     println!("-------------------------------------------------------------------------");
 
@@ -4019,13 +4963,44 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     // Authoritative Tile 15 Manifest
     if let Some(manifest) = sieve.query_srs_manifest() {
         println!("Authoritative SRS Manifest Header (Tile 15):");
-        println!("  Magic:                 {:?}", std::str::from_utf8(&manifest.magic).unwrap_or("????"));
-        println!("  Layout Version:        {} (V1: {})", manifest.schema_version, if manifest.schema_version == SCHOLAR_LAYOUT_VERSION_V1 { "CURRENT" } else { "UNSUPPORTED" });
-        println!("  CRC32C Checksum:       0x{:08X} (Status: {})", manifest.crc32c_checksum, if manifest.verify_checksum() { "PASS" } else { "MISMATCH" });
-        println!("  Project UUID:          {:016X}{:016X}", manifest.project_uuid[0], manifest.project_uuid[1]);
-        println!("  Snapshot UUID:         {:016X}{:016X}", manifest.snapshot_uuid[0], manifest.snapshot_uuid[1]);
-        println!("  Parent Snapshot UUID:  {:016X}{:016X}", manifest.parent_snapshot_uuid[0], manifest.parent_snapshot_uuid[1]);
-        println!("  Origin Session UUID:   {:016X}{:016X}", manifest.origin_session_uuid[0], manifest.origin_session_uuid[1]);
+        println!(
+            "  Magic:                 {:?}",
+            std::str::from_utf8(&manifest.magic).unwrap_or("????")
+        );
+        println!(
+            "  Layout Version:        {} (V1: {})",
+            manifest.schema_version,
+            if manifest.schema_version == SCHOLAR_LAYOUT_VERSION_V1 {
+                "CURRENT"
+            } else {
+                "UNSUPPORTED"
+            }
+        );
+        println!(
+            "  CRC32C Checksum:       0x{:08X} (Status: {})",
+            manifest.crc32c_checksum,
+            if manifest.verify_checksum() {
+                "PASS"
+            } else {
+                "MISMATCH"
+            }
+        );
+        println!(
+            "  Project UUID:          {:016X}{:016X}",
+            manifest.project_uuid[0], manifest.project_uuid[1]
+        );
+        println!(
+            "  Snapshot UUID:         {:016X}{:016X}",
+            manifest.snapshot_uuid[0], manifest.snapshot_uuid[1]
+        );
+        println!(
+            "  Parent Snapshot UUID:  {:016X}{:016X}",
+            manifest.parent_snapshot_uuid[0], manifest.parent_snapshot_uuid[1]
+        );
+        println!(
+            "  Origin Session UUID:   {:016X}{:016X}",
+            manifest.origin_session_uuid[0], manifest.origin_session_uuid[1]
+        );
         println!("  Created Timestamp:     {}", manifest.created_at_sec);
         println!("  Manifest Tile Count:   {}", manifest.tile_count);
         println!("  Manifest Total Records:{}", manifest.total_records);
@@ -4035,7 +5010,8 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("-------------------------------------------------------------------------");
 
     let ws = sieve.query_srs_workspace(None);
-    let papers = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
+    let papers =
+        sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
     let edges = sieve.query_research_graph(None, None);
     let human = sieve.query_human_lrs(None, None, 0, u64::MAX);
     let ai = sieve.query_ai_traces(None, None, 0, u64::MAX);
@@ -4044,9 +5020,15 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("  SRS Workspace:    {} records", ws.len());
     if let Some((w, coord)) = ws.first() {
         println!("    ├─ Coordinate:     {}", coord);
-        println!("    ├─ Project UUID:   {:016X}{:016X}", w.project_uuid[0], w.project_uuid[1]);
+        println!(
+            "    ├─ Project UUID:   {:016X}{:016X}",
+            w.project_uuid[0], w.project_uuid[1]
+        );
         println!("    ├─ Question Hash:  0x{:016X}", w.question_hash);
-        println!("    └─ 3D Centroid:    [{:.2}, {:.2}, {:.2}]", w.topic_centroid_xyz[0], w.topic_centroid_xyz[1], w.topic_centroid_xyz[2]);
+        println!(
+            "    └─ 3D Centroid:    [{:.2}, {:.2}, {:.2}]",
+            w.topic_centroid_xyz[0], w.topic_centroid_xyz[1], w.topic_centroid_xyz[2]
+        );
     }
     println!("  Academic Papers:  {} records", papers.len());
     println!("  Evidence Edges:   {} records", edges.len());
@@ -4054,5 +5036,3 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("  AI Agent Traces:  {} records", ai.len());
     println!("=========================================================================");
 }
-
-

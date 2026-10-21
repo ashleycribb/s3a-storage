@@ -5,11 +5,11 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct DaCommitmentRecord {
-    pub block_height: u64,          // Block height / L2 slot index
-    pub state_root_hash: [u8; 32],   // 256-bit State Root or Polynomial KZG commitment
-    pub timestamp_sec: u32,         // Block / Slot timestamp
-    pub quorum_bitmask: u32,        // Validator availability quorum signoff bitmask
-    pub transaction_count: u32,     // Number of bundled L2 / AI transactions
+    pub block_height: u64,         // Block height / L2 slot index
+    pub state_root_hash: [u8; 32], // 256-bit State Root or Polynomial KZG commitment
+    pub timestamp_sec: u32,        // Block / Slot timestamp
+    pub quorum_bitmask: u32,       // Validator availability quorum signoff bitmask
+    pub transaction_count: u32,    // Number of bundled L2 / AI transactions
     pub _reserved: [u32; 3],
 }
 

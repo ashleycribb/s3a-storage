@@ -7,10 +7,10 @@
 //! - Shadow mode: broken builds never promote to baseline; stay on shadow branch until green
 //! - Trajectory export: exports ChatML and ShareGPT trajectories as fine-tuning training data
 
-use std::fs;
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fs;
+use std::path::PathBuf;
 
 use crate::decision::{
     is_claim_judgment_call, DecisionEngine, DecisionKind, DecisionRequest, DecisionValue,
@@ -68,11 +68,23 @@ pub fn parse_structured_failures(output: &Value) -> Vec<StructuredFailure> {
     let mut failures = Vec::new();
     if let Some(arr) = output.get("failures").and_then(|v| v.as_array()) {
         for item in arr {
-            let file = item.get("file").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let file = item
+                .get("file")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
             let line = item.get("line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
             let col = item.get("col").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-            let message = item.get("message").and_then(|v| v.as_str()).unwrap_or("build error").to_string();
-            let stage = item.get("stage").and_then(|v| v.as_str()).unwrap_or("build").to_string();
+            let message = item
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("build error")
+                .to_string();
+            let stage = item
+                .get("stage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("build")
+                .to_string();
             failures.push(StructuredFailure {
                 file,
                 line,
@@ -104,7 +116,10 @@ pub fn run_repair_loop(
 
     let mut state = RunState::new(
         agent_id,
-        format!("Autonomous repair of build failure on shadow branch {}", shadow_branch),
+        format!(
+            "Autonomous repair of build failure on shadow branch {}",
+            shadow_branch
+        ),
         session_uuid,
         project_uuid,
     );
@@ -195,7 +210,9 @@ pub fn run_repair_loop(
 
         // 2. Epistemic Invariant Check: Claim Modification Guard
         // If error message or fix touches claim/evidence records, AI is strictly forbidden to auto-judge
-        if is_claim_judgment_call(&current_failure.message) || is_claim_judgment_call(&current_failure.file) {
+        if is_claim_judgment_call(&current_failure.message)
+            || is_claim_judgment_call(&current_failure.file)
+        {
             let gate_id = format!("gate_claim_repair_{}", crate::generate_uuid_v7());
             let reason = format!(
                 "Repair attempt {} touches claim/evidence record ('{}'). AI auto-merge prohibited. Escalated to human.",
@@ -205,7 +222,8 @@ pub fn run_repair_loop(
                 attempt_number: attempt_num,
                 max_attempts,
                 failure: current_failure.clone(),
-                diff: "(Claim edit detected: repair prohibited without human supervisor)".to_string(),
+                diff: "(Claim edit detected: repair prohibited without human supervisor)"
+                    .to_string(),
                 status: "escalated".to_string(),
                 rationale: reason.clone(),
                 timestamp: now,
@@ -229,7 +247,10 @@ pub fn run_repair_loop(
                 "Generate repair fix for {}:{} error: '{}'",
                 current_failure.file, current_failure.line, current_failure.message
             ),
-            context: format!("Attempt {} of {}. Failure: {:?}", attempt_num, max_attempts, current_failure),
+            context: format!(
+                "Attempt {} of {}. Failure: {:?}",
+                attempt_num, max_attempts, current_failure
+            ),
             kind: DecisionKind::Choice {
                 options: vec!["apply_fix".to_string(), "ask_human".to_string()],
             },
@@ -240,7 +261,10 @@ pub fn run_repair_loop(
         let dec = decision_engine.evaluate(&dec_req, false, state.escalated);
 
         // Check if confidence gate tripped or safe default ask_human selected
-        if dec.routed_to_human || dec.action_taken == "ask_human" || dec.confidence < runtime.config.thresholds.tool_selection {
+        if dec.routed_to_human
+            || dec.action_taken == "ask_human"
+            || dec.confidence < runtime.config.thresholds.tool_selection
+        {
             let gate_id = format!("gate_conf_repair_{}", crate::generate_uuid_v7());
             let reason = format!(
                 "Decision confidence ({:.2}) below threshold ({:.2}) on attempt {}: {}. Escalated to human supervisor.",
@@ -271,7 +295,10 @@ pub fn run_repair_loop(
         let fix_diff = if current_failure.file.contains("MatchCard") {
             "-  score: String(match.score),\n+  score: Number(match.score),".to_string()
         } else {
-            format!("// fix for {}:{}\n+  // verified correct type", current_failure.file, current_failure.line)
+            format!(
+                "// fix for {}:{}\n+  // verified correct type",
+                current_failure.file, current_failure.line
+            )
         };
 
         // 5. Re-verify via `sandbox_build` on shadow branch
@@ -298,7 +325,8 @@ pub fn run_repair_loop(
                 failure: current_failure.clone(),
                 diff: fix_diff,
                 status: "passed".to_string(),
-                rationale: "Automated fix verified green by sandbox_build; promoted to baseline.".to_string(),
+                rationale: "Automated fix verified green by sandbox_build; promoted to baseline."
+                    .to_string(),
                 timestamp: now,
             });
 
@@ -351,7 +379,10 @@ pub fn run_repair_loop(
                 failure: current_failure.clone(),
                 diff: fix_diff,
                 status: "failed".to_string(),
-                rationale: format!("Fix attempt failed; {} remaining errors in build.", new_failures.len()),
+                rationale: format!(
+                    "Fix attempt failed; {} remaining errors in build.",
+                    new_failures.len()
+                ),
                 timestamp: now,
             });
             current_failure = new_failures[0].clone();
@@ -412,11 +443,11 @@ pub fn run_repair_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::config::{AgentConfig, DecisionThresholds, RunLimits, SafeDefaults};
     use crate::model::MockModel;
     use crate::sandbox::Sandbox;
     use crate::store::LocalStore;
+    use std::sync::Arc;
 
     fn test_runtime(model_response: &str) -> (AgentRuntime, Sandbox) {
         let temp_dir = std::env::temp_dir().join(format!("s3a_repair_test_{}", std::process::id()));
@@ -452,7 +483,8 @@ mod tests {
             require_grant: false,
         };
 
-        let mock_model = Arc::new(MockModel::new("mock-model").with_default_response(model_response));
+        let mock_model =
+            Arc::new(MockModel::new("mock-model").with_default_response(model_response));
         let runtime = AgentRuntime::new(config, mock_model, None, store, sandbox.clone());
         (runtime, sandbox)
     }
@@ -460,7 +492,7 @@ mod tests {
     #[test]
     fn test_repair_loop_auto_repairs_and_promotes_with_trajectory_export() {
         let (runtime, sandbox) = test_runtime(
-            r#"{"answer": "apply_fix", "confidence": 0.95, "rationale": "Score property should be number"}"#
+            r#"{"answer": "apply_fix", "confidence": 0.95, "rationale": "Score property should be number"}"#,
         );
 
         let initial_fail = StructuredFailure {
@@ -478,17 +510,27 @@ mod tests {
             "shadow/agent_7",
             None,
             Some(initial_fail),
-        ).expect("Repair loop execution");
+        )
+        .expect("Repair loop execution");
 
-        assert!(report.promoted_to_baseline, "Successful repair must promote to baseline");
+        assert!(
+            report.promoted_to_baseline,
+            "Successful repair must promote to baseline"
+        );
         assert_eq!(report.attempts.len(), 1);
         assert_eq!(report.attempts[0].status, "passed");
-        assert!(matches!(report.outcome, RepairOutcome::RepairedAndPromoted { .. }));
+        assert!(matches!(
+            report.outcome,
+            RepairOutcome::RepairedAndPromoted { .. }
+        ));
 
         // Verify training trajectory exports exist
         assert!(report.exported_chatml_path.is_some());
         let chatml_p = report.exported_chatml_path.unwrap();
-        assert!(chatml_p.exists(), "ChatML trajectory file must exist for fine-tuning");
+        assert!(
+            chatml_p.exists(),
+            "ChatML trajectory file must exist for fine-tuning"
+        );
 
         let chatml_content = fs::read_to_string(&chatml_p).unwrap();
         assert!(chatml_content.contains("components/MatchCard.tsx"));
@@ -499,7 +541,7 @@ mod tests {
     #[test]
     fn test_repair_loop_escalates_on_claim_modification_attempt() {
         let (runtime, sandbox) = test_runtime(
-            r#"{"answer": "apply_fix", "confidence": 0.95, "rationale": "Alter claim"}"#
+            r#"{"answer": "apply_fix", "confidence": 0.95, "rationale": "Alter claim"}"#,
         );
 
         let claim_fail = StructuredFailure {
@@ -517,10 +559,17 @@ mod tests {
             "shadow/agent_claim",
             None,
             Some(claim_fail),
-        ).expect("Repair loop execution");
+        )
+        .expect("Repair loop execution");
 
-        assert!(!report.promoted_to_baseline, "Claim edit must NEVER promote to baseline");
-        assert!(matches!(report.outcome, RepairOutcome::EscalatedToHuman { .. }));
+        assert!(
+            !report.promoted_to_baseline,
+            "Claim edit must NEVER promote to baseline"
+        );
+        assert!(matches!(
+            report.outcome,
+            RepairOutcome::EscalatedToHuman { .. }
+        ));
         assert_eq!(report.attempts[0].status, "escalated");
 
         let _ = fs::remove_dir_all(sandbox.root());
@@ -530,7 +579,7 @@ mod tests {
     fn test_repair_loop_confidence_gating_trips_below_threshold() {
         // Model confidence 0.50 is below threshold 0.70
         let (runtime, sandbox) = test_runtime(
-            r#"{"answer": "apply_fix", "confidence": 0.50, "rationale": "Uncertain about type fix"}"#
+            r#"{"answer": "apply_fix", "confidence": 0.50, "rationale": "Uncertain about type fix"}"#,
         );
 
         let fail = StructuredFailure {
@@ -548,10 +597,17 @@ mod tests {
             "shadow/agent_low_conf",
             None,
             Some(fail),
-        ).expect("Repair loop execution");
+        )
+        .expect("Repair loop execution");
 
-        assert!(!report.promoted_to_baseline, "Low confidence must not promote");
-        assert!(matches!(report.outcome, RepairOutcome::EscalatedToHuman { .. }));
+        assert!(
+            !report.promoted_to_baseline,
+            "Low confidence must not promote"
+        );
+        assert!(matches!(
+            report.outcome,
+            RepairOutcome::EscalatedToHuman { .. }
+        ));
         assert_eq!(report.attempts[0].status, "escalated");
 
         let _ = fs::remove_dir_all(sandbox.root());

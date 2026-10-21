@@ -1,8 +1,8 @@
 //! Binary record definitions for S3A Git-Style Version Control (S3A-VCS).
 
 use bytemuck::{Pod, Zeroable};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
 
 /// Maximum message length stored inline in commit record (bytes).
 pub const VCS_COMMIT_MESSAGE_MAX: usize = 256;
@@ -53,7 +53,11 @@ impl VcsCommitRecord {
 
     /// Verifies the cryptographic signature of the commit record.
     pub fn verify_signature(&self) -> bool {
-        let msg_len = self.message_bytes.iter().position(|&b| b == 0).unwrap_or(VCS_COMMIT_MESSAGE_MAX);
+        let msg_len = self
+            .message_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_COMMIT_MESSAGE_MAX);
         let msg_str = match std::str::from_utf8(&self.message_bytes[..msg_len]) {
             Ok(s) => s,
             Err(_) => return false,
@@ -84,7 +88,11 @@ impl VcsCommitRecord {
 
     /// Extracts the human-readable commit message.
     pub fn message(&self) -> &str {
-        let len = self.message_bytes.iter().position(|&b| b == 0).unwrap_or(VCS_COMMIT_MESSAGE_MAX);
+        let len = self
+            .message_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_COMMIT_MESSAGE_MAX);
         std::str::from_utf8(&self.message_bytes[..len]).unwrap_or("")
     }
 }
@@ -97,13 +105,13 @@ pub const VCS_REF_NAME_MAX: usize = 64;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct VcsRefRecord {
-    pub ref_kind: u16,                   // 1 = Branch (mutable), 2 = Tag (immutable)
-    pub _pad: [u8; 6],                   // Alignment padding
-    pub target_seal_hash: [u8; 32],      // Seal hash pointed to by this ref
-    pub author_pubkey: [u8; 32],         // Creator/updater public key
-    pub updated_timestamp: u64,          // Unix epoch timestamp of ref update
-    pub signature: [u8; 64],             // Ed25519 signature over ref envelope
-    pub name: [u8; VCS_REF_NAME_MAX],    // UTF-8 ref name (e.g. "main", "v1.0.0")
+    pub ref_kind: u16,                // 1 = Branch (mutable), 2 = Tag (immutable)
+    pub _pad: [u8; 6],                // Alignment padding
+    pub target_seal_hash: [u8; 32],   // Seal hash pointed to by this ref
+    pub author_pubkey: [u8; 32],      // Creator/updater public key
+    pub updated_timestamp: u64,       // Unix epoch timestamp of ref update
+    pub signature: [u8; 64],          // Ed25519 signature over ref envelope
+    pub name: [u8; VCS_REF_NAME_MAX], // UTF-8 ref name (e.g. "main", "v1.0.0")
 }
 
 impl VcsRefRecord {
@@ -125,7 +133,11 @@ impl VcsRefRecord {
     }
 
     pub fn verify_signature(&self) -> bool {
-        let name_len = self.name.iter().position(|&b| b == 0).unwrap_or(VCS_REF_NAME_MAX);
+        let name_len = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_REF_NAME_MAX);
         let name_str = match std::str::from_utf8(&self.name[..name_len]) {
             Ok(s) => s,
             Err(_) => return false,
@@ -149,7 +161,11 @@ impl VcsRefRecord {
     }
 
     pub fn ref_name(&self) -> &str {
-        let len = self.name.iter().position(|&b| b == 0).unwrap_or(VCS_REF_NAME_MAX);
+        let len = self
+            .name
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_REF_NAME_MAX);
         std::str::from_utf8(&self.name[..len]).unwrap_or("")
     }
 }
@@ -165,14 +181,14 @@ pub const VCS_RATIONALE_MAX: usize = 128;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct VcsResolutionRecord {
-    pub resolution_id: [u8; 32],                    // SHA-256 digest of resolution envelope
-    pub resolver_pubkey: [u8; 32],                  // Human supervisor Ed25519 public key
-    pub chosen_side: u8,                            // 1 = Target, 2 = Source, 3 = Synthesis
+    pub resolution_id: [u8; 32],   // SHA-256 digest of resolution envelope
+    pub resolver_pubkey: [u8; 32], // Human supervisor Ed25519 public key
+    pub chosen_side: u8,           // 1 = Target, 2 = Source, 3 = Synthesis
     pub _pad: [u8; 7],
-    pub resolved_timestamp: u64,                    // Unix epoch timestamp (seconds)
-    pub signature: [u8; 64],                        // Ed25519 signature over envelope
-    pub record_id: [u8; VCS_RECORD_ID_MAX],         // UTF-8 conflict record ID (null-padded)
-    pub rationale: [u8; VCS_RATIONALE_MAX],         // UTF-8 supervisor rationale (null-padded)
+    pub resolved_timestamp: u64, // Unix epoch timestamp (seconds)
+    pub signature: [u8; 64],     // Ed25519 signature over envelope
+    pub record_id: [u8; VCS_RECORD_ID_MAX], // UTF-8 conflict record ID (null-padded)
+    pub rationale: [u8; VCS_RATIONALE_MAX], // UTF-8 supervisor rationale (null-padded)
     pub _reserved: [u8; 16],
 }
 
@@ -237,12 +253,20 @@ impl VcsResolutionRecord {
     }
 
     pub fn conflict_record_id(&self) -> String {
-        let end = self.record_id.iter().position(|&b| b == 0).unwrap_or(VCS_RECORD_ID_MAX);
+        let end = self
+            .record_id
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_RECORD_ID_MAX);
         String::from_utf8_lossy(&self.record_id[..end]).to_string()
     }
 
     pub fn rationale_text(&self) -> String {
-        let end = self.rationale.iter().position(|&b| b == 0).unwrap_or(VCS_RATIONALE_MAX);
+        let end = self
+            .rationale
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(VCS_RATIONALE_MAX);
         String::from_utf8_lossy(&self.rationale[..end]).to_string()
     }
 
@@ -255,7 +279,8 @@ impl VcsResolutionRecord {
         };
         let rec_id = self.conflict_record_id();
         let rat = self.rationale_text();
-        let env = Self::compute_envelope_bytes(&rec_id, self.chosen_side, self.resolved_timestamp, &rat);
+        let env =
+            Self::compute_envelope_bytes(&rec_id, self.chosen_side, self.resolved_timestamp, &rat);
         vk.verify(&env, &sig).is_ok()
     }
 }
@@ -304,7 +329,10 @@ impl std::ops::Deref for VcsMergeResult {
         match self {
             VcsMergeResult::Merged(c) => c,
             VcsMergeResult::ConflictNeedsHuman { message, .. } => {
-                panic!("Merge did not produce a commit (requires human judgment): {}", message)
+                panic!(
+                    "Merge did not produce a commit (requires human judgment): {}",
+                    message
+                )
             }
             VcsMergeResult::Conflict { message, .. } => {
                 panic!("Merge did not produce a commit (conflict): {}", message)
@@ -312,5 +340,3 @@ impl std::ops::Deref for VcsMergeResult {
         }
     }
 }
-
-

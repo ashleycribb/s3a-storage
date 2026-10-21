@@ -1,7 +1,7 @@
 //! Key rotation and revoked-key enforcement (§6).
 
-use std::collections::HashMap;
 use ed25519_dalek::{Signature, VerifyingKey};
+use std::collections::HashMap;
 
 use crate::errors::VaultError;
 use crate::keystore::KeyStore;
@@ -79,7 +79,8 @@ impl RevocationRegistry {
     /// Register a key rotation. The old key is marked revoked starting at `record.rotated_at`.
     pub fn register_rotation(&mut self, record: &KeyRotationRecord) -> Result<(), VaultError> {
         verify_key_rotation_record(record)?;
-        self.revocations.insert(record.old_public_key, record.get_rotated_at());
+        self.revocations
+            .insert(record.old_public_key, record.get_rotated_at());
         Ok(())
     }
 
@@ -88,7 +89,8 @@ impl RevocationRegistry {
         if !record.is_crc_valid() {
             return Err(VaultError::InvalidCrc("RevokedKeyRecord CRC mismatch"));
         }
-        self.revocations.insert(record.revoked_public_key, record.get_revoked_at());
+        self.revocations
+            .insert(record.revoked_public_key, record.get_revoked_at());
         Ok(())
     }
 

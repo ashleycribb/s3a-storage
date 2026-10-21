@@ -32,14 +32,14 @@ pub const PREDICATE_EXPLAINS: u32 = 7;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 pub struct OntologyConceptRecord {
-    pub concept_id: u64,          // 64-bit hash of canonical URI (offset 0..8)
-    pub parent_id: u64,           // Subsumption parent concept hash (0 if root) (offset 8..16)
-    pub ontology_id: u32,         // Enclosing ontology ID (offset 16..20)
-    pub concept_kind: u16,        // 1=Class, 2=Verb, 3=ActivityType, etc. (offset 20..22)
-    pub xapi_profile_id: u16,     // Associated xAPI profile ID (offset 22..24)
-    pub hilbert_coord: u32,       // Topological interval index for SIMD subtree sifting (offset 24..28)
-    pub flags: u32,               // Active, Tombstone, Provisional (offset 28..32)
-    pub _reserved: [u64; 4],      // Padding to exact 64 bytes (offset 32..64)
+    pub concept_id: u64,      // 64-bit hash of canonical URI (offset 0..8)
+    pub parent_id: u64,       // Subsumption parent concept hash (0 if root) (offset 8..16)
+    pub ontology_id: u32,     // Enclosing ontology ID (offset 16..20)
+    pub concept_kind: u16,    // 1=Class, 2=Verb, 3=ActivityType, etc. (offset 20..22)
+    pub xapi_profile_id: u16, // Associated xAPI profile ID (offset 22..24)
+    pub hilbert_coord: u32,   // Topological interval index for SIMD subtree sifting (offset 24..28)
+    pub flags: u32,           // Active, Tombstone, Provisional (offset 28..32)
+    pub _reserved: [u64; 4],  // Padding to exact 64 bytes (offset 32..64)
 }
 
 impl OntologyConceptRecord {
@@ -89,12 +89,12 @@ pub struct OntologyAxiomRecord {
     pub subject_concept_id: u64,  // Subject concept hash (offset 0..8)
     pub object_concept_id: u64,   // Object concept hash (offset 8..16)
     pub predicate_id: u32,        // Predicate type (offset 16..20)
-    pub axiom_type: u16,          // 1=Hierarchical, 2=PedagogicalScaffold, 3=xAPIRule (offset 20..22)
-    pub weight_fp16: u16,         // Relevance / confidence weight (offset 22..24)
-    pub target_tile_type: u16,    // Target S3A tile type e.g. 10 (LRS), 12 (Paper) (offset 24..26)
+    pub axiom_type: u16, // 1=Hierarchical, 2=PedagogicalScaffold, 3=xAPIRule (offset 20..22)
+    pub weight_fp16: u16, // Relevance / confidence weight (offset 22..24)
+    pub target_tile_type: u16, // Target S3A tile type e.g. 10 (LRS), 12 (Paper) (offset 24..26)
     pub required_addon_mask: u16, // Required addon bitmask (offset 26..28)
-    pub flags: u32,               // Active, Tombstone, Provisional (offset 28..32)
-    pub _reserved: [u64; 4],      // Padding to exact 64 bytes (offset 32..64)
+    pub flags: u32,      // Active, Tombstone, Provisional (offset 28..32)
+    pub _reserved: [u64; 4], // Padding to exact 64 bytes (offset 32..64)
 }
 
 impl OntologyAxiomRecord {

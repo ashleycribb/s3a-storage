@@ -1,9 +1,9 @@
 //! Conversion and Merge Utilities for S3A Edge Micro-Tile Archives (§9).
 
+use crate::{MmapReader, TileWriter};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use crate::{MmapReader, TileWriter};
 
 /// Report summarizing an edge archive import and merge operation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -41,7 +41,10 @@ pub fn import_edge_archive<P: AsRef<Path>, Q: AsRef<Path>>(
     }
 
     edge_reader.verify_checksums().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Edge archive checksum failure: {}", e))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Edge archive checksum failure: {}", e),
+        )
     })?;
 
     // Open target archive (or create if missing)
@@ -70,7 +73,10 @@ pub fn import_edge_archive<P: AsRef<Path>, Q: AsRef<Path>>(
             if (edge_hdr.type_id == s3a_edge::TILE_TYPE_RECORD || edge_hdr.type_id == 33)
                 && payload.len() >= core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()
             {
-                let id_rec: &s3a_edge::DeviceIdentityRecord = &bytemuck::pod_read_unaligned::<s3a_edge::DeviceIdentityRecord>(&payload[..core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()]);
+                let id_rec: &s3a_edge::DeviceIdentityRecord =
+                    &bytemuck::pod_read_unaligned::<s3a_edge::DeviceIdentityRecord>(
+                        &payload[..core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()],
+                    );
                 if id_rec.verify() && id_rec.device_id != [0u8; 16] {
                     device_id = id_rec.device_id;
                     break;
@@ -86,7 +92,12 @@ pub fn import_edge_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         let tile_gen = if edge_hdr.generation != 0 {
             edge_hdr.generation as u64
         } else {
-            (edge_reader.file_header().generation.saturating_sub(edge_reader.tile_count() as u64)) + (i as u64) + 1
+            (edge_reader
+                .file_header()
+                .generation
+                .saturating_sub(edge_reader.tile_count() as u64))
+                + (i as u64)
+                + 1
         };
         let computed = s3a_edge::compute_seal_hash(
             &prev_seal,

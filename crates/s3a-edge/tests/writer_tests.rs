@@ -19,30 +19,24 @@ fn test_append_and_seal_roundtrip() {
         0,
         1001,
     );
-    let identity = DeviceIdentityRecord::new(
-        device_id,
-        "SENS-NODE-V1",
-        [1, 0, 0, 1],
-        [0xAA; 32],
-        now,
-        1,
-    );
-    let seal0 = writer.provision(&consent, &identity, now).expect("provisioning tile should seal");
+    let identity =
+        DeviceIdentityRecord::new(device_id, "SENS-NODE-V1", [1, 0, 0, 1], [0xAA; 32], now, 1);
+    let seal0 = writer
+        .provision(&consent, &identity, now)
+        .expect("provisioning tile should seal");
     assert_eq!(writer.tile_count(), 2);
     assert_ne!(seal0, [0u8; 32]);
 
     // Tile 2: Telemetry Sensor Records
     for i in 0..50 {
-        let rec = CompactEdgeSensorRecord::new(
-            (i * 100) as u16,
-            1,
-            1,
-            2000 + (i as i32) * 5,
-            QUALITY_OK,
-        );
-        writer.append_sensor_record(&rec).expect("sensor append should succeed");
+        let rec = CompactEdgeSensorRecord::new((i * 100) as u16, 1, 1, 2000 + i * 5, QUALITY_OK);
+        writer
+            .append_sensor_record(&rec)
+            .expect("sensor append should succeed");
     }
-    let seal1 = writer.seal_tile(now + 5).expect("telemetry tile should seal");
+    let seal1 = writer
+        .seal_tile(now + 5)
+        .expect("telemetry tile should seal");
     assert_eq!(writer.tile_count(), 3);
     assert_ne!(seal1, seal0);
 
@@ -65,16 +59,20 @@ fn test_append_and_seal_roundtrip() {
         [0xEE; 8],
         85, // 85 degC
     );
-    writer.append_equipment_event(&ev1).expect("event append should succeed");
-    writer.append_equipment_event(&ev2).expect("event append should succeed");
+    writer
+        .append_equipment_event(&ev1)
+        .expect("event append should succeed");
+    writer
+        .append_equipment_event(&ev2)
+        .expect("event append should succeed");
     let seal2 = writer.seal_tile(now + 20).expect("event tile should seal");
     assert_eq!(writer.tile_count(), 4);
     assert_ne!(seal2, seal1);
 
     // Recover from the flash state and verify everything persists cleanly
     let flash_state = writer.storage().clone();
-    let recovered = EdgeWriter::<_, 4096>::recover(flash_state, device_id)
-        .expect("recover should succeed");
+    let recovered =
+        EdgeWriter::<_, 4096>::recover(flash_state, device_id).expect("recover should succeed");
 
     assert_eq!(recovered.tile_count(), 4);
     assert_eq!(recovered.generation(), 5); // Genesis(1) + 4 seals = 5
@@ -90,9 +88,17 @@ fn test_power_cut_at_every_byte_offset_of_tile_write() {
 
     // 1. Setup clean baseline archive with Tile 0 sealed
     let flash = RamFlash::<{ 32 * 1024 }>::new(256, 512);
-    let mut writer = EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, now).unwrap();
+    let mut writer =
+        EdgeWriter::<_, 4096>::open_or_format(flash, device_id, file_uuid, now).unwrap();
 
-    let consent = EdgeConsentRecord::new([1; 16], PURPOSE_OPERATIONAL_MAINTENANCE, SCOPE_TELEMETRY, now, 0, 1);
+    let consent = EdgeConsentRecord::new(
+        [1; 16],
+        PURPOSE_OPERATIONAL_MAINTENANCE,
+        SCOPE_TELEMETRY,
+        now,
+        0,
+        1,
+    );
     let identity = DeviceIdentityRecord::new(device_id, "TEST-DEV", [1, 0, 0, 0], [0; 32], now, 1);
     let seal0 = writer.provision(&consent, &identity, now).unwrap();
     assert_eq!(writer.tile_count(), 2);
@@ -100,13 +106,17 @@ fn test_power_cut_at_every_byte_offset_of_tile_write() {
     let baseline_flash = writer.storage().clone();
 
     // Measure total write operations when writing and sealing Tile 2
-    let mut test_writer = EdgeWriter::<_, 4096>::recover(baseline_flash.clone(), device_id).unwrap();
+    let mut test_writer =
+        EdgeWriter::<_, 4096>::recover(baseline_flash.clone(), device_id).unwrap();
     let rec = CompactEdgeSensorRecord::new(100, 1, 1, 2500, QUALITY_OK);
     test_writer.append_sensor_record(&rec).unwrap();
     test_writer.storage_mut().reset_write_counter();
     test_writer.seal_tile(now + 10).unwrap();
     let total_bytes_written = test_writer.storage().total_bytes_written;
-    assert!(total_bytes_written > 0, "seal_tile must perform write operations");
+    assert!(
+        total_bytes_written > 0,
+        "seal_tile must perform write operations"
+    );
 
     // 2. Cut power at every single byte offset: from 0 up to total_bytes_written - 1
     for cut_byte in 0..total_bytes_written {
@@ -130,8 +140,13 @@ fn test_power_cut_at_every_byte_offset_of_tile_write() {
         // 3. Perform boot-time recovery on the power-cut flash:
         // Core invariant: Boot recovery MUST succeed, keep all prior sealed tiles (Tile 0 & 1),
         // never corrupt flash, and be ready to resume appending.
-        let mut recovered = EdgeWriter::<_, 4096>::recover(cut_memory, device_id)
-            .unwrap_or_else(|e| panic!("Recovery failed after power cut at byte {}: {:?}", cut_byte, e));
+        let mut recovered =
+            EdgeWriter::<_, 4096>::recover(cut_memory, device_id).unwrap_or_else(|e| {
+                panic!(
+                    "Recovery failed after power cut at byte {}: {:?}",
+                    cut_byte, e
+                )
+            });
         recovered.storage_mut().set_write_limit(None);
 
         let count = recovered.tile_count();
@@ -168,13 +183,27 @@ fn test_crc_mismatch_rejected() {
 
     let mut bad_rec = rec;
     bad_rec.quantized_val = 9999;
-    assert!(!bad_rec.verify(), "Modified record must fail CRC verification");
+    assert!(
+        !bad_rec.verify(),
+        "Modified record must fail CRC verification"
+    );
 
-    let ev = EquipmentEventRecord::new(1700000000, EVENT_MACHINE_START, SEVERITY_INFO, 1, 10, [0; 8], 100);
+    let ev = EquipmentEventRecord::new(
+        1700000000,
+        EVENT_MACHINE_START,
+        SEVERITY_INFO,
+        1,
+        10,
+        [0; 8],
+        100,
+    );
     assert!(ev.verify());
     let mut bad_ev = ev;
     bad_ev.param1 = 999;
-    assert!(!bad_ev.verify(), "Modified event record must fail CRC verification");
+    assert!(
+        !bad_ev.verify(),
+        "Modified event record must fail CRC verification"
+    );
 
     // 2. Tile header CRC mismatch
     let mut tile_hdr = CommonTileHeader::new(TILE_TYPE_RECORD, 5, 160);
@@ -183,7 +212,10 @@ fn test_crc_mismatch_rejected() {
     assert!(tile_hdr.verify());
 
     tile_hdr.record_count = 6;
-    assert!(!tile_hdr.verify(), "Tampered tile header must fail CRC verification");
+    assert!(
+        !tile_hdr.verify(),
+        "Tampered tile header must fail CRC verification"
+    );
 
     // 3. File header CRC mismatch
     let mut file_hdr = FileHeader::new(2, 4096, 1700000000);
@@ -191,7 +223,10 @@ fn test_crc_mismatch_rejected() {
     assert!(file_hdr.verify());
 
     file_hdr.tile_count = 3;
-    assert!(!file_hdr.verify(), "Tampered file header must fail CRC verification");
+    assert!(
+        !file_hdr.verify(),
+        "Tampered file header must fail CRC verification"
+    );
 }
 
 #[test]
@@ -203,18 +238,41 @@ fn test_seal_chain_break_detected() {
 
     // Tampered payload breaks link
     let tampered_payload = [0x22u8; 32];
-    assert!(!trust::verify_seal_chain_link(&seal1, &prev_seal, 2, 1, &tampered_payload, &device_id));
+    assert!(!trust::verify_seal_chain_link(
+        &seal1,
+        &prev_seal,
+        2,
+        1,
+        &tampered_payload,
+        &device_id
+    ));
 
     // Tampered prev_seal breaks link
     let tampered_prev = [0xBBu8; 32];
-    assert!(!trust::verify_seal_chain_link(&seal1, &tampered_prev, 2, 1, &payload, &device_id));
+    assert!(!trust::verify_seal_chain_link(
+        &seal1,
+        &tampered_prev,
+        2,
+        1,
+        &payload,
+        &device_id
+    ));
 
     // Reordered tile index breaks link
-    assert!(!trust::verify_seal_chain_link(&seal1, &prev_seal, 2, 2, &payload, &device_id));
+    assert!(!trust::verify_seal_chain_link(
+        &seal1, &prev_seal, 2, 2, &payload, &device_id
+    ));
 
     // Swapped device_id breaks link
     let foreign_device = [0x88u8; 16];
-    assert!(!trust::verify_seal_chain_link(&seal1, &prev_seal, 2, 1, &payload, &foreign_device));
+    assert!(!trust::verify_seal_chain_link(
+        &seal1,
+        &prev_seal,
+        2,
+        1,
+        &payload,
+        &foreign_device
+    ));
 }
 
 #[test]
@@ -266,10 +324,18 @@ fn test_signature_verify_and_forge_rejected() {
 
     // Tampered seal hash rejected
     let tampered_hash = [0x56u8; 32];
-    assert!(!trust::verify_signature(&device_pubkey, &tampered_hash, &sig));
+    assert!(!trust::verify_signature(
+        &device_pubkey,
+        &tampered_hash,
+        &sig
+    ));
 
     // Forgery with attacker key rejected
     let attacker_key = SigningKey::from_bytes(&[234u8; 32]);
     let forged_sig = trust::sign_seal_hash(&attacker_key, &seal_hash);
-    assert!(!trust::verify_signature(&device_pubkey, &seal_hash, &forged_sig));
+    assert!(!trust::verify_signature(
+        &device_pubkey,
+        &seal_hash,
+        &forged_sig
+    ));
 }

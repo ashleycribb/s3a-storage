@@ -1,9 +1,9 @@
 //! Delegation grants, governance invariants, and anti-escalation enforcement (§3, §12.5).
 
-use ed25519_dalek::{Signature, VerifyingKey};
 use crate::errors::VaultError;
 use crate::keystore::KeyStore;
 use crate::records::{DelegationGrantRecord, VaultOwnerKind};
+use ed25519_dalek::{Signature, VerifyingKey};
 
 /// Check if an action string corresponds to a Non-Delegable Judgment Action (§3.2, §12.5).
 pub fn is_judgment_action(action: &str) -> bool {
@@ -100,7 +100,9 @@ pub fn evaluate_agent_action(
 ) -> Result<(), VaultError> {
     // 1. Check Non-Delegable Judgment Invariant (§3.2, §12.5)
     if is_judgment_action(action_name) {
-        return Err(VaultError::RequiresHumanApproval("Judgment action cannot be delegated to an agent"));
+        return Err(VaultError::RequiresHumanApproval(
+            "Judgment action cannot be delegated to an agent",
+        ));
     }
 
     // 2. Check Expiration
@@ -125,7 +127,7 @@ pub fn evaluate_agent_action(
 mod tests {
     use super::*;
     use crate::keystore::MemoryKeyStore;
-    use crate::records::{ACTION_READ, ACTION_WRITE, ACTION_SEND_ITEM};
+    use crate::records::{ACTION_READ, ACTION_SEND_ITEM, ACTION_WRITE};
 
     #[test]
     fn test_delegation_chain_and_governance_rules() {
@@ -195,7 +197,10 @@ mod tests {
             Some(&grant1),
             &ks,
         );
-        assert!(matches!(widened_grant, Err(VaultError::WidenedGrantForbidden)));
+        assert!(matches!(
+            widened_grant,
+            Err(VaultError::WidenedGrantForbidden)
+        ));
 
         // 4. Valid sub-grant (narrower or equal)
         let sub_grant = create_delegation_grant(
@@ -234,7 +239,13 @@ mod tests {
             Err(VaultError::RequiresHumanApproval(_))
         ));
         assert!(matches!(
-            evaluate_agent_action(&grant1, ACTION_WRITE, "claim_support_evaluation", now + 10, 0),
+            evaluate_agent_action(
+                &grant1,
+                ACTION_WRITE,
+                "claim_support_evaluation",
+                now + 10,
+                0
+            ),
             Err(VaultError::RequiresHumanApproval(_))
         ));
     }

@@ -6,8 +6,8 @@ use s3a_core::columnar::{ColumnDataType, ColumnarTileBuilder, ColumnarTileView};
 use s3a_core::{TelemetryRecord, TileType};
 use s3a_engine::lakehouse::{project_columnar_to_arrow, ArrowColumnVector};
 use s3a_engine::{
-    decode_columnar_telemetry, encode_columnar_telemetry,
-    Compactor, MmapReader, QuerySieve, S3ACrudEngine,
+    decode_columnar_telemetry, encode_columnar_telemetry, Compactor, MmapReader, QuerySieve,
+    S3ACrudEngine,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -20,7 +20,12 @@ impl TestTempFile {
     fn new(suffix: &str) -> Self {
         let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_columnar_test_{}_{}_{}", std::process::id(), count, suffix));
+        path.push(format!(
+            "s3a_columnar_test_{}_{}_{}",
+            std::process::id(),
+            count,
+            suffix
+        ));
         Self { path }
     }
 
@@ -53,7 +58,8 @@ fn test_roundtrip_equality_vs_record_tile() {
     assert!(!columnar_payload.is_empty());
 
     // Decode from columnar payload back to row records
-    let decoded = decode_columnar_telemetry(&columnar_payload).expect("decoding columnar telemetry must succeed");
+    let decoded = decode_columnar_telemetry(&columnar_payload)
+        .expect("decoding columnar telemetry must succeed");
     assert_eq!(decoded.len(), records.len());
     assert_eq!(decoded, records);
 }
@@ -129,14 +135,23 @@ fn test_null_handling() {
     validity[5] = false;
 
     // Column 0: nullable float64
-    builder.add_column("scores", ColumnDataType::Float64, &scores, Some(&validity), 1.0, 10.0);
+    builder.add_column(
+        "scores",
+        ColumnDataType::Float64,
+        &scores,
+        Some(&validity),
+        1.0,
+        10.0,
+    );
     // Column 1: non-nullable uint32
     builder.add_column("ids", ColumnDataType::UInt32, &ids, None, 10.0, 100.0);
 
     let payload = builder.build();
     let view = ColumnarTileView::parse(&payload).expect("view parse must succeed");
 
-    let desc0 = view.find_column("scores").expect("scores column must exist");
+    let desc0 = view
+        .find_column("scores")
+        .expect("scores column must exist");
     assert_eq!(desc0.null_count, 2);
 
     // Row 2 is null
@@ -163,8 +178,11 @@ fn test_arrow_export_matches() {
     }
 
     let columnar_payload = encode_columnar_telemetry(&records);
-    let batch = project_columnar_to_arrow(&columnar_payload, Some(&["timestamp", "sensor_id", "value"]))
-        .expect("arrow export must succeed");
+    let batch = project_columnar_to_arrow(
+        &columnar_payload,
+        Some(&["timestamp", "sensor_id", "value"]),
+    )
+    .expect("arrow export must succeed");
 
     assert_eq!(batch.num_rows, 10);
     assert_eq!(batch.columns.len(), 3);
@@ -220,8 +238,12 @@ fn test_compaction_opt_in_columnar_roundtrip() {
     assert_eq!(pre_query.len(), 50);
 
     // Compact with opt-in for TileType::TELEMETRY -> converts to TileType::COLUMNAR (Tile 65)
-    Compactor::compact_with_columnar_opt_in(&[&uncompacted_path], &compacted_path, &[TileType::TELEMETRY])
-        .expect("compaction must succeed");
+    Compactor::compact_with_columnar_opt_in(
+        &[&uncompacted_path],
+        &compacted_path,
+        &[TileType::TELEMETRY],
+    )
+    .expect("compaction must succeed");
 
     // Inspect compacted archive: verify TileType::COLUMNAR is present
     let reader = MmapReader::open(&compacted_path).expect("compacted archive must open");
@@ -234,7 +256,10 @@ fn test_compaction_opt_in_columnar_roundtrip() {
             }
         }
     }
-    assert!(found_columnar, "Compacted archive must contain TileType::COLUMNAR");
+    assert!(
+        found_columnar,
+        "Compacted archive must contain TileType::COLUMNAR"
+    );
 
     // Query engine reading compacted file: sieve should transparently decode columnar tiles and yield identical data
     let sieve = QuerySieve::new(&reader);

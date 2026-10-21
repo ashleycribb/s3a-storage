@@ -620,11 +620,8 @@ mod tests {
         assert!(store.allow_insecure_http());
         // Will fail on transport/connection since port is not listening, but MUST NOT be rejected by security policy
         let res = store.make_request("GET", "/about", None);
-        match res {
-            Err(StoreError::Network(msg)) => {
-                assert!(!msg.contains("Insecure HTTP connection to non-localhost host"));
-            }
-            _ => {}
+        if let Err(StoreError::Network(msg)) = res {
+            assert!(!msg.contains("Insecure HTTP connection to non-localhost host"));
         }
     }
 

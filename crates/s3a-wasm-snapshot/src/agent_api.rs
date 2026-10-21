@@ -1,21 +1,20 @@
+use crate::snapshot_view::WasmSnapshotView;
 use bytemuck::{bytes_of, cast_slice};
 use s3a_core::{
-    EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType,
-    ADDON_EDU, ADDON_ONTOLOGY, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
-    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
-};
-use s3a_pack_scholar::{
-    AcademicPaperRecord, AgentDenied, AgentRegistryRecord, AiTraceRecord, CitationFingerprintRecord,
-    HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType, SrsDeltaEntry,
-    SrsManifestHeader, SrsSyncDeltaPacket, SrsWorkspaceRecord,
-    SCHOLAR_LAYOUT_VERSION_V1, STEP_CLAIM,
+    EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType, ADDON_EDU,
+    ADDON_ONTOLOGY, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_SIZE,
+    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
 };
 use s3a_pack_ontology::{
-    OntologyAxiomRecord, OntologyConceptRecord, OntologyTileType,
-    PREDICATE_HAS_APPROVED_ANALOGY,
+    OntologyAxiomRecord, OntologyConceptRecord, OntologyTileType, PREDICATE_HAS_APPROVED_ANALOGY,
+};
+use s3a_pack_scholar::{
+    AcademicPaperRecord, AgentDenied, AgentRegistryRecord, AiTraceRecord,
+    CitationFingerprintRecord, HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord,
+    ScholarTileType, SrsDeltaEntry, SrsManifestHeader, SrsSyncDeltaPacket, SrsWorkspaceRecord,
+    SCHOLAR_LAYOUT_VERSION_V1, STEP_CLAIM,
 };
 use s3a_simd::cosine_similarity;
-use crate::snapshot_view::WasmSnapshotView;
 
 fn compute_file_header_crc32(header: &FileHeader) -> u32 {
     let bytes = bytes_of(header);
@@ -52,7 +51,7 @@ pub fn encode_claim_embedding(
     raw_bytes[64..66].copy_from_slice(&(emb_dim as u16).to_le_bytes());
     let text_bytes = text.as_bytes();
     let emb_extra_bytes = if emb_dim > 16 { (emb_dim - 16) * 4 } else { 0 };
-    let max_text_bytes = (512 - 68 - emb_extra_bytes).max(0);
+    let max_text_bytes = 512 - 68 - emb_extra_bytes;
     let actual_text_len = text_bytes.len().min(max_text_bytes);
     raw_bytes[66..68].copy_from_slice(&(actual_text_len as u16).to_le_bytes());
 
@@ -62,7 +61,8 @@ pub fn encode_claim_embedding(
         raw_bytes[68..68 + emb_extra_bytes].copy_from_slice(extra_bytes);
     }
     let text_start = 68 + emb_extra_bytes;
-    raw_bytes[text_start..text_start + actual_text_len].copy_from_slice(&text_bytes[..actual_text_len]);
+    raw_bytes[text_start..text_start + actual_text_len]
+        .copy_from_slice(&text_bytes[..actual_text_len]);
     rec
 }
 
@@ -87,7 +87,11 @@ pub fn decode_claim_embedding(rec: &EmbeddingRecord128) -> (Option<Vec<f32>>, St
         emb = Some(v);
     }
 
-    let emb_extra_bytes = if emb_dim > 16 && emb_dim <= 64 { (emb_dim - 16) * 4 } else { 0 };
+    let emb_extra_bytes = if emb_dim > 16 && emb_dim <= 64 {
+        (emb_dim - 16) * 4
+    } else {
+        0
+    };
     let text_start = 68 + emb_extra_bytes;
     let text = if text_len > 0 && text_start + text_len <= 512 {
         String::from_utf8_lossy(&raw_bytes[text_start..text_start + text_len]).to_string()
@@ -143,7 +147,9 @@ impl WasmAgentSnapshot {
     /// Loads snapshot from in-memory byte slice.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         let view = WasmSnapshotView::parse(bytes)?;
-        let manifest = view.manifest.ok_or("Snapshot missing authoritative Tile 15 (SRS_MANIFEST)")?;
+        let manifest = view
+            .manifest
+            .ok_or("Snapshot missing authoritative Tile 15 (SRS_MANIFEST)")?;
 
         // Reconstruct claims by pairing ScholarNoteClaimRecord with corresponding EmbeddingRecord128
         let mut claims = Vec::new();
@@ -238,7 +244,6 @@ impl WasmAgentSnapshot {
         Ok((bytes, new_cursor, record_count))
     }
 
-
     /// Evaluates if an agent's proposed generation requires raising its hand to the Teacher Assistant.
     pub fn preflight_agent_check(
         &self,
@@ -258,10 +263,13 @@ impl WasmAgentSnapshot {
         // Check if an unverified analogy is being attempted
         if !has_approved_analogy {
             let has_approved = self.axioms.iter().any(|a| {
-                a.subject_concept_id == concept_id && a.predicate_id == PREDICATE_HAS_APPROVED_ANALOGY
+                a.subject_concept_id == concept_id
+                    && a.predicate_id == PREDICATE_HAS_APPROVED_ANALOGY
             });
             if !has_approved {
-                return Err("RAISE_HAND_TO_TA: Proposed analogy is not approved in snapshot axioms");
+                return Err(
+                    "RAISE_HAND_TO_TA: Proposed analogy is not approved in snapshot axioms",
+                );
             }
         }
 
@@ -275,7 +283,11 @@ impl WasmAgentSnapshot {
         verb_bit: Option<u32>,
         tool_bit: Option<u32>,
     ) -> Result<(), AgentDenied> {
-        let agent = self.agents.iter().find(|a| a.agent_id == agent_id).ok_or(AgentDenied::AgentDisabled)?;
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.agent_id == agent_id)
+            .ok_or(AgentDenied::AgentDisabled)?;
         agent.assert_allows(verb_bit, tool_bit)
     }
 
@@ -288,7 +300,11 @@ impl WasmAgentSnapshot {
         tool_bit: Option<u32>,
         is_human_cleared: bool,
     ) -> Result<(), AgentDenied> {
-        let agent = self.agents.iter().find(|a| a.agent_id == agent_id).ok_or(AgentDenied::AgentDisabled)?;
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.agent_id == agent_id)
+            .ok_or(AgentDenied::AgentDisabled)?;
         agent.assert_allows_gated(verb_bit, tool_bit, is_human_cleared)
     }
 
@@ -296,7 +312,10 @@ impl WasmAgentSnapshot {
     pub fn find_approved_analogies(&self, concept_id: u64) -> Vec<OntologyAxiomRecord> {
         self.axioms
             .iter()
-            .filter(|a| a.subject_concept_id == concept_id && a.predicate_id == PREDICATE_HAS_APPROVED_ANALOGY)
+            .filter(|a| {
+                a.subject_concept_id == concept_id
+                    && a.predicate_id == PREDICATE_HAS_APPROVED_ANALOGY
+            })
             .copied()
             .collect()
     }
@@ -306,57 +325,207 @@ impl WasmAgentSnapshot {
         let mut tiles: Vec<(u32, Vec<u8>, u32, u64, u64)> = Vec::new();
 
         if let Some(ref ws) = self.workspace {
-            tiles.push((ScholarTileType::SRS_WORKSPACE, bytes_of(ws).to_vec(), 1, 0, 0));
+            tiles.push((
+                ScholarTileType::SRS_WORKSPACE,
+                bytes_of(ws).to_vec(),
+                1,
+                0,
+                0,
+            ));
         }
         if !self.papers.is_empty() {
-            let min_ts = self.papers.iter().map(|p| p.timestamp_sec).min().unwrap_or(0);
-            let max_ts = self.papers.iter().map(|p| p.timestamp_sec).max().unwrap_or(0);
-            tiles.push((ScholarTileType::ACADEMIC_PAPERS, cast_slice(&self.papers).to_vec(), self.papers.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .papers
+                .iter()
+                .map(|p| p.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .papers
+                .iter()
+                .map(|p| p.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::ACADEMIC_PAPERS,
+                cast_slice(&self.papers).to_vec(),
+                self.papers.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.edges.is_empty() {
-            let min_ts = self.edges.iter().map(|e| e.timestamp_sec).min().unwrap_or(0);
-            let max_ts = self.edges.iter().map(|e| e.timestamp_sec).max().unwrap_or(0);
-            tiles.push((ScholarTileType::RESEARCH_GRAPH, cast_slice(&self.edges).to_vec(), self.edges.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .edges
+                .iter()
+                .map(|e| e.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .edges
+                .iter()
+                .map(|e| e.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::RESEARCH_GRAPH,
+                cast_slice(&self.edges).to_vec(),
+                self.edges.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.human_decisions.is_empty() {
-            let min_ts = self.human_decisions.iter().map(|h| h.timestamp_sec).min().unwrap_or(0);
-            let max_ts = self.human_decisions.iter().map(|h| h.timestamp_sec).max().unwrap_or(0);
-            tiles.push((ScholarTileType::HUMAN_LRS, cast_slice(&self.human_decisions).to_vec(), self.human_decisions.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .human_decisions
+                .iter()
+                .map(|h| h.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .human_decisions
+                .iter()
+                .map(|h| h.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::HUMAN_LRS,
+                cast_slice(&self.human_decisions).to_vec(),
+                self.human_decisions.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.ai_traces.is_empty() {
-            let min_ts = self.ai_traces.iter().map(|a| a.timestamp_sec).min().unwrap_or(0);
-            let max_ts = self.ai_traces.iter().map(|a| a.timestamp_sec).max().unwrap_or(0);
-            tiles.push((ScholarTileType::AI_TRACE_LOG, cast_slice(&self.ai_traces).to_vec(), self.ai_traces.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .ai_traces
+                .iter()
+                .map(|a| a.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .ai_traces
+                .iter()
+                .map(|a| a.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::AI_TRACE_LOG,
+                cast_slice(&self.ai_traces).to_vec(),
+                self.ai_traces.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.agents.is_empty() {
-            tiles.push((ScholarTileType::AGENT_REGISTRY, cast_slice(&self.agents).to_vec(), self.agents.len() as u32, 0, 0));
+            tiles.push((
+                ScholarTileType::AGENT_REGISTRY,
+                cast_slice(&self.agents).to_vec(),
+                self.agents.len() as u32,
+                0,
+                0,
+            ));
         }
         if !self.concepts.is_empty() {
-            tiles.push((OntologyTileType::ONTOLOGY_CONCEPT, cast_slice(&self.concepts).to_vec(), self.concepts.len() as u32, 0, 0));
+            tiles.push((
+                OntologyTileType::ONTOLOGY_CONCEPT,
+                cast_slice(&self.concepts).to_vec(),
+                self.concepts.len() as u32,
+                0,
+                0,
+            ));
         }
         if !self.axioms.is_empty() {
-            tiles.push((OntologyTileType::ONTOLOGY_AXIOM, cast_slice(&self.axioms).to_vec(), self.axioms.len() as u32, 0, 0));
+            tiles.push((
+                OntologyTileType::ONTOLOGY_AXIOM,
+                cast_slice(&self.axioms).to_vec(),
+                self.axioms.len() as u32,
+                0,
+                0,
+            ));
         }
         if !self.claims.is_empty() {
-            let claim_records: Vec<ScholarNoteClaimRecord> = self.claims.iter().map(|c| c.record).collect();
-            let min_ts = claim_records.iter().map(|c| c.timestamp_sec).min().unwrap_or(0);
-            let max_ts = claim_records.iter().map(|c| c.timestamp_sec).max().unwrap_or(0);
-            tiles.push((ScholarTileType::NOTE_CLAIMS, cast_slice(&claim_records).to_vec(), claim_records.len() as u32, min_ts, max_ts));
+            let claim_records: Vec<ScholarNoteClaimRecord> =
+                self.claims.iter().map(|c| c.record).collect();
+            let min_ts = claim_records
+                .iter()
+                .map(|c| c.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = claim_records
+                .iter()
+                .map(|c| c.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::NOTE_CLAIMS,
+                cast_slice(&claim_records).to_vec(),
+                claim_records.len() as u32,
+                min_ts,
+                max_ts,
+            ));
 
-            let embedding_records: Vec<EmbeddingRecord128> = self.claims.iter().map(|c| {
-                encode_claim_embedding(c.record.claim_id, c.record.timestamp_sec, c.embedding.as_deref(), &c.text)
-            }).collect();
-            tiles.push((TileType::EMBEDDING, cast_slice(&embedding_records).to_vec(), embedding_records.len() as u32, min_ts, max_ts));
+            let embedding_records: Vec<EmbeddingRecord128> = self
+                .claims
+                .iter()
+                .map(|c| {
+                    encode_claim_embedding(
+                        c.record.claim_id,
+                        c.record.timestamp_sec,
+                        c.embedding.as_deref(),
+                        &c.text,
+                    )
+                })
+                .collect();
+            tiles.push((
+                TileType::EMBEDDING,
+                cast_slice(&embedding_records).to_vec(),
+                embedding_records.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.policy_marks.is_empty() {
-            let min_ts = self.policy_marks.iter().map(|m| m.timestamp).min().unwrap_or(0);
-            let max_ts = self.policy_marks.iter().map(|m| m.timestamp).max().unwrap_or(0);
-            tiles.push((TileType::MARKS, cast_slice(&self.policy_marks).to_vec(), self.policy_marks.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .policy_marks
+                .iter()
+                .map(|m| m.timestamp)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .policy_marks
+                .iter()
+                .map(|m| m.timestamp)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                TileType::MARKS,
+                cast_slice(&self.policy_marks).to_vec(),
+                self.policy_marks.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
         if !self.citation_fingerprints.is_empty() {
-            let min_ts = self.citation_fingerprints.iter().map(|f| f.fetched_at).min().unwrap_or(0);
-            let max_ts = self.citation_fingerprints.iter().map(|f| f.fetched_at).max().unwrap_or(0);
-            tiles.push((ScholarTileType::CITATION_FINGERPRINT, cast_slice(&self.citation_fingerprints).to_vec(), self.citation_fingerprints.len() as u32, min_ts, max_ts));
+            let min_ts = self
+                .citation_fingerprints
+                .iter()
+                .map(|f| f.fetched_at)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .citation_fingerprints
+                .iter()
+                .map(|f| f.fetched_at)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::CITATION_FINGERPRINT,
+                cast_slice(&self.citation_fingerprints).to_vec(),
+                self.citation_fingerprints.len() as u32,
+                min_ts,
+                max_ts,
+            ));
         }
 
         let payload_tile_count = tiles.len();
@@ -369,14 +538,24 @@ impl WasmAgentSnapshot {
         manifest.tile_count = total_tile_count;
         manifest.crc32c_checksum = manifest.compute_checksum();
 
-        tiles.push((ScholarTileType::SRS_MANIFEST, bytes_of(&manifest).to_vec(), 1, manifest.created_at_sec, manifest.created_at_sec));
+        tiles.push((
+            ScholarTileType::SRS_MANIFEST,
+            bytes_of(&manifest).to_vec(),
+            1,
+            manifest.created_at_sec,
+            manifest.created_at_sec,
+        ));
 
         // Allocate total file buffer: 512-byte header + total_tile_count * 128 KB
         let total_size = FILE_HEADER_SIZE + (total_tile_count as usize) * HYPER_TILE_SIZE;
         let mut out = vec![0u8; total_size];
 
         // 1. Populate FileHeader Slot A
-        let created_ts = if self.manifest.created_at_sec > 0 { self.manifest.created_at_sec } else { 1600000000 };
+        let created_ts = if self.manifest.created_at_sec > 0 {
+            self.manifest.created_at_sec
+        } else {
+            1600000000
+        };
         let mut file_header = FileHeader::new(total_tile_count, created_ts);
         file_header.addon_mask = ADDON_EDU | ADDON_ONTOLOGY;
         file_header.file_uuid = self.manifest.snapshot_uuid;
@@ -459,30 +638,29 @@ impl WasmAgentSnapshot {
                     return Err(format!("ForbiddenTileInDelta({})", entry.tile_type));
                 }
                 TileType::MARKS => {
-                    let mark: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let mark: MarkRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     // Security policy for marks in deltas:
                     // Only NEEDS_REVIEW and CONSENT_WITHDRAWN can be SET
-                    if mark.is_set() {
-                        if mark.mark_kind != s3a_core::MARK_NEEDS_REVIEW
-                            && mark.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
-                        {
-                            return Err(format!(
-                                "UnauthorizedMark: cannot set mark_kind {}",
-                                mark.mark_kind
-                            ));
-                        }
+                    if mark.is_set()
+                        && mark.mark_kind != s3a_core::MARK_NEEDS_REVIEW
+                        && mark.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
+                    {
+                        return Err(format!(
+                            "UnauthorizedMark: cannot set mark_kind {}",
+                            mark.mark_kind
+                        ));
                     }
                     // Cannot CLEAR legal hold, quarantine, or consent withdrawn
-                    if mark.is_cleared() {
-                        if mark.mark_kind == s3a_core::MARK_LEGAL_HOLD
+                    if mark.is_cleared()
+                        && (mark.mark_kind == s3a_core::MARK_LEGAL_HOLD
                             || mark.mark_kind == s3a_core::MARK_QUARANTINE
-                            || mark.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN
-                        {
-                            return Err(format!(
-                                "UnauthorizedMark: cannot clear mark_kind {}",
-                                mark.mark_kind
-                            ));
-                        }
+                            || mark.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN)
+                    {
+                        return Err(format!(
+                            "UnauthorizedMark: cannot clear mark_kind {}",
+                            mark.mark_kind
+                        ));
                     }
                 }
                 ScholarTileType::HUMAN_LRS
@@ -508,32 +686,38 @@ impl WasmAgentSnapshot {
         for entry in &packet.entries {
             match entry.tile_type {
                 ScholarTileType::HUMAN_LRS => {
-                    let r: HumanLrsRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: HumanLrsRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.human_decisions.push(r);
                     count += 1;
                 }
                 ScholarTileType::AI_TRACE_LOG => {
-                    let r: AiTraceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: AiTraceRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.ai_traces.push(r);
                     count += 1;
                 }
                 ScholarTileType::ACADEMIC_PAPERS => {
-                    let r: AcademicPaperRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: AcademicPaperRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.papers.push(r);
                     count += 1;
                 }
                 ScholarTileType::RESEARCH_GRAPH => {
-                    let r: ResearchGraphEdgeRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: ResearchGraphEdgeRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.edges.push(r);
                     count += 1;
                 }
                 ScholarTileType::SRS_WORKSPACE => {
-                    let r: SrsWorkspaceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: SrsWorkspaceRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.workspace = Some(r);
                     count += 1;
                 }
                 ScholarTileType::NOTE_CLAIMS => {
-                    let r: ScholarNoteClaimRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
+                    let r: ScholarNoteClaimRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
                     self.claims.push(ClaimItem {
                         record: r,
                         text: String::new(),
@@ -542,7 +726,8 @@ impl WasmAgentSnapshot {
                     count += 1;
                 }
                 ScholarTileType::CITATION_FINGERPRINT => {
-                    let r: CitationFingerprintRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
+                    let r: CitationFingerprintRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
                     self.citation_fingerprints.push(r);
                     count += 1;
                 }
@@ -550,17 +735,20 @@ impl WasmAgentSnapshot {
                     // Embeddings are not transported in standard SrsDeltaEntry due to size limits
                 }
                 TileType::MARKS => {
-                    let mark: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let mark: MarkRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.policy_marks.push(mark);
                     count += 1;
                 }
                 OntologyTileType::ONTOLOGY_CONCEPT => {
-                    let r: OntologyConceptRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: OntologyConceptRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.concepts.push(r);
                     count += 1;
                 }
                 OntologyTileType::ONTOLOGY_AXIOM => {
-                    let r: OntologyAxiomRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    let r: OntologyAxiomRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     self.axioms.push(r);
                     count += 1;
                 }
@@ -623,7 +811,6 @@ impl WasmAgentSnapshot {
             embedding: embedding.map(|e| e.to_vec()),
         });
 
-
         claim_id
     }
 
@@ -659,7 +846,12 @@ impl WasmAgentSnapshot {
     }
 
     /// Full-text search over indexed claims using token Bloom filtering followed by lexical scoring.
-    pub fn search_claims_text(&self, query: &str, top_k: usize, include_hidden: bool) -> Vec<ClaimSearchResult> {
+    pub fn search_claims_text(
+        &self,
+        query: &str,
+        top_k: usize,
+        include_hidden: bool,
+    ) -> Vec<ClaimSearchResult> {
         let mut results = Vec::new();
         let query_words: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric())
@@ -701,7 +893,11 @@ impl WasmAgentSnapshot {
             }
         }
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(core::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         if results.len() > top_k {
             results.truncate(top_k);
         }
@@ -737,7 +933,11 @@ impl WasmAgentSnapshot {
             }
         }
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(core::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         if results.len() > top_k {
             results.truncate(top_k);
         }
@@ -771,7 +971,10 @@ impl WasmAgentSnapshot {
                 0.0
             } else if claim.record.matches_query(query) {
                 let claim_lower = claim.text.to_ascii_lowercase();
-                let matches = query_words.iter().filter(|qw| claim_lower.contains(*qw)).count();
+                let matches = query_words
+                    .iter()
+                    .filter(|qw| claim_lower.contains(*qw))
+                    .count();
                 matches as f32 / query_words.len() as f32
             } else {
                 0.0
@@ -794,11 +997,14 @@ impl WasmAgentSnapshot {
             }
         }
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(core::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         if results.len() > top_k {
             results.truncate(top_k);
         }
         results
     }
 }
-

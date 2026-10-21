@@ -1,8 +1,8 @@
 //! Scoped delegation grants and governance enforcement for simulated agents.
 
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use s3a_vault::records::{DelegationGrantRecord, ACTION_READ, ACTION_WRITE};
 use std::sync::Mutex;
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use s3a_vault::records::{DelegationGrantRecord, ACTION_WRITE, ACTION_READ};
 
 /// Rejection reason when a commit violates delegation grants.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -24,8 +24,15 @@ impl std::fmt::Display for GrantRejectionReason {
             Self::ExpiredGrant => write!(f, "Delegation grant has expired"),
             Self::MaxOperationsExhausted => write!(f, "Delegation grant operation count exhausted"),
             Self::ActionNotPermitted(act) => write!(f, "Requested action {:#x} not permitted", act),
-            Self::UnauthorizedPath { path, allowed_prefix } => {
-                write!(f, "Path '{}' outside allowed grant prefix '{}'", path, allowed_prefix)
+            Self::UnauthorizedPath {
+                path,
+                allowed_prefix,
+            } => {
+                write!(
+                    f,
+                    "Path '{}' outside allowed grant prefix '{}'",
+                    path, allowed_prefix
+                )
             }
         }
     }
@@ -64,8 +71,8 @@ pub fn issue_agent_grant(
     let mut h = sha2::Sha256::default();
     use sha2::Digest;
     h.update(b"S3A_AGENT_GRANT");
-    h.update(&agent_id);
-    h.update(&now.to_le_bytes());
+    h.update(agent_id);
+    h.update(now.to_le_bytes());
     grant_id.copy_from_slice(&h.finalize()[..16]);
 
     let mut record = DelegationGrantRecord {

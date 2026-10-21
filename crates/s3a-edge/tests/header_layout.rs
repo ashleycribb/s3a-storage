@@ -20,15 +20,25 @@ fn common_tile_header_offsets_match_spec() {
     assert_eq!(TILE_FLAG_CRC_CHAIN, 2);
 }
 
-fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) }
+fn le32(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+}
 
 /// Parse a real written edge tile from raw flash bytes using only the spec's offsets.
 #[test]
 fn real_edge_tile_bytes_match_spec() {
     let flash = RamFlash::<{ 64 * 1024 }>::new(256, 512);
-    let mut w = EdgeWriter::<_, 4096>::open_or_format(flash, [0x42; 16], [1, 2], 1_700_000_000).unwrap();
+    let mut w =
+        EdgeWriter::<_, 4096>::open_or_format(flash, [0x42; 16], [1, 2], 1_700_000_000).unwrap();
     for i in 0..10u16 {
-        w.append_sensor_record(&CompactEdgeSensorRecord::new(i * 100, 1, 1, 2000 + i as i32, QUALITY_OK)).unwrap();
+        w.append_sensor_record(&CompactEdgeSensorRecord::new(
+            i * 100,
+            1,
+            1,
+            2000 + i as i32,
+            QUALITY_OK,
+        ))
+        .unwrap();
     }
     let idx = w.tile_count() as usize;
     w.seal_tile(1_700_000_005).unwrap();
@@ -49,22 +59,41 @@ fn real_edge_tile_bytes_match_spec() {
     assert_eq!(le32(h, 60) as u64, gen, "generation @60..64");
 }
 
-fn hex(s: &str) -> Vec<u8> { (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect() }
+fn hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
 fn field<'a>(j: &'a str, k: &str) -> &'a str {
     let i = j.find(&format!("\"{k}\"")).unwrap() + k.len() + 2;
     let r = j[i..].trim_start_matches([':', ' ']);
-    r.trim_start_matches('"').split(['"', ',', '\n', '}']).next().unwrap().trim()
+    r.trim_start_matches('"')
+        .split(['"', ',', '\n', '}'])
+        .next()
+        .unwrap()
+        .trim()
 }
 
 #[test]
 fn edge_hash_vectors() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../spec-vectors/hashes/");
     let d = std::fs::read_to_string(format!("{root}edge_data_crc32c.json")).unwrap();
-    assert_eq!(crc32c(&hex(field(&d, "input_hex"))), field(&d, "expected_u32").parse::<u32>().unwrap());
+    assert_eq!(
+        crc32c(&hex(field(&d, "input_hex"))),
+        field(&d, "expected_u32").parse::<u32>().unwrap()
+    );
     let hj = std::fs::read_to_string(format!("{root}edge_header_crc32c.json")).unwrap();
     let hb = hex(field(&hj, "header_hex"));
     let hdr: CommonTileHeader = bytemuck::pod_read_unaligned(&hb);
-    assert_eq!(compute_common_tile_header_crc32(&hdr), field(&hj, "expected_u32").parse::<u32>().unwrap());
-    assert_eq!(hdr.header_crc32, compute_common_tile_header_crc32(&hdr), "stored header_crc32 bytes 56..60 match");
+    assert_eq!(
+        compute_common_tile_header_crc32(&hdr),
+        field(&hj, "expected_u32").parse::<u32>().unwrap()
+    );
+    assert_eq!(
+        hdr.header_crc32,
+        compute_common_tile_header_crc32(&hdr),
+        "stored header_crc32 bytes 56..60 match"
+    );
     assert!(hdr.verify());
 }

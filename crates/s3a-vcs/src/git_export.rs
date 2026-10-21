@@ -113,14 +113,19 @@ pub fn export_git<P: AsRef<Path>>(repo: &VcsRepo, out_dir: P) -> Result<(), VcsE
         let mut cmd = Command::new("git");
         cmd.args(["commit", "-m", &msg, "--allow-empty"])
             .env("GIT_AUTHOR_NAME", author_addr.to_address_string())
-            .env("GIT_AUTHOR_EMAIL", format!("{}@s3a.local", author_addr.to_address_string()))
+            .env(
+                "GIT_AUTHOR_EMAIL",
+                format!("{}@s3a.local", author_addr.to_address_string()),
+            )
             .env("GIT_AUTHOR_DATE", &ts_str)
             .env("GIT_COMMITTER_NAME", "S3A Archival System")
             .env("GIT_COMMITTER_EMAIL", "archive@s3a.local")
             .env("GIT_COMMITTER_DATE", &ts_str)
             .current_dir(out);
 
-        let c_out = cmd.output().map_err(|e| VcsError::Generic(format!("Failed to run git commit: {}", e)))?;
+        let c_out = cmd
+            .output()
+            .map_err(|e| VcsError::Generic(format!("Failed to run git commit: {}", e)))?;
         if !c_out.status.success() {
             let err_str = String::from_utf8_lossy(&c_out.stderr);
             if !err_str.contains("nothing to commit") {

@@ -6,10 +6,8 @@
 //! 3. Apache Iceberg Table Metadata Generator (`v1.metadata.json` for Snowflake External Tables)
 //! 4. Linux Foundation Delta Lake UniForm Transaction Log Generator (Databricks / Microsoft Fabric)
 
-use s3a_core::{
-    TelemetryRecord, S3ACoordinate, S3AError,
-};
 use crate::S3ACrudEngine;
+use s3a_core::{S3ACoordinate, S3AError, TelemetryRecord};
 
 /// Snowflake External Function Request Payload (array of tuples [row_index, param1, ...]).
 #[derive(Debug, Clone)]
@@ -30,9 +28,13 @@ impl SnowflakeBatchRequest {
             let after = &trimmed[pos + data_marker.len()..].trim();
             if after.starts_with('[') {
                 // Find array elements
-                let content = after.trim_start_matches('[').trim_end_matches('}').trim_end_matches(']').trim();
+                let content = after
+                    .trim_start_matches('[')
+                    .trim_end_matches('}')
+                    .trim_end_matches(']')
+                    .trim();
                 for row_chunk in content.split("],") {
-                    let clean = row_chunk.replace('[', "").replace(']', "");
+                    let clean = row_chunk.replace(['[', ']'], "");
                     let parts: Vec<&str> = clean.split(',').map(|s| s.trim()).collect();
                     if parts.len() >= 2 {
                         if let Ok(row_num) = parts[0].parse::<usize>() {
@@ -77,17 +79,22 @@ pub fn handle_snowflake_batch_request(
                     response_data.push(format!("[{}, {}]", row_num, err_val));
                 }
             }
-        } else if param.starts_with("QUERY:") {
+        } else if let Some(query_body) = param.strip_prefix("QUERY:") {
             // Case B: Vector / Range query parameter
-            let query_body = &param[6..];
-            let records = engine.read_telemetry_with_coords(1, 101, 0, u64::MAX).unwrap_or_default();
+            let records = engine
+                .read_telemetry_with_coords(1, 101, 0, u64::MAX)
+                .unwrap_or_default();
             let json_val = format!(
                 "{{\"status\":\"success\",\"query\":\"{}\",\"matched_count\":{}}}",
-                query_body, records.len()
+                query_body,
+                records.len()
             );
             response_data.push(format!("[{}, {}]", row_num, json_val));
         } else {
-            let err_val = format!("{{\"status\":\"error\",\"error\":\"Unrecognized parameter format: {}\"}}", param);
+            let err_val = format!(
+                "{{\"status\":\"error\",\"error\":\"Unrecognized parameter format: {}\"}}",
+                param
+            );
             response_data.push(format!("[{}, {}]", row_num, err_val));
         }
     }
@@ -132,10 +139,26 @@ pub struct ArrowRecordBatchDescriptor {
 pub fn project_telemetry_to_arrow(records: &[TelemetryRecord]) -> ArrowRecordBatchDescriptor {
     let schema = ArrowSchema {
         fields: vec![
-            ArrowField { name: "timestamp", data_type: "UInt64", nullable: false },
-            ArrowField { name: "sensor_id", data_type: "UInt32", nullable: false },
-            ArrowField { name: "metric_id", data_type: "UInt32", nullable: false },
-            ArrowField { name: "value", data_type: "Float64", nullable: false },
+            ArrowField {
+                name: "timestamp",
+                data_type: "UInt64",
+                nullable: false,
+            },
+            ArrowField {
+                name: "sensor_id",
+                data_type: "UInt32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "metric_id",
+                data_type: "UInt32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "value",
+                data_type: "Float64",
+                nullable: false,
+            },
         ],
     };
 
@@ -233,13 +256,13 @@ pub fn project_columnar_to_arrow(
     }
 
     Ok(ArrowRecordBatchDescriptor {
-        schema: ArrowSchema { fields: arrow_fields },
+        schema: ArrowSchema {
+            fields: arrow_fields,
+        },
         num_rows,
         columns: arrow_columns,
     })
 }
-
-
 
 /// Generates Apache Iceberg `v1.metadata.json` for Snowflake External Tables and AWS Athena.
 pub fn generate_iceberg_metadata(
@@ -253,7 +276,8 @@ pub fn generate_iceberg_metadata(
         .unwrap()
         .as_millis();
 
-    format!(r#"{{
+    format!(
+        r#"{{
   "format-version": 2,
   "table-uuid": "s3a-iceberg-{}-{}",
   "location": "s3://s3a-cold-archive/{}",
@@ -300,7 +324,18 @@ pub fn generate_iceberg_metadata(
       "manifest-list": "s3://s3a-cold-archive/{}/metadata/snap-1.avro"
     }}
   ]
-}}"#, table_name, ts, table_name, ts, tile_count, total_records, ts, tile_count, total_records, table_name)
+}}"#,
+        table_name,
+        ts,
+        table_name,
+        ts,
+        tile_count,
+        total_records,
+        ts,
+        tile_count,
+        total_records,
+        table_name
+    )
 }
 
 /// Generates Linux Foundation Delta Lake UniForm Transaction Log Metadata.
@@ -315,7 +350,8 @@ pub fn generate_delta_metadata(
         .unwrap()
         .as_millis();
 
-    format!(r#"{{"protocol":{{"minReaderVersion":3,"minWriterVersion":7,"readerFeatures":["icebergCompatV2"]}}}}
+    format!(
+        r#"{{"protocol":{{"minReaderVersion":3,"minWriterVersion":7,"readerFeatures":["icebergCompatV2"]}}}}
 {{"metaData":{{"id":"s3a-delta-{}","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{{\"type\":\"struct\",\"fields\":[{{\"name\":\"timestamp\",\"type\":\"long\",\"nullable\":false,\"metadata\":{{}}}},{{\"name\":\"sensor_id\",\"type\":\"integer\",\"nullable\":false,\"metadata\":{{}}}},{{\"name\":\"metric_id\",\"type\":\"integer\",\"nullable\":false,\"metadata\":{{}}}},{{\"name\":\"value\",\"type\":\"double\",\"nullable\":false,\"metadata\":{{}}}}]}}","partitionColumns":["sensor_id"],"configuration":{{"delta.universalFormat.enabledFormats":"iceberg"}},"createdTime":{}}}}}
 {{"add":{{"path":"tile_000000.parquet","partitionValues":{{"sensor_id":"1"}},"size":131072,"modificationTime":{},"dataChange":true,"stats":"{{\"numRecords\":{}}}"}}}}"#,
         table_name, ts, ts, total_records

@@ -1,5 +1,5 @@
-use std::fmt;
 use crate::ql::error::QlError;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -129,7 +129,10 @@ impl<'a> Lexer<'a> {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() {
                 self.advance();
-            } else if ch == '-' && self.pos + 1 < self.chars.len() && self.chars[self.pos + 1] == '-' {
+            } else if ch == '-'
+                && self.pos + 1 < self.chars.len()
+                && self.chars[self.pos + 1] == '-'
+            {
                 // SQL-style single-line comment '--'
                 while let Some(c) = self.advance() {
                     if c == '\n' {
@@ -152,13 +155,34 @@ impl<'a> Lexer<'a> {
 
         // Symbols
         match ch {
-            ',' => { self.advance(); return Ok(Token::Comma); }
-            '=' => { self.advance(); return Ok(Token::Equal); }
-            ';' => { self.advance(); return Ok(Token::Semicolon); }
-            '(' => { self.advance(); return Ok(Token::LParen); }
-            ')' => { self.advance(); return Ok(Token::RParen); }
-            '[' => { self.advance(); return Ok(Token::LBracket); }
-            ']' => { self.advance(); return Ok(Token::RBracket); }
+            ',' => {
+                self.advance();
+                return Ok(Token::Comma);
+            }
+            '=' => {
+                self.advance();
+                return Ok(Token::Equal);
+            }
+            ';' => {
+                self.advance();
+                return Ok(Token::Semicolon);
+            }
+            '(' => {
+                self.advance();
+                return Ok(Token::LParen);
+            }
+            ')' => {
+                self.advance();
+                return Ok(Token::RParen);
+            }
+            '[' => {
+                self.advance();
+                return Ok(Token::LBracket);
+            }
+            ']' => {
+                self.advance();
+                return Ok(Token::RBracket);
+            }
             '"' | '\'' => {
                 let start_line = self.line;
                 let start_col = self.col;
@@ -180,7 +204,11 @@ impl<'a> Lexer<'a> {
         }
 
         // Numbers (including negative numbers and floats)
-        if ch.is_ascii_digit() || (ch == '-' && self.pos + 1 < self.chars.len() && self.chars[self.pos + 1].is_ascii_digit()) {
+        if ch.is_ascii_digit()
+            || (ch == '-'
+                && self.pos + 1 < self.chars.len()
+                && self.chars[self.pos + 1].is_ascii_digit())
+        {
             return self.lex_number();
         }
 

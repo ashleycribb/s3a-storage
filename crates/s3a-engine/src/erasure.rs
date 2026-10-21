@@ -10,20 +10,33 @@
 //! - S3A with 8+2 Erasure Coding: $1.25\times$ (only 25% overhead, surviving 2 drive failures)
 //! - S3A with 4+2 Erasure Coding: $1.50\times$ (50% overhead, surviving 2 drive failures)
 
+use bytemuck::{bytes_of, Pod, Zeroable};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use bytemuck::{bytes_of, Pod, Zeroable};
 
 /// Error types for Erasure Coding operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErasureError {
-    InvalidParameters { k: usize, m: usize },
+    InvalidParameters {
+        k: usize,
+        m: usize,
+    },
     DataEmpty,
-    InsufficientShards { required: usize, available: usize },
-    CorruptedShard { shard_idx: u16, expected: u32, actual: u32 },
-    OriginalChecksumMismatch { expected: u32, actual: u32 },
+    InsufficientShards {
+        required: usize,
+        available: usize,
+    },
+    CorruptedShard {
+        shard_idx: u16,
+        expected: u32,
+        actual: u32,
+    },
+    OriginalChecksumMismatch {
+        expected: u32,
+        actual: u32,
+    },
     SingularMatrix,
     Io(String),
 }
@@ -35,16 +48,37 @@ impl fmt::Display for ErasureError {
                 write!(f, "Invalid Reed-Solomon parameters: K={}, M={} (require K >= 1, M >= 1, K+M <= 256)", k, m)
             }
             ErasureError::DataEmpty => write!(f, "Cannot encode empty data buffer"),
-            ErasureError::InsufficientShards { required, available } => {
-                write!(f, "Insufficient shards for recovery: need at least {}, but only {} available", required, available)
+            ErasureError::InsufficientShards {
+                required,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Insufficient shards for recovery: need at least {}, but only {} available",
+                    required, available
+                )
             }
-            ErasureError::CorruptedShard { shard_idx, expected, actual } => {
-                write!(f, "Shard {} corrupted: CRC32C expected 0x{:08x}, got 0x{:08x}", shard_idx, expected, actual)
+            ErasureError::CorruptedShard {
+                shard_idx,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Shard {} corrupted: CRC32C expected 0x{:08x}, got 0x{:08x}",
+                    shard_idx, expected, actual
+                )
             }
             ErasureError::OriginalChecksumMismatch { expected, actual } => {
-                write!(f, "Reconstructed Hyper-Tile CRC32C mismatch: expected 0x{:08x}, got 0x{:08x}", expected, actual)
+                write!(
+                    f,
+                    "Reconstructed Hyper-Tile CRC32C mismatch: expected 0x{:08x}, got 0x{:08x}",
+                    expected, actual
+                )
             }
-            ErasureError::SingularMatrix => write!(f, "Reconstruction matrix is singular in GF(2^8)"),
+            ErasureError::SingularMatrix => {
+                write!(f, "Reconstruction matrix is singular in GF(2^8)")
+            }
             ErasureError::Io(err) => write!(f, "Erasure coding IO error: {}", err),
         }
     }
@@ -181,7 +215,9 @@ impl TileShard {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ErasureError> {
         if bytes.len() < 32 {
-            return Err(ErasureError::Io("Shard buffer smaller than 32-byte header".into()));
+            return Err(ErasureError::Io(
+                "Shard buffer smaller than 32-byte header".into(),
+            ));
         }
         let header: TileShardHeader = bytemuck::pod_read_unaligned(&bytes[..32]);
         let payload = bytes[32..].to_vec();
@@ -244,7 +280,7 @@ impl ReedSolomonCodec {
         let original_crc32c = crc32c::crc32c(data);
 
         // Compute shard size (rounded up to align evenly across K shards)
-        let shard_size = (data.len() + self.k - 1) / self.k;
+        let shard_size = data.len().div_ceil(self.k);
 
         // Populate K data shards
         let mut data_shards: Vec<Vec<u8>> = Vec::with_capacity(self.k);
@@ -339,7 +375,10 @@ impl ReedSolomonCodec {
         let shard_size = chosen[0].payload.len();
 
         // Fast path: if the first K available shards are exactly the K data shards in order
-        let is_all_data = chosen.iter().enumerate().all(|(i, s)| s.header.shard_idx as usize == i);
+        let is_all_data = chosen
+            .iter()
+            .enumerate()
+            .all(|(i, s)| s.header.shard_idx as usize == i);
         if is_all_data {
             let mut reconstructed = Vec::with_capacity(self.k * shard_size);
             for s in chosen {
@@ -535,7 +574,8 @@ mod tests {
     #[test]
     fn test_reed_solomon_4_2_survives_two_lost_data_shards() {
         let codec = ReedSolomonCodec::new(4, 2).unwrap();
-        let sample_data = b"S3A Hyper-Tile Storage Engine - 1.25x - 1.50x Durability without 3x Bloat!".to_vec();
+        let sample_data =
+            b"S3A Hyper-Tile Storage Engine - 1.25x - 1.50x Durability without 3x Bloat!".to_vec();
 
         let shards = codec.encode(&sample_data).unwrap();
         assert_eq!(shards.len(), 6);
@@ -587,7 +627,10 @@ mod tests {
 
         let err = codec.decode(&available).unwrap_err();
         match err {
-            ErasureError::InsufficientShards { required, available } => {
+            ErasureError::InsufficientShards {
+                required,
+                available,
+            } => {
                 assert_eq!(required, 4);
                 assert_eq!(available, 3);
             }

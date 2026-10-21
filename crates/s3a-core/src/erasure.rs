@@ -35,16 +35,16 @@ impl ErasureReason {
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct ErasureRecord {
     pub erased_record_hash: [u8; 32], // SHA-256 digest of original record (offset 0..32)
-    pub target_tile_type: u32,       // Tile type of target (offset 32..36)
-    pub record_index: u32,           // Record index within target tile (offset 36..40)
-    pub target_tile_id: u64,         // Tile ID in archive (offset 40..48)
-    pub reason: u32,                 // ErasureReason enum (offset 48..52)
-    pub _reserved_u32: u32,          // Alignment padding (offset 52..56)
-    pub authority: u64,              // Actor ID of authorized human/admin (offset 56..64)
-    pub requested_at: u64,           // Unix epoch timestamp requested (offset 64..72)
-    pub executed_at: u64,            // Unix epoch timestamp executed (offset 72..80)
-    pub prev_erasure_hash: [u8; 32], // Cryptographic chain hash (offset 80..112)
-    pub erasure_hash: [u8; 32],      // SHA-256 digest over preceding 112 bytes (offset 112..144)
+    pub target_tile_type: u32,        // Tile type of target (offset 32..36)
+    pub record_index: u32,            // Record index within target tile (offset 36..40)
+    pub target_tile_id: u64,          // Tile ID in archive (offset 40..48)
+    pub reason: u32,                  // ErasureReason enum (offset 48..52)
+    pub _reserved_u32: u32,           // Alignment padding (offset 52..56)
+    pub authority: u64,               // Actor ID of authorized human/admin (offset 56..64)
+    pub requested_at: u64,            // Unix epoch timestamp requested (offset 64..72)
+    pub executed_at: u64,             // Unix epoch timestamp executed (offset 72..80)
+    pub prev_erasure_hash: [u8; 32],  // Cryptographic chain hash (offset 80..112)
+    pub erasure_hash: [u8; 32],       // SHA-256 digest over preceding 112 bytes (offset 112..144)
 }
 
 impl ErasureRecord {

@@ -1,6 +1,6 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::path::PathBuf;
 
 use s3a_engine::ql::{
     execute_query, register_pack_sift_handler, Lexer, Parser, QueryResult, SiftDomain,
@@ -11,7 +11,12 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(100);
 fn temp_archive_path(label: &str) -> PathBuf {
     let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut p = std::env::temp_dir();
-    p.push(format!("s3a_ql_test_{}_{}_{}.s3a", label, std::process::id(), id));
+    p.push(format!(
+        "s3a_ql_test_{}_{}_{}.s3a",
+        label,
+        std::process::id(),
+        id
+    ));
     p
 }
 
@@ -37,7 +42,10 @@ fn test_version_preamble_and_ast() {
     assert_eq!(stmt.version(), Some(1));
 
     // 2. PRAGMA VERSION preamble
-    let query2 = format!("PRAGMA VERSION 1; SIFT TELEMETRY FROM \"{}\" WHERE TIME BETWEEN 100 AND 200", path_str);
+    let query2 = format!(
+        "PRAGMA VERSION 1; SIFT TELEMETRY FROM \"{}\" WHERE TIME BETWEEN 100 AND 200",
+        path_str
+    );
     let mut lexer2 = Lexer::new(&query2);
     let tokens2 = lexer2.tokenize_all().unwrap();
     let mut parser2 = Parser::new(tokens2);
@@ -93,7 +101,10 @@ fn test_core_query_execution_lifecycle() {
     let path_str = p.to_str().unwrap();
 
     // 1. Insert
-    let insert_ql = format!("INSERT TELEMETRY (1000, 42, 99, 123.45) INTO \"{}\"", path_str);
+    let insert_ql = format!(
+        "INSERT TELEMETRY (1000, 42, 99, 123.45) INTO \"{}\"",
+        path_str
+    );
     let res_insert = execute_query(&insert_ql).unwrap();
     match res_insert {
         QueryResult::Inserted { coordinate } => {
@@ -175,11 +186,19 @@ fn test_pack_routing_with_registered_handler() {
     let da_query = format!("SIFT DA_COMMITMENTS FROM \"{}\"", path_str);
     let res = execute_query(&da_query).unwrap();
     match res {
-        QueryResult::PackData { domain, count, summary, json_payload } => {
+        QueryResult::PackData {
+            domain,
+            count,
+            summary,
+            json_payload,
+        } => {
             assert_eq!(domain, SiftDomain::DaCommitments);
             assert_eq!(count, 7);
             assert!(summary.contains("Mock DA handler executed"));
-            assert_eq!(json_payload, Some(r#"{"mock":true,"block_count":7}"#.to_string()));
+            assert_eq!(
+                json_payload,
+                Some(r#"{"mock":true,"block_count":7}"#.to_string())
+            );
         }
         other => panic!("Expected PackData, got {:?}", other),
     }

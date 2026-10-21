@@ -1,7 +1,7 @@
 //! Gate Addresses and Dialing URI protocol (§11).
 
-use sha2::{Digest, Sha256};
 use crate::errors::VaultError;
+use sha2::{Digest, Sha256};
 
 /// An immutable Gate Address derived from an Ed25519 public key (§11.1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -179,7 +179,11 @@ mod tests {
         // Typo in checksum segment
         let mut corrupted_chk: Vec<char> = addr_str.chars().collect();
         let len = corrupted_chk.len();
-        corrupted_chk[len - 1] = if corrupted_chk[len - 1] == 'a' { 'b' } else { 'a' };
+        corrupted_chk[len - 1] = if corrupted_chk[len - 1] == 'a' {
+            'b'
+        } else {
+            'a'
+        };
         let corrupted_chk_str: String = corrupted_chk.into_iter().collect();
         assert!(matches!(
             GateAddress::parse_address(&corrupted_chk_str),

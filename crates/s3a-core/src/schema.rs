@@ -1,10 +1,10 @@
 use bytemuck::{bytes_of, cast_slice, Pod, Zeroable};
 
-use crc32c::crc32c;
-use alloc::vec::Vec;
+use crate::S3AError;
 use alloc::string::String;
 use alloc::string::ToString;
-use crate::S3AError;
+use alloc::vec::Vec;
+use crc32c::crc32c;
 
 pub const SCHEMA_FORMAT_COMPACT_BINARY: u16 = 1;
 
@@ -12,38 +12,38 @@ pub const SCHEMA_FORMAT_COMPACT_BINARY: u16 = 1;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CompactSchemaHeader {
-    pub schema_id: u32,       // Unique schema identifier (e.g. 1)
-    pub schema_format: u16,   // 1 = S3ACompactBinary
-    pub type_count: u16,      // Number of CompactSchemaTypeRecord entries
-    pub total_fields: u32,    // Number of CompactSchemaFieldRecord entries
-    pub schema_crc32: u32,    // CRC32C checksum over type records and field records
-    pub _reserved: [u8; 16],  // Reserved padding
+    pub schema_id: u32,      // Unique schema identifier (e.g. 1)
+    pub schema_format: u16,  // 1 = S3ACompactBinary
+    pub type_count: u16,     // Number of CompactSchemaTypeRecord entries
+    pub total_fields: u32,   // Number of CompactSchemaFieldRecord entries
+    pub schema_crc32: u32,   // CRC32C checksum over type records and field records
+    pub _reserved: [u8; 16], // Reserved padding
 }
 
 /// EMBEDDED SCHEMA TYPE RECORD (80 bytes, 8-byte aligned, Pod/Zeroable).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CompactSchemaTypeRecord {
-    pub type_id: u32,         // Wire tile type identifier
-    pub type_version: u32,    // Record layout version
-    pub name: [u8; 32],       // UTF-8 canonical name string
-    pub owning_pack: [u8; 32],// UTF-8 subsystem or pack name
-    pub record_size: u32,     // Byte length per record (0 if variable)
-    pub field_count: u16,     // Number of field records following
-    pub _reserved: u16,       // Alignment padding
+    pub type_id: u32,          // Wire tile type identifier
+    pub type_version: u32,     // Record layout version
+    pub name: [u8; 32],        // UTF-8 canonical name string
+    pub owning_pack: [u8; 32], // UTF-8 subsystem or pack name
+    pub record_size: u32,      // Byte length per record (0 if variable)
+    pub field_count: u16,      // Number of field records following
+    pub _reserved: u16,        // Alignment padding
 }
 
 /// EMBEDDED SCHEMA FIELD RECORD (48 bytes, 8-byte aligned, Pod/Zeroable).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct CompactSchemaFieldRecord {
-    pub field_id: u16,        // 1-based sequential field number
-    pub field_type: u16,      // 1=u8, 2=u16, 3=u32, 4=u64, 5=i8, 6=i16, 7=i32, 8=i64, 9=f32, 10=f64, 11=string, 12=uuid, 13=bytes
-    pub byte_offset: u32,     // Offset within record struct
-    pub byte_len: u32,        // Byte length of field
-    pub null_allowed: u8,     // 1 = Nullable, 0 = Required
-    pub _reserved: [u8; 3],   // Alignment padding
-    pub name: [u8; 32],       // UTF-8 attribute name string
+    pub field_id: u16,      // 1-based sequential field number
+    pub field_type: u16, // 1=u8, 2=u16, 3=u32, 4=u64, 5=i8, 6=i16, 7=i32, 8=i64, 9=f32, 10=f64, 11=string, 12=uuid, 13=bytes
+    pub byte_offset: u32, // Offset within record struct
+    pub byte_len: u32,   // Byte length of field
+    pub null_allowed: u8, // 1 = Nullable, 0 = Required
+    pub _reserved: [u8; 3], // Alignment padding
+    pub name: [u8; 32],  // UTF-8 attribute name string
 }
 
 /// High-level representation of a schema field definition.
@@ -78,7 +78,9 @@ pub fn string_to_fixed_32(s: &str) -> [u8; 32] {
 
 pub fn fixed_32_to_string(arr: &[u8; 32]) -> String {
     let nul_pos = arr.iter().position(|&b| b == 0).unwrap_or(32);
-    core::str::from_utf8(&arr[..nul_pos]).unwrap_or("").to_string()
+    core::str::from_utf8(&arr[..nul_pos])
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Encodes a list of schema type definitions into a compact binary schema payload.
@@ -138,10 +140,14 @@ pub fn encode_schema_payload(types: &[SchemaTypeDefinition]) -> Vec<u8> {
 pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>, S3AError> {
     let header_size = core::mem::size_of::<CompactSchemaHeader>();
     if payload.len() < header_size {
-        return Err(S3AError::BufferTooSmall { required: header_size, provided: payload.len() });
+        return Err(S3AError::BufferTooSmall {
+            required: header_size,
+            provided: payload.len(),
+        });
     }
 
-    let header: &CompactSchemaHeader = &bytemuck::pod_read_unaligned::<CompactSchemaHeader>(&payload[..header_size]);
+    let header: &CompactSchemaHeader =
+        &bytemuck::pod_read_unaligned::<CompactSchemaHeader>(&payload[..header_size]);
     if header.schema_format != SCHEMA_FORMAT_COMPACT_BINARY {
         return Err(S3AError::InvalidFormat);
     }
@@ -153,17 +159,27 @@ pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>
     let fields_len = (header.total_fields as usize)
         .checked_mul(field_size)
         .ok_or(S3AError::OutOfBounds)?;
-    let required_body = types_len.checked_add(fields_len).ok_or(S3AError::OutOfBounds)?;
-    let required_total = header_size.checked_add(required_body).ok_or(S3AError::OutOfBounds)?;
+    let required_body = types_len
+        .checked_add(fields_len)
+        .ok_or(S3AError::OutOfBounds)?;
+    let required_total = header_size
+        .checked_add(required_body)
+        .ok_or(S3AError::OutOfBounds)?;
 
     if payload.len() < required_total {
-        return Err(S3AError::BufferTooSmall { required: required_total, provided: payload.len() });
+        return Err(S3AError::BufferTooSmall {
+            required: required_total,
+            provided: payload.len(),
+        });
     }
 
     let body_bytes = &payload[header_size..required_total];
     let actual_crc = crc32c(body_bytes);
     if actual_crc != header.schema_crc32 {
-        return Err(S3AError::ChecksumMismatch { expected: header.schema_crc32, actual: actual_crc });
+        return Err(S3AError::ChecksumMismatch {
+            expected: header.schema_crc32,
+            actual: actual_crc,
+        });
     }
 
     // B1: decode records with pod_read_unaligned so a payload at any alignment
@@ -172,7 +188,8 @@ pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>
         .chunks_exact(type_size)
         .map(bytemuck::pod_read_unaligned::<CompactSchemaTypeRecord>)
         .collect();
-    let field_slice: Vec<CompactSchemaFieldRecord> = payload[header_size + types_len..required_total]
+    let field_slice: Vec<CompactSchemaFieldRecord> = payload
+        [header_size + types_len..required_total]
         .chunks_exact(field_size)
         .map(bytemuck::pod_read_unaligned::<CompactSchemaFieldRecord>)
         .collect();

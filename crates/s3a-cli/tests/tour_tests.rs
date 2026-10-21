@@ -20,8 +20,7 @@ use s3a_core::array::{ArrayDataType, ArrayTileBuilder};
 use s3a_core::consent::{ConsentPurpose, ConsentRecord};
 use s3a_core::schema::encode_schema_payload;
 use s3a_core::{
-    TelemetryRecord, TileType, FILE_HEADER_SIZE,
-    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    TelemetryRecord, TileType, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
 };
 use s3a_engine::{
     seal_archive_v1, seal_archive_v2, standard_schema_for_type, SealOptionsV2, TileWriter,
@@ -37,7 +36,12 @@ impl TempArchiveGuard {
     fn new(label: &str) -> Self {
         let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("s3a_tour_test_{}_{}_{}.s3a", label, std::process::id(), count));
+        p.push(format!(
+            "s3a_tour_test_{}_{}_{}.s3a",
+            label,
+            std::process::id(),
+            count
+        ));
         Self { path: p }
     }
 
@@ -96,11 +100,25 @@ fn test_tour_lobby_v1_and_v2() {
         TelemetryRecord::new(100, 1, 1, 10.5),
         TelemetryRecord::new(101, 1, 2, 20.5),
     ];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
 
     let sub_a = [1u8; 16];
-    let consent_a = ConsentRecord::new(sub_a, 10, ConsentPurpose::Research, 0, 100, 0, false, 1, [0u8; 32]);
-    writer.write_hyper_tile(TileType::CONSENT, &[consent_a], None, None).unwrap();
+    let consent_a = ConsentRecord::new(
+        sub_a,
+        10,
+        ConsentPurpose::Research,
+        0,
+        100,
+        0,
+        false,
+        1,
+        [0u8; 32],
+    );
+    writer
+        .write_hyper_tile(TileType::CONSENT, &[consent_a], None, None)
+        .unwrap();
     drop(writer);
 
     // 2. Seal as v1
@@ -109,7 +127,13 @@ fn test_tour_lobby_v1_and_v2() {
     let mut file_v1 = fs::File::open(sealed_v1.path()).unwrap();
     let len_v1 = file_v1.metadata().unwrap().len();
     let opts = TourOptions::default();
-    let report_v1 = tour_file(&mut file_v1, len_v1, sealed_v1.path().to_str().unwrap(), &opts).unwrap();
+    let report_v1 = tour_file(
+        &mut file_v1,
+        len_v1,
+        sealed_v1.path().to_str().unwrap(),
+        &opts,
+    )
+    .unwrap();
 
     assert_eq!(report_v1.lobby.footer_version, "v1");
     assert!(report_v1.lobby.seal_status.is_sealed);
@@ -129,14 +153,26 @@ fn test_tour_lobby_v1_and_v2() {
 
     let mut file_v2 = fs::File::open(sealed_v2.path()).unwrap();
     let len_v2 = file_v2.metadata().unwrap().len();
-    let report_v2 = tour_file(&mut file_v2, len_v2, sealed_v2.path().to_str().unwrap(), &opts).unwrap();
+    let report_v2 = tour_file(
+        &mut file_v2,
+        len_v2,
+        sealed_v2.path().to_str().unwrap(),
+        &opts,
+    )
+    .unwrap();
 
     assert_eq!(report_v2.lobby.footer_version, "v2");
     assert!(report_v2.lobby.seal_status.is_sealed);
     assert!(report_v2.lobby.seal_status.hash_chain_verified);
     assert_eq!(report_v2.lobby.tile_count, 2);
-    assert!(report_v2.lobby.schema_names.contains_key(&TileType::TELEMETRY));
-    assert!(report_v2.lobby.schema_names.contains_key(&TileType::CONSENT));
+    assert!(report_v2
+        .lobby
+        .schema_names
+        .contains_key(&TileType::TELEMETRY));
+    assert!(report_v2
+        .lobby
+        .schema_names
+        .contains_key(&TileType::CONSENT));
 }
 
 #[test]
@@ -149,12 +185,16 @@ fn test_tour_floor_detail() {
         TelemetryRecord::new(100, 10, 1, 42.0),
         TelemetryRecord::new(200, 20, 2, 84.0),
     ];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
 
     // Floor 1: Schema tile
     let telem_schema = standard_schema_for_type(TileType::TELEMETRY);
     let schema_payload = encode_schema_payload(&[telem_schema]);
-    writer.write_hyper_tile(TileType::SCHEMA, &schema_payload, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::SCHEMA, &schema_payload, None, None)
+        .unwrap();
     drop(writer);
 
     seal_archive_v2(raw.path(), sealed.path(), &SealOptionsV2::default()).unwrap();
@@ -190,18 +230,22 @@ fn test_tour_array_slice_reads_only_covered_chunks() {
     // Chunk 0: rows [0..4], cols [0..4] (coords [0, 0])
     let mut chunk0 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &[4, 4], &[0, 0]).unwrap();
     chunk0.set_axis_names("rows,cols");
-    let data0: Vec<i32> = (0..16).map(|i| 100 + i as i32).collect();
+    let data0: Vec<i32> = (0..16).map(|i| 100 + i).collect();
     chunk0.set_data(&data0).unwrap();
     let payload0 = chunk0.build();
-    writer.write_hyper_tile(TileType::ARRAY, &payload0, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::ARRAY, &payload0, None, None)
+        .unwrap();
 
     // Chunk 1: rows [0..4], cols [4..8] (coords [0, 4])
     let mut chunk1 = ArrayTileBuilder::new(2, ArrayDataType::Int32, &[4, 4], &[0, 4]).unwrap();
     chunk1.set_axis_names("rows,cols");
-    let data1: Vec<i32> = (0..16).map(|i| 200 + i as i32).collect();
+    let data1: Vec<i32> = (0..16).map(|i| 200 + i).collect();
     chunk1.set_data(&data1).unwrap();
     let payload1 = chunk1.build();
-    writer.write_hyper_tile(TileType::ARRAY, &payload1, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::ARRAY, &payload1, None, None)
+        .unwrap();
 
     drop(writer);
 
@@ -225,7 +269,10 @@ fn test_tour_array_slice_reads_only_covered_chunks() {
     assert_eq!(slice.total_elements, 4);
 
     // Chunk 1 element data starts after ArrayTileHeader (320 bytes)
-    let chunk1_elements_start = (FILE_HEADER_SIZE + HYPER_TILE_SIZE + HYPER_TILE_HEADER_SIZE + s3a_core::array::ArrayTileHeader::SIZE) as u64;
+    let chunk1_elements_start = (FILE_HEADER_SIZE
+        + HYPER_TILE_SIZE
+        + HYPER_TILE_HEADER_SIZE
+        + s3a_core::array::ArrayTileHeader::SIZE) as u64;
     let chunk1_payload_end = (FILE_HEADER_SIZE + 2 * HYPER_TILE_SIZE) as u64;
 
     // Verify Chunk 1 element data bytes were NEVER touched
@@ -252,21 +299,27 @@ fn test_tour_cross_section_ordering() {
         TelemetryRecord::new(100, 10, 1, 1.0),
         TelemetryRecord::new(101, 20, 1, 2.0),
     ];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs0, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs0, None, None)
+        .unwrap();
 
     // Floor 1: sensor 10 and 30
     let recs1 = vec![
         TelemetryRecord::new(200, 10, 1, 3.0),
         TelemetryRecord::new(201, 30, 1, 4.0),
     ];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)
+        .unwrap();
 
     // Floor 2: sensor 10 and 40
     let recs2 = vec![
         TelemetryRecord::new(300, 10, 1, 5.0),
         TelemetryRecord::new(301, 40, 1, 6.0),
     ];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)
+        .unwrap();
 
     drop(writer);
 
@@ -281,7 +334,9 @@ fn test_tour_cross_section_ordering() {
     };
     let report = tour_file(&mut file, len, sealed.path().to_str().unwrap(), &opts).unwrap();
 
-    let cross = report.cross_section.expect("cross_section must be populated");
+    let cross = report
+        .cross_section
+        .expect("cross_section must be populated");
     assert_eq!(cross.match_count, 3);
     assert_eq!(cross.withheld_count, 0);
 
@@ -304,9 +359,22 @@ fn test_tour_consent_withheld_counts() {
     // Floor 0: Participant records
     // Sub A: granted research consent
     // Sub B: withdrawn research consent
-    let grant_a = ConsentRecord::new(sub_a, 1, ConsentPurpose::Research, 0, 100, 0, false, 1, [0u8; 32]);
-    let withdraw_b = ConsentRecord::new_withdrawal(sub_b, 1, ConsentPurpose::Research, 0, 200, 1, [0u8; 32]);
-    writer.write_hyper_tile(TileType::CONSENT, &[grant_a, withdraw_b], None, None).unwrap();
+    let grant_a = ConsentRecord::new(
+        sub_a,
+        1,
+        ConsentPurpose::Research,
+        0,
+        100,
+        0,
+        false,
+        1,
+        [0u8; 32],
+    );
+    let withdraw_b =
+        ConsentRecord::new_withdrawal(sub_b, 1, ConsentPurpose::Research, 0, 200, 1, [0u8; 32]);
+    writer
+        .write_hyper_tile(TileType::CONSENT, &[grant_a, withdraw_b], None, None)
+        .unwrap();
 
     drop(writer);
 
@@ -317,7 +385,8 @@ fn test_tour_consent_withheld_counts() {
 
     // 1. Lobby consent summary
     let opts_lobby = TourOptions::default();
-    let rep_lobby = tour_file(&mut file, len, sealed.path().to_str().unwrap(), &opts_lobby).unwrap();
+    let rep_lobby =
+        tour_file(&mut file, len, sealed.path().to_str().unwrap(), &opts_lobby).unwrap();
     assert_eq!(rep_lobby.lobby.consent_summary.active_research_count, 1);
     assert_eq!(rep_lobby.lobby.consent_summary.withdrawn_count, 1);
 
@@ -326,7 +395,13 @@ fn test_tour_consent_withheld_counts() {
         floor: Some(0),
         ..Default::default()
     };
-    let rep_detail = tour_file(&mut file, len, sealed.path().to_str().unwrap(), &opts_detail).unwrap();
+    let rep_detail = tour_file(
+        &mut file,
+        len,
+        sealed.path().to_str().unwrap(),
+        &opts_detail,
+    )
+    .unwrap();
     let detail = rep_detail.floor_detail.unwrap();
     assert_eq!(detail.records.len(), 1); // Only Sub A is visible
     assert_eq!(detail.withheld_count, 1); // Sub B was withheld
@@ -341,7 +416,9 @@ fn test_tour_bytes_read_bound() {
     let mut writer = TileWriter::create(raw.path()).unwrap();
     for i in 0..5 {
         let recs = vec![TelemetryRecord::new(100 + i, 1, 1, (i * 10) as f64)];
-        writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+            .unwrap();
     }
     drop(writer);
 
@@ -353,7 +430,13 @@ fn test_tour_bytes_read_bound() {
     // Test A: Lobby / Floor list reads ONLY the footer!
     let mut tracker = TrackingReader::new(file);
     let opts_lobby = TourOptions::default();
-    let rep = tour_file(&mut tracker, len, sealed.path().to_str().unwrap(), &opts_lobby).unwrap();
+    let rep = tour_file(
+        &mut tracker,
+        len,
+        sealed.path().to_str().unwrap(),
+        &opts_lobby,
+    )
+    .unwrap();
     assert_eq!(rep.lobby.tile_count, 5);
 
     // Index offset is at `file_len - index_len - endcap_size`
@@ -362,7 +445,9 @@ fn test_tour_bytes_read_bound() {
         assert!(
             pos >= data_len,
             "Lobby touched tile body data at pos {} (len {})! Expected >= footer offset {}",
-            pos, count, data_len
+            pos,
+            count,
+            data_len
         );
     }
 
@@ -373,7 +458,13 @@ fn test_tour_bytes_read_bound() {
         floor: Some(2),
         ..Default::default()
     };
-    let rep2 = tour_file(&mut tracker2, len, sealed.path().to_str().unwrap(), &opts_floor).unwrap();
+    let rep2 = tour_file(
+        &mut tracker2,
+        len,
+        sealed.path().to_str().unwrap(),
+        &opts_floor,
+    )
+    .unwrap();
     assert_eq!(rep2.floor_detail.unwrap().index, 2);
 
     let floor_2_start = (FILE_HEADER_SIZE + 2 * HYPER_TILE_SIZE) as u64;
@@ -397,7 +488,9 @@ fn test_tour_cli_binary_and_json() {
 
     let mut writer = TileWriter::create(raw.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 42.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     seal_archive_v2(raw.path(), sealed.path(), &SealOptionsV2::default()).unwrap();
@@ -428,21 +521,34 @@ fn test_tour_cli_binary_and_json() {
 
     // 3. Detail --floor 0 --json
     let out_detail = Command::new(bin)
-        .args(["tour", "--json", "--floor", "0", sealed.path().to_str().unwrap()])
+        .args([
+            "tour",
+            "--json",
+            "--floor",
+            "0",
+            sealed.path().to_str().unwrap(),
+        ])
         .output()
         .expect("tour floor detail failed");
     assert!(out_detail.status.success());
-    let v_det: serde_json::Value = serde_json::from_slice(&out_detail.stdout).expect("valid json output");
+    let v_det: serde_json::Value =
+        serde_json::from_slice(&out_detail.stdout).expect("valid json output");
     assert_eq!(v_det["floor_detail"]["type_name"], "telemetry");
     assert_eq!(v_det["floor_detail"]["records"][0]["sensor_id"], 1);
 
     // 4. History --history --json
     let out_hist = Command::new(bin)
-        .args(["tour", "--json", "--history", sealed.path().to_str().unwrap()])
+        .args([
+            "tour",
+            "--json",
+            "--history",
+            sealed.path().to_str().unwrap(),
+        ])
         .output()
         .expect("tour history failed");
     assert!(out_hist.status.success());
-    let v_hist: serde_json::Value = serde_json::from_slice(&out_hist.stdout).expect("valid json output");
+    let v_hist: serde_json::Value =
+        serde_json::from_slice(&out_hist.stdout).expect("valid json output");
     assert_eq!(v_hist["history"][0]["generation"], 1);
 }
 
@@ -453,7 +559,9 @@ fn test_tour_displays_manifest_in_lobby_and_floor() {
 
     let mut writer = TileWriter::create(raw.path()).unwrap();
     let recs = vec![TelemetryRecord::new(500, 1, 1, 99.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let opts = SealOptionsV2 {
@@ -492,7 +600,9 @@ fn test_tour_displays_manifest_in_lobby_and_floor() {
     assert!(out_json.status.success());
     let v_json: serde_json::Value = serde_json::from_slice(&out_json.stdout).unwrap();
     assert_eq!(v_json["ok"], true);
-    let manifest_field = v_json["lobby"]["manifest"].as_str().expect("lobby.manifest must be present");
+    let manifest_field = v_json["lobby"]["manifest"]
+        .as_str()
+        .expect("lobby.manifest must be present");
     assert!(manifest_field.contains("THIS IS AN S3A FILE"));
 
     // 3. Inspect floor 0 (Manifest floor)

@@ -1,17 +1,17 @@
 //! Cryptographic key custody and KeyStore implementations (§2.2).
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use ed25519_dalek::{Signature, Signer, SigningKey};
-use rand_core::{OsRng, RngCore};
 use argon2::Argon2;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use zeroize::Zeroize;
+use ed25519_dalek::{Signature, Signer, SigningKey};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use zeroize::Zeroize;
 
 use crate::errors::VaultError;
 
@@ -20,7 +20,11 @@ pub trait KeyStore: Send + Sync {
     fn get_public_key(&self, identity_id: &[u8; 16]) -> Result<[u8; 32], VaultError>;
     fn sign(&self, identity_id: &[u8; 16], message: &[u8]) -> Result<[u8; 64], VaultError>;
     fn generate_keypair(&mut self, identity_id: &[u8; 16]) -> Result<[u8; 32], VaultError>;
-    fn insert_keypair(&mut self, identity_id: &[u8; 16], secret_seed: &[u8; 32]) -> Result<[u8; 32], VaultError>;
+    fn insert_keypair(
+        &mut self,
+        identity_id: &[u8; 16],
+        secret_seed: &[u8; 32],
+    ) -> Result<[u8; 32], VaultError>;
 }
 
 /// In-memory KeyStore (useful for tests and harnesses).
@@ -58,19 +62,17 @@ impl MemoryKeyStore {
 
 impl KeyStore for MemoryKeyStore {
     fn get_public_key(&self, identity_id: &[u8; 16]) -> Result<[u8; 32], VaultError> {
-        let entry = self
-            .keys
-            .get(identity_id)
-            .ok_or_else(|| VaultError::KeyStoreError(format!("Key not found for id {}", hex::encode(identity_id))))?;
+        let entry = self.keys.get(identity_id).ok_or_else(|| {
+            VaultError::KeyStoreError(format!("Key not found for id {}", hex::encode(identity_id)))
+        })?;
         let signing_key = SigningKey::from_bytes(&entry.seed);
         Ok(signing_key.verifying_key().to_bytes())
     }
 
     fn sign(&self, identity_id: &[u8; 16], message: &[u8]) -> Result<[u8; 64], VaultError> {
-        let entry = self
-            .keys
-            .get(identity_id)
-            .ok_or_else(|| VaultError::KeyStoreError(format!("Key not found for id {}", hex::encode(identity_id))))?;
+        let entry = self.keys.get(identity_id).ok_or_else(|| {
+            VaultError::KeyStoreError(format!("Key not found for id {}", hex::encode(identity_id)))
+        })?;
         let signing_key = SigningKey::from_bytes(&entry.seed);
         let sig: Signature = signing_key.sign(message);
         Ok(sig.to_bytes())
@@ -82,10 +84,15 @@ impl KeyStore for MemoryKeyStore {
         self.insert_keypair(identity_id, &seed)
     }
 
-    fn insert_keypair(&mut self, identity_id: &[u8; 16], secret_seed: &[u8; 32]) -> Result<[u8; 32], VaultError> {
+    fn insert_keypair(
+        &mut self,
+        identity_id: &[u8; 16],
+        secret_seed: &[u8; 32],
+    ) -> Result<[u8; 32], VaultError> {
         let signing_key = SigningKey::from_bytes(secret_seed);
         let pubkey = signing_key.verifying_key().to_bytes();
-        self.keys.insert(*identity_id, KeyEntry { seed: *secret_seed });
+        self.keys
+            .insert(*identity_id, KeyEntry { seed: *secret_seed });
         Ok(pubkey)
     }
 }
@@ -131,7 +138,9 @@ impl FileKeyStore {
         let path_buf = path.as_ref().to_path_buf();
         let raw = fs::read(&path_buf)?;
         if raw.len() < 6 + 16 + 12 + 16 || &raw[0..6] != KEYSTORE_MAGIC {
-            return Err(VaultError::KeyStoreError("Invalid keystore file format".into()));
+            return Err(VaultError::KeyStoreError(
+                "Invalid keystore file format".into(),
+            ));
         }
 
         let salt = &raw[6..22];
@@ -148,14 +157,17 @@ impl FileKeyStore {
             .map_err(|e| VaultError::KeyStoreError(format!("Cipher init failed: {}", e)))?;
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let plaintext = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| VaultError::KeyStoreError("Keystore decryption failed (invalid passphrase or corrupted file)".into()))?;
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            VaultError::KeyStoreError(
+                "Keystore decryption failed (invalid passphrase or corrupted file)".into(),
+            )
+        })?;
 
         derived_key.zeroize();
 
-        let payload: KeyStorePayload = serde_json::from_slice(&plaintext)
-            .map_err(|e| VaultError::KeyStoreError(format!("JSON deserialization failed: {}", e)))?;
+        let payload: KeyStorePayload = serde_json::from_slice(&plaintext).map_err(|e| {
+            VaultError::KeyStoreError(format!("JSON deserialization failed: {}", e))
+        })?;
 
         let mut inner = MemoryKeyStore::new();
         for item in payload.entries {
@@ -247,7 +259,11 @@ impl KeyStore for FileKeyStore {
         self.inner.generate_keypair(identity_id)
     }
 
-    fn insert_keypair(&mut self, identity_id: &[u8; 16], secret_seed: &[u8; 32]) -> Result<[u8; 32], VaultError> {
+    fn insert_keypair(
+        &mut self,
+        identity_id: &[u8; 16],
+        secret_seed: &[u8; 32],
+    ) -> Result<[u8; 32], VaultError> {
         self.inner.insert_keypair(identity_id, secret_seed)
     }
 }
@@ -284,7 +300,9 @@ mod tests {
         let msg = b"test message to sign";
         let sig = reopen.sign(&id, msg).unwrap();
         let verifying_key = VerifyingKey::from_bytes(&pk2).unwrap();
-        assert!(verifying_key.verify_strict(msg, &Signature::from_bytes(&sig)).is_ok());
+        assert!(verifying_key
+            .verify_strict(msg, &Signature::from_bytes(&sig))
+            .is_ok());
 
         // Reopen with wrong passphrase must fail
         assert!(FileKeyStore::open(&ks_path, "wrong-passphrase").is_err());

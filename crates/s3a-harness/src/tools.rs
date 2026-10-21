@@ -152,16 +152,16 @@ impl Tool for S3aQueryTool {
         if let Ok(entries) = std::fs::read_dir(root) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.extension().map_or(false, |ext| ext == "s3a") {
+                if p.extension().is_some_and(|ext| ext == "s3a") {
                     archive_paths.push(p);
                 }
             }
         }
         let exports_dir = ctx.sandbox.exports_dir();
-        if let Ok(entries) = std::fs::read_dir(&exports_dir) {
+        if let Ok(entries) = std::fs::read_dir(exports_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.extension().map_or(false, |ext| ext == "s3a") {
+                if p.extension().is_some_and(|ext| ext == "s3a") {
                     archive_paths.push(p);
                 }
             }
@@ -742,7 +742,11 @@ impl Tool for SandboxBuildTool {
 
     fn execute(&self, args: &Value, _ctx: &ToolExecutionContext) -> Result<Value, ToolError> {
         // Deterministic mock failure hook for offline / test environments
-        if args.get("mock_failure").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if args
+            .get("mock_failure")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             return Ok(json!({
                 "status": "failed",
                 "success": false,
@@ -775,7 +779,11 @@ impl Tool for SandboxBuildTool {
             .and_then(|v| v.as_str())
             .unwrap_or("s3a-swarm-main");
 
-        let endpoint = format!("{}/project/{}/preview", worker_url.trim_end_matches('/'), project_id);
+        let endpoint = format!(
+            "{}/project/{}/preview",
+            worker_url.trim_end_matches('/'),
+            project_id
+        );
 
         let req_body = json!({
             "branch": args.get("branch").and_then(|v| v.as_str()).unwrap_or("main"),
@@ -793,10 +801,11 @@ impl Tool for SandboxBuildTool {
                     tool: "sandbox_build".to_string(),
                     details: format!("Failed to read preview response: {}", e),
                 })?;
-                let json_resp: Value = serde_json::from_str(&text).map_err(|e| ToolError::ExecutionFailed {
-                    tool: "sandbox_build".to_string(),
-                    details: format!("Invalid JSON from /preview: {}", e),
-                })?;
+                let json_resp: Value =
+                    serde_json::from_str(&text).map_err(|e| ToolError::ExecutionFailed {
+                        tool: "sandbox_build".to_string(),
+                        details: format!("Invalid JSON from /preview: {}", e),
+                    })?;
                 Ok(json_resp)
             }
             Err(e) => {
@@ -927,24 +936,29 @@ impl ToolRegistry {
         if s3a_vault::is_judgment_action(tool_name) {
             return Err(ToolError::ExecutionFailed {
                 tool: tool_name.to_string(),
-                details: "Non-delegable judgment action requires interactive human approval".to_string(),
+                details: "Non-delegable judgment action requires interactive human approval"
+                    .to_string(),
             });
         }
 
         // 3. Delegation grant check if required
         if agent_config.require_grant {
-            let grant = ctx.grant_record.as_ref().ok_or_else(|| ToolError::ExecutionFailed {
-                tool: tool_name.to_string(),
-                details: "Agent tool call denied: active delegation grant missing".to_string(),
-            })?;
+            let grant = ctx
+                .grant_record
+                .as_ref()
+                .ok_or_else(|| ToolError::ExecutionFailed {
+                    tool: tool_name.to_string(),
+                    details: "Agent tool call denied: active delegation grant missing".to_string(),
+                })?;
 
             let action_mask = s3a_vault::records::ACTION_READ | s3a_vault::records::ACTION_WRITE;
             let now = chrono_timestamp();
-            s3a_vault::evaluate_agent_action(grant, action_mask, tool_name, now, 0)
-                .map_err(|e| ToolError::ExecutionFailed {
+            s3a_vault::evaluate_agent_action(grant, action_mask, tool_name, now, 0).map_err(
+                |e| ToolError::ExecutionFailed {
                     tool: tool_name.to_string(),
                     details: format!("Agent tool call denied: {}", e),
-                })?;
+                },
+            )?;
         }
 
         // 4. Lookup tool
@@ -1078,12 +1092,15 @@ mod tests {
 
         // 1. Without grant: tool call is denied
         let err = registry.call_tool(&config, "s3a_query", &json!({ "query": "dna" }), &ctx);
-        assert!(matches!(err, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("grant missing")));
+        assert!(
+            matches!(err, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("grant missing"))
+        );
 
         // 2. Judgment action is blocked regardless of grant
         config.allowed_tools.push("erasure_purge".into());
         let err_judgment = registry.call_tool(&config, "erasure_purge", &json!({}), &ctx);
-        assert!(matches!(err_judgment, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("judgment action")));
+        assert!(
+            matches!(err_judgment, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("judgment action"))
+        );
     }
 }
-

@@ -7,7 +7,12 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(500);
 fn temp_archive_path(label: &str) -> PathBuf {
     let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut p = std::env::temp_dir();
-    p.push(format!("s3a_cli_test_{}_{}_{}.s3a", label, std::process::id(), id));
+    p.push(format!(
+        "s3a_cli_test_{}_{}_{}.s3a",
+        label,
+        std::process::id(),
+        id
+    ));
     p
 }
 
@@ -45,7 +50,10 @@ fn test_cli_query_and_json_output() {
     let path_str = p.to_str().unwrap();
 
     // 1. Insert via CLI query
-    let insert_ql = format!("INSERT TELEMETRY (1000, 10, 20, 99.5) INTO \"{}\"", path_str);
+    let insert_ql = format!(
+        "INSERT TELEMETRY (1000, 10, 20, 99.5) INTO \"{}\"",
+        path_str
+    );
     let out_insert = Command::new(bin)
         .args(["query", "--json", &insert_ql])
         .output()
@@ -112,8 +120,8 @@ fn test_cli_query_and_json_output() {
 
 #[test]
 fn test_cli_seal_anchor_upgrade_and_verify() {
-    use sha2::{Digest, Sha256};
     use s3a_engine::anchor::mock_calendar::MockOtsCalendar;
+    use sha2::{Digest, Sha256};
 
     let bin = env!("CARGO_BIN_EXE_s3a-cli");
     let raw = temp_archive_path("anchor_raw");
@@ -125,7 +133,10 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
     let sealed_str = sealed.to_str().unwrap();
 
     // 1. Create raw archive
-    let insert_ql = format!("INSERT TELEMETRY (2000, 11, 22, 123.45) INTO \"{}\"", raw_str);
+    let insert_ql = format!(
+        "INSERT TELEMETRY (2000, 11, 22, 123.45) INTO \"{}\"",
+        raw_str
+    );
     let out_insert = Command::new(bin)
         .args(["query", "--json", &insert_ql])
         .output()
@@ -168,8 +179,9 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
 
     // 6. Confirm in calendar and upgrade anchor
     let rep = s3a_engine::verify_sealed_archive(&sealed, None).expect("verify");
-    let detached = s3a_engine::anchor::DetachedTimestampFile::from_reader(&rep.anchors[0].proof_bytes[..])
-        .expect("parse");
+    let detached =
+        s3a_engine::anchor::DetachedTimestampFile::from_reader(&rep.anchors[0].proof_bytes[..])
+            .expect("parse");
     let attestations = s3a_engine::anchor::collect_attestations(&detached.timestamp.first_step);
     let commitment = attestations
         .iter()
@@ -185,7 +197,7 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
     let block_height = 899123u64;
     let mut block_hasher = Sha256::new();
     block_hasher.update(commitment);
-    block_hasher.update(&block_height.to_le_bytes());
+    block_hasher.update(block_height.to_le_bytes());
     let block_hash: [u8; 32] = block_hasher.finalize().into();
     let header = MockOtsCalendar::make_mock_block_header(block_hash);
     cal1.confirm(&hex::encode(commitment), block_height, header);
@@ -200,7 +212,14 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
 
     // 7. Verify anchor in confirmed state (--json)
     let out_v_json = Command::new(bin)
-        .args(["verify", "--anchor", "--esplora", &cal1.url(), "--json", sealed_str])
+        .args([
+            "verify",
+            "--anchor",
+            "--esplora",
+            &cal1.url(),
+            "--json",
+            sealed_str,
+        ])
         .output()
         .expect("verify json failed");
     assert!(out_v_json.status.success());
@@ -212,11 +231,11 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
 
 #[test]
 fn test_cli_scholar_recheck_command() {
+    use s3a_core::ADDON_EDU;
+    use s3a_engine::S3ACrudEngine;
     use s3a_pack_scholar::{
         CitationFingerprintRecord, MockScholarServer, ScholarCrudExt, CONTENT_KIND_PDF,
     };
-    use s3a_engine::S3ACrudEngine;
-    use s3a_core::ADDON_EDU;
 
     let bin = env!("CARGO_BIN_EXE_s3a-cli");
     let server = MockScholarServer::start();
@@ -268,7 +287,9 @@ fn test_cli_scholar_recheck_command() {
         1600000000,
     );
 
-    engine.create_citation_fingerprints(&[fp1, fp2, fp3, fp4]).unwrap();
+    engine
+        .create_citation_fingerprints(&[fp1, fp2, fp3, fp4])
+        .unwrap();
 
     // 3. Run s3a-cli scholar recheck in offline mode
     let out_offline = Command::new(bin)
@@ -287,11 +308,20 @@ fn test_cli_scholar_recheck_command() {
 
     let out_online = Command::new(bin)
         .args([
-            "scholar", "recheck", archive_str, "--online", "--endpoint", &server.addr,
-            "--url", &url1,
-            "--url", &url2,
-            "--url", &url3,
-            "--url", &url4,
+            "scholar",
+            "recheck",
+            archive_str,
+            "--online",
+            "--endpoint",
+            &server.addr,
+            "--url",
+            &url1,
+            "--url",
+            &url2,
+            "--url",
+            &url3,
+            "--url",
+            &url4,
         ])
         .output()
         .expect("scholar recheck online failed");
@@ -304,13 +334,13 @@ fn test_cli_scholar_recheck_command() {
 
 #[test]
 fn test_cli_scholar_proof_and_export_bib() {
-    use s3a_pack_scholar::{
-        CitationFingerprintRecord, ScholarNoteClaimRecord, AcademicPaperRecord,
-        ScholarCrudExt, CONTENT_KIND_PDF, CLAIM_KIND_EMPIRICAL,
-    };
-    use s3a_engine::S3ACrudEngine;
-    use s3a_engine::anchor::mock_calendar::MockOtsCalendar;
     use s3a_core::ADDON_EDU;
+    use s3a_engine::anchor::mock_calendar::MockOtsCalendar;
+    use s3a_engine::S3ACrudEngine;
+    use s3a_pack_scholar::{
+        AcademicPaperRecord, CitationFingerprintRecord, ScholarCrudExt, ScholarNoteClaimRecord,
+        CLAIM_KIND_EMPIRICAL, CONTENT_KIND_PDF,
+    };
 
     let bin = env!("CARGO_BIN_EXE_s3a-cli");
     let raw = temp_archive_path("scholar_proof_raw");
@@ -321,7 +351,8 @@ fn test_cli_scholar_proof_and_export_bib() {
     let sealed_str = sealed.to_str().unwrap();
 
     let bib_out = std::env::temp_dir().join(format!("test_bib_{}.bib", std::process::id()));
-    let proof_out = std::env::temp_dir().join(format!("test_bib_{}.bib.proof.json", std::process::id()));
+    let proof_out =
+        std::env::temp_dir().join(format!("test_bib_{}.bib.proof.json", std::process::id()));
     let _g3 = TempArchiveGuard(bib_out.clone());
     let _g4 = TempArchiveGuard(proof_out.clone());
 
@@ -330,20 +361,7 @@ fn test_cli_scholar_proof_and_export_bib() {
     engine.enable_addon(ADDON_EDU).unwrap();
 
     // 2. Insert paper and citation fingerprint
-    let paper = AcademicPaperRecord::new(
-        1001,
-        1600000000,
-        1,
-        0.1,
-        0.2,
-        0.3,
-        10,
-        2024,
-        1,
-        1,
-        0,
-        0,
-    );
+    let paper = AcademicPaperRecord::new(1001, 1600000000, 1, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 0);
     engine.create_academic_papers(&[paper]).unwrap();
 
     let fp = CitationFingerprintRecord::from_content(
@@ -367,7 +385,8 @@ fn test_cli_scholar_proof_and_export_bib() {
         0.98,
         CLAIM_KIND_EMPIRICAL,
         quote,
-    ).with_evidence(
+    )
+    .with_evidence(
         1001, // citation_fingerprint_id
         4,
         120,
@@ -425,7 +444,15 @@ fn test_cli_scholar_proof_and_export_bib() {
     // 8. Test export-bib with companion proof
     let bib_str = bib_out.to_str().unwrap();
     let out_bib = Command::new(bin)
-        .args(["scholar", "export-bib", sealed_str, "--out", bib_str, "--format", "bibtex"])
+        .args([
+            "scholar",
+            "export-bib",
+            sealed_str,
+            "--out",
+            bib_str,
+            "--format",
+            "bibtex",
+        ])
         .output()
         .expect("export-bib failed");
     assert!(out_bib.status.success());

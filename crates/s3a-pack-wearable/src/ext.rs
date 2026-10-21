@@ -1,7 +1,7 @@
-use std::io;
-use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
 use crate::pack::WearableTileType;
 use crate::records::CompactWearableRecord;
+use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
+use std::io;
 
 pub trait WearableCrudExt {
     fn create_wearable_records(&self, records: &[CompactWearableRecord]) -> io::Result<u64>;
@@ -38,7 +38,8 @@ impl WearableQueryExt for QuerySieve<'_> {
         sensor_id: Option<u8>,
         metric_id: Option<u8>,
     ) -> Vec<CompactWearableRecord> {
-        self.reader().query_wearable_records(min_ts_sec, max_ts_sec, sensor_id, metric_id)
+        self.reader()
+            .query_wearable_records(min_ts_sec, max_ts_sec, sensor_id, metric_id)
     }
 }
 
@@ -63,7 +64,8 @@ impl WearableQueryExt for MmapReader {
                 continue;
             }
 
-            if header.max_timestamp < min_ts_sec as u64 || header.min_timestamp > max_ts_sec as u64 {
+            if header.max_timestamp < min_ts_sec as u64 || header.min_timestamp > max_ts_sec as u64
+            {
                 continue;
             }
 

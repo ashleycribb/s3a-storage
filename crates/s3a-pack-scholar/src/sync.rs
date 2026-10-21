@@ -15,17 +15,17 @@ use crate::snapshot::SrsSnapshotBundle;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct SrsSyncDeltaHeader {
-    pub magic: [u8; 8],                // b"S3ASYNC1" (offset 0..8)
-    pub schema_version: u32,           // Version 1 (offset 8..12)
-    pub flags: u32,                    // Sync flags (offset 12..16)
-    pub session_uuid: [u64; 2],        // 128-bit active session UUID (offset 16..32)
-    pub base_snapshot_uuid: [u64; 2],  // Parent snapshot UUID (offset 32..48)
-    pub delta_seq: u64,                // Monotonic delta sequence counter (offset 48..56)
-    pub record_count: u32,             // Number of entries in delta (offset 56..60)
-    pub crc32c_checksum: u32,          // Hardware CRC32C over header and payload (offset 60..64)
-    pub created_at_sec: u64,           // Timestamp in epoch seconds (offset 64..72)
-    pub _reserved: [u64; 2],           // Reserved for future extensions (offset 72..88)
-    pub _padding: u64,                 // Alignment padding (offset 88..96)
+    pub magic: [u8; 8],               // b"S3ASYNC1" (offset 0..8)
+    pub schema_version: u32,          // Version 1 (offset 8..12)
+    pub flags: u32,                   // Sync flags (offset 12..16)
+    pub session_uuid: [u64; 2],       // 128-bit active session UUID (offset 16..32)
+    pub base_snapshot_uuid: [u64; 2], // Parent snapshot UUID (offset 32..48)
+    pub delta_seq: u64,               // Monotonic delta sequence counter (offset 48..56)
+    pub record_count: u32,            // Number of entries in delta (offset 56..60)
+    pub crc32c_checksum: u32,         // Hardware CRC32C over header and payload (offset 60..64)
+    pub created_at_sec: u64,          // Timestamp in epoch seconds (offset 64..72)
+    pub _reserved: [u64; 2],          // Reserved for future extensions (offset 72..88)
+    pub _padding: u64,                // Alignment padding (offset 88..96)
 }
 
 impl SrsSyncDeltaHeader {
@@ -46,7 +46,13 @@ impl SrsSyncDeltaHeader {
         #[cfg(target_arch = "wasm32")]
         let now = 0u64;
 
-        Self::with_timestamp(session_uuid, base_snapshot_uuid, delta_seq, record_count, now)
+        Self::with_timestamp(
+            session_uuid,
+            base_snapshot_uuid,
+            delta_seq,
+            record_count,
+            now,
+        )
     }
 
     pub fn with_timestamp(
@@ -135,25 +141,56 @@ impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SyncError::BufferTooSmall { required, provided } => {
-                write!(f, "Delta buffer too small: required {}, provided {}", required, provided)
+                write!(
+                    f,
+                    "Delta buffer too small: required {}, provided {}",
+                    required, provided
+                )
             }
-            SyncError::InvalidMagic => write!(f, "Invalid sync delta magic: expected b\"S3ASYNC1\""),
+            SyncError::InvalidMagic => {
+                write!(f, "Invalid sync delta magic: expected b\"S3ASYNC1\"")
+            }
             SyncError::UnsupportedVersion(v) => write!(f, "Unsupported sync delta version: {}", v),
             SyncError::ChecksumMismatch { expected, actual } => {
-                write!(f, "Sync delta checksum mismatch: expected 0x{:08X}, computed 0x{:08X}", expected, actual)
+                write!(
+                    f,
+                    "Sync delta checksum mismatch: expected 0x{:08X}, computed 0x{:08X}",
+                    expected, actual
+                )
             }
-            SyncError::InvalidPayloadSize => write!(f, "Invalid sync delta payload size for record count"),
-            SyncError::SessionMismatch => write!(f, "Sync delta session UUID does not match target session"),
-            SyncError::BaseSnapshotMismatch => write!(f, "Sync delta base snapshot UUID does not match target bundle"),
+            SyncError::InvalidPayloadSize => {
+                write!(f, "Invalid sync delta payload size for record count")
+            }
+            SyncError::SessionMismatch => {
+                write!(f, "Sync delta session UUID does not match target session")
+            }
+            SyncError::BaseSnapshotMismatch => write!(
+                f,
+                "Sync delta base snapshot UUID does not match target bundle"
+            ),
             SyncError::SequenceGap { expected, actual } => {
-                write!(f, "Sync delta sequence gap: expected {}, actual {}", expected, actual)
+                write!(
+                    f,
+                    "Sync delta sequence gap: expected {}, actual {}",
+                    expected, actual
+                )
             }
             SyncError::ForbiddenTileInDelta(tt) => {
-                write!(f, "Tile type {} is strictly forbidden in client sync deltas", tt)
+                write!(
+                    f,
+                    "Tile type {} is strictly forbidden in client sync deltas",
+                    tt
+                )
             }
-            SyncError::UnknownTileType(tt) => write!(f, "Unknown or unhandled tile type {} in sync delta", tt),
+            SyncError::UnknownTileType(tt) => {
+                write!(f, "Unknown or unhandled tile type {} in sync delta", tt)
+            }
             SyncError::UnauthorizedMark { mark_kind, action } => {
-                write!(f, "Unauthorized mark operation: mark_kind {}, action {}", mark_kind, action)
+                write!(
+                    f,
+                    "Unauthorized mark operation: mark_kind {}, action {}",
+                    mark_kind, action
+                )
             }
         }
     }
@@ -185,7 +222,13 @@ impl SrsSyncDeltaPacket {
         created_at_sec: u64,
     ) -> Self {
         Self {
-            header: SrsSyncDeltaHeader::with_timestamp(session_uuid, base_snapshot_uuid, delta_seq, 0, created_at_sec),
+            header: SrsSyncDeltaHeader::with_timestamp(
+                session_uuid,
+                base_snapshot_uuid,
+                delta_seq,
+                0,
+                created_at_sec,
+            ),
             entries: Vec::new(),
         }
     }
@@ -221,7 +264,8 @@ impl SrsSyncDeltaPacket {
             });
         }
 
-        let header: SrsSyncDeltaHeader = bytemuck::pod_read_unaligned(&bytes[..SrsSyncDeltaHeader::HEADER_SIZE]);
+        let header: SrsSyncDeltaHeader =
+            bytemuck::pod_read_unaligned(&bytes[..SrsSyncDeltaHeader::HEADER_SIZE]);
         if header.magic != SrsSyncDeltaHeader::MAGIC {
             return Err(SyncError::InvalidMagic);
         }
@@ -304,79 +348,86 @@ impl SrsSyncDeltaPacket {
                             && r.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
                         {
                             return Err(SyncError::UnauthorizedMark {
-                                 mark_kind: r.mark_kind,
-                                 action: r.set_or_clear,
-                             });
-                         }
-                     } else if r.set_or_clear == s3a_core::MARK_CLEAR {
-                         if r.mark_kind == s3a_core::MARK_LEGAL_HOLD
-                             || r.mark_kind == s3a_core::MARK_QUARANTINE
-                             || r.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN
-                         {
-                             return Err(SyncError::UnauthorizedMark {
-                                 mark_kind: r.mark_kind,
-                                 action: r.set_or_clear,
-                             });
-                         }
-                     } else {
-                         return Err(SyncError::UnauthorizedMark {
-                             mark_kind: r.mark_kind,
-                             action: r.set_or_clear,
-                         });
-                     }
-                 }
-                 other => {
-                     return Err(SyncError::UnknownTileType(other));
-                 }
-             }
-         }
- 
-         // Phase 2: Transactional application (only reached if all entries passed validation)
-         let mut count = 0;
-         for entry in &self.entries {
-             match entry.tile_type {
-                 ScholarTileType::HUMAN_LRS => {
-                     let r: HumanLrsRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.human_decisions.push(r);
-                     count += 1;
-                 }
-                 ScholarTileType::AI_TRACE_LOG => {
-                     let r: AiTraceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.ai_traces.push(r);
-                     count += 1;
-                 }
-                 ScholarTileType::ACADEMIC_PAPERS => {
-                     let r: AcademicPaperRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.papers.push(r);
-                     count += 1;
-                 }
-                 ScholarTileType::RESEARCH_GRAPH => {
-                     let r: ResearchGraphEdgeRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.evidence_edges.push(r);
-                     count += 1;
-                 }
-                 ScholarTileType::SRS_WORKSPACE => {
-                     let r: SrsWorkspaceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.workspace = Some(r);
-                     count += 1;
-                 }
-                 ScholarTileType::NOTE_CLAIMS => {
-                     let r: ScholarNoteClaimRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
-                     bundle.claims.push(r);
-                     count += 1;
-                 }
-                 ScholarTileType::CITATION_FINGERPRINT => {
-                     let _r: CitationFingerprintRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
-                     count += 1;
-                 }
-                 TileType::MARKS => {
-                     let r: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
-                     bundle.policy_marks.push(r);
-                     count += 1;
-                 }
-                 _ => unreachable!(),
-             }
-         }
+                                mark_kind: r.mark_kind,
+                                action: r.set_or_clear,
+                            });
+                        }
+                    } else if r.set_or_clear == s3a_core::MARK_CLEAR {
+                        if r.mark_kind == s3a_core::MARK_LEGAL_HOLD
+                            || r.mark_kind == s3a_core::MARK_QUARANTINE
+                            || r.mark_kind == s3a_core::MARK_CONSENT_WITHDRAWN
+                        {
+                            return Err(SyncError::UnauthorizedMark {
+                                mark_kind: r.mark_kind,
+                                action: r.set_or_clear,
+                            });
+                        }
+                    } else {
+                        return Err(SyncError::UnauthorizedMark {
+                            mark_kind: r.mark_kind,
+                            action: r.set_or_clear,
+                        });
+                    }
+                }
+                other => {
+                    return Err(SyncError::UnknownTileType(other));
+                }
+            }
+        }
+
+        // Phase 2: Transactional application (only reached if all entries passed validation)
+        let mut count = 0;
+        for entry in &self.entries {
+            match entry.tile_type {
+                ScholarTileType::HUMAN_LRS => {
+                    let r: HumanLrsRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.human_decisions.push(r);
+                    count += 1;
+                }
+                ScholarTileType::AI_TRACE_LOG => {
+                    let r: AiTraceRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.ai_traces.push(r);
+                    count += 1;
+                }
+                ScholarTileType::ACADEMIC_PAPERS => {
+                    let r: AcademicPaperRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.papers.push(r);
+                    count += 1;
+                }
+                ScholarTileType::RESEARCH_GRAPH => {
+                    let r: ResearchGraphEdgeRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.evidence_edges.push(r);
+                    count += 1;
+                }
+                ScholarTileType::SRS_WORKSPACE => {
+                    let r: SrsWorkspaceRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.workspace = Some(r);
+                    count += 1;
+                }
+                ScholarTileType::NOTE_CLAIMS => {
+                    let r: ScholarNoteClaimRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
+                    bundle.claims.push(r);
+                    count += 1;
+                }
+                ScholarTileType::CITATION_FINGERPRINT => {
+                    let _r: CitationFingerprintRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
+                    count += 1;
+                }
+                TileType::MARKS => {
+                    let r: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
+                    bundle.policy_marks.push(r);
+                    count += 1;
+                }
+                _ => unreachable!(),
+            }
+        }
 
         bundle.last_applied_delta_seq = self.header.delta_seq;
         bundle.manifest.total_records += count as u64;
@@ -405,7 +456,9 @@ mod tests {
             s3a_core::S3ACoordinate::new(0, 11, 0),
             0x12345678,
         );
-        delta.push_record(ScholarTileType::HUMAN_LRS, &human).unwrap();
+        delta
+            .push_record(ScholarTileType::HUMAN_LRS, &human)
+            .unwrap();
 
         let ai = AiTraceRecord::new(
             session,
@@ -416,7 +469,9 @@ mod tests {
             s3a_core::S3ACoordinate::new(0, 10, 0),
             42,
         );
-        delta.push_record(ScholarTileType::AI_TRACE_LOG, &ai).unwrap();
+        delta
+            .push_record(ScholarTileType::AI_TRACE_LOG, &ai)
+            .unwrap();
 
         let bytes = delta.export_bytes();
         // 96 bytes header + 2 * 168 bytes entries = 432 bytes total (sub-kilobyte!)
@@ -429,7 +484,8 @@ mod tests {
         assert_eq!(parsed.entries[0].tile_type, ScholarTileType::HUMAN_LRS);
         assert_eq!(parsed.entries[1].tile_type, ScholarTileType::AI_TRACE_LOG);
 
-        let parsed_human: HumanLrsRecord = bytemuck::pod_read_unaligned(&parsed.entries[0].record_bytes()[..64]);
+        let parsed_human: HumanLrsRecord =
+            bytemuck::pod_read_unaligned(&parsed.entries[0].record_bytes()[..64]);
         assert_eq!(parsed_human.actor_hash, 0xFEEDFACE);
         assert_eq!(parsed_human.decision_score, 0.95);
     }
@@ -439,7 +495,9 @@ mod tests {
         let session = [1, 2];
         let mut delta = SrsSyncDeltaPacket::new(session, [0, 0], 1);
         let human = HumanLrsRecord::default();
-        delta.push_record(ScholarTileType::HUMAN_LRS, &human).unwrap();
+        delta
+            .push_record(ScholarTileType::HUMAN_LRS, &human)
+            .unwrap();
 
         let mut bytes = delta.export_bytes();
         // Corrupt a byte in the payload
@@ -476,10 +534,17 @@ mod tests {
 
         let mut delta = SrsSyncDeltaPacket::new(session, base, 1);
         let agent = AgentRegistryRecord::default();
-        delta.push_record(ScholarTileType::AGENT_REGISTRY, &agent).unwrap();
+        delta
+            .push_record(ScholarTileType::AGENT_REGISTRY, &agent)
+            .unwrap();
 
         let res = delta.apply_to_bundle(&mut bundle);
-        assert_eq!(res, Err(SyncError::ForbiddenTileInDelta(ScholarTileType::AGENT_REGISTRY)));
+        assert_eq!(
+            res,
+            Err(SyncError::ForbiddenTileInDelta(
+                ScholarTileType::AGENT_REGISTRY
+            ))
+        );
         assert_eq!(bundle.agents.len(), 0);
     }
 
@@ -513,7 +578,10 @@ mod tests {
         delta.push_record(TileType::MARKS, &m_illegal_set).unwrap();
         assert_eq!(
             delta.apply_to_bundle(&mut bundle),
-            Err(SyncError::UnauthorizedMark { mark_kind: MARK_LEGAL_HOLD, action: MARK_SET })
+            Err(SyncError::UnauthorizedMark {
+                mark_kind: MARK_LEGAL_HOLD,
+                action: MARK_SET
+            })
         );
 
         // 2. Clearing LEGAL_HOLD, QUARANTINE, or CONSENT_WITHDRAWN must be rejected
@@ -523,7 +591,10 @@ mod tests {
             delta_clear.push_record(TileType::MARKS, &m_clear).unwrap();
             assert_eq!(
                 delta_clear.apply_to_bundle(&mut bundle),
-                Err(SyncError::UnauthorizedMark { mark_kind: bad_clear, action: MARK_CLEAR })
+                Err(SyncError::UnauthorizedMark {
+                    mark_kind: bad_clear,
+                    action: MARK_CLEAR
+                })
             );
         }
 
@@ -568,16 +639,23 @@ mod tests {
         // 1. Sequence gap: delta_seq = 2 when expecting 1
         let mut delta_gap = SrsSyncDeltaPacket::new(session, base, 2);
         let human = HumanLrsRecord::default();
-        delta_gap.push_record(ScholarTileType::HUMAN_LRS, &human).unwrap();
+        delta_gap
+            .push_record(ScholarTileType::HUMAN_LRS, &human)
+            .unwrap();
         assert_eq!(
             delta_gap.apply_to_bundle(&mut bundle),
-            Err(SyncError::SequenceGap { expected: 1, actual: 2 })
+            Err(SyncError::SequenceGap {
+                expected: 1,
+                actual: 2
+            })
         );
         assert_eq!(bundle.human_decisions.len(), 0);
 
         // 2. Apply delta 1 successfully
         let mut delta_1 = SrsSyncDeltaPacket::new(session, base, 1);
-        delta_1.push_record(ScholarTileType::HUMAN_LRS, &human).unwrap();
+        delta_1
+            .push_record(ScholarTileType::HUMAN_LRS, &human)
+            .unwrap();
         assert_eq!(delta_1.apply_to_bundle(&mut bundle), Ok(1));
         assert_eq!(bundle.human_decisions.len(), 1);
         assert_eq!(bundle.last_applied_delta_seq, 1);
@@ -590,7 +668,9 @@ mod tests {
         // 4. Apply delta 2 successfully
         let mut delta_2 = SrsSyncDeltaPacket::new(session, base, 2);
         let ai = AiTraceRecord::default();
-        delta_2.push_record(ScholarTileType::AI_TRACE_LOG, &ai).unwrap();
+        delta_2
+            .push_record(ScholarTileType::AI_TRACE_LOG, &ai)
+            .unwrap();
         assert_eq!(delta_2.apply_to_bundle(&mut bundle), Ok(1));
         assert_eq!(bundle.ai_traces.len(), 1);
         assert_eq!(bundle.last_applied_delta_seq, 2);
@@ -611,14 +691,23 @@ mod tests {
         let mut delta = SrsSyncDeltaPacket::new(session, base, 1);
         // Entry 1: Valid human decision
         let human = HumanLrsRecord::default();
-        delta.push_record(ScholarTileType::HUMAN_LRS, &human).unwrap();
+        delta
+            .push_record(ScholarTileType::HUMAN_LRS, &human)
+            .unwrap();
         // Entry 2: Forbidden agent registry
         let agent = AgentRegistryRecord::default();
-        delta.push_record(ScholarTileType::AGENT_REGISTRY, &agent).unwrap();
+        delta
+            .push_record(ScholarTileType::AGENT_REGISTRY, &agent)
+            .unwrap();
 
         // Must fail closed on entry 2 and NOT apply entry 1
         let res = delta.apply_to_bundle(&mut bundle);
-        assert_eq!(res, Err(SyncError::ForbiddenTileInDelta(ScholarTileType::AGENT_REGISTRY)));
+        assert_eq!(
+            res,
+            Err(SyncError::ForbiddenTileInDelta(
+                ScholarTileType::AGENT_REGISTRY
+            ))
+        );
         assert_eq!(bundle.human_decisions.len(), 0);
         assert_eq!(bundle.last_applied_delta_seq, 0);
     }

@@ -12,11 +12,11 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use s3a_core::{
-    FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
-};
+use s3a_core::{FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE};
 use s3a_engine::{
-    compactor_gates::{clear_quarantine, fault_injection, is_tile_quarantined, quarantine_path, quarantine_tile},
+    compactor_gates::{
+        clear_quarantine, fault_injection, is_tile_quarantined, quarantine_path, quarantine_tile,
+    },
     recover_archive, Compactor, MmapReader, TelemetryRecord, TileType, TileWriter,
 };
 
@@ -35,7 +35,13 @@ impl TestTempFile {
             .unwrap_or_default()
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_gate_test_{}_{}_{}_{}.s3a", suffix, std::process::id(), ts, id));
+        path.push(format!(
+            "s3a_gate_test_{}_{}_{}_{}.s3a",
+            suffix,
+            std::process::id(),
+            ts,
+            id
+        ));
         Self { path }
     }
 
@@ -65,8 +71,12 @@ fn test_corrupt_input_tile_refuses_compaction_and_inputs_survive() {
     let mut writer = TileWriter::create(in_path).unwrap();
     let rec1 = TelemetryRecord::new(100, 1, 1, 10.0);
     let rec2 = TelemetryRecord::new(200, 1, 1, 20.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[100]), None).unwrap();
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[200]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[100]), None)
+        .unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[200]), None)
+        .unwrap();
     drop(writer);
 
     let initial_len = fs::metadata(in_path).unwrap().len();
@@ -91,7 +101,10 @@ fn test_corrupt_input_tile_refuses_compaction_and_inputs_survive() {
 
     // 3. Attempt compaction: must fail-closed!
     let comp_res = Compactor::compact(&[in_path], out_path);
-    assert!(comp_res.is_err(), "Compaction must refuse when input tile CRC is corrupted");
+    assert!(
+        comp_res.is_err(),
+        "Compaction must refuse when input tile CRC is corrupted"
+    );
     let err_msg = comp_res.unwrap_err().to_string();
     assert!(
         err_msg.contains("quarantined") || err_msg.contains("CRC mismatch"),
@@ -100,7 +113,10 @@ fn test_corrupt_input_tile_refuses_compaction_and_inputs_survive() {
     );
 
     // 4. Verify output was discarded and inputs survived completely
-    assert!(!out_path.exists(), "Output file must be discarded on compaction failure");
+    assert!(
+        !out_path.exists(),
+        "Output file must be discarded on compaction failure"
+    );
     assert!(in_path.exists(), "Input file must survive intact");
     assert_eq!(
         fs::metadata(in_path).unwrap().len(),
@@ -145,7 +161,14 @@ fn test_injected_record_drop_or_duplication_fails_during_gate_and_nothing_commit
     let r1 = TelemetryRecord::new(100, 1, 1, 10.0);
     let r2 = TelemetryRecord::new(200, 1, 2, 20.0);
     let r3 = TelemetryRecord::new(300, 1, 3, 30.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[r1, r2, r3], Some(&[100, 200, 300]), None).unwrap();
+    writer
+        .write_hyper_tile(
+            TileType::TELEMETRY,
+            &[r1, r2, r3],
+            Some(&[100, 200, 300]),
+            None,
+        )
+        .unwrap();
     drop(writer);
 
     let initial_len = fs::metadata(in_path).unwrap().len();
@@ -153,15 +176,25 @@ fn test_injected_record_drop_or_duplication_fails_during_gate_and_nothing_commit
     // 2. Scenario A: Injected record DROP
     fault_injection::INJECT_RECORD_DROP.store(true, Ordering::SeqCst);
     let drop_res = Compactor::compact(&[in_path], out_path);
-    assert!(drop_res.is_err(), "Compaction must fail when a record drop is injected");
+    assert!(
+        drop_res.is_err(),
+        "Compaction must fail when a record drop is injected"
+    );
     let drop_err = drop_res.unwrap_err().to_string();
     assert!(
         drop_err.contains("count mismatch") || drop_err.contains("During-Gate"),
         "Error must identify During-Gate mismatch: {}",
         drop_err
     );
-    assert!(!out_path.exists(), "Output must be discarded after record drop failure");
-    assert_eq!(fs::metadata(in_path).unwrap().len(), initial_len, "Input must survive untouched");
+    assert!(
+        !out_path.exists(),
+        "Output must be discarded after record drop failure"
+    );
+    assert_eq!(
+        fs::metadata(in_path).unwrap().len(),
+        initial_len,
+        "Input must survive untouched"
+    );
 
     // Clear quarantine from the drop test failure before scenario B
     clear_quarantine(in_path);
@@ -170,22 +203,35 @@ fn test_injected_record_drop_or_duplication_fails_during_gate_and_nothing_commit
     // 3. Scenario B: Injected record DUPLICATION
     fault_injection::INJECT_RECORD_DUPLICATION.store(true, Ordering::SeqCst);
     let dup_res = Compactor::compact(&[in_path], out_path);
-    assert!(dup_res.is_err(), "Compaction must fail when a record duplication is injected");
+    assert!(
+        dup_res.is_err(),
+        "Compaction must fail when a record duplication is injected"
+    );
     let dup_err = dup_res.unwrap_err().to_string();
     assert!(
         dup_err.contains("count mismatch") || dup_err.contains("During-Gate"),
         "Error must identify During-Gate mismatch: {}",
         dup_err
     );
-    assert!(!out_path.exists(), "Output must be discarded after record duplication failure");
-    assert_eq!(fs::metadata(in_path).unwrap().len(), initial_len, "Input must survive untouched");
+    assert!(
+        !out_path.exists(),
+        "Output must be discarded after record duplication failure"
+    );
+    assert_eq!(
+        fs::metadata(in_path).unwrap().len(),
+        initial_len,
+        "Input must survive untouched"
+    );
 
     fault_injection::reset();
     clear_quarantine(in_path);
 
     // 4. Verify clean compaction succeeds once fault injection is reset (outputs telemetry + schema tile)
     let clean_res = Compactor::compact(&[in_path], out_path);
-    assert!(clean_res.is_ok(), "Clean compaction must succeed without fault injection");
+    assert!(
+        clean_res.is_ok(),
+        "Clean compaction must succeed without fault injection"
+    );
     let reader = MmapReader::open(out_path).unwrap();
     assert_eq!(reader.tile_count(), 2);
     assert!(reader.verify_checksums().is_ok());
@@ -202,7 +248,9 @@ fn test_crash_between_write_and_verify_old_slot_still_live() {
     // 1. Create archive and commit tile 1 (starts in Slot A gen 1, commits tile 1 in Slot B gen 2)
     let mut writer = TileWriter::create(path).unwrap();
     let rec1 = TelemetryRecord::new(1000, 10, 1, 100.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None)
+        .unwrap();
     drop(writer);
 
     let reader_init = MmapReader::open(path).unwrap();
@@ -220,16 +268,34 @@ fn test_crash_between_write_and_verify_old_slot_still_live() {
 
     let rec2 = TelemetryRecord::new(2000, 10, 1, 200.0);
     let write_res = writer2.write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None);
-    assert!(write_res.is_err(), "Write must abort on injected crash before commit");
+    assert!(
+        write_res.is_err(),
+        "Write must abort on injected crash before commit"
+    );
     drop(writer2);
     fault_injection::reset();
 
     // 3. Inspect archive: old slot is still the live one!
     let reader_post_crash = MmapReader::open(path).unwrap();
-    assert_eq!(reader_post_crash.active_slot(), old_slot, "Old slot must still be the active one!");
-    assert_eq!(reader_post_crash.generation(), old_gen, "Old generation must remain active!");
-    assert_eq!(reader_post_crash.tile_count(), old_count, "Old tile count must remain active!");
-    assert!(reader_post_crash.verify_checksums().is_ok(), "Old committed data must be intact and verified");
+    assert_eq!(
+        reader_post_crash.active_slot(),
+        old_slot,
+        "Old slot must still be the active one!"
+    );
+    assert_eq!(
+        reader_post_crash.generation(),
+        old_gen,
+        "Old generation must remain active!"
+    );
+    assert_eq!(
+        reader_post_crash.tile_count(),
+        old_count,
+        "Old tile count must remain active!"
+    );
+    assert!(
+        reader_post_crash.verify_checksums().is_ok(),
+        "Old committed data must be intact and verified"
+    );
     drop(reader_post_crash);
 
     // 4. Archive recovery should clean up the uncommitted bytes and keep old slot live
@@ -242,7 +308,9 @@ fn test_crash_between_write_and_verify_old_slot_still_live() {
     assert_eq!(writer3.active_slot(), old_slot);
     assert_eq!(writer3.tile_count(), old_count);
     let rec3 = TelemetryRecord::new(3000, 10, 1, 300.0);
-    writer3.write_hyper_tile(TileType::TELEMETRY, &[rec3], Some(&[3000]), None).unwrap();
+    writer3
+        .write_hyper_tile(TileType::TELEMETRY, &[rec3], Some(&[3000]), None)
+        .unwrap();
     drop(writer3);
 
     let reader_final = MmapReader::open(path).unwrap();
@@ -265,12 +333,17 @@ fn test_duplicate_input_tile_in_compaction_generation_rejected() {
     // Create 1 input tile
     let mut writer = TileWriter::create(in_path).unwrap();
     let rec = TelemetryRecord::new(100, 1, 1, 10.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec], Some(&[100]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec], Some(&[100]), None)
+        .unwrap();
     drop(writer);
 
     // Pass the same input path twice in input_paths:
     let res = Compactor::compact(&[in_path, in_path], out_path);
-    assert!(res.is_err(), "Compaction must fail when the same input tile is consumed twice in one pass");
+    assert!(
+        res.is_err(),
+        "Compaction must fail when the same input tile is consumed twice in one pass"
+    );
     let err = res.unwrap_err().to_string();
     assert!(
         err.contains("consumed more than once") || err.contains("duplicate input tile"),
@@ -293,7 +366,9 @@ fn test_zero_header_crc_rejected_on_non_legacy_tile() {
     // 1. Create a valid tile (record_layout_version = 1 by default, which is non-legacy)
     let mut writer = TileWriter::create(in_path).unwrap();
     let rec = TelemetryRecord::new(100, 1, 1, 10.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec], Some(&[100]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec], Some(&[100]), None)
+        .unwrap();
     drop(writer);
 
     // 2. Corrupt header CRC by zeroing it out: header_crc32 is at offset 36 in HyperTileHeader
@@ -308,10 +383,15 @@ fn test_zero_header_crc_rejected_on_non_legacy_tile() {
 
     // 3. Compaction must fail-closed!
     let res = Compactor::compact(&[in_path], out_path);
-    assert!(res.is_err(), "Compactor must reject non-legacy tile with zero header CRC");
+    assert!(
+        res.is_err(),
+        "Compactor must reject non-legacy tile with zero header CRC"
+    );
     let err_str = res.unwrap_err().to_string();
     assert!(
-        err_str.contains("zero header CRC") || err_str.contains("header CRC mismatch") || err_str.contains("quarantined"),
+        err_str.contains("zero header CRC")
+            || err_str.contains("header CRC mismatch")
+            || err_str.contains("quarantined"),
         "Error must mention zero header CRC / mismatch: {}",
         err_str
     );
@@ -344,8 +424,12 @@ fn test_quarantining_generation_n_does_not_block_generation_n_plus_1() {
     let mut writer = TileWriter::create(in_path).unwrap();
     let r1 = TelemetryRecord::new(100, 1, 1, 10.0);
     let r2 = TelemetryRecord::new(200, 1, 2, 20.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[r1], Some(&[100]), None).unwrap();
-    writer.write_hyper_tile(TileType::TELEMETRY, &[r2], Some(&[200]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[r1], Some(&[100]), None)
+        .unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[r2], Some(&[200]), None)
+        .unwrap();
     drop(writer);
 
     let active_gen = {
@@ -380,27 +464,40 @@ fn test_corrupt_sidecar_line_returns_error() {
     // Create a valid archive
     let mut writer = TileWriter::create(in_path).unwrap();
     let r1 = TelemetryRecord::new(100, 1, 1, 10.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[r1], Some(&[100]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[r1], Some(&[100]), None)
+        .unwrap();
     drop(writer);
 
     // Corrupt the quarantine sidecar with malformed unparseable content
     let q_path = quarantine_path(in_path);
     {
-        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(&q_path).unwrap();
+        let mut f = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&q_path)
+            .unwrap();
         writeln!(f, "CORRUPT_LINE_WITHOUT_COLON_OR_VALID_INTS").unwrap();
         f.flush().unwrap();
     }
 
     // Checking quarantine must fail with io::ErrorKind::InvalidData
     let check_res = is_tile_quarantined(in_path, 1, 1);
-    assert!(check_res.is_err(), "is_tile_quarantined must fail on corrupt sidecar line");
+    assert!(
+        check_res.is_err(),
+        "is_tile_quarantined must fail on corrupt sidecar line"
+    );
     let err = check_res.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("Corrupted quarantine sidecar"));
 
     // Compactor must fail closed when checking quarantine on corrupt sidecar
     let comp_res = Compactor::compact(&[in_path], out_path);
-    assert!(comp_res.is_err(), "Compaction must fail closed on corrupt quarantine sidecar");
+    assert!(
+        comp_res.is_err(),
+        "Compaction must fail closed on corrupt quarantine sidecar"
+    );
     let comp_err = comp_res.unwrap_err().to_string();
     assert!(
         comp_err.contains("Corrupted quarantine sidecar"),

@@ -1,6 +1,8 @@
 #![no_std]
 
-use s3a_core::{HyperTileHeader, SimplexHull, MicroHull, MAX_HULL_DIMENSIONS, MICRO_HULL_DIMENSIONS, Dop14Hull};
+use s3a_core::{
+    Dop14Hull, HyperTileHeader, MicroHull, SimplexHull, MAX_HULL_DIMENSIONS, MICRO_HULL_DIMENSIONS,
+};
 
 /// High-Performance 14-DOP (Discrete Oriented Polytope) SIMD rejection filter.
 /// Evaluates 7 canonical axis projections (3 orthogonal + 4 diagonal).
@@ -52,7 +54,9 @@ pub fn can_reject_micro_tile(hull: &MicroHull, query_point: &[f32]) -> bool {
     if hull.dim == 0 {
         return false;
     }
-    let dim = (hull.dim as usize).min(MICRO_HULL_DIMENSIONS).min(query_point.len());
+    let dim = (hull.dim as usize)
+        .min(MICRO_HULL_DIMENSIONS)
+        .min(query_point.len());
     for i in 0..dim {
         if query_point[i] < hull.min_bounds[i] || query_point[i] > hull.max_bounds[i] {
             return true;
@@ -172,7 +176,7 @@ pub fn cosine_similarity_int8(a: &[i8], b: &[i8]) -> f32 {
 
 /// Computes dot product directly on packed 4-bit unsigned nibble vectors.
 pub fn dot_product_4bit(a: &[u8], b: &[u8], dimensions: usize) -> u32 {
-    let byte_len = a.len().min(b.len()).min((dimensions + 1) / 2);
+    let byte_len = a.len().min(b.len()).min(dimensions.div_ceil(2));
     let mut sum = 0u32;
 
     for i in 0..byte_len {
@@ -218,7 +222,11 @@ pub fn is_record_alive(flags: u64) -> bool {
 }
 
 /// Single-cycle SIMD tile rejection check for temporal range filtering.
-pub fn can_reject_tile_time(header: &HyperTileHeader, query_min_ts: u64, query_max_ts: u64) -> bool {
+pub fn can_reject_tile_time(
+    header: &HyperTileHeader,
+    query_min_ts: u64,
+    query_max_ts: u64,
+) -> bool {
     if header.record_count == 0 {
         return true;
     }
@@ -230,7 +238,9 @@ pub fn can_reject_tile_point(hull: &SimplexHull, query_point: &[f32]) -> bool {
     if hull.dim == 0 {
         return false;
     }
-    let dim = (hull.dim as usize).min(MAX_HULL_DIMENSIONS).min(query_point.len());
+    let dim = (hull.dim as usize)
+        .min(MAX_HULL_DIMENSIONS)
+        .min(query_point.len());
     for i in 0..dim {
         if query_point[i] < hull.min_bounds[i] || query_point[i] > hull.max_bounds[i] {
             return true;
@@ -312,7 +322,11 @@ pub fn can_reject_tile_ttl(header: &HyperTileHeader, current_query_time: u64) ->
 
 /// Multi-Tenant / RBAC Security Rejection: Rejects the tile if tenant does not match
 /// or query clearance level is insufficient.
-pub fn can_reject_tile_security(header: &HyperTileHeader, tenant_id: u64, clearance_level: u8) -> bool {
+pub fn can_reject_tile_security(
+    header: &HyperTileHeader,
+    tenant_id: u64,
+    clearance_level: u8,
+) -> bool {
     if header.security.tenant_id != 0 && header.security.tenant_id != tenant_id {
         return true;
     }
@@ -336,7 +350,6 @@ pub fn learned_index_predict_offset(header: &HyperTileHeader, query_ts: u64) -> 
     let clamped = predicted.max(0.0).min((header.record_count - 1) as f32);
     clamped as u32
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -514,11 +527,7 @@ mod tests {
 
     #[test]
     fn test_dop14_simd_rejection() {
-        let points = [
-            [0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0],
-            [2.0, 2.0, 2.0],
-        ];
+        let points = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0]];
         let hull = Dop14Hull::from_points(&points);
 
         // Disjoint query box [5,5,5]..[6,6,6] should reject
@@ -528,5 +537,3 @@ mod tests {
         assert!(!can_reject_dop14(&hull, &[1.0, 1.0, 1.0], &[3.0, 3.0, 3.0]));
     }
 }
-
-

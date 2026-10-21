@@ -1,14 +1,14 @@
 use s3a_core::{
-    EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType,
-    FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET,
-    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, ADDON_EDU,
+    EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType, ADDON_EDU,
+    FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET, FILE_HEADER_SLOT_SIZE,
+    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
 };
+use s3a_pack_ontology::{OntologyAxiomRecord, OntologyConceptRecord, OntologyTileType};
 use s3a_pack_scholar::{
     AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, CitationFingerprintRecord,
     HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType,
     SrsManifestHeader, SrsWorkspaceRecord,
 };
-use s3a_pack_ontology::{OntologyAxiomRecord, OntologyConceptRecord, OntologyTileType};
 
 /// In-Memory Zero-Copy WebAssembly Snapshot Viewer.
 /// Operates directly on browser-provided memory buffers (Uint8Array / &[u8]) without filesystem IO.
@@ -37,12 +37,20 @@ impl<'a> WasmSnapshotView<'a> {
             return Err("Buffer too small for S3A dual file header");
         }
 
-        let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
-        let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
+            &bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+        );
+        let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
+            &bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+        );
 
         let header = match (slot_a.verify(), slot_b.verify()) {
             (Ok(_), Ok(_)) => {
-                if slot_a.generation >= slot_b.generation { *slot_a } else { *slot_b }
+                if slot_a.generation >= slot_b.generation {
+                    *slot_a
+                } else {
+                    *slot_b
+                }
             }
             (Ok(_), Err(_)) => *slot_a,
             (Err(_), Ok(_)) => *slot_b,
@@ -74,7 +82,9 @@ impl<'a> WasmSnapshotView<'a> {
                 break; // Premature EOF
             }
 
-            let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&bytes[offset..offset + HYPER_TILE_HEADER_SIZE]);
+            let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
+                &bytes[offset..offset + HYPER_TILE_HEADER_SIZE],
+            );
             let payload_start = offset + HYPER_TILE_HEADER_SIZE;
             let payload_end = payload_start + tile_header.payload_bytes as usize;
             if payload_end > offset + HYPER_TILE_SIZE {

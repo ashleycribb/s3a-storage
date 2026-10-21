@@ -69,16 +69,16 @@ pub const DOC_FLAG_IS_JSON: u32 = 1 << 1;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct StatementIndexRecord {
-    pub statement_id: [u64; 2],       // 128-bit statement UUID (offset 0..16)
-    pub stored_timestamp_ms: u64,     // Epoch ms when statement was stored (offset 16..24)
-    pub timestamp_ms: u64,            // Statement timestamp in epoch ms (offset 24..32)
-    pub actor_hash: u64,              // 64-bit hash of actor IFI (offset 32..40)
-    pub verb_hash: u32,               // 32-bit hash or verb_id of verb IRI (offset 40..44)
-    pub activity_hash: u32,           // 32-bit hash of object activity ID (offset 44..48)
-    pub registration_hash: u32,       // 32-bit hash of registration UUID (0 if none) (offset 48..52)
-    pub body_tile_id: u32,            // HyperTile ID containing the body blob (offset 52..56)
-    pub body_offset: u32,             // Byte offset in tile payload where StatementBlobHeader begins (offset 56..60)
-    pub flags: u32,                   // Active, voided, voiding, attachments, etc. (offset 60..64)
+    pub statement_id: [u64; 2],   // 128-bit statement UUID (offset 0..16)
+    pub stored_timestamp_ms: u64, // Epoch ms when statement was stored (offset 16..24)
+    pub timestamp_ms: u64,        // Statement timestamp in epoch ms (offset 24..32)
+    pub actor_hash: u64,          // 64-bit hash of actor IFI (offset 32..40)
+    pub verb_hash: u32,           // 32-bit hash or verb_id of verb IRI (offset 40..44)
+    pub activity_hash: u32,       // 32-bit hash of object activity ID (offset 44..48)
+    pub registration_hash: u32,   // 32-bit hash of registration UUID (0 if none) (offset 48..52)
+    pub body_tile_id: u32,        // HyperTile ID containing the body blob (offset 52..56)
+    pub body_offset: u32, // Byte offset in tile payload where StatementBlobHeader begins (offset 56..60)
+    pub flags: u32,       // Active, voided, voiding, attachments, etc. (offset 60..64)
 }
 
 impl Default for StatementIndexRecord {
@@ -153,13 +153,13 @@ impl StatementIndexRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct StatementBlobHeader {
-    pub body_hash_xxh3: [u8; 16],     // 128-bit hash (xxh3_128 of canonical statement JSON) (offset 0..16)
-    pub sha256_hash: [u8; 32],        // 256-bit SHA-256 hash of canonical statement JSON (offset 16..48)
-    pub total_bytes: u32,             // Total uncompressed byte length of this statement JSON (offset 48..52)
-    pub chunk_index: u16,             // 0 for single chunk, or chunk index if split (offset 52..54)
-    pub total_chunks: u16,            // 1 for single chunk, or total chunks (offset 54..56)
-    pub chunk_bytes: u32,             // Byte length of data payload immediately following this header (offset 56..60)
-    pub chunk_crc32: u32,             // CRC32C checksum of data payload following this header (offset 60..64)
+    pub body_hash_xxh3: [u8; 16], // 128-bit hash (xxh3_128 of canonical statement JSON) (offset 0..16)
+    pub sha256_hash: [u8; 32], // 256-bit SHA-256 hash of canonical statement JSON (offset 16..48)
+    pub total_bytes: u32, // Total uncompressed byte length of this statement JSON (offset 48..52)
+    pub chunk_index: u16, // 0 for single chunk, or chunk index if split (offset 52..54)
+    pub total_chunks: u16, // 1 for single chunk, or total chunks (offset 54..56)
+    pub chunk_bytes: u32, // Byte length of data payload immediately following this header (offset 56..60)
+    pub chunk_crc32: u32, // CRC32C checksum of data payload following this header (offset 60..64)
 }
 
 impl Default for StatementBlobHeader {
@@ -205,15 +205,15 @@ impl StatementBlobHeader {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct DocumentRecordHeader {
-    pub doc_kind: u32,                // DOC_KIND_STATE, DOC_KIND_AGENT_PROFILE, etc. (offset 0..4)
-    pub flags: u32,                   // DOC_FLAG_ACTIVE, DOC_FLAG_DELETED (offset 4..8)
-    pub key_hash: u64,                // 64-bit hash of compound key for fast O(1) lookup (offset 8..16)
-    pub etag_hash: [u8; 16],          // 128-bit hash representing document ETag (offset 16..32)
-    pub timestamp_ms: u64,            // Last-Modified timestamp in epoch ms (offset 32..40)
-    pub content_len: u32,             // Byte length of document payload (offset 40..44)
-    pub key_len: u32,                 // Byte length of UTF-8 key string (offset 44..48)
-    pub content_crc32: u32,           // CRC32C of document content payload (offset 48..52)
-    pub _reserved: [u32; 3],          // Zero-padded alignment to 64 bytes (offset 52..64)
+    pub doc_kind: u32, // DOC_KIND_STATE, DOC_KIND_AGENT_PROFILE, etc. (offset 0..4)
+    pub flags: u32,    // DOC_FLAG_ACTIVE, DOC_FLAG_DELETED (offset 4..8)
+    pub key_hash: u64, // 64-bit hash of compound key for fast O(1) lookup (offset 8..16)
+    pub etag_hash: [u8; 16], // 128-bit hash representing document ETag (offset 16..32)
+    pub timestamp_ms: u64, // Last-Modified timestamp in epoch ms (offset 32..40)
+    pub content_len: u32, // Byte length of document payload (offset 40..44)
+    pub key_len: u32,  // Byte length of UTF-8 key string (offset 44..48)
+    pub content_crc32: u32, // CRC32C of document content payload (offset 48..52)
+    pub _reserved: [u32; 3], // Zero-padded alignment to 64 bytes (offset 52..64)
 }
 
 impl Default for DocumentRecordHeader {
@@ -245,14 +245,14 @@ impl DocumentRecordHeader {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct AttachmentBlobHeader {
-    pub sha2: [u8; 32],               // 256-bit SHA-256 hash matching statement attachment sha2 (offset 0..32)
-    pub content_type_hash: u32,       // 32-bit hash of MIME type (offset 32..36)
-    pub chunk_index: u16,             // Chunk offset if split across tiles (offset 36..38)
-    pub total_chunks: u16,            // Total chunks (offset 38..40)
-    pub total_bytes: u32,             // Full attachment size in bytes (offset 40..44)
-    pub chunk_bytes: u32,             // Byte length of this chunk payload (offset 44..48)
-    pub chunk_crc32: u32,             // CRC32C checksum of this chunk (offset 48..52)
-    pub _reserved: [u32; 3],          // Zero-padded alignment to 64 bytes (offset 52..64)
+    pub sha2: [u8; 32], // 256-bit SHA-256 hash matching statement attachment sha2 (offset 0..32)
+    pub content_type_hash: u32, // 32-bit hash of MIME type (offset 32..36)
+    pub chunk_index: u16, // Chunk offset if split across tiles (offset 36..38)
+    pub total_chunks: u16, // Total chunks (offset 38..40)
+    pub total_bytes: u32, // Full attachment size in bytes (offset 40..44)
+    pub chunk_bytes: u32, // Byte length of this chunk payload (offset 44..48)
+    pub chunk_crc32: u32, // CRC32C checksum of this chunk (offset 48..52)
+    pub _reserved: [u32; 3], // Zero-padded alignment to 64 bytes (offset 52..64)
 }
 
 impl Default for AttachmentBlobHeader {
@@ -280,17 +280,17 @@ impl Default for AttachmentBlobHeader {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct ElrRecordHeader {
-    pub entity_id: [u64; 2],              // 128-bit entity UUID (offset 0..16)
-    pub source_statement_id: [u64; 2],    // 128-bit source statement UUID (provenance) (offset 16..32)
-    pub related_id: [u64; 2],             // 128-bit related entity UUID (person_id, resource_id, etc.) (offset 32..48)
-    pub timestamp_ms: u64,                // Timestamp in epoch ms (offset 48..56)
-    pub flags: u32,                       // ELR_FLAG_ACTIVE = 0, ELR_FLAG_TOMBSTONE = 1 << 0 (offset 56..60)
-    pub status: u32,                      // ELR_STATUS_* or ELR_GOAL_STATUS_* (offset 60..64)
-    pub numeric_value: f32,               // score_scaled / confidence (offset 64..68)
-    pub payload_len: u32,                 // byte length of following UTF-8 JSON payload (offset 68..72)
-    pub payload_crc32: u32,               // hardware CRC32C of payload (offset 72..76)
-    pub sub_type: u32,                    // ELR_GOAL_TYPE_* or qualification_type (offset 76..80)
-    pub _reserved: [u64; 2],              // padding to 96 bytes (offset 80..96)
+    pub entity_id: [u64; 2],           // 128-bit entity UUID (offset 0..16)
+    pub source_statement_id: [u64; 2], // 128-bit source statement UUID (provenance) (offset 16..32)
+    pub related_id: [u64; 2], // 128-bit related entity UUID (person_id, resource_id, etc.) (offset 32..48)
+    pub timestamp_ms: u64,    // Timestamp in epoch ms (offset 48..56)
+    pub flags: u32,           // ELR_FLAG_ACTIVE = 0, ELR_FLAG_TOMBSTONE = 1 << 0 (offset 56..60)
+    pub status: u32,          // ELR_STATUS_* or ELR_GOAL_STATUS_* (offset 60..64)
+    pub numeric_value: f32,   // score_scaled / confidence (offset 64..68)
+    pub payload_len: u32,     // byte length of following UTF-8 JSON payload (offset 68..72)
+    pub payload_crc32: u32,   // hardware CRC32C of payload (offset 72..76)
+    pub sub_type: u32,        // ELR_GOAL_TYPE_* or qualification_type (offset 76..80)
+    pub _reserved: [u64; 2],  // padding to 96 bytes (offset 80..96)
 }
 
 impl Default for ElrRecordHeader {

@@ -21,16 +21,14 @@ use s3a_core::array::{ArrayDataType, ArrayTileHeader, ArrayTileView};
 use s3a_core::consent::{ConsentPurpose, ConsentRecord};
 use s3a_core::schema::{decode_schema_payload, SchemaFieldDefinition, SchemaTypeDefinition};
 use s3a_core::{
-    FileHeader, HyperTileHeader, MarkRecord, SealedDirectoryEntry, SealedEndCap,
-    SealedEndCapV2, SealedIndexHeaderV2, SealedTileIndexEntry, FILE_HEADER_SIZE,
-    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, MARK_SET,
-    MARK_TARGET_ALL_RECORDS, SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC_V1,
-    SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE, SEALED_INDEX_HEADER_SIZE_V2,
-    SEALED_INDEX_MAGIC_V2, TileType,
+    FileHeader, HyperTileHeader, MarkRecord, SealedDirectoryEntry, SealedEndCap, SealedEndCapV2,
+    SealedIndexHeaderV2, SealedTileIndexEntry, TileType, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE,
+    HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, MARK_SET, MARK_TARGET_ALL_RECORDS,
+    SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC_V1, SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE,
+    SEALED_INDEX_HEADER_SIZE_V2, SEALED_INDEX_MAGIC_V2,
 };
 use s3a_edge::{
-    CompactEdgeSensorRecord, EdgeConsentRecord, EquipmentEventRecord,
-    PURPOSE_RESEARCH_ANALYTICS,
+    CompactEdgeSensorRecord, EdgeConsentRecord, EquipmentEventRecord, PURPOSE_RESEARCH_ANALYTICS,
 };
 use s3a_engine::anchor::{extract_anchors_from_footer, AnchorProof};
 use s3a_engine::sealed::{
@@ -318,10 +316,13 @@ pub fn tour_file<R: Read + Seek>(
         reader.seek(SeekFrom::Start(m_floor.offset))?;
         if reader.read_exact(&mut hdr_buf).is_ok() {
             let hdr: HyperTileHeader = pod_read_unaligned(&hdr_buf);
-            let payload_len = (hdr.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
+            let payload_len =
+                (hdr.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
             if payload_len > 0 {
                 let mut payload = vec![0u8; payload_len];
-                reader.seek(SeekFrom::Start(m_floor.offset + HYPER_TILE_HEADER_SIZE as u64))?;
+                reader.seek(SeekFrom::Start(
+                    m_floor.offset + HYPER_TILE_HEADER_SIZE as u64,
+                ))?;
                 if reader.read_exact(&mut payload).is_ok() {
                     manifest = String::from_utf8(payload).ok();
                 }
@@ -492,15 +493,15 @@ fn inspect_archive_context<R: Read + Seek>(
 
                     // Check for embedded anchors in footer
                     let mut anchors = Vec::new();
-                    let data_end_offset =
-                        FILE_HEADER_SIZE as u64 + (index_hdr.tile_count as u64) * (HYPER_TILE_SIZE as u64);
+                    let data_end_offset = FILE_HEADER_SIZE as u64
+                        + (index_hdr.tile_count as u64) * (HYPER_TILE_SIZE as u64);
                     if endcap.index_offset > data_end_offset {
                         let potential_anchor_len = (endcap.index_offset - data_end_offset) as usize;
                         if potential_anchor_len >= 12 {
                             reader.seek(SeekFrom::Start(data_end_offset))?;
                             let mut anchor_buf = vec![0u8; potential_anchor_len];
                             if reader.read_exact(&mut anchor_buf).is_ok()
-                                && &anchor_buf[..8] == &SEALED_ANCHORS_MAGIC
+                                && anchor_buf[..8] == SEALED_ANCHORS_MAGIC
                             {
                                 anchors = extract_anchors_from_footer(&anchor_buf, 0, 0);
                             }
@@ -567,7 +568,9 @@ fn inspect_archive_context<R: Read + Seek>(
                     // If a schema tile (77) is present, read ONLY that tile and override schemas
                     for f in &floors {
                         if f.type_id == TileType::SCHEMA {
-                            if let Ok(tile_bytes) = read_exact_tile_bytes(reader, f.offset, f.length) {
+                            if let Ok(tile_bytes) =
+                                read_exact_tile_bytes(reader, f.offset, f.length)
+                            {
                                 if tile_bytes.len() > HYPER_TILE_HEADER_SIZE {
                                     let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..];
                                     if let Ok(decoded_schemas) = decode_schema_payload(payload) {
@@ -607,7 +610,8 @@ fn inspect_archive_context<R: Read + Seek>(
             && endcap_v1.endcap_crc32 == compute_endcap_crc32(&endcap_v1)
         {
             let dir_offset = endcap_v1.footer_offset;
-            let dir_len = (endcap_v1.tile_count as usize) * std::mem::size_of::<SealedDirectoryEntry>();
+            let dir_len =
+                (endcap_v1.tile_count as usize) * std::mem::size_of::<SealedDirectoryEntry>();
 
             if dir_offset + (dir_len as u64) + (SEALED_ENDCAP_SIZE as u64) <= file_len {
                 reader.seek(SeekFrom::Start(dir_offset))?;
@@ -734,7 +738,10 @@ fn read_array_header<R: Read + Seek>(
     if hdr.is_valid() {
         Ok(hdr)
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid ArrayTileHeader"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid ArrayTileHeader",
+        ))
     }
 }
 
@@ -788,9 +795,17 @@ fn build_consent_state<R: Read + Seek>(
                     for m in records {
                         if m.mark_kind == MARK_CONSENT_WITHDRAWN {
                             if m.set_or_clear == MARK_SET {
-                                marks_withdrawn.insert((m.target_tile_type, m.target_tile_id as u32, m.record_index));
+                                marks_withdrawn.insert((
+                                    m.target_tile_type,
+                                    m.target_tile_id as u32,
+                                    m.record_index,
+                                ));
                             } else {
-                                marks_withdrawn.remove(&(m.target_tile_type, m.target_tile_id as u32, m.record_index));
+                                marks_withdrawn.remove(&(
+                                    m.target_tile_type,
+                                    m.target_tile_id as u32,
+                                    m.record_index,
+                                ));
                             }
                         }
                     }
@@ -851,7 +866,10 @@ fn evaluate_consent_summary<R: Read + Seek>(
 
     let total = active + withdrawn;
     let status_str = if withdrawn > 0 {
-        format!("{} active, {} withdrawn (purpose=research)", active, withdrawn)
+        format!(
+            "{} active, {} withdrawn (purpose=research)",
+            active, withdrawn
+        )
     } else {
         format!("{} active (purpose=research)", active)
     };
@@ -878,8 +896,14 @@ fn is_record_withheld(
     }
 
     // 2. Tile 19 Mark check
-    if state.marks_withdrawn.contains(&(floor.type_id, floor.tile_index, record_idx))
-        || state.marks_withdrawn.contains(&(floor.type_id, floor.tile_index, MARK_TARGET_ALL_RECORDS))
+    if state
+        .marks_withdrawn
+        .contains(&(floor.type_id, floor.tile_index, record_idx))
+        || state.marks_withdrawn.contains(&(
+            floor.type_id,
+            floor.tile_index,
+            MARK_TARGET_ALL_RECORDS,
+        ))
     {
         return true;
     }
@@ -979,7 +1003,13 @@ fn inspect_floor_detail<R: Read + Seek>(
         }
     } else {
         // Known fallback unpacking if record_size == 0
-        unpack_fallback_records(floor, payload, &consent_state, &mut records, &mut withheld_count);
+        unpack_fallback_records(
+            floor,
+            payload,
+            &consent_state,
+            &mut records,
+            &mut withheld_count,
+        );
     }
 
     Ok(TourFloorDetail {
@@ -1012,8 +1042,12 @@ fn calculate_array_stats(view: &ArrayTileView) -> TourArrayStats {
                 total_elements = slice.len();
                 for &v in slice {
                     let vf = v as f64;
-                    if vf < min { min = vf; }
-                    if vf > max { max = vf; }
+                    if vf < min {
+                        min = vf;
+                    }
+                    if vf > max {
+                        max = vf;
+                    }
                     sum += vf;
                 }
             }
@@ -1022,8 +1056,12 @@ fn calculate_array_stats(view: &ArrayTileView) -> TourArrayStats {
             if let Ok(slice) = view.read_elements::<f64>() {
                 total_elements = slice.len();
                 for &v in slice {
-                    if v < min { min = v; }
-                    if v > max { max = v; }
+                    if v < min {
+                        min = v;
+                    }
+                    if v > max {
+                        max = v;
+                    }
                     sum += v;
                 }
             }
@@ -1033,8 +1071,12 @@ fn calculate_array_stats(view: &ArrayTileView) -> TourArrayStats {
                 total_elements = slice.len();
                 for &v in slice {
                     let vf = v as f64;
-                    if vf < min { min = vf; }
-                    if vf > max { max = vf; }
+                    if vf < min {
+                        min = vf;
+                    }
+                    if vf > max {
+                        max = vf;
+                    }
                     sum += vf;
                 }
             }
@@ -1044,8 +1086,12 @@ fn calculate_array_stats(view: &ArrayTileView) -> TourArrayStats {
                 total_elements = slice.len();
                 for &v in slice {
                     let vf = v as f64;
-                    if vf < min { min = vf; }
-                    if vf > max { max = vf; }
+                    if vf < min {
+                        min = vf;
+                    }
+                    if vf > max {
+                        max = vf;
+                    }
                     sum += vf;
                 }
             }
@@ -1054,16 +1100,28 @@ fn calculate_array_stats(view: &ArrayTileView) -> TourArrayStats {
             // General byte elements
             for &b in view.data {
                 let vf = b as f64;
-                if vf < min { min = vf; }
-                if vf > max { max = vf; }
+                if vf < min {
+                    min = vf;
+                }
+                if vf > max {
+                    max = vf;
+                }
                 sum += vf;
             }
         }
     }
 
-    if min == f64::MAX { min = 0.0; }
-    if max == f64::MIN { max = 0.0; }
-    let mean = if total_elements > 0 { sum / total_elements as f64 } else { 0.0 };
+    if min == f64::MAX {
+        min = 0.0;
+    }
+    if max == f64::MIN {
+        max = 0.0;
+    }
+    let mean = if total_elements > 0 {
+        sum / total_elements as f64
+    } else {
+        0.0
+    };
 
     TourArrayStats {
         total_elements,
@@ -1117,7 +1175,10 @@ fn unpack_record_json(fields: &[SchemaFieldDefinition], slice: &[u8]) -> serde_j
                     serde_json::json!(f64::from_le_bytes(bytes))
                 }
                 11 => {
-                    let nul = field_slice.iter().position(|&b| b == 0).unwrap_or(field_slice.len());
+                    let nul = field_slice
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(field_slice.len());
                     let s = std::str::from_utf8(&field_slice[..nul]).unwrap_or("");
                     serde_json::json!(s)
                 }
@@ -1204,8 +1265,11 @@ fn execute_array_slice<R: Read + Seek>(
     ctx: &ParsedArchiveContext,
 ) -> Result<TourSliceResult, Box<dyn std::error::Error>> {
     // Collect all Array floors
-    let array_floors: Vec<&ParsedFloorMeta> =
-        ctx.floors.iter().filter(|f| f.type_id == TileType::ARRAY).collect();
+    let array_floors: Vec<&ParsedFloorMeta> = ctx
+        .floors
+        .iter()
+        .filter(|f| f.type_id == TileType::ARRAY)
+        .collect();
 
     if array_floors.is_empty() {
         return Err("No Array floors found in archive".into());
@@ -1268,62 +1332,42 @@ fn execute_array_slice<R: Read + Seek>(
         match dtype {
             Some(ArrayDataType::Float32) => {
                 if let Ok(slice) = view.read_elements::<f32>() {
-                    extract_chunk_elements_32(
-                        &hdr,
-                        &ranges,
-                        slice,
-                        |coords, val| {
-                            elements.push(serde_json::json!({
-                                "coords": coords,
-                                "value": val,
-                            }));
-                        },
-                    );
-                }
-            }
-            Some(ArrayDataType::Float64) => {
-                if let Ok(slice) = view.read_elements::<f64>() {
-                    extract_chunk_elements_64(
-                        &hdr,
-                        &ranges,
-                        slice,
-                        |coords, val| {
-                            elements.push(serde_json::json!({
-                                "coords": coords,
-                                "value": val,
-                            }));
-                        },
-                    );
-                }
-            }
-            Some(ArrayDataType::Int32) => {
-                if let Ok(slice) = view.read_elements::<i32>() {
-                    extract_chunk_elements_i32(
-                        &hdr,
-                        &ranges,
-                        slice,
-                        |coords, val| {
-                            elements.push(serde_json::json!({
-                                "coords": coords,
-                                "value": val,
-                            }));
-                        },
-                    );
-                }
-            }
-            _ => {
-                // Byte fallback
-                extract_chunk_elements_u8(
-                    &hdr,
-                    &ranges,
-                    view.data,
-                    |coords, val| {
+                    extract_chunk_elements_32(&hdr, &ranges, slice, |coords, val| {
                         elements.push(serde_json::json!({
                             "coords": coords,
                             "value": val,
                         }));
-                    },
-                );
+                    });
+                }
+            }
+            Some(ArrayDataType::Float64) => {
+                if let Ok(slice) = view.read_elements::<f64>() {
+                    extract_chunk_elements_64(&hdr, &ranges, slice, |coords, val| {
+                        elements.push(serde_json::json!({
+                            "coords": coords,
+                            "value": val,
+                        }));
+                    });
+                }
+            }
+            Some(ArrayDataType::Int32) => {
+                if let Ok(slice) = view.read_elements::<i32>() {
+                    extract_chunk_elements_i32(&hdr, &ranges, slice, |coords, val| {
+                        elements.push(serde_json::json!({
+                            "coords": coords,
+                            "value": val,
+                        }));
+                    });
+                }
+            }
+            _ => {
+                // Byte fallback
+                extract_chunk_elements_u8(&hdr, &ranges, view.data, |coords, val| {
+                    elements.push(serde_json::json!({
+                        "coords": coords,
+                        "value": val,
+                    }));
+                });
             }
         }
     }
@@ -1352,7 +1396,10 @@ fn parse_slice_ranges(
             let axis_id = axis_id.trim();
             let idx = if let Ok(num) = axis_id.parse::<usize>() {
                 num
-            } else if let Some(found) = axis_names.iter().position(|&n| n.eq_ignore_ascii_case(axis_id)) {
+            } else if let Some(found) = axis_names
+                .iter()
+                .position(|&n| n.eq_ignore_ascii_case(axis_id))
+            {
                 found
             } else {
                 return Err(format!("Unknown axis name '{}'", axis_id).into());
@@ -1587,7 +1634,13 @@ fn execute_cross_section<R: Read + Seek>(
                 let slice = &payload[start..start + rec_size];
                 let obj = unpack_record_json(&schema.fields, slice);
 
-                if record_matches_filter(&obj, &search_key, search_val, floor.min_key, floor.max_key) {
+                if record_matches_filter(
+                    &obj,
+                    &search_key,
+                    search_val,
+                    floor.min_key,
+                    floor.max_key,
+                ) {
                     if is_record_withheld(&consent_state, floor, i as u32, &obj) {
                         withheld_count += 1;
                     } else {
@@ -1633,10 +1686,10 @@ fn record_matches_filter(
             }
         }
         for (k, v) in map {
-            if k == "timestamp" || k == "id" || k == "sensor_id" || k == "subject_id" {
-                if format!("{}", v).trim_matches('"') == val_str {
-                    return true;
-                }
+            if (k == "timestamp" || k == "id" || k == "sensor_id" || k == "subject_id")
+                && format!("{}", v).trim_matches('"') == val_str
+            {
+                return true;
             }
         }
         return false;
@@ -1681,12 +1734,15 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!(" Total Epochs:      {}", history.len());
         println!();
         println!(
-            "{:<4} {:<20} {:<34} {:<34} {}",
-            "Gen", "Sealed Time", "Prev Seal Hash", "Seal Hash", "Anchor Status"
+            "{:<4} {:<20} {:<34} {:<34} Anchor Status",
+            "Gen", "Sealed Time", "Prev Seal Hash", "Seal Hash"
         );
         println!(
-            "{:<4} {:<20} {:<34} {:<34} {}",
-            "---", "-------------------", "--------------------------------", "--------------------------------", "-------------"
+            "{:<4} {:<20} {:<34} {:<34} -------------",
+            "---",
+            "-------------------",
+            "--------------------------------",
+            "--------------------------------"
         );
         for h in history {
             println!(
@@ -1706,8 +1762,14 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!("============================================================");
         println!(" S3A FLOOR DETAIL: Floor {}", detail.index);
         println!("============================================================");
-        println!(" Type:        {} (Type ID {}, Layout v{})", detail.type_name, detail.type_id, detail.version);
-        println!(" Records:     {} ({} bytes)", detail.record_count, detail.size_bytes);
+        println!(
+            " Type:        {} (Type ID {}, Layout v{})",
+            detail.type_name, detail.type_id, detail.version
+        );
+        println!(
+            " Records:     {} ({} bytes)",
+            detail.record_count, detail.size_bytes
+        );
         println!(" Keys/Range:  {}..{}", detail.min_key, detail.max_key);
         println!(" Hash:        {}", detail.payload_hash);
         println!();
@@ -1742,7 +1804,8 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         if detail.withheld_count > 0 {
             println!(
                 "({} records displayed, {} withheld due to research consent policy)",
-                detail.records.len(), detail.withheld_count
+                detail.records.len(),
+                detail.withheld_count
             );
         } else {
             println!("({} records displayed, 0 withheld)", detail.records.len());
@@ -1773,10 +1836,16 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
     // 4. Cross-section search (`--cross key=val`)
     if let Some(cross) = &report.cross_section {
         println!("============================================================");
-        println!(" S3A CROSS-SECTION: {}={}", cross.search_key, cross.search_value);
+        println!(
+            " S3A CROSS-SECTION: {}={}",
+            cross.search_key, cross.search_value
+        );
         println!("============================================================");
         println!(" Total Matches:    {}", cross.match_count);
-        println!(" Withheld Count:   {} (consent: purpose=research)", cross.withheld_count);
+        println!(
+            " Withheld Count:   {} (consent: purpose=research)",
+            cross.withheld_count
+        );
         println!();
         if !cross.matches.is_empty() {
             println!("Matches:");
@@ -1799,7 +1868,10 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
     println!(" Total Floors:    {}", report.lobby.tile_count);
     println!(" Seal Status:     {}", report.lobby.seal_status.summary);
     println!(" Consent Summary: {}", report.lobby.consent_summary.status);
-    println!(" Schema Registry: {} registered types", report.lobby.schema_names.len());
+    println!(
+        " Schema Registry: {} registered types",
+        report.lobby.schema_names.len()
+    );
     for (t_id, name) in &report.lobby.schema_names {
         println!("   - Type {}: {}", t_id, name);
     }

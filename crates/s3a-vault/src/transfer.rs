@@ -6,9 +6,7 @@ use std::collections::HashSet;
 
 use crate::errors::VaultError;
 use crate::keystore::KeyStore;
-use crate::records::{
-    ItemTransferRecord, TRANSFER_MODE_UNIQUE,
-};
+use crate::records::{ItemTransferRecord, TRANSFER_MODE_UNIQUE};
 
 /// Compute transfer hash (§5.3):
 /// transfer_hash = SHA-256(prev_transfer_hash || item_hash || from_pubkey || to_pubkey || timestamp)
@@ -24,7 +22,7 @@ pub fn compute_transfer_hash(
     hasher.update(item_hash);
     hasher.update(from_pubkey);
     hasher.update(to_pubkey);
-    hasher.update(&timestamp.to_le_bytes());
+    hasher.update(timestamp.to_le_bytes());
     hasher.finalize().into()
 }
 
@@ -93,10 +91,14 @@ pub fn resolve_chain_ownership(
     verify_transfer_record(genesis)?;
 
     if genesis.prev_transfer_hash != [0u8; 32] {
-        return Err(VaultError::CorruptedData("Genesis transfer link must have zero prev_transfer_hash"));
+        return Err(VaultError::CorruptedData(
+            "Genesis transfer link must have zero prev_transfer_hash",
+        ));
     }
     if &genesis.from_pubkey != issuer_pubkey {
-        return Err(VaultError::CorruptedData("Genesis transfer must be signed by the issuer"));
+        return Err(VaultError::CorruptedData(
+            "Genesis transfer must be signed by the issuer",
+        ));
     }
 
     let mut prev_hash = compute_transfer_hash(
@@ -119,12 +121,16 @@ pub fn resolve_chain_ownership(
 
         // Must link to exact prev_transfer_hash
         if link.prev_transfer_hash != prev_hash {
-            return Err(VaultError::CorruptedData("Transfer chain prev_transfer_hash broken"));
+            return Err(VaultError::CorruptedData(
+                "Transfer chain prev_transfer_hash broken",
+            ));
         }
 
         // Must be signed by the current owner
         if link.from_pubkey != current_owner {
-            return Err(VaultError::CorruptedData("Transfer link sender is not current owner"));
+            return Err(VaultError::CorruptedData(
+                "Transfer link sender is not current owner",
+            ));
         }
 
         // Double-send detection for unique transfers

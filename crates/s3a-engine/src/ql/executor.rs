@@ -4,8 +4,8 @@ use std::sync::{Arc, OnceLock, RwLock};
 use crate::ql::ast::*;
 use crate::ql::error::QlError;
 use crate::{
-    EmbeddingRecord128, LearningActivityRecord, MmapReader,
-    QuerySieve, S3ACoordinate, S3ACrudEngine, TelemetryRecord, TileFusionEngine, TileType,
+    EmbeddingRecord128, LearningActivityRecord, MmapReader, QuerySieve, S3ACoordinate,
+    S3ACrudEngine, TelemetryRecord, TileFusionEngine, TileType,
 };
 use s3a_simd::{cosine_similarity, dot_product};
 
@@ -21,13 +21,22 @@ pub enum QueryResult {
         summary: String,
         json_payload: Option<String>,
     },
-    Inserted { coordinate: S3ACoordinate },
-    Deleted { success: bool },
-    Compacted { new_tile_count: u32 },
-    Fused { new_tile_count: u32 },
+    Inserted {
+        coordinate: S3ACoordinate,
+    },
+    Deleted {
+        success: bool,
+    },
+    Compacted {
+        new_tile_count: u32,
+    },
+    Fused {
+        new_tile_count: u32,
+    },
 }
 
-pub type PackSiftHandler = Arc<dyn Fn(&SiftStatement) -> Result<QueryResult, QlError> + Send + Sync>;
+pub type PackSiftHandler =
+    Arc<dyn Fn(&SiftStatement) -> Result<QueryResult, QlError> + Send + Sync>;
 
 static PACK_HANDLERS: OnceLock<RwLock<HashMap<SiftDomain, PackSiftHandler>>> = OnceLock::new();
 
@@ -75,30 +84,30 @@ impl S3AQLEngine {
                 if let Some(handler) = map.get(&SiftDomain::Kinematics) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-robotics",
                     feature: "kinematics",
-                });
+                })
             }
             SiftDomain::GisMesh => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::GisMesh) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-gis",
                     feature: "gis_mesh",
-                });
+                })
             }
             SiftDomain::DaCommitments => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::DaCommitments) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-da",
                     feature: "da_commitments",
-                });
+                })
             }
             SiftDomain::HumanLrs | SiftDomain::LearningActivities => {
                 let map = get_pack_handlers().read().unwrap();
@@ -109,30 +118,30 @@ impl S3AQLEngine {
                 if let Some(handler) = map.get(&SiftDomain::HumanLrs) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "human_lrs",
-                });
+                })
             }
             SiftDomain::AiTraces => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::AiTraces) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "ai_traces",
-                });
+                })
             }
             SiftDomain::AcademicPapers => {
                 let map = get_pack_handlers().read().unwrap();
                 if let Some(handler) = map.get(&SiftDomain::AcademicPapers) {
                     return handler(sift);
                 }
-                return Err(QlError::PackRequired {
+                Err(QlError::PackRequired {
                     pack: "s3a-pack-scholar",
                     feature: "academic_papers",
-                });
+                })
             }
             SiftDomain::Telemetry => {
                 let reader = MmapReader::open(&sift.from_path).map_err(QlError::Io)?;
@@ -159,7 +168,8 @@ impl S3AQLEngine {
                     }
                 }
 
-                let records = sieve.query_telemetry_with_coords(min_ts, max_ts, sensor_id, metric_id);
+                let records =
+                    sieve.query_telemetry_with_coords(min_ts, max_ts, sensor_id, metric_id);
                 let limited = match sift.limit {
                     Some(lim) => records.into_iter().take(lim).collect(),
                     None => records,
@@ -213,7 +223,9 @@ impl S3AQLEngine {
 
                 let mut results = Vec::new();
 
-                if let Some((comp_vec, v_weight, sp_target, sp_weight, hl_secs, t_weight)) = compose_opt {
+                if let Some((comp_vec, v_weight, sp_target, sp_weight, hl_secs, t_weight)) =
+                    compose_opt
+                {
                     for i in 0..reader.tile_count() as usize {
                         if let Some((header, payload)) = reader.get_tile(i) {
                             if header.tile_type == TileType::EMBEDDING {
@@ -231,14 +243,15 @@ impl S3AQLEngine {
                                         };
                                         let time_score = if let Some(hl) = hl_secs {
                                             let dt = (max_t.saturating_sub(rec.timestamp)) as f64;
-                                            let lambda = 0.69314718 / hl.max(1.0);
+                                            let lambda = std::f64::consts::LN_2 / hl.max(1.0);
                                             (-lambda * dt).exp() as f32
                                         } else {
                                             1.0
                                         };
 
-                                        let composite_score =
-                                            v_weight * sim + sp_weight * sp_score + t_weight * time_score;
+                                        let composite_score = v_weight * sim
+                                            + sp_weight * sp_score
+                                            + t_weight * time_score;
                                         results.push((
                                             *rec,
                                             composite_score,
@@ -249,7 +262,9 @@ impl S3AQLEngine {
                             }
                         }
                     }
-                    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+                    results.sort_by(|a, b| {
+                        b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal)
+                    });
                     if let Some(lim) = sift.limit {
                         results.truncate(lim);
                     }
@@ -261,8 +276,12 @@ impl S3AQLEngine {
                                 for (offset, rec) in recs.iter().enumerate() {
                                     if rec.timestamp >= min_t && rec.timestamp <= max_t {
                                         let sim = match metric {
-                                            SimilarityMetric::Cosine => cosine_similarity(&rec.vector, target),
-                                            SimilarityMetric::DotProduct => dot_product(&rec.vector, target),
+                                            SimilarityMetric::Cosine => {
+                                                cosine_similarity(&rec.vector, target)
+                                            }
+                                            SimilarityMetric::DotProduct => {
+                                                dot_product(&rec.vector, target)
+                                            }
                                         };
                                         if sim >= threshold {
                                             results.push((
@@ -325,11 +344,9 @@ impl S3AQLEngine {
     }
 
     fn execute_fuse(fuse: &FuseStatement) -> Result<QueryResult, QlError> {
-        let count = TileFusionEngine::fuse_telemetry_tiles(
-            &fuse.input_paths,
-            fuse.output_path.clone(),
-        )
-        .map_err(|e| QlError::Internal(e.to_string()))?;
+        let count =
+            TileFusionEngine::fuse_telemetry_tiles(&fuse.input_paths, fuse.output_path.clone())
+                .map_err(|e| QlError::Internal(e.to_string()))?;
 
         Ok(QueryResult::Fused {
             new_tile_count: count,

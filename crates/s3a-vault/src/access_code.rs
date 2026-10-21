@@ -66,8 +66,9 @@ impl AccessCode {
 
     /// Verify signature and structure.
     pub fn verify_signature(&self) -> Result<(), VaultError> {
-        let verifying_key = VerifyingKey::from_bytes(&self.issuer_pubkey)
-            .map_err(|_| VaultError::InvalidSignature("Invalid issuer public key in access code"))?;
+        let verifying_key = VerifyingKey::from_bytes(&self.issuer_pubkey).map_err(|_| {
+            VaultError::InvalidSignature("Invalid issuer public key in access code")
+        })?;
         let mut sig_bytes = [0u8; 64];
         hex::decode_to_slice(&self.signature, &mut sig_bytes)
             .map_err(|_| VaultError::InvalidSignature("Invalid hex signature in access code"))?;
@@ -138,7 +139,9 @@ impl AccessCodeSessionManager {
 
         // 3. Target gate match
         if code.target_gate != target_gate.to_address_string() {
-            return Err(VaultError::InvalidAddressFormat("Target gate mismatch".into()));
+            return Err(VaultError::InvalidAddressFormat(
+                "Target gate mismatch".into(),
+            ));
         }
 
         // 4. Expiry
@@ -160,8 +163,8 @@ impl AccessCodeSessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
     use crate::records::{ACTION_READ, ACTION_WRITE};
+    use rand_core::OsRng;
 
     #[test]
     fn test_access_code_issuance_token_and_consumption() {

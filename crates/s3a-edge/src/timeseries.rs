@@ -47,7 +47,7 @@ pub fn bit_pack_u16(values: &[u16], bit_width: u8, out: &mut [u8]) -> usize {
     }
 
     let total_bits = values.len() * (bit_width as usize);
-    let bytes_needed = (total_bits + 7) / 8;
+    let bytes_needed = total_bits.div_ceil(8);
     if out.len() < bytes_needed {
         return 0;
     }

@@ -39,7 +39,10 @@ pub fn register_ql_handlers() {
             Ok(s3a_engine::ql::QueryResult::PackData {
                 domain: s3a_engine::ql::ast::SiftDomain::DaCommitments,
                 count,
-                summary: format!("Found {} DA commitment records in '{}'", count, sift.from_path),
+                summary: format!(
+                    "Found {} DA commitment records in '{}'",
+                    count, sift.from_path
+                ),
                 json_payload: None,
             })
         }),
@@ -72,7 +75,13 @@ mod tests {
 
     #[test]
     fn test_da_write_and_query_commitments() {
-        let temp = std::env::temp_dir().join(format!("s3a_test_da_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp = std::env::temp_dir().join(format!(
+            "s3a_test_da_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let engine = S3ACrudEngine::open_or_create(&temp).unwrap();
         engine.enable_addon(ADDON_DA).unwrap();
 
