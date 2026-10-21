@@ -773,6 +773,39 @@ impl TileWriter {
     }
 }
 
+/// Why a tile was rejected by a `try_*` reader accessor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorruptReason {
+    IndexOutOfRange,
+    StrideTooSmall { stride: usize },
+    OffsetOverflow,
+    SlotPastEof { end: usize, file_len: usize },
+    PayloadTooLong { payload_len: usize, capacity: usize },
+    HeaderCrcMismatch { stored: u32, computed: u32 },
+    DataCrcMismatch { stored: u32, computed: u32 },
+}
+
+/// A tile failed structural or checksum validation (ADR-0004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Corrupt {
+    pub tile: usize,
+    pub reason: CorruptReason,
+}
+
+impl Corrupt {
+    fn new(tile: usize, reason: CorruptReason) -> Self {
+        Self { tile, reason }
+    }
+}
+
+impl std::fmt::Display for Corrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "corrupt tile {}: {:?}", self.tile, self.reason)
+    }
+}
+
+impl std::error::Error for Corrupt {}
+
 /// Zero-copy memory-mapped reader for S3A archives with dual-generation metadata validation.
 pub struct MmapReader {
     _file: File,
@@ -799,12 +832,55 @@ impl MmapReader {
         let (active_header, active_slot) = resolve_active_header(slot_a, slot_b)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
+        // A3: the file must be large enough to hold every tile the header claims.
+        let (base, stride, min_hdr) = if active_header.is_edge_profile() {
+            let stride = active_header.tile_stride();
+            let base = if (active_header.flags & s3a_edge::FLAG_COMPACT_HEADER) != 0 { 256.max(stride) } else { FILE_HEADER_SIZE };
+            (base, stride, s3a_edge::COMMON_TILE_HEADER_SIZE)
+        } else {
+            (FILE_HEADER_SIZE, HYPER_TILE_SIZE, HYPER_TILE_HEADER_SIZE)
+        };
+        let bad = |m: String| io::Error::new(io::ErrorKind::InvalidData, m);
+        if stride < min_hdr {
+            return Err(bad(format!("tile stride {} smaller than tile header {}", stride, min_hdr)));
+        }
+        let need = (active_header.tile_count as usize)
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(base))
+            .ok_or_else(|| bad("tile_count * stride overflows".into()))?;
+        // A truncated file (need > len) still opens so intact leading tiles stay readable
+        // (spec vector invalid_truncated_tile); see validate_file_size() / verify_checksums().
+        let _ = need;
+
         Ok(Self {
             _file: file,
             mmap,
             active_header,
             active_slot,
         })
+    }
+
+    /// A3: checks that the file is long enough for `tile_count` tiles of the header's stride.
+    /// Returns `Corrupt { tile: first_missing_tile, reason: SlotPastEof }` if it is not.
+    pub fn validate_file_size(&self) -> Result<(), Corrupt> {
+        let count = self.tile_count() as usize;
+        if count == 0 {
+            return Ok(());
+        }
+        let (base, stride) = if self.is_edge_archive() {
+            (self.header_extent(), self.tile_stride())
+        } else {
+            (FILE_HEADER_SIZE, HYPER_TILE_SIZE)
+        };
+        let need = count
+            .checked_mul(stride)
+            .and_then(|n| n.checked_add(base))
+            .ok_or(Corrupt::new(count - 1, CorruptReason::OffsetOverflow))?;
+        if need > self.mmap.len() {
+            let first_missing = self.mmap.len().saturating_sub(base) / stride.max(1);
+            return Err(Corrupt::new(first_missing, CorruptReason::SlotPastEof { end: need, file_len: self.mmap.len() }));
+        }
+        Ok(())
     }
 
     pub fn file_header(&self) -> &FileHeader {
@@ -847,33 +923,67 @@ impl MmapReader {
         }
     }
 
+    /// Returns `None` on any corruption (never panics on bounds). See [`MmapReader::try_get_edge_tile`].
     pub fn get_edge_tile(&self, index: usize) -> Option<(&s3a_edge::CommonTileHeader, &[u8])> {
-        if index >= self.tile_count() as usize {
-            return None;
-        }
-
-        let stride = self.tile_stride();
-        let offset = self.header_extent() + index * stride;
-        if offset + stride > self.mmap.len() {
-            return None;
-        }
-
-        let header_slice = &self.mmap[offset..offset + s3a_edge::COMMON_TILE_HEADER_SIZE];
-        let tile_header: &s3a_edge::CommonTileHeader = from_bytes(header_slice);
-
-        let payload_start = offset + s3a_edge::COMMON_TILE_HEADER_SIZE;
-        let payload_end = payload_start + tile_header.payload_len as usize;
-        if payload_end > offset + stride {
-            return None;
-        }
-        let payload = &self.mmap[payload_start..payload_end];
-
-        Some((tile_header, payload))
+        self.try_get_edge_tile(index).ok()
     }
 
-    pub fn get_promoted_tile(&self, index: usize) -> Option<(HyperTileHeader, &[u8])> {
+    /// Byte range `[start, end)` of tile slot `index`, checked against the real file length.
+    fn tile_slot(&self, index: usize, base: usize, stride: usize, min_header: usize) -> Result<(usize, usize), Corrupt> {
+        if index >= self.tile_count() as usize {
+            return Err(Corrupt::new(index, CorruptReason::IndexOutOfRange));
+        }
+        if stride < min_header {
+            return Err(Corrupt::new(index, CorruptReason::StrideTooSmall { stride }));
+        }
+        let start = index
+            .checked_mul(stride)
+            .and_then(|o| o.checked_add(base))
+            .ok_or(Corrupt::new(index, CorruptReason::OffsetOverflow))?;
+        let end = start
+            .checked_add(stride)
+            .ok_or(Corrupt::new(index, CorruptReason::OffsetOverflow))?;
+        if end > self.mmap.len() {
+            return Err(Corrupt::new(index, CorruptReason::SlotPastEof { end, file_len: self.mmap.len() }));
+        }
+        Ok((start, end))
+    }
+
+    /// Like [`MmapReader::get_edge_tile`] but reports why a tile was rejected. When the tile has
+    /// `TILE_FLAG_CRC_CHAIN` set, both `header_crc32` and `data_crc32` are verified.
+    pub fn try_get_edge_tile(&self, index: usize) -> Result<(&s3a_edge::CommonTileHeader, &[u8]), Corrupt> {
+        let hs = s3a_edge::COMMON_TILE_HEADER_SIZE;
+        let (offset, slot_end) = self.tile_slot(index, self.header_extent(), self.tile_stride(), hs)?;
+
+        let header_slice = &self.mmap[offset..offset + hs];
+        // NOTE(A4): unaligned bytemuck cast; replaced by pod_read_unaligned in A4.
+        let tile_header: &s3a_edge::CommonTileHeader = from_bytes(header_slice);
+
+        let payload_start = offset + hs;
+        let len = tile_header.payload_len as usize;
+        let payload_end = payload_start
+            .checked_add(len)
+            .filter(|e| *e <= slot_end)
+            .ok_or(Corrupt::new(index, CorruptReason::PayloadTooLong { payload_len: len, capacity: slot_end - payload_start }))?;
+        let payload = &self.mmap[payload_start..payload_end];
+
+        if tile_header.flags & s3a_edge::TILE_FLAG_CRC_CHAIN != 0 {
+            let h = s3a_edge::compute_common_tile_header_crc32(tile_header);
+            if h != tile_header.header_crc32 {
+                return Err(Corrupt::new(index, CorruptReason::HeaderCrcMismatch { stored: tile_header.header_crc32, computed: h }));
+            }
+            let d = crc32c::crc32c(payload);
+            if d != tile_header.data_crc32 {
+                return Err(Corrupt::new(index, CorruptReason::DataCrcMismatch { stored: tile_header.data_crc32, computed: d }));
+            }
+        }
+        Ok((tile_header, payload))
+    }
+
+    /// Result-returning variant of [`MmapReader::get_promoted_tile`].
+    pub fn try_get_promoted_tile(&self, index: usize) -> Result<(HyperTileHeader, &[u8]), Corrupt> {
         if self.is_edge_archive() {
-            let (edge_hdr, payload) = self.get_edge_tile(index)?;
+            let (edge_hdr, payload) = self.try_get_edge_tile(index)?;
             let mut promoted = HyperTileHeader::new((index + 1) as u64, edge_hdr.type_id as u32);
             promoted.record_count = edge_hdr.record_count;
             promoted.payload_bytes = edge_hdr.payload_len as u32;
@@ -884,34 +994,37 @@ impl MmapReader {
             promoted.tile_index = index as u32;
             promoted.file_uuid = self.active_header.file_uuid;
             promoted.provenance.merkle_root = edge_hdr.payload_hash;
-            Some((promoted, payload))
+            Ok((promoted, payload))
         } else {
-            let (hdr, payload) = self.get_tile(index)?;
-            Some((*hdr, payload))
+            let (hdr, payload) = self.try_get_tile(index)?;
+            Ok((*hdr, payload))
         }
     }
 
-    pub fn get_tile(&self, index: usize) -> Option<(&HyperTileHeader, &[u8])> {
-        if index >= self.tile_count() as usize {
-            return None;
-        }
+    pub fn get_promoted_tile(&self, index: usize) -> Option<(HyperTileHeader, &[u8])> {
+        self.try_get_promoted_tile(index).ok()
+    }
 
-        let offset = FILE_HEADER_SIZE + index * HYPER_TILE_SIZE;
-        if offset + HYPER_TILE_SIZE > self.mmap.len() {
-            return None;
-        }
+    /// Returns `None` on any corruption (never panics on bounds). See [`MmapReader::try_get_tile`].
+    pub fn get_tile(&self, index: usize) -> Option<(&HyperTileHeader, &[u8])> {
+        self.try_get_tile(index).ok()
+    }
+
+    /// Like [`MmapReader::get_tile`] but reports why a tile was rejected.
+    pub fn try_get_tile(&self, index: usize) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
+        let (offset, slot_end) = self.tile_slot(index, FILE_HEADER_SIZE, HYPER_TILE_SIZE, HYPER_TILE_HEADER_SIZE)?;
 
         let header_slice = &self.mmap[offset..offset + HYPER_TILE_HEADER_SIZE];
+        // NOTE(A4): unaligned bytemuck cast; replaced by pod_read_unaligned in A4.
         let tile_header: &HyperTileHeader = from_bytes(header_slice);
 
         let payload_start = offset + HYPER_TILE_HEADER_SIZE;
-        let payload_end = payload_start + tile_header.payload_bytes as usize;
-        if payload_end > offset + HYPER_TILE_SIZE {
-            return None;
-        }
-        let payload = &self.mmap[payload_start..payload_end];
-
-        Some((tile_header, payload))
+        let len = tile_header.payload_bytes as usize;
+        let payload_end = payload_start
+            .checked_add(len)
+            .filter(|e| *e <= slot_end)
+            .ok_or(Corrupt::new(index, CorruptReason::PayloadTooLong { payload_len: len, capacity: slot_end - payload_start }))?;
+        Ok((tile_header, &self.mmap[payload_start..payload_end]))
     }
 
     /// Instantaneous O(1) direct record lookup by S3ACoordinate address (Level, Tile ID, Record Offset)
@@ -963,6 +1076,11 @@ impl MmapReader {
                     actual: expected_header_crc,
                 });
             }
+        }
+
+        if let Err(c) = self.validate_file_size() {
+            let _ = c;
+            return Err(S3AError::OutOfBounds);
         }
 
         let count = self.tile_count() as usize;
