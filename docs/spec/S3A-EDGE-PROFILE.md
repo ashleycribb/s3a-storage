@@ -752,3 +752,103 @@ fn process_edge_archive(edge_file_path: &Path, consolidated_db_path: &Path) {
 }
 ```
 
+
+---
+
+## 16. Edge Packet Stores (spec only; no edge-writer change yet)
+
+Status: draft. This section is normative for future edge writers. It refines `S3A-SYNC.md` §3 and
+uses the DTN transfer profile in `S3A-SYNC.md` §2. Nothing in `crates/` implements it yet.
+Decision record: ADR-0009.
+
+### 16.1 Stores, streams and priority
+
+1. A device MAY declare up to 8 named **packet stores**. Each store owns exactly one `stream_id`
+   (`S3A-SYNC.md` §1.1) and a contiguous, sector-aligned range of micro-tiles (§2.1).
+2. Store descriptor (fixed 32 bytes, kept in the provisioning config tile, §5.3):
+
+   | Field | Type | Meaning |
+   |-------|------|---------|
+   | `name` | `[u8;16]` | UTF-8, zero padded |
+   | `stream_id` | `u32` | sync stream this store feeds |
+   | `first_tile`, `tile_count` | `u16`,`u16` | micro-tile range owned by the store |
+   | `priority` | `u8` | 0–3, same scale as the envelope `priority` |
+   | `overflow` | `u8` | `0 = RING`, `1 = STOP` |
+   | `apid` | `u16` | optional CCSDS APID (11 bits), `0x7FF` = none |
+   | `reserved` | `[u8;4]` | zero |
+
+3. When a contact opens, stores drain highest `priority` first; within a store, oldest first.
+
+### 16.2 Overflow modes
+
+- **`RING`** — when the range is full the writer erases the oldest micro-tile (released or not) and reuses it. Every overwrite of un-receipted data MUST advance the store's
+  `lost_through_seq` marker so the next bundle reports a gap (`E_SEQ_GAP`); loss is never silent.
+- **`STOP`** — when the range is full the writer refuses new records (`E_STORE_FULL` returned to
+  the caller) and keeps everything already stored. Space is reclaimed only by custody release
+  (§16.4).
+
+Use `STOP` for records that must not be lost (events, consent, audit); `RING` for high-rate
+telemetry where "latest wins".
+
+### 16.3 Sequence counters
+
+Each record gets a per-store `seq: u64` assigned at append time, strictly increasing and never
+reused, including after `RING` overwrite and after power loss (§16.7). It maps 1:1 to the envelope
+`seq` of its `stream_id` (`S3A-SYNC.md` §2 item 4). When an APID is set, the low 14 bits are the
+CCSDS packet sequence count (`S3A-SYNC.md` §3).
+
+### 16.4 Custody and release
+
+1. A sealed micro-tile is *pending* until the device holds a valid signed `RECEIPT` from the next
+   hop covering the bundle's `msg_id` and every chunk hash in it (`S3A-SYNC.md` §2 item 3).
+2. Only then MAY the tile be marked *released*; only released tiles may be erased in `STOP` mode.
+3. Release is recorded by programming a release marker (append-only, `1→0` bits only; §3.3), so it
+   needs no sector erase and survives power loss.
+4. Receipts are idempotent. A receipt that fails signature verification is ignored; the tile stays
+   pending. An AI or relay MAY check that a receipt exists; it does not judge disputed data.
+
+### 16.5 Resume after interruption
+
+A transfer is described by a signed manifest of chunk hashes. After a broken contact the receiver
+sends `WANT` listing only the chunk hashes it lacks; the device resends those chunks. No byte
+offsets are used, so resent chunks may come from any copy (device, relay, removable media).
+
+### 16.6 Store contents as bundle payloads
+
+1. One bundle = one S3A-SYNC envelope = one or more whole sealed micro-tiles of one store, plus the
+   manifest. Unsealed tiles are never sent.
+2. Envelope fields: `stream_id` from the store, `seq` = highest record seq included, `priority`
+   from the store, `lifetime_s` from device policy.
+3. When carried in BPv7, the bundle lifetime SHOULD equal `lifetime_s`. BPv7 itself has no
+   priority field and no in-protocol custody transfer (see §16.9), so priority and custody stay in
+   the S3A envelope and `RECEIPT`.
+
+### 16.7 Power-cut semantics
+
+Consistent with §4: a record exists only once its micro-tile is sealed. On boot, recovery (§4.4)
+runs first, then for each store: rebuild `next_seq` = (highest seq in the last sealed tile) + 1,
+re-read release markers, and re-read `lost_through_seq`. Records in a torn tile were never
+committed and never sent, so reassigning their seqs is safe; seqs present in sealed tiles are
+never reused. A torn release marker (partly programmed) counts as *not released*,
+so a power cut can delay deletion but never cause it.
+
+### 16.8 Budget fit (4–8 KB micro-tiles)
+
+- Per-store RAM: descriptor 32 B + `next_seq` 8 B + `lost_through_seq` 8 B + pending count 2 B
+  ≈ 50 B; 8 stores ≈ 400 B, inside the §3 budget.
+- Manifest: 32-byte hash per chunk; with one chunk per micro-tile a 4 KB tile carries a 4,032-byte
+  payload (§2.4.1), so a 16-tile bundle needs a 512-byte manifest.
+- The release marker and `lost_through_seq` live in the existing tile header reserved bytes or a
+  config record; no new tile type and no file-format change.
+
+### 16.9 Prior art (each link checked to return HTTP 200 on 2026-10-21)
+
+| Claim | Source |
+|-------|--------|
+| Packet stores come as FIFO *bounded* (full ⇒ no new packets; nothing discarded until the user frees it) or *circular* (full ⇒ oldest deleted). | CCSDS 873.0-M-1 §2.3.3.1 (historical document), https://ccsds.org/Pubs/873x0m1s.pdf |
+| CFDP receivers issue NAK PDUs listing the extents not yet received; the sender retransmits them, and retransmission segmentation need not match the original. | CCSDS 727.0-B-5 §4.6.4.2–4.6.4.3, https://public.ccsds.org/Pubs/727x0b5e1.pdf |
+| BPv7 bundles carry a Lifetime; nodes need no longer retain a bundle after its age exceeds it. | RFC 9171 §4.3.1, https://www.rfc-editor.org/rfc/rfc9171.txt |
+| BPv7 migrated custody transfer to bundle-in-bundle encapsulation and removed Quality of Service (priority) markings. | RFC 9171 Appendix A, https://www.rfc-editor.org/rfc/rfc9171.txt |
+| LTP splits a block into a reliably sent *red-part* and an unacknowledged *green-part*. Relevant if a convergence layer sends `STOP` stores red and `RING` telemetry green. | RFC 5326 §2, https://www.rfc-editor.org/rfc/rfc5326.txt |
+
+S3A does not implement CFDP, BPv7 or LTP and makes no conformance claim.
