@@ -898,7 +898,6 @@ fn verify_signature_over_data(
     signature: &[u8],
     sig_alg_oid: &ObjectIdentifier,
 ) -> Result<(), String> {
-    use rsa::pkcs1::DecodeRsaPublicKey;
     use signature::Verifier;
     let pk_bytes = spki
         .subject_public_key
@@ -912,24 +911,19 @@ fn verify_signature_over_data(
     let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 
     if spki.algorithm.oid == rsa_encryption || spki.algorithm.oid == sha256_rsa {
-        let rsa_key = rsa::RsaPublicKey::from_pkcs1_der(pk_bytes)
-            .map_err(|e| format!("Invalid PKCS#1 RSA key: {}", e))?;
-        let rsa_sig = rsa::pkcs1v15::Signature::try_from(signature)
-            .map_err(|e| format!("Invalid RSA signature bytes: {}", e))?;
-
-        if *sig_alg_oid == sha384_rsa {
-            let vk = rsa::pkcs1v15::VerifyingKey::<sha2::Sha384>::new(rsa_key);
-            vk.verify(data, &rsa_sig)
-                .map_err(|e| format!("RSA SHA-384 signature verification failed: {}", e))?;
+        // Verification-only RSA via ring (public-key ops; no private-key code linked).
+        // ring requires >= 2048-bit moduli, which matches CA/B and RFC 3161 TSA practice.
+        let alg: &'static dyn ring::signature::VerificationAlgorithm = if *sig_alg_oid == sha384_rsa
+        {
+            &ring::signature::RSA_PKCS1_2048_8192_SHA384
         } else if *sig_alg_oid == sha512_rsa {
-            let vk = rsa::pkcs1v15::VerifyingKey::<sha2::Sha512>::new(rsa_key);
-            vk.verify(data, &rsa_sig)
-                .map_err(|e| format!("RSA SHA-512 signature verification failed: {}", e))?;
+            &ring::signature::RSA_PKCS1_2048_8192_SHA512
         } else {
-            let vk = rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(rsa_key);
-            vk.verify(data, &rsa_sig)
-                .map_err(|e| format!("RSA SHA-256 signature verification failed: {}", e))?;
-        }
+            &ring::signature::RSA_PKCS1_2048_8192_SHA256
+        };
+        ring::signature::UnparsedPublicKey::new(alg, pk_bytes)
+            .verify(data, signature)
+            .map_err(|_| "RSA signature verification failed".to_string())?;
         Ok(())
     } else if spki.algorithm.oid == ec_public_key {
         let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
@@ -1720,6 +1714,36 @@ pub mod mock_calendar {
 
 #[cfg(test)]
 mod tests {
+    /// Test-only RSA signer backed by ring and fixed, throwaway PKCS#1 DER fixtures
+    /// (never used outside tests; replaces the `rsa` crate, RUSTSEC-2023-0071).
+    struct TestRsaKey(ring::signature::RsaKeyPair);
+    impl TestRsaKey {
+        fn a() -> Self {
+            Self::load(include_bytes!("../tests/fixtures/test_only_rsa2048_a.der"))
+        }
+        fn b() -> Self {
+            Self::load(include_bytes!("../tests/fixtures/test_only_rsa2048_b.der"))
+        }
+        fn load(der: &[u8]) -> Self {
+            Self(ring::signature::RsaKeyPair::from_der(der).unwrap())
+        }
+        fn public_pkcs1_der(&self) -> Vec<u8> {
+            use ring::signature::KeyPair;
+            self.0.public_key().as_ref().to_vec()
+        }
+        fn sign(&self, msg: impl AsRef<[u8]>) -> Vec<u8> {
+            let mut sig = vec![0u8; self.0.public().modulus_len()];
+            self.0
+                .sign(
+                    &ring::signature::RSA_PKCS1_SHA256,
+                    &ring::rand::SystemRandom::new(),
+                    msg.as_ref(),
+                    &mut sig,
+                )
+                .unwrap();
+            sig
+        }
+    }
     use super::*;
     use crate::anchor::mock_calendar::MockOtsCalendar;
     use std::collections::HashMap;
@@ -2127,9 +2151,6 @@ mod tests {
 
     #[test]
     fn test_rfc3161_resigned_with_self_made_key_fails_trust_store() {
-        use rsa::pkcs1v15::SigningKey;
-        use signature::{SignatureEncoding, Signer};
-
         let tsr_bytes = include_bytes!("../tests/fixtures/digicert_response.tsr");
         let ca_bytes = include_bytes!("../tests/fixtures/digicert_root_ca.pem");
         let trust_store = parse_pem_certificates(std::str::from_utf8(ca_bytes).unwrap()).unwrap();
@@ -2141,9 +2162,7 @@ mod tests {
         let token = resp.time_stamp_token.clone().unwrap();
         let mut sd = SignedData::from_der(&token.content.to_der().unwrap()).unwrap();
 
-        let mut rng = rand::thread_rng();
-        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let signing_key = SigningKey::<sha2::Sha256>::new(priv_key);
+        let signing_key = TestRsaKey::a();
 
         let mut signer_info = sd.signer_infos.0.as_slice()[0].clone();
         let signed_attrs = signer_info.signed_attrs.as_ref().unwrap();
@@ -2274,26 +2293,19 @@ mod tests {
 
     #[test]
     fn test_rfc3161_forged_root_subject_serial_different_key_fails() {
-        use rsa::pkcs1::EncodeRsaPublicKey;
-        use rsa::pkcs1v15::SigningKey;
-        use signature::{SignatureEncoding, Signer};
-
         let ca_bytes = include_bytes!("../tests/fixtures/digicert_root_ca.pem");
         let trust_store = parse_pem_certificates(std::str::from_utf8(ca_bytes).unwrap()).unwrap();
         let real_root = &trust_store[0];
 
         // Attacker creates a certificate copying real_root's subject and serial_number, but with their own RSA key
-        let mut rng = rand::thread_rng();
-        let attacker_priv = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let attacker_pub = attacker_priv.to_public_key();
-        let attacker_spki_doc = attacker_pub.to_pkcs1_der().unwrap();
+        let signing_key = TestRsaKey::a();
+        let attacker_spki_doc = signing_key.public_pkcs1_der();
 
         let mut forged_tbs = real_root.tbs_certificate.clone();
         forged_tbs.subject_public_key_info.subject_public_key =
-            der::asn1::BitString::from_bytes(attacker_spki_doc.as_bytes()).unwrap();
+            der::asn1::BitString::from_bytes(&attacker_spki_doc).unwrap();
 
         let forged_tbs_der = forged_tbs.to_der().unwrap();
-        let signing_key = SigningKey::<sha2::Sha256>::new(attacker_priv);
         let forged_sig = signing_key.sign(&forged_tbs_der);
 
         let forged_cert = x509_cert::Certificate {
@@ -2322,11 +2334,9 @@ mod tests {
         leaf_tbs.serial_number =
             x509_cert::serial_number::SerialNumber::new(&[0x11, 0x22]).unwrap();
         // Give leaf its own key and distinct subject so it is not mistaken for the trust root
-        let leaf_priv = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let leaf_pub = leaf_priv.to_public_key();
-        let leaf_spki_doc = leaf_pub.to_pkcs1_der().unwrap();
+        let leaf_spki_doc = TestRsaKey::b().public_pkcs1_der();
         leaf_tbs.subject_public_key_info.subject_public_key =
-            der::asn1::BitString::from_bytes(leaf_spki_doc.as_bytes()).unwrap();
+            der::asn1::BitString::from_bytes(&leaf_spki_doc).unwrap();
         leaf_tbs.issuer = forged_cert.tbs_certificate.subject.clone();
 
         let leaf_tbs_der = leaf_tbs.to_der().unwrap();
@@ -2358,9 +2368,6 @@ mod tests {
 
     #[test]
     fn test_rfc3161_gentime_outside_validity_window_fails() {
-        use rsa::pkcs1v15::SigningKey;
-        use signature::{SignatureEncoding, Signer};
-
         let tsr_bytes = include_bytes!("../tests/fixtures/digicert_response.tsr");
         let ca_bytes = include_bytes!("../tests/fixtures/digicert_root_ca.pem");
         let trust_store = parse_pem_certificates(std::str::from_utf8(ca_bytes).unwrap()).unwrap();
@@ -2415,9 +2422,7 @@ mod tests {
             set_der[0] = 0x31;
         }
 
-        let mut rng = rand::thread_rng();
-        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
-        let signing_key = SigningKey::<sha2::Sha256>::new(priv_key);
+        let signing_key = TestRsaKey::a();
         let forged_sig = signing_key.sign(&set_der);
         signer_info.signature = der::asn1::OctetString::new(forged_sig.to_vec()).unwrap();
         sd.signer_infos = cms::signed_data::SignerInfos::try_from(vec![signer_info]).unwrap();
