@@ -22,15 +22,15 @@ hex = { workspace = true }
 humantime = { workspace = true }
 opentimestamps = "0.2.0"
 x509-tsp = "0.1.0"
-der = { version = "0.8", features = ["std", "oid", "alloc"] }
+der = { version = "0.7", features = ["std", "oid", "alloc"] }
 cms = "0.2"
 cmpv2 = "0.2"
 spki = "0.7"
 x509-cert = { version = "0.2", features = ["pem", "std"] }
 rsa = { version = "0.9", features = ["sha2"] }
-p256 = { version = "0.14", features = ["ecdsa"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
 signature = "2.2"
-getrandom = "0.4"
+getrandom = "0.2"
 reed-solomon-erasure = "6.0.0"
 miniz_oxide = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
