@@ -228,7 +228,7 @@ All values below are verified against the reference code and pinned by vectors i
 Note: the provenance root is currently derived from the CRC32C and length, not a cryptographic Merkle root; a domain-separated cryptographic root is a planned future change and will require a new layout version.
 
 
-### 3.3 CRC32C Covered Ranges & Padding Rules
+### 3.5 CRC32C Covered Ranges & Padding Rules
 
 1. **Header CRC (`header_crc32`)**:
    - `header_crc32` resides at offset `36..40` of `HyperTileHeader`.
@@ -241,7 +241,7 @@ Note: the provenance root is currently derived from the CRC32C and length, not a
    - Every Hyper-Tile MUST occupy exactly 131,072 bytes on disk.
    - If `payload_bytes < 130,560`, the writer MUST write $131,072 - (512 + \text{payload\_bytes})$ zero bytes (`0x00`) following the active payload.
 
-### 3.4 Tile Self-Addressing & Reader Verification Rules
+### 3.6 Tile Self-Addressing & Reader Verification Rules
 
 In specification v1.1-draft, every Hyper-Tile is self-addressing:
 1. **Protected Address Range**: The `file_uuid` (128-bit), `tile_index` (`u32`), and `generation` (`u64`) fields reside inside `HyperTileHeader` (offsets 480..512) and are strictly covered by `header_crc32`.
@@ -250,13 +250,13 @@ In specification v1.1-draft, every Hyper-Tile is self-addressing:
    - A tile is evaluated as **Legacy Unaddressed** if and only if `record_layout_version <= 1` and `file_uuid == [0, 0]`.
    - Compliant readers MUST permit legacy unaddressed tiles to pass verification through the legacy path without failing closed.
 
-### 3.5 Edge & Micro-Tile Profile Pointer
+### 3.7 Edge & Micro-Tile Profile Pointer
 
 For resource-constrained microcontrollers (ESP32, nRF52, RP2040), embedded sensor nodes, and industrial telemetry loggers operating under strict memory limits ($\le 32\text{ KB}$ RAM, `no_std`, heapless execution), S3A defines the companion **Edge Profile Specification** in [`S3A-EDGE-PROFILE.md`](S3A-EDGE-PROFILE.md).
 
 The Edge Profile specifies 4 KB and 8 KB flash-sector aligned micro-tiles, power-loss crash safety rules, on-device Ed25519 hash-chain sealing, and transport-agnostic sharing protocols while guaranteeing that all edge files remain valid S3A files directly readable by the full engine.
 
-### 3.6 Digital Vault Profile Pointer
+### 3.8 Digital Vault Profile Pointer
 
 For cryptographic identity custody, verifiable credentials (W3C VC / Open Badges 3.0), autonomous agent delegation grants, physical thing management, gate network addressing, approval checkpoints, and digital holdings stored natively within valid S3A archives (`.vault.s3a` / `.s3a`), S3A defines the companion **Digital Vault Specification** in [`S3A-VAULT.md`](S3A-VAULT.md).
 
