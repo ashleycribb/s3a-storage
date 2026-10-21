@@ -1,19 +1,16 @@
-use wasm_bindgen::prelude::*;
 use s3a_core::S3ACoordinate;
 use s3a_pack_scholar::{
-    seed_default_agents, AcademicPaperRecord, AiTraceRecord, HumanLrsRecord,
-    SrsManifestHeader, SrsWorkspaceRecord,
-    TOOL_READ_FILE as CORE_TOOL_READ_FILE,
-    TOOL_OPENALEX_QUERY as CORE_TOOL_OPENALEX_QUERY,
-    TOOL_EXTRACT_CLAIMS as CORE_TOOL_EXTRACT_CLAIMS,
-    TOOL_SYNTHESIZE_EVIDENCE as CORE_TOOL_SYNTHESIZE_EVIDENCE,
+    seed_default_agents, AcademicPaperRecord, AiTraceRecord, HumanLrsRecord, SrsManifestHeader,
+    SrsWorkspaceRecord, TOOL_CREDENTIAL_EXPORT as CORE_TOOL_CREDENTIAL_EXPORT,
     TOOL_CROSSREF_QUERY as CORE_TOOL_CROSSREF_QUERY,
     TOOL_EXPORT_SNAPSHOT as CORE_TOOL_EXPORT_SNAPSHOT,
+    TOOL_EXTRACT_CLAIMS as CORE_TOOL_EXTRACT_CLAIMS, TOOL_MUTATE_GRAPH as CORE_TOOL_MUTATE_GRAPH,
+    TOOL_OPENALEX_QUERY as CORE_TOOL_OPENALEX_QUERY, TOOL_PUBLISH as CORE_TOOL_PUBLISH,
+    TOOL_READ_FILE as CORE_TOOL_READ_FILE,
+    TOOL_SYNTHESIZE_EVIDENCE as CORE_TOOL_SYNTHESIZE_EVIDENCE,
     TOOL_TA_SUPERVISOR_CALL as CORE_TOOL_TA_SUPERVISOR_CALL,
-    TOOL_MUTATE_GRAPH as CORE_TOOL_MUTATE_GRAPH,
-    TOOL_PUBLISH as CORE_TOOL_PUBLISH,
-    TOOL_CREDENTIAL_EXPORT as CORE_TOOL_CREDENTIAL_EXPORT,
 };
+use wasm_bindgen::prelude::*;
 
 use crate::agent_api::WasmAgentSnapshot as InnerSnapshot;
 
@@ -223,7 +220,10 @@ impl WasmAgentSnapshot {
         );
 
         self.inner.human_decisions.push(rec);
-        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::HUMAN_LRS, &rec) {
+        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(
+            s3a_pack_scholar::ScholarTileType::HUMAN_LRS,
+            &rec,
+        ) {
             self.inner.pending_delta.push(entry);
             self.inner.statement_log.push(entry);
         }
@@ -266,7 +266,10 @@ impl WasmAgentSnapshot {
         );
 
         self.inner.ai_traces.push(rec);
-        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::AI_TRACE_LOG, &rec) {
+        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(
+            s3a_pack_scholar::ScholarTileType::AI_TRACE_LOG,
+            &rec,
+        ) {
             self.inner.pending_delta.push(entry);
             self.inner.statement_log.push(entry);
         }
@@ -309,13 +312,15 @@ impl WasmAgentSnapshot {
         }
 
         self.inner.papers.push(rec);
-        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(s3a_pack_scholar::ScholarTileType::ACADEMIC_PAPERS, &rec) {
+        if let Ok(entry) = s3a_pack_scholar::SrsDeltaEntry::from_record(
+            s3a_pack_scholar::ScholarTileType::ACADEMIC_PAPERS,
+            &rec,
+        ) {
             self.inner.pending_delta.push(entry);
             self.inner.statement_log.push(entry);
         }
         Ok((self.inner.papers.len() - 1) as u32)
     }
-
 
     /// Asserts that the specified agent slug is authorized for the given verb_id and tool_bit.
     /// Returns an error on denial.
@@ -454,17 +459,14 @@ impl WasmAgentSnapshot {
     /// Returns a `WasmSyncBatch` containing the binary delta packet, new cursor, and record count.
     #[wasm_bindgen]
     pub fn export_since(&self, cursor: u64) -> Result<WasmSyncBatch, JsValue> {
-        let (bytes, new_cursor, record_count) = self
-            .inner
-            .export_since(cursor)
-            .map_err(|e| js_error(&e))?;
+        let (bytes, new_cursor, record_count) =
+            self.inner.export_since(cursor).map_err(|e| js_error(&e))?;
         Ok(WasmSyncBatch {
             bytes,
             new_cursor,
             record_count,
         })
     }
-
 
     /// Applies an incoming sync delta buffer into the local session.
     #[wasm_bindgen]
@@ -524,7 +526,9 @@ impl WasmAgentSnapshot {
         let k = top_k.unwrap_or(10);
         let min_s = min_score.unwrap_or(0.0);
         let hidden = include_hidden.unwrap_or(false);
-        let results = self.inner.search_claims_vector(&query_embedding, k, min_s, hidden);
+        let results = self
+            .inner
+            .search_claims_vector(&query_embedding, k, min_s, hidden);
         format_claim_results(&results)
     }
 
@@ -539,14 +543,9 @@ impl WasmAgentSnapshot {
     ) -> Result<JsValue, JsValue> {
         let k = top_k.unwrap_or(10);
         let hidden = include_hidden.unwrap_or(false);
-        let results = self.inner.search_claims_hybrid(
-            query,
-            query_embedding.as_deref(),
-            0.5,
-            0.5,
-            k,
-            hidden,
-        );
+        let results =
+            self.inner
+                .search_claims_hybrid(query, query_embedding.as_deref(), 0.5, 0.5, k, hidden);
         format_claim_results(&results)
     }
 
@@ -595,15 +594,37 @@ pub fn iri_for_verb_id(id: u32) -> Option<String> {
     s3a_pack_scholar::xapi::resolve_verb_by_id(id).map(|v| v.iri.to_string())
 }
 
-fn format_claim_results(results: &[crate::agent_api::ClaimSearchResult]) -> Result<JsValue, JsValue> {
+fn format_claim_results(
+    results: &[crate::agent_api::ClaimSearchResult],
+) -> Result<JsValue, JsValue> {
     let arr = js_sys::Array::new();
     for res in results {
         let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &JsValue::from_str("claimId"), &JsValue::from_f64(res.claim_id as f64))?;
-        js_sys::Reflect::set(&obj, &JsValue::from_str("text"), &JsValue::from_str(&res.text))?;
-        js_sys::Reflect::set(&obj, &JsValue::from_str("confidence"), &JsValue::from_f64(res.confidence as f64))?;
-        js_sys::Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_f64(res.kind as f64))?;
-        js_sys::Reflect::set(&obj, &JsValue::from_str("score"), &JsValue::from_f64(res.score as f64))?;
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("claimId"),
+            &JsValue::from_f64(res.claim_id as f64),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("text"),
+            &JsValue::from_str(&res.text),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("confidence"),
+            &JsValue::from_f64(res.confidence as f64),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("kind"),
+            &JsValue::from_f64(res.kind as f64),
+        )?;
+        js_sys::Reflect::set(
+            &obj,
+            &JsValue::from_str("score"),
+            &JsValue::from_f64(res.score as f64),
+        )?;
         arr.push(&obj);
     }
     Ok(arr.into())
@@ -641,4 +662,3 @@ impl WasmSyncBatch {
 pub fn export_since(snapshot: &WasmAgentSnapshot, cursor: u64) -> Result<WasmSyncBatch, JsValue> {
     snapshot.export_since(cursor)
 }
-

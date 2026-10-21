@@ -1,9 +1,9 @@
 //! High-level S3A Digital Vault storage engine (§1.2, §2, §7, §13).
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use s3a_core::TileType;
 use s3a_engine::{MmapReader, TileWriter};
@@ -133,9 +133,15 @@ impl Vault {
 
                     // 1. VaultIdentityRecord (96 bytes)
                     if payload_len >= 96 && payload_len % 96 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, VaultIdentityRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, VaultIdentityRecord>(payload)
+                        {
                             for r in records {
-                                if r.is_crc_valid() && r.key_algorithm == 1 && r.owner_kind >= 1 && r.owner_kind <= 4 {
+                                if r.is_crc_valid()
+                                    && r.key_algorithm == 1
+                                    && r.owner_kind >= 1
+                                    && r.owner_kind <= 4
+                                {
                                     identities.push(*r);
                                 }
                             }
@@ -144,7 +150,9 @@ impl Vault {
 
                     // 2. DelegationGrantRecord (192 bytes)
                     if payload_len >= 192 && payload_len % 192 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, DelegationGrantRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, DelegationGrantRecord>(payload)
+                        {
                             for r in records {
                                 if r.get_expires_at() >= r.get_issued_at() {
                                     grants.insert(r.grant_id, *r);
@@ -155,7 +163,9 @@ impl Vault {
 
                     // 3. VaultItemRecord (160 bytes)
                     if payload_len >= 160 && payload_len % 160 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, VaultItemRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, VaultItemRecord>(payload)
+                        {
                             for r in records {
                                 if r.is_crc_valid() {
                                     items.insert(r.item_hash, *r);
@@ -166,7 +176,9 @@ impl Vault {
 
                     // 4. ItemTransferRecord (240 bytes)
                     if payload_len >= 240 && payload_len % 240 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, ItemTransferRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, ItemTransferRecord>(payload)
+                        {
                             for r in records {
                                 if r.is_crc_valid() {
                                     transfers.entry(r.item_hash).or_default().push(*r);
@@ -177,7 +189,9 @@ impl Vault {
 
                     // 5. KeyRotationRecord (220 bytes)
                     if payload_len >= 220 && payload_len % 220 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, KeyRotationRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, KeyRotationRecord>(payload)
+                        {
                             for r in records {
                                 if r.is_crc_valid() {
                                     let _ = revocation_registry.register_rotation(r);
@@ -188,7 +202,9 @@ impl Vault {
 
                     // 6. RevokedKeyRecord (64 bytes)
                     if payload_len >= 64 && payload_len % 64 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, RevokedKeyRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, RevokedKeyRecord>(payload)
+                        {
                             for r in records {
                                 if r.is_crc_valid() {
                                     let _ = revocation_registry.register_revocation(r);
@@ -199,7 +215,9 @@ impl Vault {
 
                     // 7. VaultEventRecord (80 bytes)
                     if payload_len >= 80 && payload_len % 80 == 0 {
-                        if let Ok(records) = bytemuck::try_cast_slice::<u8, VaultEventRecord>(payload) {
+                        if let Ok(records) =
+                            bytemuck::try_cast_slice::<u8, VaultEventRecord>(payload)
+                        {
                             for r in records {
                                 if r.is_crc_valid() {
                                     events.push(*r);
@@ -270,7 +288,11 @@ impl Vault {
         crate::transfer::verify_transfer_record(&transfer)?;
 
         // Append to chain and verify no double send
-        let mut chain = self.transfers.get(&transfer.item_hash).cloned().unwrap_or_default();
+        let mut chain = self
+            .transfers
+            .get(&transfer.item_hash)
+            .cloned()
+            .unwrap_or_default();
         chain.push(transfer);
 
         let issuer_pk = if let Some(item) = self.items.get(&transfer.item_hash) {
@@ -376,7 +398,8 @@ mod tests {
         let vault_path = temp_dir.path().join("alice.vault.s3a");
         let mut ks = MemoryKeyStore::new();
 
-        let vault = Vault::create(&vault_path, "Alice Vault", VaultOwnerKind::Person, &mut ks).unwrap();
+        let vault =
+            Vault::create(&vault_path, "Alice Vault", VaultOwnerKind::Person, &mut ks).unwrap();
         let addr = vault.gate_address().unwrap();
         let uri = vault.gate_uri().unwrap();
 

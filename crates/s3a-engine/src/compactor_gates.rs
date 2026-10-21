@@ -23,7 +23,11 @@ pub fn quarantine_path<P: AsRef<Path>>(archive_path: P) -> PathBuf {
 
 /// Checks whether a specific (tile_id, generation) in an archive is quarantined.
 /// Fails closed: an unreadable or corrupt sidecar line returns an error instead of being skipped.
-pub fn is_tile_quarantined<P: AsRef<Path>>(archive_path: P, tile_id: u64, generation: u64) -> io::Result<bool> {
+pub fn is_tile_quarantined<P: AsRef<Path>>(
+    archive_path: P,
+    tile_id: u64,
+    generation: u64,
+) -> io::Result<bool> {
     let p = archive_path.as_ref();
     let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
 
@@ -103,7 +107,11 @@ pub fn is_tile_quarantined<P: AsRef<Path>>(archive_path: P, tile_id: u64, genera
 }
 
 /// Marks a (tile_id, generation) quarantined both in memory and in the persistent sidecar file.
-pub fn quarantine_tile<P: AsRef<Path>>(archive_path: P, tile_id: u64, generation: u64) -> io::Result<()> {
+pub fn quarantine_tile<P: AsRef<Path>>(
+    archive_path: P,
+    tile_id: u64,
+    generation: u64,
+) -> io::Result<()> {
     let p = archive_path.as_ref();
     let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
 
@@ -113,10 +121,7 @@ pub fn quarantine_tile<P: AsRef<Path>>(archive_path: P, tile_id: u64, generation
     }
 
     let q_path = quarantine_path(p);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&q_path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&q_path)?;
     writeln!(file, "{}:{}", tile_id, generation)?;
     file.flush()?;
     file.sync_all()?;
@@ -303,9 +308,12 @@ pub fn verify_written_tile_from_disk(
     let mut header_buf = [0u8; HYPER_TILE_HEADER_SIZE];
     file.read_exact(&mut header_buf)?;
 
-    let disk_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
+    let disk_header: &HyperTileHeader =
+        &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
     let disk_header_crc = compute_tile_header_crc32(disk_header);
-    if disk_header.header_crc32 != expected_header_crc || disk_header.header_crc32 != disk_header_crc {
+    if disk_header.header_crc32 != expected_header_crc
+        || disk_header.header_crc32 != disk_header_crc
+    {
         file.seek(SeekFrom::End(0))?;
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

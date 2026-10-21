@@ -6,18 +6,18 @@
 //! Conforms strictly to the Non-Core Additive Principle:
 //! Does not pollute s3a-core or s3a-engine with browser/WASM-specific constructs.
 
-pub mod snapshot_view;
 pub mod agent_api;
 pub mod bindgen;
+pub mod snapshot_view;
 
-pub use snapshot_view::WasmSnapshotView;
 pub use agent_api::WasmAgentSnapshot;
 pub use bindgen::{
-    new_session, from_bytes, export_bytes, verb_id_for_iri, iri_for_verb_id,
-    TOOL_READ_FILE, TOOL_OPENALEX_QUERY, TOOL_EXTRACT_CLAIMS, TOOL_SYNTHESIZE_EVIDENCE,
-    TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_TA_SUPERVISOR_CALL, TOOL_MUTATE_GRAPH,
-    TOOL_PUBLISH, TOOL_CREDENTIAL_EXPORT,
+    export_bytes, from_bytes, iri_for_verb_id, new_session, verb_id_for_iri,
+    TOOL_CREDENTIAL_EXPORT, TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_EXTRACT_CLAIMS,
+    TOOL_MUTATE_GRAPH, TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE, TOOL_SYNTHESIZE_EVIDENCE,
+    TOOL_TA_SUPERVISOR_CALL,
 };
+pub use snapshot_view::WasmSnapshotView;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
@@ -29,19 +29,18 @@ pub fn init_panic_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use s3a_pack_scholar::{
-        seed_default_agents, AcademicPaperRecord, AgentDenied, AiTraceRecord,
-        HumanLrsRecord, ResearchGraphEdgeRecord, SrsManifestHeader, SrsWorkspaceRecord,
-        ScholarTileType, SrsDeltaEntry, TOOL_OPENALEX_QUERY, TOOL_PUBLISH,
+    use s3a_core::{
+        MarkRecord, S3ACoordinate, TileType, MARK_CLEAR, MARK_CONSENT_WITHDRAWN, MARK_LEGAL_HOLD,
+        MARK_QUARANTINE, MARK_SET,
     };
     use s3a_pack_ontology::{
-        OntologyAxiomRecord, OntologyConceptRecord,
-        KIND_CLASS, ONTOLOGY_PEDAGOGY, PREDICATE_HAS_APPROVED_ANALOGY,
+        OntologyAxiomRecord, OntologyConceptRecord, KIND_CLASS, ONTOLOGY_PEDAGOGY,
+        PREDICATE_HAS_APPROVED_ANALOGY,
     };
-    use s3a_core::{
-        MarkRecord, S3ACoordinate, TileType,
-        MARK_CONSENT_WITHDRAWN, MARK_LEGAL_HOLD, MARK_QUARANTINE,
-        MARK_SET, MARK_CLEAR,
+    use s3a_pack_scholar::{
+        seed_default_agents, AcademicPaperRecord, AgentDenied, AiTraceRecord, HumanLrsRecord,
+        ResearchGraphEdgeRecord, ScholarTileType, SrsDeltaEntry, SrsManifestHeader,
+        SrsWorkspaceRecord, TOOL_OPENALEX_QUERY, TOOL_PUBLISH,
     };
 
     #[test]
@@ -52,15 +51,26 @@ mod tests {
         let manifest = SrsManifestHeader::new(p_uuid, s_uuid, [0, 0], [0, 0], 1600000000, 9, 6);
 
         let ws = SrsWorkspaceRecord::new(p_uuid, 888, 1, [0.1, 0.2, 0.3], 1);
-        let paper = AcademicPaperRecord::new(
-            0x1234, 1600000000, 50, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 0,
-        );
+        let paper =
+            AcademicPaperRecord::new(0x1234, 1600000000, 50, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 0);
         let edge = ResearchGraphEdgeRecord::new(0x1234, 0x5678, 1600000000, 0, 1, 1.0);
         let human = HumanLrsRecord::new(
-            [0xAAAA, 0xBBBB], 1600000000, 0x05E8, 0x00E2, 1.0, S3ACoordinate::new(0, 0, 0), 0x104,
+            [0xAAAA, 0xBBBB],
+            1600000000,
+            0x05E8,
+            0x00E2,
+            1.0,
+            S3ACoordinate::new(0, 0, 0),
+            0x104,
         );
         let ai = AiTraceRecord::new(
-            [0xAAAA, 0xBBBB], 1600000000, 42, 1, 0.65, S3ACoordinate::new(0, 0, 0), 10,
+            [0xAAAA, 0xBBBB],
+            1600000000,
+            42,
+            1,
+            0.65,
+            S3ACoordinate::new(0, 0, 0),
+            10,
         );
 
         let default_agents = seed_default_agents();
@@ -69,7 +79,8 @@ mod tests {
 
         let concept_id = 0x104; // IdealGasLaw
         let analogy_id = 0x999; // BouncingTennisBalls
-        let concept = OntologyConceptRecord::new(concept_id, 0, ONTOLOGY_PEDAGOGY, KIND_CLASS, 1, 200);
+        let concept =
+            OntologyConceptRecord::new(concept_id, 0, ONTOLOGY_PEDAGOGY, KIND_CLASS, 1, 200);
         let axiom = OntologyAxiomRecord::new(
             concept_id,
             analogy_id,
@@ -120,15 +131,31 @@ mod tests {
         assert_eq!(loaded_agent_snap.agents[0].agent_id, agent.agent_id);
 
         // 5. Test Agent Allowlist Enforcement inside WASM
-        assert!(loaded_agent_snap.assert_agent_allows(agent.agent_id, Some(1 << 5), Some(TOOL_OPENALEX_QUERY)).is_ok());
-        let denied = loaded_agent_snap.assert_agent_allows(agent.agent_id, None, Some(TOOL_PUBLISH));
-        assert!(matches!(denied, Err(AgentDenied::ToolExplicitlyDenied { .. })));
+        assert!(loaded_agent_snap
+            .assert_agent_allows(agent.agent_id, Some(1 << 5), Some(TOOL_OPENALEX_QUERY))
+            .is_ok());
+        let denied =
+            loaded_agent_snap.assert_agent_allows(agent.agent_id, None, Some(TOOL_PUBLISH));
+        assert!(matches!(
+            denied,
+            Err(AgentDenied::ToolExplicitlyDenied { .. })
+        ));
 
         // Test Gated Action: claim-checker requires human gate approval
-        let unapproved = loaded_agent_snap.assert_agent_allows_gated(claim_checker.agent_id, Some(1 << 5), None, false);
+        let unapproved = loaded_agent_snap.assert_agent_allows_gated(
+            claim_checker.agent_id,
+            Some(1 << 5),
+            None,
+            false,
+        );
         assert!(matches!(unapproved, Err(AgentDenied::RequiresHumanGate)));
 
-        let approved = loaded_agent_snap.assert_agent_allows_gated(claim_checker.agent_id, Some(1 << 5), None, true);
+        let approved = loaded_agent_snap.assert_agent_allows_gated(
+            claim_checker.agent_id,
+            Some(1 << 5),
+            None,
+            true,
+        );
         assert!(approved.is_ok());
 
         // 6. Test Preflight Agent Checks inside WASM:
@@ -154,27 +181,39 @@ mod tests {
 
     #[test]
     fn test_wasm_delta_incremental_sync() {
-        let mut snap1 = WasmAgentSnapshot::from_bytes(&WasmAgentSnapshot {
-            manifest: SrsManifestHeader::new([1, 2], [3, 4], [0, 0], [1, 2], 1600000000, 1, 0),
-            workspace: None,
-            papers: Vec::new(),
-            edges: Vec::new(),
-            human_decisions: Vec::new(),
-            ai_traces: Vec::new(),
-            agents: Vec::new(),
-            concepts: Vec::new(),
-            axioms: Vec::new(),
-            claims: Vec::new(),
-            citation_fingerprints: Vec::new(),
-            policy_marks: Vec::new(),
-            pending_delta: Vec::new(),
-            delta_seq: 1,
-            last_applied_delta_seq: 0,
-            statement_log: Vec::new(),
-        }.export_bytes().unwrap()).unwrap();
+        let mut snap1 = WasmAgentSnapshot::from_bytes(
+            &WasmAgentSnapshot {
+                manifest: SrsManifestHeader::new([1, 2], [3, 4], [0, 0], [1, 2], 1600000000, 1, 0),
+                workspace: None,
+                papers: Vec::new(),
+                edges: Vec::new(),
+                human_decisions: Vec::new(),
+                ai_traces: Vec::new(),
+                agents: Vec::new(),
+                concepts: Vec::new(),
+                axioms: Vec::new(),
+                claims: Vec::new(),
+                citation_fingerprints: Vec::new(),
+                policy_marks: Vec::new(),
+                pending_delta: Vec::new(),
+                delta_seq: 1,
+                last_applied_delta_seq: 0,
+                statement_log: Vec::new(),
+            }
+            .export_bytes()
+            .unwrap(),
+        )
+        .unwrap();
 
         // Mutate snap1: add a claim and an AI trace
-        snap1.add_claim(101, 0xCAFE, 0.95, s3a_pack_scholar::CLAIM_KIND_EMPIRICAL, "Evidence for room temperature superconductor refuted", None);
+        snap1.add_claim(
+            101,
+            0xCAFE,
+            0.95,
+            s3a_pack_scholar::CLAIM_KIND_EMPIRICAL,
+            "Evidence for room temperature superconductor refuted",
+            None,
+        );
         // Pushes AI trace + Note Claim
         assert_eq!(snap1.pending_delta.len(), 2);
 
@@ -259,7 +298,10 @@ mod tests {
 
         assert_eq!(loaded.claims.len(), 2);
         assert_eq!(loaded.claims[0].record.claim_id, 1);
-        assert_eq!(loaded.claims[0].text, "Majorana zero modes verified in topological superconducting nanowires");
+        assert_eq!(
+            loaded.claims[0].text,
+            "Majorana zero modes verified in topological superconducting nanowires"
+        );
         assert!(loaded.claims[0].embedding.is_some());
         assert_eq!(loaded.claims[0].embedding.as_ref().unwrap()[0], 1.0);
 
@@ -284,7 +326,8 @@ mod tests {
         assert!(vec_results[0].score > 0.9);
 
         // 3. Hybrid Search
-        let hybrid_results = loaded.search_claims_hybrid("nanowires", Some(&query_vec), 0.5, 0.5, 5, false);
+        let hybrid_results =
+            loaded.search_claims_hybrid("nanowires", Some(&query_vec), 0.5, 0.5, 5, false);
         assert!(!hybrid_results.is_empty());
         assert_eq!(hybrid_results[0].claim_id, 1);
         assert!(hybrid_results[0].score > 0.8);
@@ -342,7 +385,10 @@ mod tests {
         assert_eq!(snap.search_claims_text("Majorana", 5, true).len(), 1);
 
         let query_vec = [1.0, 0.0, 0.0, 0.0];
-        assert_eq!(snap.search_claims_vector(&query_vec, 5, 0.5, false).len(), 0);
+        assert_eq!(
+            snap.search_claims_vector(&query_vec, 5, 0.5, false).len(),
+            0
+        );
         assert_eq!(snap.search_claims_vector(&query_vec, 5, 0.5, true).len(), 1);
 
         // Export and reload: verify quarantine mark is preserved and filtering holds
@@ -376,7 +422,10 @@ mod tests {
         // 1. Delta with AGENT_REGISTRY is rejected fail-closed
         let mut packet = s3a_pack_scholar::SrsSyncDeltaPacket::new([1, 2], [3, 4], 1);
         let default_agents = seed_default_agents();
-        packet.entries.push(SrsDeltaEntry::from_record(ScholarTileType::AGENT_REGISTRY, &default_agents[0]).unwrap());
+        packet.entries.push(
+            SrsDeltaEntry::from_record(ScholarTileType::AGENT_REGISTRY, &default_agents[0])
+                .unwrap(),
+        );
         let res = snap.apply_delta_bytes(&packet.export_bytes());
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("ForbiddenTileInDelta"));
@@ -393,7 +442,9 @@ mod tests {
             1600000000,
             0xBAD,
         );
-        mark_packet.entries.push(SrsDeltaEntry::from_record(TileType::MARKS, &illegal_clear).unwrap());
+        mark_packet
+            .entries
+            .push(SrsDeltaEntry::from_record(TileType::MARKS, &illegal_clear).unwrap());
         let mark_res = snap.apply_delta_bytes(&mark_packet.export_bytes());
         assert!(mark_res.is_err());
         assert!(mark_res.unwrap_err().contains("UnauthorizedMark"));
@@ -410,7 +461,9 @@ mod tests {
             1600000000,
             0xBEEF,
         );
-        valid_packet.entries.push(SrsDeltaEntry::from_record(TileType::MARKS, &consent_mark).unwrap());
+        valid_packet
+            .entries
+            .push(SrsDeltaEntry::from_record(TileType::MARKS, &consent_mark).unwrap());
         let valid_bytes = valid_packet.export_bytes();
         let ok_res = snap.apply_delta_bytes(&valid_bytes).unwrap();
         assert_eq!(ok_res, 1);
@@ -432,17 +485,36 @@ mod tests {
         // Round-trip tests for IDs 1..=21
         for id in 1..=21 {
             let iri = iri_for_verb_id(id).expect(&format!("IRI must exist for verb id {}", id));
-            let resolved_id = verb_id_for_iri(&iri).expect(&format!("Verb ID must resolve for IRI {}", iri));
+            let resolved_id =
+                verb_id_for_iri(&iri).expect(&format!("Verb ID must resolve for IRI {}", iri));
             assert_eq!(resolved_id, id, "Round-trip mismatch for verb id {}", id);
         }
 
         // Test alias mappings resolve correctly
-        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/created"), Some(15));
-        assert_eq!(verb_id_for_iri("http://activitystrea.ms/schema/1.0/create"), Some(15));
-        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/asked"), Some(17));
-        assert_eq!(verb_id_for_iri("http://adlnet.gov/expapi/verbs/asked"), Some(17));
-        assert_eq!(verb_id_for_iri("https://ashecribb.dev/xapi/verbs/logged-out"), Some(20));
-        assert_eq!(verb_id_for_iri("http://adlnet.gov/expapi/verbs/logged-out"), Some(20));
+        assert_eq!(
+            verb_id_for_iri("https://ashecribb.dev/xapi/verbs/created"),
+            Some(15)
+        );
+        assert_eq!(
+            verb_id_for_iri("http://activitystrea.ms/schema/1.0/create"),
+            Some(15)
+        );
+        assert_eq!(
+            verb_id_for_iri("https://ashecribb.dev/xapi/verbs/asked"),
+            Some(17)
+        );
+        assert_eq!(
+            verb_id_for_iri("http://adlnet.gov/expapi/verbs/asked"),
+            Some(17)
+        );
+        assert_eq!(
+            verb_id_for_iri("https://ashecribb.dev/xapi/verbs/logged-out"),
+            Some(20)
+        );
+        assert_eq!(
+            verb_id_for_iri("http://adlnet.gov/expapi/verbs/logged-out"),
+            Some(20)
+        );
 
         // Test label resolution
         assert_eq!(verb_id_for_iri("searched"), Some(10));
@@ -461,7 +533,9 @@ mod tests {
 
     #[test]
     fn test_record_ai_rejects_judgment_verbs() {
-        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+        let mut session =
+            crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+                .unwrap();
 
         // 1. record_ai must reject judgment verbs: approved (3), rejected (4), reviewed (2)
         let judgment_verbs = [
@@ -472,17 +546,30 @@ mod tests {
 
         for &verb in &judgment_verbs {
             let res = session.record_ai("lab-assistant", verb, 0.95, None);
-            assert!(res.is_err(), "record_ai should reject judgment verb {}", verb);
+            assert!(
+                res.is_err(),
+                "record_ai should reject judgment verb {}",
+                verb
+            );
         }
 
         // 2. assert_agent_allows must reject judgment verbs for AI agents
         for &verb in &judgment_verbs {
             let res = session.assert_agent_allows("lab-assistant", Some(verb), None);
-            assert!(res.is_err(), "assert_agent_allows should reject judgment verb {}", verb);
+            assert!(
+                res.is_err(),
+                "assert_agent_allows should reject judgment verb {}",
+                verb
+            );
         }
 
         // 3. record_ai accepts valid non-judgment verbs (e.g. ai-answered: 18, experienced: 1)
-        let ok_res = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.9, None);
+        let ok_res = session.record_ai(
+            "lab-assistant",
+            s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+            0.9,
+            None,
+        );
         assert!(ok_res.is_ok(), "record_ai should accept ai-answered");
 
         // 4. record_human rejects ai-answered (18) because it is AI-only
@@ -496,36 +583,55 @@ mod tests {
 
         // 5. record_human accepts judgment verbs (e.g. approved: 3, reviewed: 2, rejected: 4)
         for &verb in &judgment_verbs {
-            let res = session.record_human(
-                verb,
-                wasm_bindgen::JsValue::NULL,
-                0,
-                None,
+            let res = session.record_human(verb, wasm_bindgen::JsValue::NULL, 0, None);
+            assert!(
+                res.is_ok(),
+                "record_human should accept judgment verb {}",
+                verb
             );
-            assert!(res.is_ok(), "record_human should accept judgment verb {}", verb);
         }
     }
 
     #[test]
     fn test_reproduce_export_from_bytes_roundtrip() {
-        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+        let mut session =
+            crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+                .unwrap();
 
         // Record a few human + AI steps (including new verbs 10..=21 and ai_trace_index links)
-        let ai_idx1 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
-        let human_idx1 = session.record_human(
-            s3a_pack_scholar::xapi::VERB_ID_SEARCHED, // 10
-            wasm_bindgen::JsValue::NULL,
-            12345,
-            Some(ai_idx1),
-        ).unwrap();
+        let ai_idx1 = session
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+                0.95,
+                None,
+            )
+            .unwrap();
+        let human_idx1 = session
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_SEARCHED, // 10
+                wasm_bindgen::JsValue::NULL,
+                12345,
+                Some(ai_idx1),
+            )
+            .unwrap();
 
-        let ai_idx2 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_CREATED, 0.88, Some(human_idx1)).unwrap();
-        let _human_idx2 = session.record_human(
-            s3a_pack_scholar::xapi::VERB_ID_ACCEPTED, // 19
-            wasm_bindgen::JsValue::NULL,
-            67890,
-            Some(ai_idx2),
-        ).unwrap();
+        let ai_idx2 = session
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_CREATED,
+                0.88,
+                Some(human_idx1),
+            )
+            .unwrap();
+        let _human_idx2 = session
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_ACCEPTED, // 19
+                wasm_bindgen::JsValue::NULL,
+                67890,
+                Some(ai_idx2),
+            )
+            .unwrap();
 
         // Export bytes
         let bytes1 = session.export_bytes().unwrap();
@@ -536,20 +642,33 @@ mod tests {
         assert_eq!(bytes1.len(), bytes1_again.len());
 
         // from_bytes
-        let mut restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes1).expect("from_bytes should succeed");
+        let mut restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes1)
+            .expect("from_bytes should succeed");
 
         // Export immediately from restored (test that exports twice in a row with no changes / before new calls)
         let bytes_restored_1 = restored.export_bytes().unwrap();
-        println!("Export restored immediately len: {}", bytes_restored_1.len());
+        println!(
+            "Export restored immediately len: {}",
+            bytes_restored_1.len()
+        );
 
         // Record more steps
-        let ai_idx3 = restored.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.92, None).unwrap();
-        let _human_idx3 = restored.record_human(
-            s3a_pack_scholar::xapi::VERB_ID_EDITED, // 16
-            wasm_bindgen::JsValue::NULL,
-            11111,
-            Some(ai_idx3),
-        ).unwrap();
+        let ai_idx3 = restored
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+                0.92,
+                None,
+            )
+            .unwrap();
+        let _human_idx3 = restored
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_EDITED, // 16
+                wasm_bindgen::JsValue::NULL,
+                11111,
+                Some(ai_idx3),
+            )
+            .unwrap();
 
         // Export bytes again
         let bytes2 = restored.export_bytes().unwrap();
@@ -559,14 +678,51 @@ mod tests {
 
     #[test]
     fn test_export_since_deltas() {
-        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+        let mut session =
+            crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+                .unwrap();
 
         // Record 5 statements: 3 AI traces, 2 Human decisions
-        let a0 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
-        let h0 = session.record_human(s3a_pack_scholar::xapi::VERB_ID_SEARCHED, wasm_bindgen::JsValue::NULL, 100, Some(a0)).unwrap();
-        let a1 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_CREATED, 0.90, Some(h0)).unwrap();
-        let h1 = session.record_human(s3a_pack_scholar::xapi::VERB_ID_ACCEPTED, wasm_bindgen::JsValue::NULL, 200, Some(a1)).unwrap();
-        let _a2 = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.88, Some(h1)).unwrap();
+        let a0 = session
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+                0.95,
+                None,
+            )
+            .unwrap();
+        let h0 = session
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+                wasm_bindgen::JsValue::NULL,
+                100,
+                Some(a0),
+            )
+            .unwrap();
+        let a1 = session
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_CREATED,
+                0.90,
+                Some(h0),
+            )
+            .unwrap();
+        let h1 = session
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_ACCEPTED,
+                wasm_bindgen::JsValue::NULL,
+                200,
+                Some(a1),
+            )
+            .unwrap();
+        let _a2 = session
+            .record_ai(
+                "lab-assistant",
+                s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+                0.88,
+                Some(h1),
+            )
+            .unwrap();
 
         // Full delta (cursor = 0): should contain all 5 statements
         let full = session.export_since(0).expect("full delta should succeed");
@@ -574,16 +730,20 @@ mod tests {
         assert_eq!(full.new_cursor(), 5);
         assert!(!full.bytes().is_empty());
 
-        let full_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&full.bytes()).expect("packet deserialization");
+        let full_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&full.bytes())
+            .expect("packet deserialization");
         assert_eq!(full_packet.entries.len(), 5);
 
         // Partial delta (cursor = 2): should contain only the remaining 3 statements
-        let partial = session.export_since(2).expect("partial delta should succeed");
+        let partial = session
+            .export_since(2)
+            .expect("partial delta should succeed");
         assert_eq!(partial.record_count(), 3);
         assert_eq!(partial.new_cursor(), 5);
         assert!(!partial.bytes().is_empty());
 
-        let partial_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&partial.bytes()).expect("packet deserialization");
+        let partial_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&partial.bytes())
+            .expect("packet deserialization");
         assert_eq!(partial_packet.entries.len(), 3);
 
         // Empty delta (cursor = 5): should contain 0 statements, cursor remains 5
@@ -591,33 +751,53 @@ mod tests {
         assert_eq!(empty.record_count(), 0);
         assert_eq!(empty.new_cursor(), 5);
 
-        let empty_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&empty.bytes()).expect("packet deserialization");
+        let empty_packet = s3a_pack_scholar::SrsSyncDeltaPacket::parse_bytes(&empty.bytes())
+            .expect("packet deserialization");
         assert_eq!(empty_packet.entries.len(), 0);
 
         // Cursor out-of-bounds (cursor > 5): should return an error
         let invalid = session.export_since(6);
-        assert!(invalid.is_err(), "cursor ahead of statement log should fail");
+        assert!(
+            invalid.is_err(),
+            "cursor ahead of statement log should fail"
+        );
     }
 
     #[test]
     fn test_export_from_bytes_100_iterations_roundtrip() {
-        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef").unwrap();
+        let mut session =
+            crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+                .unwrap();
         let mut last_size = 0;
 
         for i in 0..100 {
-            let ai_idx = session.record_ai("lab-assistant", s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED, 0.95, None).unwrap();
-            let _human_idx = session.record_human(
-                s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
-                wasm_bindgen::JsValue::NULL,
-                (1000 + i) as u32,
-                Some(ai_idx),
-            ).unwrap();
+            let ai_idx = session
+                .record_ai(
+                    "lab-assistant",
+                    s3a_pack_scholar::xapi::VERB_ID_AI_ANSWERED,
+                    0.95,
+                    None,
+                )
+                .unwrap();
+            let _human_idx = session
+                .record_human(
+                    s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+                    wasm_bindgen::JsValue::NULL,
+                    (1000 + i) as u32,
+                    Some(ai_idx),
+                )
+                .unwrap();
 
             let bytes = session.export_bytes().unwrap();
-            assert!(bytes.len() >= last_size, "Size must grow or stay valid at iteration {}", i);
+            assert!(
+                bytes.len() >= last_size,
+                "Size must grow or stay valid at iteration {}",
+                i
+            );
             last_size = bytes.len();
 
-            let restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes).expect("from_bytes should succeed");
+            let restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes)
+                .expect("from_bytes should succeed");
             assert_eq!(restored.inner.ai_traces.len(), (i + 1) as usize);
             assert_eq!(restored.inner.human_decisions.len(), (i + 1) as usize);
             assert_eq!(restored.inner.statement_log.len(), ((i + 1) * 2) as usize);
@@ -631,36 +811,47 @@ mod tests {
 
     #[test]
     fn test_wasm_roundtrip_new_session_record_export_from_bytes_export() {
-        let mut session = crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
-            .expect("new_session should succeed");
+        let mut session =
+            crate::bindgen::WasmAgentSnapshot::new_session("0123456789abcdef0123456789abcdef")
+                .expect("new_session should succeed");
 
-        let h_idx = session.record_human(
-            s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
-            wasm_bindgen::JsValue::NULL,
-            0x12345678,
-            None,
-        ).expect("record_human should succeed");
+        let h_idx = session
+            .record_human(
+                s3a_pack_scholar::xapi::VERB_ID_SEARCHED,
+                wasm_bindgen::JsValue::NULL,
+                0x12345678,
+                None,
+            )
+            .expect("record_human should succeed");
 
-        let _ai_idx = session.record_ai(
-            "lab-assistant",
-            18, // verb 18: ai-answered
-            0.95,
-            Some(h_idx),
-        ).expect("record_ai should succeed");
+        let _ai_idx = session
+            .record_ai(
+                "lab-assistant",
+                18, // verb 18: ai-answered
+                0.95,
+                Some(h_idx),
+            )
+            .expect("record_ai should succeed");
 
-        let bytes1 = session.export_bytes().expect("first export_bytes should succeed");
+        let bytes1 = session
+            .export_bytes()
+            .expect("first export_bytes should succeed");
         assert!(!bytes1.is_empty(), "first export must not be empty");
         println!("Export 1 size: {} bytes", bytes1.len());
 
         let mut restored = crate::bindgen::WasmAgentSnapshot::from_bytes(&bytes1)
             .expect("from_bytes should succeed");
 
-        let bytes2 = restored.export_bytes().expect("second export_bytes should succeed");
+        let bytes2 = restored
+            .export_bytes()
+            .expect("second export_bytes should succeed");
         assert!(!bytes2.is_empty(), "second export must not be empty");
         println!("Export 2 size: {} bytes", bytes2.len());
 
-        assert_eq!(bytes1.len(), bytes2.len(), "both exports must succeed and lengths must be stable");
+        assert_eq!(
+            bytes1.len(),
+            bytes2.len(),
+            "both exports must succeed and lengths must be stable"
+        );
     }
 }
-
-

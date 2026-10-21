@@ -1,8 +1,8 @@
 //! CLI command handlers for `s3a-cli vcs ...`
 
-use std::path::PathBuf;
 use ed25519_dalek::SigningKey;
 use rand_core::{OsRng, RngCore};
+use std::path::PathBuf;
 
 use s3a_vcs::{export_git, sync_push, VcsRepo};
 
@@ -46,7 +46,9 @@ pub fn handle_vcs_command(args: &[String]) {
             }
 
             let Some(file) = file_opt else {
-                println!("Usage: s3a-cli vcs commit <archive_file> -m \"<message>\" [--branch <branch>]");
+                println!(
+                    "Usage: s3a-cli vcs commit <archive_file> -m \"<message>\" [--branch <branch>]"
+                );
                 return;
             };
             let msg = msg_opt.unwrap_or_else(|| "Snapshot commit".to_string());
@@ -73,7 +75,11 @@ pub fn handle_vcs_command(args: &[String]) {
                 return;
             };
 
-            let target = args.iter().skip(4).find(|a| !a.starts_with('-')).map(|s| s.as_str());
+            let target = args
+                .iter()
+                .skip(4)
+                .find(|a| !a.starts_with('-'))
+                .map(|s| s.as_str());
 
             match VcsRepo::open(file) {
                 Ok(repo) => match repo.log(target) {
@@ -115,7 +121,11 @@ pub fn handle_vcs_command(args: &[String]) {
                 return;
             }
             let file = &args[3];
-            let new_branch = if args.len() >= 5 { Some(&args[4]) } else { None };
+            let new_branch = if args.len() >= 5 {
+                Some(&args[4])
+            } else {
+                None
+            };
 
             match VcsRepo::open(file) {
                 Ok(repo) => {
@@ -129,7 +139,11 @@ pub fn handle_vcs_command(args: &[String]) {
                             .map(|r| r.target_seal_hash)
                             .unwrap_or([0u8; 32]);
                         match repo.set_branch(branch_name, target_seal, &signing_key) {
-                            Ok(r) => println!("Created branch '{}' -> {}", r.ref_name(), hex::encode(r.target_seal_hash)),
+                            Ok(r) => println!(
+                                "Created branch '{}' -> {}",
+                                r.ref_name(),
+                                hex::encode(r.target_seal_hash)
+                            ),
                             Err(e) => eprintln!("Failed to create branch: {}", e),
                         }
                     } else {
@@ -139,7 +153,11 @@ pub fn handle_vcs_command(args: &[String]) {
                                 println!("Branches in {}:", file);
                                 for r in refs {
                                     if r.ref_kind == s3a_vcs::REF_KIND_BRANCH {
-                                        println!("  * {} ({})", r.ref_name(), hex::encode(r.target_seal_hash));
+                                        println!(
+                                            "  * {} ({})",
+                                            r.ref_name(),
+                                            hex::encode(r.target_seal_hash)
+                                        );
                                     }
                                 }
                             }
@@ -156,7 +174,11 @@ pub fn handle_vcs_command(args: &[String]) {
                 return;
             }
             let file = &args[3];
-            let new_tag = if args.len() >= 5 { Some(&args[4]) } else { None };
+            let new_tag = if args.len() >= 5 {
+                Some(&args[4])
+            } else {
+                None
+            };
 
             match VcsRepo::open(file) {
                 Ok(repo) => {
@@ -178,7 +200,11 @@ pub fn handle_vcs_command(args: &[String]) {
                                 .unwrap_or([0u8; 32])
                         };
                         match repo.set_tag(tag_name, target_seal, &signing_key) {
-                            Ok(r) => println!("Created tag '{}' -> {}", r.ref_name(), hex::encode(r.target_seal_hash)),
+                            Ok(r) => println!(
+                                "Created tag '{}' -> {}",
+                                r.ref_name(),
+                                hex::encode(r.target_seal_hash)
+                            ),
                             Err(e) => eprintln!("Failed to create tag: {}", e),
                         }
                     } else {
@@ -187,7 +213,11 @@ pub fn handle_vcs_command(args: &[String]) {
                                 println!("Tags in {}:", file);
                                 for r in refs {
                                     if r.ref_kind == s3a_vcs::REF_KIND_TAG {
-                                        println!("  tag {} ({})", r.ref_name(), hex::encode(r.target_seal_hash));
+                                        println!(
+                                            "  tag {} ({})",
+                                            r.ref_name(),
+                                            hex::encode(r.target_seal_hash)
+                                        );
                                     }
                                 }
                             }
@@ -223,7 +253,9 @@ pub fn handle_vcs_command(args: &[String]) {
 
                     match seal {
                         Some(s) => println!("Checked out view at seal {}", hex::encode(s)),
-                        None => eprintln!("Could not resolve '{}' to a known ref or commit", target),
+                        None => {
+                            eprintln!("Could not resolve '{}' to a known ref or commit", target)
+                        }
                     }
                 }
                 Err(e) => eprintln!("Failed to open repository: {}", e),
@@ -231,7 +263,12 @@ pub fn handle_vcs_command(args: &[String]) {
         }
         "diff" => {
             let json_mode = args.iter().any(|a| a == "--json");
-            let non_flags: Vec<&str> = args.iter().skip(3).filter(|a| !a.starts_with('-')).map(|s| s.as_str()).collect();
+            let non_flags: Vec<&str> = args
+                .iter()
+                .skip(3)
+                .filter(|a| !a.starts_with('-'))
+                .map(|s| s.as_str())
+                .collect();
             if non_flags.len() < 1 {
                 println!("Usage: s3a-cli vcs diff <archive_file> [commit_a] [commit_b] [--json]");
                 return;
@@ -240,19 +277,34 @@ pub fn handle_vcs_command(args: &[String]) {
             match VcsRepo::open(file) {
                 Ok(repo) => {
                     let from_seal = [0u8; 32];
-                    let to_seal = repo.get_ref("main").ok().flatten().map(|r| r.target_seal_hash).unwrap_or([0u8; 32]);
+                    let to_seal = repo
+                        .get_ref("main")
+                        .ok()
+                        .flatten()
+                        .map(|r| r.target_seal_hash)
+                        .unwrap_or([0u8; 32]);
                     match repo.diff(&from_seal, &to_seal) {
                         Ok(diff_report) => {
                             if json_mode {
                                 println!("{}", serde_json::to_string_pretty(&diff_report).unwrap());
                             } else {
-                                println!("=== S3A VCS DIFF: {}..{} ===", &diff_report.from_seal[..8], &diff_report.to_seal[..8]);
+                                println!(
+                                    "=== S3A VCS DIFF: {}..{} ===",
+                                    &diff_report.from_seal[..8],
+                                    &diff_report.to_seal[..8]
+                                );
                                 println!("Records Added:     {}", diff_report.total_records_added);
-                                println!("Records Withdrawn: {}", diff_report.total_records_withdrawn);
+                                println!(
+                                    "Records Withdrawn: {}",
+                                    diff_report.total_records_withdrawn
+                                );
                                 println!("Records Erased:    {}", diff_report.total_records_erased);
                                 println!();
                                 for td in diff_report.tile_diffs {
-                                    println!("  - {}: +{} added, -{} withdrawn", td.type_name, td.records_added, td.records_withdrawn);
+                                    println!(
+                                        "  - {}: +{} added, -{} withdrawn",
+                                        td.type_name, td.records_added, td.records_withdrawn
+                                    );
                                 }
                             }
                         }
@@ -275,20 +327,35 @@ pub fn handle_vcs_command(args: &[String]) {
             match VcsRepo::open(file) {
                 Ok(repo) => match repo.merge(source_branch, target_branch, &signing_key, true) {
                     Ok(s3a_vcs::VcsMergeResult::Merged(commit)) => {
-                        println!("Merged branch '{}' into '{}':", source_branch, target_branch);
+                        println!(
+                            "Merged branch '{}' into '{}':",
+                            source_branch, target_branch
+                        );
                         println!("  Merge Commit: {}", hex::encode(commit.commit_id));
                         println!("  Seal Hash:    {}", hex::encode(commit.seal_hash));
                     }
-                    Ok(s3a_vcs::VcsMergeResult::ConflictNeedsHuman { conflicting_records, message }) => {
-                        println!("MERGE BLOCKED (Human Supervisor Judgment Required): {}", message);
+                    Ok(s3a_vcs::VcsMergeResult::ConflictNeedsHuman {
+                        conflicting_records,
+                        message,
+                    }) => {
+                        println!(
+                            "MERGE BLOCKED (Human Supervisor Judgment Required): {}",
+                            message
+                        );
                         for c in conflicting_records {
                             println!("  Conflict Record: {} ({})", c.record_id, c.type_name);
                             println!("    Version A ({}): {}", target_branch, c.target_version);
                             println!("    Version B ({}): {}", source_branch, c.source_version);
                         }
                     }
-                    Ok(s3a_vcs::VcsMergeResult::Conflict { conflicting_record_ids, message }) => {
-                        eprintln!("Merge conflict: {}. Conflicting IDs: {:?}", message, conflicting_record_ids);
+                    Ok(s3a_vcs::VcsMergeResult::Conflict {
+                        conflicting_record_ids,
+                        message,
+                    }) => {
+                        eprintln!(
+                            "Merge conflict: {}. Conflicting IDs: {:?}",
+                            message, conflicting_record_ids
+                        );
                     }
                     Err(e) => eprintln!("Merge failed: {}", e),
                 },
@@ -317,7 +384,12 @@ pub fn handle_vcs_command(args: &[String]) {
             }
             let src = &args[3];
             let tgt = &args[4];
-            let branch = args.iter().position(|a| a == "--branch").and_then(|p| args.get(p + 1)).map(|s| s.as_str()).unwrap_or("main");
+            let branch = args
+                .iter()
+                .position(|a| a == "--branch")
+                .and_then(|p| args.get(p + 1))
+                .map(|s| s.as_str())
+                .unwrap_or("main");
             let allow_merge = args.iter().any(|a| a == "--merge");
             let signing_key = load_or_generate_key(src);
 
@@ -337,7 +409,10 @@ pub fn handle_vcs_command(args: &[String]) {
             };
 
             match sync_push(&s_repo, &t_repo, branch, allow_merge, None, &signing_key) {
-                Ok(transferred) => println!("Push completed: transferred {} missing tiles to target", transferred),
+                Ok(transferred) => println!(
+                    "Push completed: transferred {} missing tiles to target",
+                    transferred
+                ),
                 Err(e) => eprintln!("Push failed: {}", e),
             }
         }
@@ -347,14 +422,20 @@ pub fn handle_vcs_command(args: &[String]) {
 
 fn print_vcs_usage() {
     println!("S3A Git-Style Version Control (s3a-cli vcs):");
-    println!("  s3a-cli vcs init <archive>                            Initialize VCS on an S3A archive");
+    println!(
+        "  s3a-cli vcs init <archive>                            Initialize VCS on an S3A archive"
+    );
     println!("  s3a-cli vcs commit <archive> -m \"<msg>\" [--branch B]   Seal archive with signed commit record");
-    println!("  s3a-cli vcs log <archive> [--json] [ref]              Display commit DAG log history");
+    println!(
+        "  s3a-cli vcs log <archive> [--json] [ref]              Display commit DAG log history"
+    );
     println!("  s3a-cli vcs branch <archive> [branch_name]            List branches or create new branch pointer");
     println!("  s3a-cli vcs tag <archive> [tag_name] [seal]           List tags or create immutable snapshot tag");
     println!("  s3a-cli vcs checkout <archive> <ref_or_commit>        Checkout read-only view at ref/commit");
     println!("  s3a-cli vcs diff <archive> [commit_a] [commit_b]      Aggregate record changes without privacy leaks");
-    println!("  s3a-cli vcs merge <archive> <source> <target>         Append-only union merge branches");
+    println!(
+        "  s3a-cli vcs merge <archive> <source> <target>         Append-only union merge branches"
+    );
     println!("  s3a-cli vcs push <src> <tgt> [--branch B] [--merge]   Inventory sync push transmitting missing tiles");
     println!("  s3a-cli vcs export-git <archive> <out_dir>            Export repository to real read-only Git repo");
 }

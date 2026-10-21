@@ -27,15 +27,35 @@ impl fmt::Display for VaultError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCrc(msg) => write!(f, "Invalid CRC32C checksum: {}", msg),
-            Self::InvalidSignature(msg) => write!(f, "Cryptographic signature verification failed: {}", msg),
-            Self::SelfGrantForbidden => write!(f, "Self-granting by autonomous agents is strictly forbidden"),
-            Self::WidenedGrantForbidden => write!(f, "Sub-grant widens parent delegation permissions"),
-            Self::GrantExpiredOrExhausted => write!(f, "Delegation grant has expired or reached max operation limit"),
-            Self::RequiresHumanApproval(action) => write!(f, "Non-delegable judgment action requires interactive human approval: {}", action),
-            Self::KeyRevokedError(key) => write!(f, "Action rejected: key {} is revoked", hex::encode(key)),
-            Self::InvalidAddressChecksum => write!(f, "Gate address checksum mismatch / typo detected"),
+            Self::InvalidSignature(msg) => {
+                write!(f, "Cryptographic signature verification failed: {}", msg)
+            }
+            Self::SelfGrantForbidden => write!(
+                f,
+                "Self-granting by autonomous agents is strictly forbidden"
+            ),
+            Self::WidenedGrantForbidden => {
+                write!(f, "Sub-grant widens parent delegation permissions")
+            }
+            Self::GrantExpiredOrExhausted => write!(
+                f,
+                "Delegation grant has expired or reached max operation limit"
+            ),
+            Self::RequiresHumanApproval(action) => write!(
+                f,
+                "Non-delegable judgment action requires interactive human approval: {}",
+                action
+            ),
+            Self::KeyRevokedError(key) => {
+                write!(f, "Action rejected: key {} is revoked", hex::encode(key))
+            }
+            Self::InvalidAddressChecksum => {
+                write!(f, "Gate address checksum mismatch / typo detected")
+            }
             Self::InvalidAddressFormat(msg) => write!(f, "Invalid gate address format: {}", msg),
-            Self::DoubleSendDetected(hash) => write!(f, "Double-send detected for item {}", hex::encode(hash)),
+            Self::DoubleSendDetected(hash) => {
+                write!(f, "Double-send detected for item {}", hex::encode(hash))
+            }
             Self::ConsentViolationError(msg) => write!(f, "Consent governance violation: {}", msg),
             Self::KeyStoreError(msg) => write!(f, "KeyStore error: {}", msg),
             Self::ItemNotFound(id) => write!(f, "Vault item {} not found", hex::encode(id)),

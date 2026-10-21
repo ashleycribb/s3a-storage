@@ -3,8 +3,8 @@
 //! When `--shadow` is active, commits land on isolated shadow branches (`shadow/{agent}/{seq}`)
 //! and are only promoted to `main` if an automated eval passes.
 
-use s3a_vcs::records::VcsCommitRecord;
 use crate::merge::RepoRecordEntry;
+use s3a_vcs::records::VcsCommitRecord;
 
 /// Outcome of automated shadow evaluation.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -67,6 +67,7 @@ pub fn evaluate_shadow_commit(
         passed: true,
         eval_name: "s3a_swarm_shadow_eval".to_string(),
         score: 1.0,
-        rationale: "All invariants passed: signature verified, payload structured, non-empty".to_string(),
+        rationale: "All invariants passed: signature verified, payload structured, non-empty"
+            .to_string(),
     }
 }

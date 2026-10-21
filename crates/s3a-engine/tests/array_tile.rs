@@ -24,7 +24,12 @@ impl TestTempFile {
     fn new(suffix: &str) -> Self {
         let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_array_test_{}_{}_{}.s3a", std::process::id(), count, suffix));
+        path.push(format!(
+            "s3a_array_test_{}_{}_{}.s3a",
+            std::process::id(),
+            count,
+            suffix
+        ));
         Self { path }
     }
 
@@ -44,7 +49,8 @@ fn test_array_roundtrip_2d_3d_4d() {
     // 2D Array: 4 x 5 float32 matrix
     let shape_2d = [4u64, 5u64];
     let coords_2d = [0u64, 0u64];
-    let mut builder_2d = ArrayTileBuilder::new(2, ArrayDataType::Float32, &shape_2d, &coords_2d).unwrap();
+    let mut builder_2d =
+        ArrayTileBuilder::new(2, ArrayDataType::Float32, &shape_2d, &coords_2d).unwrap();
     builder_2d.set_axis_names("rows,cols");
 
     let data_2d: Vec<f32> = (0..20).map(|x| x as f32 * 0.5).collect();
@@ -57,12 +63,16 @@ fn test_array_roundtrip_2d_3d_4d() {
     assert!(view_2d.verify_chunk_hash());
     let elems_2d: &[f32] = view_2d.read_elements().unwrap();
     assert_eq!(elems_2d, data_2d.as_slice());
-    assert_eq!(view_2d.get_element::<f32>(&[2, 3]), Some(data_2d[2 * 5 + 3]));
+    assert_eq!(
+        view_2d.get_element::<f32>(&[2, 3]),
+        Some(data_2d[2 * 5 + 3])
+    );
 
     // 3D Array: 3 x 4 x 2 int32 cube
     let shape_3d = [3u64, 4u64, 2u64];
     let coords_3d = [0u64, 0u64, 0u64];
-    let mut builder_3d = ArrayTileBuilder::new(3, ArrayDataType::Int32, &shape_3d, &coords_3d).unwrap();
+    let mut builder_3d =
+        ArrayTileBuilder::new(3, ArrayDataType::Int32, &shape_3d, &coords_3d).unwrap();
     builder_3d.set_axis_names("x,y,z");
 
     let data_3d: Vec<i32> = (0..24).map(|x| (x * 10) as i32).collect();
@@ -80,7 +90,8 @@ fn test_array_roundtrip_2d_3d_4d() {
     // 4D Array: 2 x 3 x 2 x 2 float64 hyper-volume
     let shape_4d = [2u64, 3u64, 2u64, 2u64];
     let coords_4d = [0u64, 0u64, 0u64, 0u64];
-    let mut builder_4d = ArrayTileBuilder::new(4, ArrayDataType::Float64, &shape_4d, &coords_4d).unwrap();
+    let mut builder_4d =
+        ArrayTileBuilder::new(4, ArrayDataType::Float64, &shape_4d, &coords_4d).unwrap();
     builder_4d.set_axis_names("batch,channels,height,width");
 
     let data_4d: Vec<f64> = (0..24).map(|x| x as f64 * 3.14).collect();
@@ -126,7 +137,9 @@ fn test_array_slice_across_chunk_boundaries() {
     // rows [1..3] (2 rows), cols [2..6] (4 columns)
     // Global columns 2..4 come from Chunk 0 (local cols 2..4)
     // Global columns 4..6 come from Chunk 1 (local cols 0..2)
-    let slice = engine.read_array_slice::<i32>(&[(1, 3), (2, 6)], -1).unwrap();
+    let slice = engine
+        .read_array_slice::<i32>(&[(1, 3), (2, 6)], -1)
+        .unwrap();
     assert_eq!(slice.len(), 2 * 4); // 8 elements
 
     // Row 1 (global row 1):
@@ -164,7 +177,9 @@ fn test_missing_chunk_returns_fill_value() {
     // Slice rows [0..2], cols [0..4] (2 rows x 4 cols = 8 elements)
     // Cols [0..2] exist, Cols [2..4] are missing chunk space -> MUST return fill_value (-999.0)
     let fill = -999.0f64;
-    let slice = engine.read_array_slice::<f64>(&[(0, 2), (0, 4)], fill).unwrap();
+    let slice = engine
+        .read_array_slice::<f64>(&[(0, 2), (0, 4)], fill)
+        .unwrap();
     assert_eq!(slice.len(), 8);
 
     // Row 0
@@ -233,10 +248,15 @@ fn test_dtype_coverage() {
 
     // f64
     let mut b_f64 = ArrayTileBuilder::new(1, ArrayDataType::Float64, &[2], &[0]).unwrap();
-    b_f64.set_data(&[core::f64::consts::PI, core::f64::consts::E]).unwrap();
+    b_f64
+        .set_data(&[core::f64::consts::PI, core::f64::consts::E])
+        .unwrap();
     let p_f64 = b_f64.build();
     let v_f64 = ArrayTileView::parse(&p_f64).unwrap();
-    assert_eq!(v_f64.read_elements::<f64>().unwrap(), &[core::f64::consts::PI, core::f64::consts::E]);
+    assert_eq!(
+        v_f64.read_elements::<f64>().unwrap(),
+        &[core::f64::consts::PI, core::f64::consts::E]
+    );
 }
 
 #[test]

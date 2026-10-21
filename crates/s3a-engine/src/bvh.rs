@@ -1,7 +1,6 @@
+use crate::MmapReader;
 use s3a_core::{SimplexHull, MAX_HULL_DIMENSIONS};
 use s3a_simd::{can_reject_tile_point, can_reject_tile_range};
-use crate::MmapReader;
-
 
 /// Bounding Volume Hierarchy (BVH) node representing a cluster or hierarchy of Hyper-Tiles.
 #[derive(Debug, Clone)]
@@ -157,7 +156,12 @@ impl HullBvh {
         candidates
     }
 
-    fn traverse_spatial_range(node: &BvhNode, min_bounds: &[f32], max_bounds: &[f32], out: &mut Vec<usize>) {
+    fn traverse_spatial_range(
+        node: &BvhNode,
+        min_bounds: &[f32],
+        max_bounds: &[f32],
+        out: &mut Vec<usize>,
+    ) {
         if can_reject_tile_range(&node.hull, min_bounds, max_bounds) {
             // Entire branch rejected!
             return;

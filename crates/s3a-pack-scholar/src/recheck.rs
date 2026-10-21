@@ -12,21 +12,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use s3a_core::{
-    FileHeader, HyperTileHeader, MarkRecord,
-    FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
-    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
-    MARK_NEEDS_REVIEW, MARK_SET, TileType,
+    FileHeader, HyperTileHeader, MarkRecord, TileType, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
+    FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, MARK_NEEDS_REVIEW, MARK_SET,
 };
 use s3a_engine::sealed::seal_buffer;
 use s3a_engine::TileWriter;
 
 use crate::pack::ScholarTileType;
-use crate::records::{
-    AcademicPaperRecord, CitationFingerprintRecord,
-};
+use crate::records::{AcademicPaperRecord, CitationFingerprintRecord};
 use crate::xapi::{
-    hash_iri, EXT_CONTENT_SHA256, EXT_CROSSREF_VERSION,
-    EXT_RECHECK_STATUS, EXT_SOURCE_URL, SCHOLAR_XAPI_PROFILE_IRI,
+    hash_iri, EXT_CONTENT_SHA256, EXT_CROSSREF_VERSION, EXT_RECHECK_STATUS, EXT_SOURCE_URL,
+    SCHOLAR_XAPI_PROFILE_IRI,
 };
 
 pub fn is_sealed_file_bytes(bytes: &[u8]) -> bool {
@@ -109,12 +105,18 @@ pub fn recheck_archive<P: AsRef<Path>>(
 ) -> io::Result<RecheckReport> {
     let path = file_path.as_ref();
     if !path.exists() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("File not found: {}", path.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("File not found: {}", path.display()),
+        ));
     }
 
     let file_bytes = std::fs::read(path)?;
     if file_bytes.len() < FILE_HEADER_SIZE {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "File too small for S3A header"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too small for S3A header",
+        ));
     }
 
     let is_sealed = is_sealed_file_bytes(&file_bytes);
@@ -132,10 +134,12 @@ pub fn recheck_archive<P: AsRef<Path>>(
     let mut offset = FILE_HEADER_SIZE;
     while offset + HYPER_TILE_SIZE <= file_bytes.len() {
         let tile_bytes = &file_bytes[offset..offset + HYPER_TILE_SIZE];
-        let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let tile_header: &HyperTileHeader =
+            &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
 
         if tile_header.tile_type == ScholarTileType::CITATION_FINGERPRINT {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[CitationFingerprintRecord] = bytemuck::cast_slice(payload);
             for (rec_idx, rec) in recs.iter().enumerate() {
                 if rec.is_active() {
@@ -143,7 +147,8 @@ pub fn recheck_archive<P: AsRef<Path>>(
                 }
             }
         } else if tile_header.tile_type == ScholarTileType::ACADEMIC_PAPERS {
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             let recs: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
             for rec in recs {
                 if !paper_doi_map.contains_key(&rec.paper_id) {
@@ -152,23 +157,31 @@ pub fn recheck_archive<P: AsRef<Path>>(
             }
         } else if tile_header.tile_type == TileType::STATEMENT_BODY {
             // Extract DOIs and URLs from xAPI statement bodies
-            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
+            let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE
+                ..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
             if payload.len() >= 64 {
                 let json_slice = &payload[64..];
                 if let Ok(val) = serde_json::from_slice::<serde_json::Value>(json_slice) {
-                    if let Some(obj_id) = val.get("object").and_then(|o| o.get("id")).and_then(|i| i.as_str()) {
+                    if let Some(obj_id) = val
+                        .get("object")
+                        .and_then(|o| o.get("id"))
+                        .and_then(|i| i.as_str())
+                    {
                         let doi_cleaned = obj_id.trim_start_matches("https://doi.org/").to_string();
-                        let pid = val.get("context")
+                        let pid = val
+                            .get("context")
                             .and_then(|c| c.get("extensions"))
                             .and_then(|e| e.get("https://ashecribb.dev/xapi/ext/paper-id"))
                             .and_then(|p| p.as_u64())
                             .unwrap_or(hash_iri(&doi_cleaned));
                         paper_doi_map.entry(pid).or_insert(doi_cleaned);
 
-                        if let Some(src_url) = val.get("context")
+                        if let Some(src_url) = val
+                            .get("context")
                             .and_then(|c| c.get("extensions"))
                             .and_then(|e| e.get(EXT_SOURCE_URL))
-                            .and_then(|u| u.as_str()) {
+                            .and_then(|u| u.as_str())
+                        {
                             paper_url_map.entry(pid).or_insert(src_url.to_string());
                         }
                     }
@@ -185,8 +198,14 @@ pub fn recheck_archive<P: AsRef<Path>>(
     let now_sec = s3a_engine::lrs_store::now_ms() / 1000;
 
     for (fp, tile_id, rec_idx) in discovered_fps {
-        let doi = paper_doi_map.get(&fp.paper_id).cloned().unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
-        let source_url = paper_url_map.get(&fp.paper_id).cloned().unwrap_or_else(|| format!("https://doi.org/{}", doi));
+        let doi = paper_doi_map
+            .get(&fp.paper_id)
+            .cloned()
+            .unwrap_or_else(|| format!("10.1000/{}", fp.paper_id));
+        let source_url = paper_url_map
+            .get(&fp.paper_id)
+            .cloned()
+            .unwrap_or_else(|| format!("https://doi.org/{}", doi));
 
         let (status, msg, fetched_sha) = if opts.online {
             verify_online_source(&source_url, &doi, &fp, opts.crossref_endpoint.as_deref())
@@ -194,9 +213,17 @@ pub fn recheck_archive<P: AsRef<Path>>(
             // In offline mode, verify internal hash plausibility
             let is_zero = fp.content_sha256.iter().all(|&b| b == 0);
             if is_zero {
-                (RecheckStatus::Changed, "Zero content SHA-256 in fingerprint".to_string(), None)
+                (
+                    RecheckStatus::Changed,
+                    "Zero content SHA-256 in fingerprint".to_string(),
+                    None,
+                )
             } else {
-                (RecheckStatus::Unchanged, "Offline verification: SHA-256 signature format valid".to_string(), Some(fp.content_sha256_hex()))
+                (
+                    RecheckStatus::Unchanged,
+                    "Offline verification: SHA-256 signature format valid".to_string(),
+                    Some(fp.content_sha256_hex()),
+                )
             }
         };
 
@@ -280,7 +307,14 @@ pub fn recheck_archive<P: AsRef<Path>>(
 
     // Persist marks and statements if any were generated
     if !marks_to_write.is_empty() || !statements_to_write.is_empty() {
-        apply_marks_and_statements(path, &file_bytes, is_sealed, &marks_to_write, &statements_to_write, opts.out_path.as_deref())?;
+        apply_marks_and_statements(
+            path,
+            &file_bytes,
+            is_sealed,
+            &marks_to_write,
+            &statements_to_write,
+            opts.out_path.as_deref(),
+        )?;
     }
 
     Ok(report)
@@ -293,20 +327,26 @@ fn verify_online_source(
     crossref_endpoint: Option<&str>,
 ) -> (RecheckStatus, String, Option<String>) {
     // 1. Fetch source content bytes
-    let resp = ureq::get(source_url)
-        .timeout(Duration::from_secs(5))
-        .call();
+    let resp = ureq::get(source_url).timeout(Duration::from_secs(5)).call();
 
     let content_bytes = match resp {
         Ok(r) => {
             let mut buf = Vec::new();
             if let Err(e) = r.into_reader().read_to_end(&mut buf) {
-                return (RecheckStatus::Unreachable, format!("Failed to read stream: {}", e), None);
+                return (
+                    RecheckStatus::Unreachable,
+                    format!("Failed to read stream: {}", e),
+                    None,
+                );
             }
             buf
         }
         Err(e) => {
-            return (RecheckStatus::Unreachable, format!("HTTP fetch failed: {}", e), None);
+            return (
+                RecheckStatus::Unreachable,
+                format!("HTTP fetch failed: {}", e),
+                None,
+            );
         }
     };
 
@@ -322,9 +362,7 @@ fn verify_online_source(
         format!("https://api.crossref.org/works/{}", doi)
     };
 
-    let cr_resp = ureq::get(&cr_url)
-        .timeout(Duration::from_secs(5))
-        .call();
+    let cr_resp = ureq::get(&cr_url).timeout(Duration::from_secs(5)).call();
 
     if let Ok(cr_r) = cr_resp {
         let mut cr_text = String::new();
@@ -332,40 +370,76 @@ fn verify_online_source(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&cr_text) {
                 let msg = val.get("message").unwrap_or(&val);
 
-            // Check for retraction indications
-            let is_retracted = msg.get("update-to")
-                .and_then(|u| u.as_array())
-                .map(|arr| arr.iter().any(|item| {
-                    item.get("type").and_then(|t| t.as_str()).map(|t| t == "retraction").unwrap_or(false)
-                        || item.get("label").and_then(|l| l.as_str()).map(|l| l.to_lowercase().contains("retract")).unwrap_or(false)
-                }))
-                .unwrap_or(false)
-                || msg.get("status").and_then(|s| s.as_str()).map(|s| s.to_lowercase().contains("retract")).unwrap_or(false)
-                || msg.get("relation").and_then(|r| r.get("is-retracted-by")).is_some();
+                // Check for retraction indications
+                let is_retracted = msg
+                    .get("update-to")
+                    .and_then(|u| u.as_array())
+                    .map(|arr| {
+                        arr.iter().any(|item| {
+                            item.get("type")
+                                .and_then(|t| t.as_str())
+                                .map(|t| t == "retraction")
+                                .unwrap_or(false)
+                                || item
+                                    .get("label")
+                                    .and_then(|l| l.as_str())
+                                    .map(|l| l.to_lowercase().contains("retract"))
+                                    .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+                    || msg
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_lowercase().contains("retract"))
+                        .unwrap_or(false)
+                    || msg
+                        .get("relation")
+                        .and_then(|r| r.get("is-retracted-by"))
+                        .is_some();
 
-            if is_retracted {
-                return (RecheckStatus::Retracted, "Crossref reports work has been retracted".to_string(), Some(fetched_hex));
-            }
+                if is_retracted {
+                    return (
+                        RecheckStatus::Retracted,
+                        "Crossref reports work has been retracted".to_string(),
+                        Some(fetched_hex),
+                    );
+                }
 
-            // Check for newer update/version
-            let cr_version = msg.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-            if cr_version > fp.crossref_version {
-                return (RecheckStatus::Changed, format!("Crossref reports newer version v{} (recorded v{})", cr_version, fp.crossref_version), Some(fetched_hex));
+                // Check for newer update/version
+                let cr_version = msg.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                if cr_version > fp.crossref_version {
+                    return (
+                        RecheckStatus::Changed,
+                        format!(
+                            "Crossref reports newer version v{} (recorded v{})",
+                            cr_version, fp.crossref_version
+                        ),
+                        Some(fetched_hex),
+                    );
+                }
             }
         }
     }
-}
 
     // 3. Compare hash
     if fetched_digest != fp.content_sha256 {
         return (
             RecheckStatus::Changed,
-            format!("Content SHA-256 mismatch (stored {}, fetched {})", fp.content_sha256_hex(), fetched_hex),
+            format!(
+                "Content SHA-256 mismatch (stored {}, fetched {})",
+                fp.content_sha256_hex(),
+                fetched_hex
+            ),
             Some(fetched_hex),
         );
     }
 
-    (RecheckStatus::Unchanged, "Content hash and Crossref metadata match recorded provenance".to_string(), Some(fetched_hex))
+    (
+        RecheckStatus::Unchanged,
+        "Content hash and Crossref metadata match recorded provenance".to_string(),
+        Some(fetched_hex),
+    )
 }
 
 fn apply_marks_and_statements(
@@ -394,7 +468,8 @@ fn apply_marks_and_statements(
             hdr.header_crc32 = compute_tile_header_crc32(&hdr);
 
             mark_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&hdr));
-            mark_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + mark_bytes.len()].copy_from_slice(mark_bytes);
+            mark_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + mark_bytes.len()]
+                .copy_from_slice(mark_bytes);
             working_buf.extend_from_slice(&mark_tile);
 
             // Increment tile_count in header
@@ -403,7 +478,8 @@ fn apply_marks_and_statements(
 
         // Append xAPI statement bodies
         for stmt in statements {
-            let json_bytes = serde_json::to_vec(stmt).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let json_bytes = serde_json::to_vec(stmt)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let mut stmt_tile = vec![0u8; HYPER_TILE_SIZE];
             let mut hdr = HyperTileHeader::new(0, TileType::STATEMENT_BODY);
             let total_payload = 64 + json_bytes.len();
@@ -416,7 +492,8 @@ fn apply_marks_and_statements(
             hdr.header_crc32 = compute_tile_header_crc32(&hdr);
 
             stmt_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&hdr));
-            stmt_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + total_payload].copy_from_slice(&payload_buf);
+            stmt_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + total_payload]
+                .copy_from_slice(&payload_buf);
             working_buf.extend_from_slice(&stmt_tile);
 
             update_slot_tile_count(&mut working_buf);
@@ -431,17 +508,12 @@ fn apply_marks_and_statements(
 
         if !marks.is_empty() {
             let timestamps: Vec<u64> = marks.iter().map(|m| m.timestamp).collect();
-            writer.write_hyper_tile_ext(
-                TileType::MARKS,
-                marks,
-                Some(&timestamps),
-                None,
-                None,
-            )?;
+            writer.write_hyper_tile_ext(TileType::MARKS, marks, Some(&timestamps), None, None)?;
         }
 
         for stmt in statements {
-            let json_bytes = serde_json::to_vec(stmt).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let json_bytes = serde_json::to_vec(stmt)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             let mut payload_buf = vec![0u8; 64 + json_bytes.len()];
             payload_buf[64..].copy_from_slice(&json_bytes);
 
@@ -465,7 +537,9 @@ fn compute_tile_header_crc32(header: &HyperTileHeader) -> u32 {
 }
 
 fn update_slot_tile_count(buf: &mut [u8]) {
-    let slot_a: &mut FileHeader = bytemuck::from_bytes_mut(&mut buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+    let slot_a: &mut FileHeader = bytemuck::from_bytes_mut(
+        &mut buf[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
     slot_a.tile_count += 1;
     slot_a.generation += 1;
     slot_a.header_crc32 = compute_file_header_crc32(slot_a);
@@ -481,12 +555,18 @@ fn compute_file_header_crc32(header: &FileHeader) -> u32 {
 
 fn extract_unsealed_length(bytes: &[u8]) -> io::Result<usize> {
     if bytes.len() < 64 {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "File too small"));
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "File too small",
+        ));
     }
     let endcap_bytes = &bytes[bytes.len() - 64..];
     let endcap: s3a_core::SealedEndCap = bytemuck::pod_read_unaligned(endcap_bytes);
     if endcap.footer_offset == 0 || endcap.footer_offset as usize > bytes.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid footer offset in endcap"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid footer offset in endcap",
+        ));
     }
     Ok(endcap.footer_offset as usize)
 }
@@ -529,21 +609,46 @@ impl MockScholarServer {
                         }
                         let req = String::from_utf8_lossy(&buf[..n]);
 
-                        let (status_line, content_type, body) = if req.contains("GET /paper_ok.pdf") {
-                            ("HTTP/1.1 200 OK", "application/pdf", b"%PDF-1.4 Mock valid content for research paper".to_vec())
+                        let (status_line, content_type, body) = if req.contains("GET /paper_ok.pdf")
+                        {
+                            (
+                                "HTTP/1.1 200 OK",
+                                "application/pdf",
+                                b"%PDF-1.4 Mock valid content for research paper".to_vec(),
+                            )
                         } else if req.contains("GET /paper_changed.pdf") {
-                            ("HTTP/1.1 200 OK", "application/pdf", b"%PDF-1.4 TAMPERED content differs from original hash".to_vec())
+                            (
+                                "HTTP/1.1 200 OK",
+                                "application/pdf",
+                                b"%PDF-1.4 TAMPERED content differs from original hash".to_vec(),
+                            )
                         } else if req.contains("GET /works/10.1000/retracted") {
                             let json = r#"{"message":{"update-to":[{"type":"retraction","label":"Retracted paper"}]}}"#;
-                            ("HTTP/1.1 200 OK", "application/json", json.as_bytes().to_vec())
+                            (
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                json.as_bytes().to_vec(),
+                            )
                         } else if req.contains("GET /works/10.1000/updated") {
                             let json = r#"{"message":{"version":2}}"#;
-                            ("HTTP/1.1 200 OK", "application/json", json.as_bytes().to_vec())
+                            (
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                json.as_bytes().to_vec(),
+                            )
                         } else if req.contains("GET /works/") {
                             let json = r#"{"message":{"version":1}}"#;
-                            ("HTTP/1.1 200 OK", "application/json", json.as_bytes().to_vec())
+                            (
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                json.as_bytes().to_vec(),
+                            )
                         } else {
-                            ("HTTP/1.1 404 Not Found", "text/plain", b"Not found".to_vec())
+                            (
+                                "HTTP/1.1 404 Not Found",
+                                "text/plain",
+                                b"Not found".to_vec(),
+                            )
                         };
 
                         let response = format!(
@@ -582,10 +687,10 @@ impl Drop for MockScholarServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use s3a_core::ADDON_EDU;
-    use s3a_engine::S3ACrudEngine;
     use crate::ext::ScholarCrudExt;
     use crate::CONTENT_KIND_PDF;
+    use s3a_core::ADDON_EDU;
+    use s3a_engine::S3ACrudEngine;
 
     #[test]
     fn test_scholar_recheck_offline_and_mock_server_all_four_states() {
@@ -593,7 +698,13 @@ mod tests {
         let valid_content = b"%PDF-1.4 Mock valid content for research paper";
 
         let temp_dir = std::env::temp_dir();
-        let unique_name = format!("scholar_recheck_test_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let unique_name = format!(
+            "scholar_recheck_test_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         let live_path = temp_dir.join(unique_name);
         let _ = std::fs::remove_file(&live_path);
 
@@ -655,10 +766,34 @@ mod tests {
             url_overrides: HashMap::new(),
             out_path: None,
         };
-        opts.url_overrides.insert(101, ("10.1000/101".to_string(), format!("{}/paper_ok.pdf", server.addr)));
-        opts.url_overrides.insert(102, ("10.1000/102".to_string(), format!("{}/paper_changed.pdf", server.addr)));
-        opts.url_overrides.insert(103, ("10.1000/retracted".to_string(), format!("{}/paper_ok.pdf", server.addr)));
-        opts.url_overrides.insert(104, ("10.1000/104".to_string(), "http://127.0.0.1:9/unreachable.pdf".to_string()));
+        opts.url_overrides.insert(
+            101,
+            (
+                "10.1000/101".to_string(),
+                format!("{}/paper_ok.pdf", server.addr),
+            ),
+        );
+        opts.url_overrides.insert(
+            102,
+            (
+                "10.1000/102".to_string(),
+                format!("{}/paper_changed.pdf", server.addr),
+            ),
+        );
+        opts.url_overrides.insert(
+            103,
+            (
+                "10.1000/retracted".to_string(),
+                format!("{}/paper_ok.pdf", server.addr),
+            ),
+        );
+        opts.url_overrides.insert(
+            104,
+            (
+                "10.1000/104".to_string(),
+                "http://127.0.0.1:9/unreachable.pdf".to_string(),
+            ),
+        );
 
         let report = recheck_archive(&live_path, &opts).unwrap();
         assert_eq!(report.items.len(), 4);

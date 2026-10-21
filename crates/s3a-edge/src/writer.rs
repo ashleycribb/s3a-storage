@@ -8,12 +8,12 @@
 //! - Atomic recovery on boot: Scans tiles, truncates incomplete/torn writes, recovers append pointer.
 //! - Cryptographic SHA-256 seal hash chain linking every micro-tile to genesis.
 
-use bytemuck::{bytes_of};
 use crate::crc::crc32c;
 use crate::flash::FlashStorage;
 use crate::header::*;
 use crate::records::*;
 use crate::trust::compute_seal_hash;
+use bytemuck::bytes_of;
 use sha2::{Digest, Sha256};
 
 /// Errors returned by the S3A Edge Writer.
@@ -64,11 +64,17 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
         created_timestamp: u64,
     ) -> Result<Self, EdgeError<S::Error>> {
         let mut slot_buf = [0u8; FILE_HEADER_SLOT_SIZE];
-        let has_valid_slot = if storage.read(FILE_HEADER_SLOT_A_OFFSET, &mut slot_buf).is_ok() {
+        let has_valid_slot = if storage
+            .read(FILE_HEADER_SLOT_A_OFFSET, &mut slot_buf)
+            .is_ok()
+        {
             let slot_a: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
             if slot_a.verify() {
                 true
-            } else if storage.read(FILE_HEADER_SLOT_B_OFFSET, &mut slot_buf).is_ok() {
+            } else if storage
+                .read(FILE_HEADER_SLOT_B_OFFSET, &mut slot_buf)
+                .is_ok()
+            {
                 let slot_b: FileHeader = bytemuck::pod_read_unaligned(&slot_buf);
                 slot_b.verify()
             } else {
@@ -128,10 +134,7 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
         })
     }
 
-    fn recover_internal(
-        mut storage: S,
-        device_id: [u8; 16],
-    ) -> Result<Self, EdgeError<S::Error>> {
+    fn recover_internal(mut storage: S, device_id: [u8; 16]) -> Result<Self, EdgeError<S::Error>> {
         let mut slot_buf = [0u8; FILE_HEADER_SLOT_SIZE];
 
         // Read Slot A
@@ -207,7 +210,11 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
             let tile_gen = if tile_header.generation != 0 {
                 tile_header.generation as u64
             } else {
-                (active_header.generation.saturating_sub(active_header.tile_count as u64)) + (i as u64) + 1
+                (active_header
+                    .generation
+                    .saturating_sub(active_header.tile_count as u64))
+                    + (i as u64)
+                    + 1
             };
             let seal_hash = compute_seal_hash(
                 &prev_seal_hash,
@@ -276,7 +283,11 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
     }
 
     /// Appends a raw record into the in-memory staging buffer.
-    pub fn append_record(&mut self, type_id: u16, record_bytes: &[u8]) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_record(
+        &mut self,
+        type_id: u16,
+        record_bytes: &[u8],
+    ) -> Result<(), EdgeError<S::Error>> {
         if self.staging_record_count == 0 {
             self.staging_type_id = type_id;
         } else if self.staging_type_id != type_id {
@@ -299,27 +310,42 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
     }
 
     /// Appends a typed sensor record (§5.1.1).
-    pub fn append_sensor_record(&mut self, record: &CompactEdgeSensorRecord) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_sensor_record(
+        &mut self,
+        record: &CompactEdgeSensorRecord,
+    ) -> Result<(), EdgeError<S::Error>> {
         self.append_record(TILE_TYPE_TIME_SERIES, bytes_of(record))
     }
 
     /// Appends a typed equipment event record (§5.2.1).
-    pub fn append_equipment_event(&mut self, record: &EquipmentEventRecord) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_equipment_event(
+        &mut self,
+        record: &EquipmentEventRecord,
+    ) -> Result<(), EdgeError<S::Error>> {
         self.append_record(TILE_TYPE_RECORD, bytes_of(record))
     }
 
     /// Appends a typed key-value configuration snapshot record (§5.3.1).
-    pub fn append_config_entry(&mut self, record: &ConfigEntryRecord) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_config_entry(
+        &mut self,
+        record: &ConfigEntryRecord,
+    ) -> Result<(), EdgeError<S::Error>> {
         self.append_record(TILE_TYPE_CONFIG, bytes_of(record))
     }
 
     /// Appends a typed device identity record (§6.3.1).
-    pub fn append_device_identity(&mut self, record: &DeviceIdentityRecord) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_device_identity(
+        &mut self,
+        record: &DeviceIdentityRecord,
+    ) -> Result<(), EdgeError<S::Error>> {
         self.append_record(TILE_TYPE_RECORD, bytes_of(record))
     }
 
     /// Appends a typed participant consent & ownership record (§7.1.1).
-    pub fn append_consent(&mut self, record: &EdgeConsentRecord) -> Result<(), EdgeError<S::Error>> {
+    pub fn append_consent(
+        &mut self,
+        record: &EdgeConsentRecord,
+    ) -> Result<(), EdgeError<S::Error>> {
         self.append_record(TILE_TYPE_CONSENT, bytes_of(record))
     }
 
@@ -379,7 +405,8 @@ impl<S: FlashStorage, const TILE_SIZE: usize> EdgeWriter<S, TILE_SIZE> {
         )?;
 
         // Commit Marker: Write header last (page 0..64)
-        self.storage.write(tile_offset, &self.staging_buffer[..COMMON_TILE_HEADER_SIZE])?;
+        self.storage
+            .write(tile_offset, &self.staging_buffer[..COMMON_TILE_HEADER_SIZE])?;
 
         // Atomic FileHeader commit switch (Slot A <-> Slot B)
         let next_slot = 1 - self.active_slot;

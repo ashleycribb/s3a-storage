@@ -1,10 +1,10 @@
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, ScholarQueryExt, SrsManifestHeader};
 use s3a_engine::{
     execute_query, MmapReader, QuerySieve, S3ACoordinate, S3ACrudEngine, TelemetryRecord,
 };
+use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, ScholarQueryExt, SrsManifestHeader};
 
 /// Runs the standard Model Context Protocol (MCP) server over stdin/stdout.
 pub fn run_mcp_server<P: AsRef<Path>>(archive_path: P) {
@@ -49,7 +49,10 @@ pub fn handle_mcp_request(json_str: &str, default_path: &str) -> Option<String> 
         "notifications/initialized" => None,
         "ping" => {
             let id = id_opt.unwrap_or_else(|| "\"1\"".to_string());
-            Some(format!("{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{}}}}", id))
+            Some(format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{}}}}",
+                id
+            ))
         }
         "tools/list" => {
             let id = id_opt.unwrap_or_else(|| "\"1\"".to_string());
@@ -65,7 +68,10 @@ pub fn handle_mcp_request(json_str: &str, default_path: &str) -> Option<String> 
             let args_json = extract_subobject(json_str, "arguments").unwrap_or_default();
 
             let (result_text, is_err) = execute_tool(&tool_name, &args_json, default_path);
-            let escaped_text = result_text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+            let escaped_text = result_text
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n");
 
             Some(format!(
                 "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}],\"isError\":{}}}}}",
@@ -115,7 +121,10 @@ fn execute_tool(tool_name: &str, args_json: &str, default_path: &str) -> (String
                 Ok(c) => match S3ACrudEngine::open_or_create(&file) {
                     Ok(engine) => match engine.read_by_coordinate::<TelemetryRecord>(&c) {
                         Ok(r) => (
-                            format!("Record at {}: timestamp={}, sensor={}, metric={}, value={:.2}", c, r.timestamp, r.sensor_id, r.metric_id, r.value),
+                            format!(
+                                "Record at {}: timestamp={}, sensor={}, metric={}, value={:.2}",
+                                c, r.timestamp, r.sensor_id, r.metric_id, r.value
+                            ),
                             false,
                         ),
                         Err(e) => (format!("Lookup error: {}", e), true),
@@ -155,36 +164,49 @@ fn execute_tool(tool_name: &str, args_json: &str, default_path: &str) -> (String
                 Err(e) => (format!("Engine error: {}", e), true),
             }
         }
-        "s3a_inspect_archive" => {
-            match MmapReader::open(&file) {
-                Ok(reader) => {
-                    let hdr = reader.file_header();
-                    let info = format!(
+        "s3a_inspect_archive" => match MmapReader::open(&file) {
+            Ok(reader) => {
+                let hdr = reader.file_header();
+                let info = format!(
                         "Archive '{}': version={}, generation={}, active_slot={}, tiles={}, header_crc32=0x{:08X}",
                         file, hdr.version, hdr.generation, reader.active_slot(), reader.tile_count(), hdr.header_crc32
                     );
-                    (info, false)
-                }
-                Err(e) => (format!("Failed to inspect archive '{}': {}", file, e), true),
+                (info, false)
             }
-        }
-        "s3a_compact_archive" => {
-            match S3ACrudEngine::open_or_create(&file) {
-                Ok(engine) => match engine.purge_and_compact() {
-                    Ok(new_count) => (format!("Compacted archive '{}': new tile count = {}", file, new_count), false),
-                    Err(e) => (format!("Compaction error: {}", e), true),
-                },
-                Err(e) => (format!("Engine error: {}", e), true),
-            }
-        }
+            Err(e) => (format!("Failed to inspect archive '{}': {}", file, e), true),
+        },
+        "s3a_compact_archive" => match S3ACrudEngine::open_or_create(&file) {
+            Ok(engine) => match engine.purge_and_compact() {
+                Ok(new_count) => (
+                    format!(
+                        "Compacted archive '{}': new tile count = {}",
+                        file, new_count
+                    ),
+                    false,
+                ),
+                Err(e) => (format!("Compaction error: {}", e), true),
+            },
+            Err(e) => (format!("Engine error: {}", e), true),
+        },
         "s3a_search_library" => {
             let min_year = parse_u64(args_json, "min_year").unwrap_or(0) as u16;
             let max_year = parse_u64(args_json, "max_year").unwrap_or(u16::MAX as u64) as u16;
             match MmapReader::open(&file) {
                 Ok(reader) => {
                     let sieve = QuerySieve::new(&reader);
-                    let papers = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], min_year, max_year);
-                    let mut summary = format!("Found {} academic papers in '{}' (Year {}-{}):\n", papers.len(), file, min_year, max_year);
+                    let papers = sieve.query_academic_papers_3d(
+                        [-f32::INFINITY; 3],
+                        [f32::INFINITY; 3],
+                        min_year,
+                        max_year,
+                    );
+                    let mut summary = format!(
+                        "Found {} academic papers in '{}' (Year {}-{}):\n",
+                        papers.len(),
+                        file,
+                        min_year,
+                        max_year
+                    );
                     for (p, coord) in papers.iter().take(25) {
                         summary.push_str(&format!(
                             "  - [{}] Paper ID: 0x{:016X} | Year: {} | Citations: {} | Venue: {} | OA: {}\n",
@@ -196,29 +218,50 @@ fn execute_tool(tool_name: &str, args_json: &str, default_path: &str) -> (String
                 Err(e) => (format!("Search error: {}", e), true),
             }
         }
-        "s3a_get_synthesis_matrix" => {
-            match MmapReader::open(&file) {
-                Ok(reader) => {
-                    let sieve = QuerySieve::new(&reader);
-                    let papers = sieve.query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX);
-                    let edges = sieve.query_research_graph(None, None);
-                    let matrix = format!(
+        "s3a_get_synthesis_matrix" => match MmapReader::open(&file) {
+            Ok(reader) => {
+                let sieve = QuerySieve::new(&reader);
+                let papers = sieve.query_academic_papers_3d(
+                    [-f32::INFINITY; 3],
+                    [f32::INFINITY; 3],
+                    0,
+                    u16::MAX,
+                );
+                let edges = sieve.query_research_graph(None, None);
+                let matrix = format!(
                         "Research Synthesis Matrix for '{}':\n  - Total Analyzed Papers: {}\n  - Extracted Evidence Relationships: {}\n  - 3D Cluster Centroid: In-memory\n  - Provenance: Hardware CRC32C Verified",
                         file, papers.len(), edges.len()
                     );
-                    (matrix, false)
-                }
-                Err(e) => (format!("Synthesis error: {}", e), true),
+                (matrix, false)
             }
-        }
+            Err(e) => (format!("Synthesis error: {}", e), true),
+        },
         "s3a_export_srs" => {
-            let snapshot_file = parse_str(args_json, "snapshot_file").unwrap_or_else(|| "project.snapshot.s3a".to_string());
+            let snapshot_file = parse_str(args_json, "snapshot_file")
+                .unwrap_or_else(|| "project.snapshot.s3a".to_string());
             match S3ACrudEngine::open_or_create(&file) {
                 Ok(engine) => {
-                    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                    let manifest = SrsManifestHeader::new([0x1234, 0x5678], [0xAAAA, ts], [0, 0], [0, 0], ts, 0, 0);
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let manifest = SrsManifestHeader::new(
+                        [0x1234, 0x5678],
+                        [0xAAAA, ts],
+                        [0, 0],
+                        [0, 0],
+                        ts,
+                        0,
+                        0,
+                    );
                     match engine.export_srs_snapshot(&snapshot_file, &manifest, None, None) {
-                        Ok(b) => (format!("Successfully exported SRS snapshot to '{}' with {} total records.", snapshot_file, b.manifest.total_records), false),
+                        Ok(b) => (
+                            format!(
+                                "Successfully exported SRS snapshot to '{}' with {} total records.",
+                                snapshot_file, b.manifest.total_records
+                            ),
+                            false,
+                        ),
                         Err(e) => (format!("Export error: {}", e), true),
                     }
                 }
@@ -226,7 +269,8 @@ fn execute_tool(tool_name: &str, args_json: &str, default_path: &str) -> (String
             }
         }
         "s3a_intake_srs" => {
-            let snapshot_file = parse_str(args_json, "snapshot_file").unwrap_or_else(|| "project.snapshot.s3a".to_string());
+            let snapshot_file = parse_str(args_json, "snapshot_file")
+                .unwrap_or_else(|| "project.snapshot.s3a".to_string());
             match intake_srs_snapshot(&snapshot_file) {
                 Ok(b) => (
                     format!(
@@ -302,7 +346,9 @@ fn parse_id(json: &str) -> Option<String> {
             let end = rest[1..].find('"')? + 1;
             Some(rest[..=end].to_string())
         } else {
-            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
             Some(rest[..end].to_string())
         }
     } else {
@@ -329,7 +375,9 @@ fn parse_u64(json: &str, key: &str) -> Option<u64> {
     let search = format!("\"{}\":", key);
     if let Some(pos) = json.find(&search) {
         let rest = json[pos + search.len()..].trim_start();
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     } else {
         None
@@ -340,7 +388,9 @@ fn parse_f64(json: &str, key: &str) -> Option<f64> {
     let search = format!("\"{}\":", key);
     if let Some(pos) = json.find(&search) {
         let rest = json[pos + search.len()..].trim_start();
-        let end = rest.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+            .unwrap_or(rest.len());
         rest[..end].parse().ok()
     } else {
         None
@@ -354,8 +404,9 @@ fn extract_subobject(json: &str, key: &str) -> Option<String> {
     if rest.starts_with('{') {
         let mut depth = 0;
         for (i, c) in rest.char_indices() {
-            if c == '{' { depth += 1; }
-            else if c == '}' {
+            if c == '{' {
+                depth += 1;
+            } else if c == '}' {
                 depth -= 1;
                 if depth == 0 {
                     return Some(rest[..=i].to_string());

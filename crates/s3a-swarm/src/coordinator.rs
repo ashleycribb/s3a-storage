@@ -8,8 +8,8 @@ use std::time::Instant;
 use s3a_core::TileType;
 use s3a_engine::sealed::{seal_buffer_v2, SealOptionsV2};
 use s3a_engine::TileWriter;
-use s3a_vcs::records::{VcsCommitRecord, VcsRefRecord, REF_KIND_BRANCH, VCS_REF_NAME_MAX};
 use s3a_vcs::errors::VcsError;
+use s3a_vcs::records::{VcsCommitRecord, VcsRefRecord, REF_KIND_BRANCH, VCS_REF_NAME_MAX};
 
 use crate::agent::AgentCommitBundle;
 use crate::eval::evaluate_shadow_commit;
@@ -86,11 +86,10 @@ impl SharedRepoCoordinator {
         }
 
         // 2. Scoped delegation grant evaluation (fail-safe default)
-        if let Err(reason) = validate_commit_grant(&bundle.grant, allowed_prefix, &bundle.paths, now, op_idx) {
-            let author_addr = format!(
-                "s3a-{:02x}",
-                bundle.commit.author_checksum
-            );
+        if let Err(reason) =
+            validate_commit_grant(&bundle.grant, allowed_prefix, &bundle.paths, now, op_idx)
+        {
+            let author_addr = format!("s3a-{:02x}", bundle.commit.author_checksum);
             record_grant_rejection(
                 allowed_prefix,
                 &author_addr,
@@ -126,18 +125,24 @@ impl SharedRepoCoordinator {
                 let outcome = existing.merge_with(incoming);
                 match outcome {
                     RecordMergeOutcome::DisjointAdded => {
-                        self.active_records.insert(incoming.record_id.clone(), incoming.clone());
+                        self.active_records
+                            .insert(incoming.record_id.clone(), incoming.clone());
                         self.auto_merged += 1;
                     }
                     RecordMergeOutcome::SameRecordUpdated { .. } => {
-                        self.active_records.insert(incoming.record_id.clone(), incoming.clone());
+                        self.active_records
+                            .insert(incoming.record_id.clone(), incoming.clone());
                         self.auto_merged += 1;
                     }
                     RecordMergeOutcome::SameRecordPreservedExisting { .. } => {
                         // Existing version is newer or won signature tie-break; preserved deterministically
                         self.auto_merged += 1;
                     }
-                    RecordMergeOutcome::EpistemicConflictNeedsHuman { record_id, target_version, source_version } => {
+                    RecordMergeOutcome::EpistemicConflictNeedsHuman {
+                        record_id,
+                        target_version,
+                        source_version,
+                    } => {
                         has_epistemic_conflict = true;
                         conflict_rec_out = record_id.clone();
                         conflict_id_out = self.human_queue.enqueue(
@@ -154,7 +159,8 @@ impl SharedRepoCoordinator {
                 }
             } else {
                 // Disjoint record added as part of set union
-                self.active_records.insert(incoming.record_id.clone(), incoming.clone());
+                self.active_records
+                    .insert(incoming.record_id.clone(), incoming.clone());
                 self.auto_merged += 1;
             }
         }
@@ -173,7 +179,8 @@ impl SharedRepoCoordinator {
             let seal_hash = bundle.commit.seal_hash;
             self.current_seal = seal_hash;
             self.commits.push(bundle.commit);
-            self.raw_tiles.push((bundle.raw_tile_type, bundle.raw_tile_payload));
+            self.raw_tiles
+                .push((bundle.raw_tile_type, bundle.raw_tile_payload));
 
             Ok(PushResult::Merged {
                 commit_id,
@@ -241,7 +248,12 @@ impl SharedRepoCoordinator {
 
         // Chunk claim records into 128KB tiles (max ~100 per tile)
         for chunk in claim_records.chunks(100) {
-            let _ = writer.write_hyper_tile(s3a_pack_scholar::ScholarTileType::NOTE_CLAIMS, chunk, None, None);
+            let _ = writer.write_hyper_tile(
+                s3a_pack_scholar::ScholarTileType::NOTE_CLAIMS,
+                chunk,
+                None,
+                None,
+            );
         }
 
         // Write VCS commit records chunked into 128KB tiles (max 250 commits per tile)
@@ -276,8 +288,8 @@ impl SharedRepoCoordinator {
         opts.title = Some("S3A Swarm Benchmark Final Repository".to_string());
         opts.prev_seal_hash = self.current_seal;
 
-        let sealed = seal_buffer_v2(&unsealed_bytes, &opts)
-            .map_err(|e| VcsError::Generic(e.to_string()))?;
+        let sealed =
+            seal_buffer_v2(&unsealed_bytes, &opts).map_err(|e| VcsError::Generic(e.to_string()))?;
         fs::write(p, &sealed)?;
 
         // Extract seal hash from final sealed buffer

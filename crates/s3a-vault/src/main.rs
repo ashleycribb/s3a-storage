@@ -1,10 +1,10 @@
+use rand_core::RngCore;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use rand_core::RngCore;
 
-use s3a_vault::address::{GateAddress, GateTarget};
 use s3a_vault::access_code::AccessCode;
+use s3a_vault::address::{GateAddress, GateTarget};
 use s3a_vault::backup::{create_backup, restore_backup};
 use s3a_vault::delegation::create_delegation_grant;
 use s3a_vault::keystore::{FileKeyStore, KeyStore};
@@ -14,7 +14,8 @@ use s3a_vault::transfer::create_transfer_record;
 use s3a_vault::Vault;
 
 fn print_usage() {
-    println!(r#"S3A Digital Vault CLI (s3a-vault)
+    println!(
+        r#"S3A Digital Vault CLI (s3a-vault)
 
 USAGE:
     s3a-vault new <vault_file> [--name <display_name>] [--passphrase <pass>]
@@ -29,7 +30,8 @@ USAGE:
     s3a-vault backup <vault_file> <out_backup> --passphrase <pass>
     s3a-vault restore <backup_file> <out_vault> --passphrase <pass>
     s3a-vault dial gate://<name|address> [--server <url>]
-"#);
+"#
+    );
 }
 
 fn main() {
@@ -81,16 +83,22 @@ fn cmd_new(args: &[String]) {
     }
     let vault_path = &args[0];
     let name = get_arg_val(args, "--name").unwrap_or_else(|| "S3A Sovereign Vault".to_string());
-    let pass = get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
+    let pass =
+        get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
 
     let ks_path = keystore_path_for_vault(vault_path);
-    let mut keystore = FileKeyStore::open_or_create(&ks_path, &pass).expect("Keystore creation failed");
+    let mut keystore =
+        FileKeyStore::open_or_create(&ks_path, &pass).expect("Keystore creation failed");
 
     let vault = Vault::create(vault_path, &name, VaultOwnerKind::Person, &mut keystore)
         .expect("Vault creation failed");
-    keystore.save(&pass).expect("Failed to persist encrypted keystore");
+    keystore
+        .save(&pass)
+        .expect("Failed to persist encrypted keystore");
 
-    let addr = vault.gate_address().expect("Gate address derivation failed");
+    let addr = vault
+        .gate_address()
+        .expect("Gate address derivation failed");
     println!("Created S3A Vault: {}", vault_path);
     println!("Keystore:         {:?}", ks_path);
     println!("Gate Address:     {}", addr.to_address_string());
@@ -108,9 +116,14 @@ fn cmd_show(args: &[String]) {
     println!("=== S3A Vault Overview ===");
     println!("File:         {}", vault_path);
     if let Some(id) = vault.primary_identity() {
-        let name = String::from_utf8_lossy(&id.display_name).trim_matches('\0').to_string();
+        let name = String::from_utf8_lossy(&id.display_name)
+            .trim_matches('\0')
+            .to_string();
         println!("Owner Name:   {}", name);
-        println!("Owner Kind:   {:?}", VaultOwnerKind::from_u16(id.owner_kind));
+        println!(
+            "Owner Kind:   {:?}",
+            VaultOwnerKind::from_u16(id.owner_kind)
+        );
         println!("Public Key:   {}", hex::encode(id.public_key));
     }
     if let Ok(addr) = vault.gate_address() {
@@ -143,16 +156,24 @@ fn cmd_grant(args: &[String]) {
     hex::decode_to_slice(&args[1], &mut agent_pk).expect("Invalid agent public key hex");
     let actions: u32 = args[2].parse().unwrap_or(ACTION_READ | ACTION_WRITE);
 
-    let max_ops: u32 = get_arg_val(args, "--max-ops").and_then(|s| s.parse().ok()).unwrap_or(100);
-    let expires_in: u64 = get_arg_val(args, "--expires-in").and_then(|s| s.parse().ok()).unwrap_or(86400);
-    let pass = get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
+    let max_ops: u32 = get_arg_val(args, "--max-ops")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(100);
+    let expires_in: u64 = get_arg_val(args, "--expires-in")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(86400);
+    let pass =
+        get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
 
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
     let primary = vault.primary_identity().expect("No identity in vault");
     let ks_path = keystore_path_for_vault(vault_path);
     let keystore = FileKeyStore::open(&ks_path, &pass).expect("Failed to open keystore");
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let grant_id = [42u8; 16];
 
     let grant = create_delegation_grant(
@@ -168,9 +189,12 @@ fn cmd_grant(args: &[String]) {
         now + expires_in,
         None,
         &keystore,
-    ).expect("Failed to create grant");
+    )
+    .expect("Failed to create grant");
 
-    vault.add_grant(grant).expect("Failed to commit grant to vault");
+    vault
+        .add_grant(grant)
+        .expect("Failed to commit grant to vault");
     println!("Granted authority to agent {}", args[1]);
     println!("Grant ID:   {}", hex::encode(grant_id));
     println!("Actions:    0x{:04x}", actions);
@@ -188,7 +212,9 @@ fn cmd_revoke(args: &[String]) {
     hex::decode_to_slice(&args[1], &mut grant_id).expect("Invalid grant ID hex");
 
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
-    let seq = vault.log_event(EVENT_GRANT_REVOKED, 1, grant_id, 0).expect("Failed to record event");
+    let seq = vault
+        .log_event(EVENT_GRANT_REVOKED, 1, grant_id, 0)
+        .expect("Failed to record event");
     println!("Revoked grant {} (event sequence #{})", args[1], seq);
 }
 
@@ -201,16 +227,24 @@ fn cmd_code(args: &[String]) {
     let target_gate = GateAddress::parse_address(&args[1]).expect("Invalid target gate address");
     let actions: u32 = args[2].parse().unwrap_or(ACTION_READ);
 
-    let expiry: u64 = get_arg_val(args, "--expiry").and_then(|s| s.parse().ok()).unwrap_or(3600);
-    let max_uses: u32 = get_arg_val(args, "--max-uses").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let pass = get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
+    let expiry: u64 = get_arg_val(args, "--expiry")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3600);
+    let max_uses: u32 = get_arg_val(args, "--max-uses")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let pass =
+        get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
 
     let vault = Vault::open(vault_path).expect("Failed to open vault");
     let _primary = vault.primary_identity().expect("No primary identity");
     let ks_path = keystore_path_for_vault(vault_path);
     let _keystore = FileKeyStore::open(&ks_path, &pass).expect("Failed to open keystore");
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
     let code_id = [99u8; 16];
 
@@ -239,13 +273,17 @@ fn cmd_send(args: &[String]) {
     let mut to_pk = [0u8; 32];
     hex::decode_to_slice(&args[2], &mut to_pk).expect("Invalid recipient public key hex");
 
-    let pass = get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
+    let pass =
+        get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
     let primary = vault.primary_identity().expect("No primary identity");
     let ks_path = keystore_path_for_vault(vault_path);
     let keystore = FileKeyStore::open(&ks_path, &pass).expect("Failed to open keystore");
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let transfer = create_transfer_record(
         [1u8; 16],
         item_hash,
@@ -255,14 +293,20 @@ fn cmd_send(args: &[String]) {
         [0u8; 32],
         TRANSFER_MODE_UNIQUE,
         &keystore,
-    ).expect("Failed to create transfer");
+    )
+    .expect("Failed to create transfer");
 
-    vault.add_transfer(transfer).expect("Failed to record transfer in vault");
+    vault
+        .add_transfer(transfer)
+        .expect("Failed to record transfer in vault");
 
     if let Some(out_path) = get_arg_val(args, "--out") {
         let bytes = bytemuck::bytes_of(&transfer);
         fs::write(&out_path, bytes).expect("Failed to write transfer file");
-        println!("Transferred item {} to {}. Saved to {}", args[1], args[2], out_path);
+        println!(
+            "Transferred item {} to {}. Saved to {}",
+            args[1], args[2], out_path
+        );
     } else {
         println!("Transferred item {} to {}", args[1], args[2]);
     }
@@ -284,8 +328,13 @@ fn cmd_receive(args: &[String]) {
     let transfer: ItemTransferRecord = bytemuck::pod_read_unaligned(&bytes);
 
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
-    vault.add_transfer(transfer).expect("Failed to ingest transfer link");
-    println!("Received and verified transfer link for item {}", hex::encode(transfer.item_hash));
+    vault
+        .add_transfer(transfer)
+        .expect("Failed to ingest transfer link");
+    println!(
+        "Received and verified transfer link for item {}",
+        hex::encode(transfer.item_hash)
+    );
 }
 
 fn cmd_rotate(args: &[String]) {
@@ -297,7 +346,8 @@ fn cmd_rotate(args: &[String]) {
     let mut new_pk = [0u8; 32];
     hex::decode_to_slice(&args[1], &mut new_pk).expect("Invalid new public key hex");
 
-    let pass = get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
+    let pass =
+        get_arg_val(args, "--passphrase").unwrap_or_else(|| "default-dev-passphrase".to_string());
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
     let primary = vault.primary_identity().expect("No primary identity");
     let ks_path = keystore_path_for_vault(vault_path);
@@ -306,14 +356,21 @@ fn cmd_rotate(args: &[String]) {
     let new_id = [88u8; 16];
     let mut seed = [0u8; 32];
     rand_core::OsRng.fill_bytes(&mut seed);
-    keystore.insert_keypair(&new_id, &seed).expect("Failed to insert key");
+    keystore
+        .insert_keypair(&new_id, &seed)
+        .expect("Failed to insert key");
     keystore.save(&pass).expect("Failed to save keystore");
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let rot = create_key_rotation_record([77u8; 16], primary.identity_id, new_id, now, &keystore)
         .expect("Failed to create rotation");
 
-    vault.add_key_rotation(rot).expect("Failed to commit rotation");
+    vault
+        .add_key_rotation(rot)
+        .expect("Failed to commit rotation");
     println!("Rotated vault master key to {}", hex::encode(new_pk));
 }
 

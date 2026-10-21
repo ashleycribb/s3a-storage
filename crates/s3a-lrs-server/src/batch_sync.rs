@@ -150,8 +150,13 @@ fn json_response<T: Serialize>(status_code: u16, data: &T) -> Response<Cursor<Ve
         vec![
             Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap(),
             Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-            Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Authorization, X-Experience-API-Version"[..]).unwrap(),
-            Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, OPTIONS"[..]).unwrap(),
+            Header::from_bytes(
+                &b"Access-Control-Allow-Headers"[..],
+                &b"Content-Type, Authorization, X-Experience-API-Version"[..],
+            )
+            .unwrap(),
+            Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"POST, OPTIONS"[..])
+                .unwrap(),
             Header::from_bytes(&b"Date"[..], crate::format_http_date().as_bytes()).unwrap(),
         ],
         Cursor::new(body.clone()),
@@ -264,17 +269,27 @@ pub fn handle_batch_sync(
     let signature = Signature::from_bytes(sig_bytes[..64].try_into().unwrap());
 
     // Allow signing either raw delta bytes directly or canonical envelope
-    let envelope_str = format!("{}:{}:{}:{}", req.session_id, from_cursor, to_cursor, req.checksum);
+    let envelope_str = format!(
+        "{}:{}:{}:{}",
+        req.session_id, from_cursor, to_cursor, req.checksum
+    );
     let mut sig_valid = verifying_key.verify(&raw_delta, &signature).is_ok();
     if !sig_valid {
-        sig_valid = verifying_key.verify(envelope_str.as_bytes(), &signature).is_ok();
+        sig_valid = verifying_key
+            .verify(envelope_str.as_bytes(), &signature)
+            .is_ok();
     }
     if !sig_valid {
         let envelope_short = format!("{}:{}:{}", req.session_id, from_cursor, to_cursor);
-        sig_valid = verifying_key.verify(envelope_short.as_bytes(), &signature).is_ok();
+        sig_valid = verifying_key
+            .verify(envelope_short.as_bytes(), &signature)
+            .is_ok();
     }
     if !sig_valid {
-        return error_response(401, "Signature verification failed: invalid Ed25519 signature");
+        return error_response(
+            401,
+            "Signature verification failed: invalid Ed25519 signature",
+        );
     }
 
     // 7. Parse and validate S3ASYNC1 delta packet
@@ -344,7 +359,9 @@ pub fn handle_batch_sync(
     if records_to_append > 0 {
         let store = match state.get_or_create_scholar_store() {
             Ok(s) => s,
-            Err(e) => return error_response(500, &format!("Failed to open scholar.s3a archive: {:?}", e)),
+            Err(e) => {
+                return error_response(500, &format!("Failed to open scholar.s3a archive: {:?}", e))
+            }
         };
 
         // Group entries by tile_type to write coherent S3A hyper-tiles
@@ -358,7 +375,10 @@ pub fn handle_batch_sync(
                 _ => 64,
             };
             let slice = &entry.record_bytes()[..record_len];
-            grouped_entries.entry(entry.tile_type).or_default().extend_from_slice(slice);
+            grouped_entries
+                .entry(entry.tile_type)
+                .or_default()
+                .extend_from_slice(slice);
             *group_counts.entry(entry.tile_type).or_default() += 1;
         }
 
@@ -372,7 +392,10 @@ pub fn handle_batch_sync(
             if let Err(e) = store.writer().write_raw_hyper_tile(&hdr, &payload) {
                 return error_response(
                     500,
-                    &format!("Failed to append tile type 0x{:08X} to scholar.s3a: {}", tile_type, e),
+                    &format!(
+                        "Failed to append tile type 0x{:08X} to scholar.s3a: {}",
+                        tile_type, e
+                    ),
                 );
             }
         }
@@ -390,7 +413,9 @@ pub fn handle_batch_sync(
             .map(|s| s.total_records_synced + records_to_append as u64)
             .unwrap_or(records_to_append as u64),
     };
-    service.sessions.insert(req.session_id.clone(), updated_state);
+    service
+        .sessions
+        .insert(req.session_id.clone(), updated_state);
 
     json_response(
         200,

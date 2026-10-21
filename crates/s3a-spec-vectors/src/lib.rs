@@ -2,10 +2,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use bytemuck::{bytes_of};
+use bytemuck::bytes_of;
 use s3a_core::{
     HyperTileHeader, MarkRecord, S3AError, StatementIndexRecord, TelemetryRecord, TileType,
     ADDON_EDU, HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, MARK_SET,
+};
+use s3a_edge::{
+    CompactEdgeSensorRecord, EdgeConsentRecord, EdgeWriter, EquipmentEventRecord, RamFlash,
 };
 use s3a_engine::{
     compute_tile_header_crc32, Compactor, MmapReader, QuerySieve, S3ACrudEngine, TileWriter,
@@ -13,13 +16,9 @@ use s3a_engine::{
 use s3a_pack_scholar::{
     export_srs_snapshot, AcademicPaperRecord, ScholarCrudExt, SrsManifestHeader, SrsWorkspaceRecord,
 };
-use s3a_edge::{
-    CompactEdgeSensorRecord, EdgeConsentRecord, EdgeWriter, EquipmentEventRecord, RamFlash,
-};
 use s3a_vault::{
-    evaluate_agent_action, is_judgment_action, verify_delegation_grant,
-    KeyStore, MemoryKeyStore, Vault, VaultItemRecord, VaultOwnerKind,
-    ACTION_READ, ACTION_WRITE,
+    evaluate_agent_action, is_judgment_action, verify_delegation_grant, KeyStore, MemoryKeyStore,
+    Vault, VaultItemRecord, VaultOwnerKind, ACTION_READ, ACTION_WRITE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -872,13 +871,22 @@ fn generate_sealed_ok(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs1: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
-    let recs2: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64)).collect();
+    let recs1: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
+    let recs2: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)?;
     drop(writer);
 
-    s3a_engine::seal_archive(&unsealed_tmp, &file_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &unsealed_tmp,
+        &file_path,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     let _ = fs::remove_file(unsealed_tmp);
 
     let file_size = fs::metadata(&file_path)?.len();
@@ -924,7 +932,9 @@ fn generate_sealed_footer_missing(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&file_path)?;
-    let recs: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
+    let recs: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None)?;
     drop(writer);
 
@@ -972,11 +982,18 @@ fn generate_sealed_endcap_corrupt(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
+    let recs: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None)?;
     drop(writer);
 
-    s3a_engine::seal_archive(&unsealed_tmp, &file_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &unsealed_tmp,
+        &file_path,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     let _ = fs::remove_file(unsealed_tmp);
 
     // Corrupt the end cap (endcap_crc32 is at len - 12)
@@ -1029,11 +1046,18 @@ fn generate_sealed_truncated_mid_tile(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
+    let recs: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None)?;
     drop(writer);
 
-    s3a_engine::seal_archive(&unsealed_tmp, &file_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &unsealed_tmp,
+        &file_path,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     let _ = fs::remove_file(unsealed_tmp);
 
     // Truncate file mid-tile (e.g. truncate to 512 + 65536 bytes)
@@ -1072,13 +1096,22 @@ fn generate_one_tile_corrupt_repaired(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs1: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
-    let recs2: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64)).collect();
+    let recs1: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
+    let recs2: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)?;
     drop(writer);
 
-    s3a_engine::seal_archive(&unsealed_tmp, &file_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &unsealed_tmp,
+        &file_path,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     let _ = fs::remove_file(unsealed_tmp);
 
     // Corrupt 1 data tile (tile 0 payload at 512 + 512 + 10)
@@ -1130,15 +1163,26 @@ fn generate_three_tiles_corrupt_in_one_group(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs1: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
-    let recs2: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64)).collect();
-    let recs3: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(3000 + i as u64, 300 + i as u32, 3, 30.0 + i as f64)).collect();
+    let recs1: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
+    let recs2: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64))
+        .collect();
+    let recs3: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(3000 + i as u64, 300 + i as u32, 3, 30.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs3, None, None)?;
     drop(writer);
 
-    s3a_engine::seal_archive(&unsealed_tmp, &file_path, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)?;
+    s3a_engine::seal_archive(
+        &unsealed_tmp,
+        &file_path,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )?;
     let _ = fs::remove_file(unsealed_tmp);
 
     // Corrupt all 3 data tiles in group 0 (M=2, so 3 is unrepairable)
@@ -1181,8 +1225,12 @@ fn generate_tiles_out_of_order(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs1: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
-    let recs2: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64)).collect();
+    let recs1: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
+    let recs2: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)?;
     drop(writer);
@@ -1198,8 +1246,12 @@ fn generate_tiles_out_of_order(dir: &Path) -> io::Result<String> {
     unsealed_bytes[tile1_offset..tile1_offset + HYPER_TILE_SIZE].copy_from_slice(&tile0);
 
     // Seal the buffer with swapped tiles
-    let sealed_bytes = s3a_engine::seal_buffer(&unsealed_bytes, s3a_engine::DEFAULT_SEAL_K, s3a_engine::DEFAULT_SEAL_M)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
+    let sealed_bytes = s3a_engine::seal_buffer(
+        &unsealed_bytes,
+        s3a_engine::DEFAULT_SEAL_K,
+        s3a_engine::DEFAULT_SEAL_M,
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{}", e)))?;
     fs::write(&file_path, &sealed_bytes)?;
     let _ = fs::remove_file(unsealed_tmp);
 
@@ -1247,8 +1299,12 @@ fn generate_foreign_tile(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&unsealed_tmp)?;
-    let recs1: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
-    let recs2: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64)).collect();
+    let recs1: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
+    let recs2: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(2000 + i as u64, 200 + i as u32, 2, 20.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)?;
     writer.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)?;
     drop(writer);
@@ -1258,10 +1314,13 @@ fn generate_foreign_tile(dir: &Path) -> io::Result<String> {
 
     // Corrupt file_uuid of tile 1 to a foreign file_uuid
     let tile1_offset = 512 + HYPER_TILE_SIZE;
-    let mut tile1_hdr: HyperTileHeader = bytemuck::pod_read_unaligned(&file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
+    let mut tile1_hdr: HyperTileHeader = bytemuck::pod_read_unaligned(
+        &file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE],
+    );
     tile1_hdr.file_uuid = [0xDEAD_BEEF, 0xCAFE_BABE];
     tile1_hdr.header_crc32 = compute_tile_header_crc32(&tile1_hdr);
-    file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&tile1_hdr));
+    file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE]
+        .copy_from_slice(bytes_of(&tile1_hdr));
 
     fs::write(&file_path, &file_bytes)?;
     let file_size = fs::metadata(&file_path)?.len();
@@ -1269,10 +1328,14 @@ fn generate_foreign_tile(dir: &Path) -> io::Result<String> {
     let exp = ConformanceExpectation {
         case_name: name.to_string(),
         category: "invalid".to_string(),
-        description: "Tile header carrying foreign file_uuid; reader MUST reject with FileUuidMismatch error".to_string(),
+        description:
+            "Tile header carrying foreign file_uuid; reader MUST reject with FileUuidMismatch error"
+                .to_string(),
         expected_outcome: "error".to_string(),
         error_class: Some("FileUuidMismatch".to_string()),
-        expected_error_message: Some("Tile file_uuid does not match file header file_uuid".to_string()),
+        expected_error_message: Some(
+            "Tile file_uuid does not match file header file_uuid".to_string(),
+        ),
         file_size_bytes: Some(file_size),
         header: None,
         records_per_tile_type: std::collections::BTreeMap::new(),
@@ -1295,19 +1358,24 @@ fn generate_legacy_unaddressed_tiles(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
 
     let mut writer = TileWriter::create(&file_path)?;
-    let recs: Vec<TelemetryRecord> = (0..5).map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64)).collect();
+    let recs: Vec<TelemetryRecord> = (0..5)
+        .map(|i| TelemetryRecord::new(1000 + i as u64, 100 + i as u32, 1, 10.0 + i as f64))
+        .collect();
     writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None)?;
     drop(writer);
 
     // Overwrite tile 0 header to zero out file_uuid and tile_index (simulating legacy pre-v1.1 tile)
     let mut file_bytes = fs::read(&file_path)?;
     let tile_offset = 512;
-    let mut hdr: HyperTileHeader = bytemuck::pod_read_unaligned(&file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
+    let mut hdr: HyperTileHeader = bytemuck::pod_read_unaligned(
+        &file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE],
+    );
     hdr.file_uuid = [0, 0];
     hdr.tile_index = 0;
     hdr.record_layout_version = 1;
     hdr.header_crc32 = compute_tile_header_crc32(&hdr);
-    file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&hdr));
+    file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE]
+        .copy_from_slice(bytes_of(&hdr));
     fs::write(&file_path, &file_bytes)?;
 
     let file_size = fs::metadata(&file_path)?.len();
@@ -1359,32 +1427,23 @@ fn generate_micro_valid_4kb(dir: &Path) -> io::Result<String> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
     // Tile 0: Consent Record
-    let consent = EdgeConsentRecord::new(
-        [0xAA; 16],
-        0x01,
-        0x01,
-        1700000000,
-        1800000000,
-        1001,
-    );
-    writer.append_consent(&consent)
+    let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
+    writer
+        .append_consent(&consent)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-    writer.seal_tile(1700000001)
+    writer
+        .seal_tile(1700000001)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
     // Tile 1: 5 Sensor records
     for i in 0..5 {
-        let rec = CompactEdgeSensorRecord::new(
-            (i * 10) as u16,
-            1,
-            1,
-            200 + (i as i32) * 5,
-            0,
-        );
-        writer.append_sensor_record(&rec)
+        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + (i as i32) * 5, 0);
+        writer
+            .append_sensor_record(&rec)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     }
-    writer.seal_tile(1700000060)
+    writer
+        .seal_tile(1700000060)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
     let flash = writer.into_storage();
@@ -1411,7 +1470,9 @@ fn generate_micro_valid_4kb(dir: &Path) -> io::Result<String> {
     let exp = ConformanceExpectation {
         case_name: name.to_string(),
         category: "valid".to_string(),
-        description: "Valid 4,096-byte Micro S3A file with standard DualFileHeader and 2 micro-tiles".to_string(),
+        description:
+            "Valid 4,096-byte Micro S3A file with standard DualFileHeader and 2 micro-tiles"
+                .to_string(),
         expected_outcome: "ok".to_string(),
         error_class: None,
         expected_error_message: None,
@@ -1449,17 +1510,12 @@ fn generate_micro_truncated_file(dir: &Path) -> io::Result<String> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
     // Tile 0: Consent Record
-    let consent = EdgeConsentRecord::new(
-        [0xAA; 16],
-        0x01,
-        0x01,
-        1700000000,
-        1800000000,
-        1001,
-    );
-    writer.append_consent(&consent)
+    let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
+    writer
+        .append_consent(&consent)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-    writer.seal_tile(1700000001)
+    writer
+        .seal_tile(1700000001)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
     let mut flash = writer.into_storage();
@@ -1523,34 +1579,25 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
 
     // Tile 0: Consent Record
-    let consent = EdgeConsentRecord::new(
-        [0xAA; 16],
-        0x01,
-        0x01,
-        1700000000,
-        1800000000,
-        1001,
-    );
-    writer.append_consent(&consent)
+    let consent = EdgeConsentRecord::new([0xAA; 16], 0x01, 0x01, 1700000000, 1800000000, 1001);
+    writer
+        .append_consent(&consent)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-    let seal0 = writer.seal_tile(1700000001)
+    let seal0 = writer
+        .seal_tile(1700000001)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     let sig0 = s3a_edge::sign_seal_hash(&signing_key, &seal0);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal0, &sig0));
 
     // Tile 1: 5 Sensor records
     for i in 0..5 {
-        let rec = CompactEdgeSensorRecord::new(
-            (i * 10) as u16,
-            1,
-            1,
-            200 + (i as i32) * 5,
-            0,
-        );
-        writer.append_sensor_record(&rec)
+        let rec = CompactEdgeSensorRecord::new((i * 10) as u16, 1, 1, 200 + (i as i32) * 5, 0);
+        writer
+            .append_sensor_record(&rec)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     }
-    let seal1 = writer.seal_tile(1700000060)
+    let seal1 = writer
+        .seal_tile(1700000060)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     let sig1 = s3a_edge::sign_seal_hash(&signing_key, &seal1);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal1, &sig1));
@@ -1566,10 +1613,12 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
             [0x01; 8],
             100,
         );
-        writer.append_equipment_event(&evt)
+        writer
+            .append_equipment_event(&evt)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     }
-    let seal2 = writer.seal_tile(1700000080)
+    let seal2 = writer
+        .seal_tile(1700000080)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
     let sig2 = s3a_edge::sign_seal_hash(&signing_key, &seal2);
     assert!(s3a_edge::verify_signature_raw(&pubkey_bytes, &seal2, &sig2));
@@ -1581,7 +1630,9 @@ fn generate_micro_signed_seal_chain(dir: &Path) -> io::Result<String> {
     let exp = ConformanceExpectation {
         case_name: name.to_string(),
         category: "valid".to_string(),
-        description: "Three 4 KB micro-tiles with continuous SHA-256 seal chain and valid Ed25519 signatures".to_string(),
+        description:
+            "Three 4 KB micro-tiles with continuous SHA-256 seal chain and valid Ed25519 signatures"
+                .to_string(),
         expected_outcome: "ok".to_string(),
         error_class: None,
         expected_error_message: None,
@@ -1616,8 +1667,13 @@ fn generate_vault_transfer_chain(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
     let mut keystore = MemoryKeyStore::new();
 
-    let mut vault = Vault::create(&file_path, "Issuer Vault", VaultOwnerKind::Organization, &mut keystore)
-        .map_err(io::Error::other)?;
+    let mut vault = Vault::create(
+        &file_path,
+        "Issuer Vault",
+        VaultOwnerKind::Organization,
+        &mut keystore,
+    )
+    .map_err(io::Error::other)?;
 
     let primary = *vault.primary_identity().unwrap();
     let issuer_id = primary.identity_id;
@@ -1626,51 +1682,39 @@ fn generate_vault_transfer_chain(dir: &Path) -> io::Result<String> {
     let alice_id = [0x02; 16];
     let bob_id = [0x03; 16];
 
-    let alice_pk = keystore.generate_keypair(&alice_id).map_err(io::Error::other)?;
-    let bob_pk = keystore.generate_keypair(&bob_id).map_err(io::Error::other)?;
+    let alice_pk = keystore
+        .generate_keypair(&alice_id)
+        .map_err(io::Error::other)?;
+    let bob_pk = keystore
+        .generate_keypair(&bob_id)
+        .map_err(io::Error::other)?;
 
     let item_hash = [0xAA; 32];
     let item_record = VaultItemRecord::new(
-        [0x10; 16],
-        1, // Credential
-        item_hash,
-        issuer_pk,
-        issuer_pk,
-        1700000000,
-        0,
-        0,
+        [0x10; 16], 1, // Credential
+        item_hash, issuer_pk, issuer_pk, 1700000000, 0, 0,
     );
     vault.add_item(item_record).map_err(io::Error::other)?;
 
     let transfer_1 = s3a_vault::create_transfer_record(
-        [0x01; 16],
-        item_hash,
-        issuer_id,
-        alice_pk,
-        1700000010,
-        [0u8; 32],
-        0,
-        &keystore,
-    ).map_err(io::Error::other)?;
+        [0x01; 16], item_hash, issuer_id, alice_pk, 1700000010, [0u8; 32], 0, &keystore,
+    )
+    .map_err(io::Error::other)?;
     let link1_hash = transfer_1.compute_transfer_hash();
     vault.add_transfer(transfer_1).map_err(io::Error::other)?;
 
     let transfer_2 = s3a_vault::create_transfer_record(
-        [0x02; 16],
-        item_hash,
-        alice_id,
-        bob_pk,
-        1700000020,
-        link1_hash,
-        0,
-        &keystore,
-    ).map_err(io::Error::other)?;
+        [0x02; 16], item_hash, alice_id, bob_pk, 1700000020, link1_hash, 0, &keystore,
+    )
+    .map_err(io::Error::other)?;
     vault.add_transfer(transfer_2).map_err(io::Error::other)?;
 
     let exp = ConformanceExpectation {
         case_name: name.to_string(),
         category: "valid".to_string(),
-        description: "Three-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01)".to_string(),
+        description:
+            "Three-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01)"
+                .to_string(),
         expected_outcome: "ok".to_string(),
         error_class: None,
         expected_error_message: None,
@@ -1700,14 +1744,21 @@ fn generate_vault_delegation_governance(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
     let mut keystore = MemoryKeyStore::new();
 
-    let mut vault = Vault::create(&file_path, "Alice Vault", VaultOwnerKind::Person, &mut keystore)
-        .map_err(io::Error::other)?;
+    let mut vault = Vault::create(
+        &file_path,
+        "Alice Vault",
+        VaultOwnerKind::Person,
+        &mut keystore,
+    )
+    .map_err(io::Error::other)?;
 
     let primary = *vault.primary_identity().unwrap();
     let alice_id = primary.identity_id;
 
     let gamma_id = [0x02; 16];
-    let gamma_pk = keystore.generate_keypair(&gamma_id).map_err(io::Error::other)?;
+    let gamma_pk = keystore
+        .generate_keypair(&gamma_id)
+        .map_err(io::Error::other)?;
 
     let grant = s3a_vault::create_delegation_grant(
         [0x50; 16],
@@ -1722,7 +1773,8 @@ fn generate_vault_delegation_governance(dir: &Path) -> io::Result<String> {
         1700010000,
         None,
         &keystore,
-    ).map_err(io::Error::other)?;
+    )
+    .map_err(io::Error::other)?;
     vault.add_grant(grant).map_err(io::Error::other)?;
 
     let exp = ConformanceExpectation {
@@ -1758,14 +1810,21 @@ fn generate_vault_key_revocation(dir: &Path) -> io::Result<String> {
     let file_path = dir.join(format!("{}.s3a", name));
     let mut keystore = MemoryKeyStore::new();
 
-    let mut vault = Vault::create(&file_path, "Rotated Vault", VaultOwnerKind::Person, &mut keystore)
-        .map_err(io::Error::other)?;
+    let mut vault = Vault::create(
+        &file_path,
+        "Rotated Vault",
+        VaultOwnerKind::Person,
+        &mut keystore,
+    )
+    .map_err(io::Error::other)?;
 
     let primary = *vault.primary_identity().unwrap();
     let k1_id = primary.identity_id;
 
     let k2_id = [0x02; 16];
-    let _k2_pk = keystore.generate_keypair(&k2_id).map_err(io::Error::other)?;
+    let _k2_pk = keystore
+        .generate_keypair(&k2_id)
+        .map_err(io::Error::other)?;
 
     let rotation_timestamp = 1700005000;
     let rotation = s3a_vault::create_key_rotation_record(
@@ -1774,7 +1833,8 @@ fn generate_vault_key_revocation(dir: &Path) -> io::Result<String> {
         k2_id,
         rotation_timestamp,
         &keystore,
-    ).map_err(io::Error::other)?;
+    )
+    .map_err(io::Error::other)?;
     vault.add_key_rotation(rotation).map_err(io::Error::other)?;
 
     let exp = ConformanceExpectation {
@@ -1813,11 +1873,20 @@ fn generate_vault_vc_import(dir: &Path) -> io::Result<String> {
     let issuer_id = [0x01; 16];
     let recipient_id = [0x02; 16];
 
-    let issuer_pk = keystore.generate_keypair(&issuer_id).map_err(io::Error::other)?;
-    let recipient_pk = keystore.generate_keypair(&recipient_id).map_err(io::Error::other)?;
-
-    let mut vault = Vault::create(&file_path, "Recipient Vault", VaultOwnerKind::Person, &mut keystore)
+    let issuer_pk = keystore
+        .generate_keypair(&issuer_id)
         .map_err(io::Error::other)?;
+    let recipient_pk = keystore
+        .generate_keypair(&recipient_id)
+        .map_err(io::Error::other)?;
+
+    let mut vault = Vault::create(
+        &file_path,
+        "Recipient Vault",
+        VaultOwnerKind::Person,
+        &mut keystore,
+    )
+    .map_err(io::Error::other)?;
 
     let vc_json = serde_json::json!({
         "@context": [
@@ -1850,7 +1919,9 @@ fn generate_vault_vc_import(dir: &Path) -> io::Result<String> {
     hasher.update(&json_bytes);
     let doc_hash: [u8; 32] = hasher.finalize().into();
 
-    let _sig = keystore.sign(&issuer_id, &doc_hash).map_err(io::Error::other)?;
+    let _sig = keystore
+        .sign(&issuer_id, &doc_hash)
+        .map_err(io::Error::other)?;
 
     let blob_tile_id = {
         let mut writer = TileWriter::open_append(&file_path)?;
@@ -2065,11 +2136,18 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                     let report = s3a_engine::verify_sealed_archive(&s3a_path, None)
                         .map_err(|e| format!("{}: verify_sealed_archive failed: {}", name, e))?;
                     assert!(report.is_sealed, "{}: expected is_sealed true", name);
-                    assert_eq!(report.repaired_tiles.len(), 0, "{}: expected 0 repaired tiles", name);
+                    assert_eq!(
+                        report.repaired_tiles.len(),
+                        0,
+                        "{}: expected 0 repaired tiles",
+                        name
+                    );
                 }
 
                 if name == "valid_schema_catalog" {
-                    let cat = reader.catalog().map_err(|e| format!("{}: catalog: {}", name, e))?;
+                    let cat = reader
+                        .catalog()
+                        .map_err(|e| format!("{}: catalog: {}", name, e))?;
                     if cat.source == s3a_engine::schema::CatalogSource::Registry
                         || cat.get(0).is_none()
                         || cat.get(77).is_none()
@@ -2125,20 +2203,59 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                         let file_data = fs::read(&s3a_path).map_err(|e| e.to_string())?;
                         let mut flash = RamFlash::<16384>::new(256, 512);
                         flash.memory[..file_data.len()].copy_from_slice(&file_data);
-                        let writer = EdgeWriter::<_, 4096>::recover(flash, [0x11; 16])
-                            .map_err(|e| format!("{}: EdgeWriter::recover failed: {:?}", name, e))?;
-                        assert_eq!(writer.tile_count(), 1, "{}: recovered tile count mismatch", name);
+                        let writer =
+                            EdgeWriter::<_, 4096>::recover(flash, [0x11; 16]).map_err(|e| {
+                                format!("{}: EdgeWriter::recover failed: {:?}", name, e)
+                            })?;
+                        assert_eq!(
+                            writer.tile_count(),
+                            1,
+                            "{}: recovered tile count mismatch",
+                            name
+                        );
                     }
                     if name == "micro_signed_seal_chain" {
                         let (h0, _) = reader.get_edge_tile(0).unwrap();
                         let (h1, _) = reader.get_edge_tile(1).unwrap();
                         let (h2, _) = reader.get_edge_tile(2).unwrap();
                         let dev_id = [0x11; 16];
-                        let seal0 = s3a_edge::compute_seal_hash(&[0u8; 32], h0.generation as u64, 0, &h0.payload_hash, &dev_id);
-                        let seal1 = s3a_edge::compute_seal_hash(&seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id);
-                        let seal2 = s3a_edge::compute_seal_hash(&seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id);
-                        assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
-                        assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
+                        let seal0 = s3a_edge::compute_seal_hash(
+                            &[0u8; 32],
+                            h0.generation as u64,
+                            0,
+                            &h0.payload_hash,
+                            &dev_id,
+                        );
+                        let seal1 = s3a_edge::compute_seal_hash(
+                            &seal0,
+                            h1.generation as u64,
+                            1,
+                            &h1.payload_hash,
+                            &dev_id,
+                        );
+                        let seal2 = s3a_edge::compute_seal_hash(
+                            &seal1,
+                            h2.generation as u64,
+                            2,
+                            &h2.payload_hash,
+                            &dev_id,
+                        );
+                        assert!(s3a_edge::verify_seal_chain_link(
+                            &seal1,
+                            &seal0,
+                            h1.generation as u64,
+                            1,
+                            &h1.payload_hash,
+                            &dev_id
+                        ));
+                        assert!(s3a_edge::verify_seal_chain_link(
+                            &seal2,
+                            &seal1,
+                            h2.generation as u64,
+                            2,
+                            &h2.payload_hash,
+                            &dev_id
+                        ));
                     }
                 }
 
@@ -2146,37 +2263,62 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                     let vault = Vault::open(&s3a_path)
                         .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
                     let item_hash = [0xAA; 32];
-                    let owner_pk = vault.get_item_owner(&item_hash)
+                    let owner_pk = vault
+                        .get_item_owner(&item_hash)
                         .map_err(|e| format!("{}: get_item_owner failed: {:?}", name, e))?;
                     assert_ne!(owner_pk, [0u8; 32], "{}: owner must not be zero", name);
                 }
                 if name == "vault_delegation_governance" {
                     let vault = Vault::open(&s3a_path)
                         .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
-                    let grant = vault.grants().values().next().copied()
+                    let grant = vault
+                        .grants()
+                        .values()
+                        .next()
+                        .copied()
                         .ok_or_else(|| format!("{}: missing grant", name))?;
-                    verify_delegation_grant(&grant)
-                        .map_err(|e| format!("{}: verify_delegation_grant failed: {:?}", name, e))?;
-                    let out_write = evaluate_agent_action(&grant, ACTION_WRITE, "record_write", 1700000010, 1);
-                    assert!(out_write.is_ok(), "{}: evaluate write failed: {:?}", name, out_write);
+                    verify_delegation_grant(&grant).map_err(|e| {
+                        format!("{}: verify_delegation_grant failed: {:?}", name, e)
+                    })?;
+                    let out_write =
+                        evaluate_agent_action(&grant, ACTION_WRITE, "record_write", 1700000010, 1);
+                    assert!(
+                        out_write.is_ok(),
+                        "{}: evaluate write failed: {:?}",
+                        name,
+                        out_write
+                    );
                     assert!(is_judgment_action("erasure"));
-                    let out_judge = evaluate_agent_action(&grant, ACTION_WRITE, "erasure", 1700000010, 1);
-                    assert!(matches!(out_judge, Err(s3a_vault::VaultError::RequiresHumanApproval(_))));
+                    let out_judge =
+                        evaluate_agent_action(&grant, ACTION_WRITE, "erasure", 1700000010, 1);
+                    assert!(matches!(
+                        out_judge,
+                        Err(s3a_vault::VaultError::RequiresHumanApproval(_))
+                    ));
                 }
                 if name == "vault_key_revocation" {
                     let vault = Vault::open(&s3a_path)
                         .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
                     let primary_pk = vault.primary_identity().unwrap().public_key;
-                    assert!(vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 - 10).is_ok());
+                    assert!(vault
+                        .revocation_registry()
+                        .check_key_valid(&primary_pk, 1700005000 - 10)
+                        .is_ok());
                     assert!(matches!(
-                        vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 + 10),
+                        vault
+                            .revocation_registry()
+                            .check_key_valid(&primary_pk, 1700005000 + 10),
                         Err(s3a_vault::VaultError::KeyRevokedError(_))
                     ));
                 }
                 if name == "vault_vc_import" {
                     let vault = Vault::open(&s3a_path)
                         .map_err(|e| format!("{}: Vault::open failed: {:?}", name, e))?;
-                    assert!(!vault.items().is_empty(), "{}: expected indexed items", name);
+                    assert!(
+                        !vault.items().is_empty(),
+                        "{}: expected indexed items",
+                        name
+                    );
                 }
             }
             "fallback_recovered" => {
@@ -2204,10 +2346,18 @@ pub fn verify_conformance_vectors<P: AsRef<Path>>(dir: P) -> Result<usize, Strin
                     assert_eq!(report.is_sealed, exp_sealed, "{}: is_sealed mismatch", name);
                 }
                 if let Some(exp_rebuilt) = exp.rebuilt_directory {
-                    assert_eq!(report.rebuilt_directory, exp_rebuilt, "{}: rebuilt_directory mismatch", name);
+                    assert_eq!(
+                        report.rebuilt_directory, exp_rebuilt,
+                        "{}: rebuilt_directory mismatch",
+                        name
+                    );
                 }
                 if let Some(exp_ooo) = exp.out_of_order_detected {
-                    assert_eq!(report.out_of_order_detected, exp_ooo, "{}: out_of_order mismatch", name);
+                    assert_eq!(
+                        report.out_of_order_detected, exp_ooo,
+                        "{}: out_of_order mismatch",
+                        name
+                    );
                 }
             }
             "repaired" => {
@@ -2474,9 +2624,17 @@ mod tests {
         generate_valid_protected_mark_hidden(&dir).unwrap();
         let reader = MmapReader::open(dir.join("valid_protected_mark_hidden.s3a")).unwrap();
         let sieve_default = QuerySieve::new(&reader).with_hidden_marks(false);
-        assert_eq!(sieve_default.query_telemetry(0, u64::MAX, None, None).len(), 0);
+        assert_eq!(
+            sieve_default.query_telemetry(0, u64::MAX, None, None).len(),
+            0
+        );
         let sieve_override = QuerySieve::new(&reader).with_hidden_marks(true);
-        assert_eq!(sieve_override.query_telemetry(0, u64::MAX, None, None).len(), 1);
+        assert_eq!(
+            sieve_override
+                .query_telemetry(0, u64::MAX, None, None)
+                .len(),
+            1
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2495,10 +2653,12 @@ mod tests {
 
     #[test]
     fn test_vector_sealed_footer_missing() {
-        let dir = std::env::temp_dir().join(format!("s3a_vec_footer_missing_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("s3a_vec_footer_missing_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_sealed_footer_missing(&dir).unwrap();
-        let report = s3a_engine::verify_sealed_archive(dir.join("sealed_footer_missing.s3a"), None).unwrap();
+        let report =
+            s3a_engine::verify_sealed_archive(dir.join("sealed_footer_missing.s3a"), None).unwrap();
         assert!(!report.is_sealed);
         assert!(report.rebuilt_directory);
         let _ = fs::remove_dir_all(dir);
@@ -2506,10 +2666,12 @@ mod tests {
 
     #[test]
     fn test_vector_sealed_endcap_corrupt() {
-        let dir = std::env::temp_dir().join(format!("s3a_vec_endcap_corrupt_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("s3a_vec_endcap_corrupt_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_sealed_endcap_corrupt(&dir).unwrap();
-        let report = s3a_engine::verify_sealed_archive(dir.join("sealed_endcap_corrupt.s3a"), None).unwrap();
+        let report =
+            s3a_engine::verify_sealed_archive(dir.join("sealed_endcap_corrupt.s3a"), None).unwrap();
         assert!(!report.is_sealed);
         assert!(report.rebuilt_directory);
         let _ = fs::remove_dir_all(dir);
@@ -2520,7 +2682,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("s3a_vec_sealed_trunc_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_sealed_truncated_mid_tile(&dir).unwrap();
-        let err = s3a_engine::verify_sealed_archive(dir.join("sealed_truncated_mid_tile.s3a"), None).unwrap_err();
+        let err =
+            s3a_engine::verify_sealed_archive(dir.join("sealed_truncated_mid_tile.s3a"), None)
+                .unwrap_err();
         assert_eq!(err, S3AError::SealedTruncated);
         let _ = fs::remove_dir_all(dir);
     }
@@ -2530,7 +2694,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("s3a_vec_repaired_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_one_tile_corrupt_repaired(&dir).unwrap();
-        let report = s3a_engine::verify_sealed_archive(dir.join("one_tile_corrupt_repaired.s3a"), None).unwrap();
+        let report =
+            s3a_engine::verify_sealed_archive(dir.join("one_tile_corrupt_repaired.s3a"), None)
+                .unwrap();
         assert!(report.is_sealed);
         assert_eq!(report.repaired_tiles, vec![0]);
         let _ = fs::remove_dir_all(dir);
@@ -2538,10 +2704,15 @@ mod tests {
 
     #[test]
     fn test_vector_three_tiles_corrupt_in_one_group() {
-        let dir = std::env::temp_dir().join(format!("s3a_vec_three_corrupt_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("s3a_vec_three_corrupt_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_three_tiles_corrupt_in_one_group(&dir).unwrap();
-        let err = s3a_engine::verify_sealed_archive(dir.join("three_tiles_corrupt_in_one_group.s3a"), None).unwrap_err();
+        let err = s3a_engine::verify_sealed_archive(
+            dir.join("three_tiles_corrupt_in_one_group.s3a"),
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, S3AError::UnrepairableCorruption { .. }));
         let _ = fs::remove_dir_all(dir);
     }
@@ -2551,7 +2722,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("s3a_vec_ooo_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_tiles_out_of_order(&dir).unwrap();
-        let report = s3a_engine::verify_sealed_archive(dir.join("tiles_out_of_order.s3a"), None).unwrap();
+        let report =
+            s3a_engine::verify_sealed_archive(dir.join("tiles_out_of_order.s3a"), None).unwrap();
         assert!(report.out_of_order_detected);
         let _ = fs::remove_dir_all(dir);
     }
@@ -2561,7 +2733,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("s3a_vec_foreign_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         generate_foreign_tile(&dir).unwrap();
-        let err = s3a_engine::verify_sealed_archive(dir.join("foreign_tile.s3a"), None).unwrap_err();
+        let err =
+            s3a_engine::verify_sealed_archive(dir.join("foreign_tile.s3a"), None).unwrap_err();
         assert!(matches!(err, S3AError::FileUuidMismatch { .. }));
         let _ = fs::remove_dir_all(dir);
     }
@@ -2578,7 +2751,8 @@ mod tests {
 
     #[test]
     fn test_scholar_snapshot_seal_verify_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("s3a_scholar_roundtrip_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("s3a_scholar_roundtrip_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let live_db = dir.join("scholar_live.s3a");
         let snapshot_file = dir.join("scholar_export.snapshot.s3a");
@@ -2670,11 +2844,33 @@ mod tests {
         let (h1, _) = reader.get_edge_tile(1).unwrap();
         let (h2, _) = reader.get_edge_tile(2).unwrap();
         let dev_id = [0x11; 16];
-        let seal0 = s3a_edge::compute_seal_hash(&[0u8; 32], h0.generation as u64, 0, &h0.payload_hash, &dev_id);
-        let seal1 = s3a_edge::compute_seal_hash(&seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id);
-        let seal2 = s3a_edge::compute_seal_hash(&seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id);
-        assert!(s3a_edge::verify_seal_chain_link(&seal1, &seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id));
-        assert!(s3a_edge::verify_seal_chain_link(&seal2, &seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id));
+        let seal0 = s3a_edge::compute_seal_hash(
+            &[0u8; 32],
+            h0.generation as u64,
+            0,
+            &h0.payload_hash,
+            &dev_id,
+        );
+        let seal1 =
+            s3a_edge::compute_seal_hash(&seal0, h1.generation as u64, 1, &h1.payload_hash, &dev_id);
+        let seal2 =
+            s3a_edge::compute_seal_hash(&seal1, h2.generation as u64, 2, &h2.payload_hash, &dev_id);
+        assert!(s3a_edge::verify_seal_chain_link(
+            &seal1,
+            &seal0,
+            h1.generation as u64,
+            1,
+            &h1.payload_hash,
+            &dev_id
+        ));
+        assert!(s3a_edge::verify_seal_chain_link(
+            &seal2,
+            &seal1,
+            h2.generation as u64,
+            2,
+            &h2.payload_hash,
+            &dev_id
+        ));
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -2706,7 +2902,10 @@ mod tests {
         let res = evaluate_agent_action(&grant, ACTION_WRITE, "record_write", 1700000010, 1);
         assert!(res.is_ok());
         let res_judge = evaluate_agent_action(&grant, ACTION_WRITE, "erasure", 1700000010, 1);
-        assert!(matches!(res_judge, Err(s3a_vault::VaultError::RequiresHumanApproval(_))));
+        assert!(matches!(
+            res_judge,
+            Err(s3a_vault::VaultError::RequiresHumanApproval(_))
+        ));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -2719,9 +2918,14 @@ mod tests {
         reader.verify_checksums().unwrap();
         let vault = Vault::open(dir.join("vault_key_revocation.s3a")).unwrap();
         let primary_pk = vault.primary_identity().unwrap().public_key;
-        assert!(vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 - 10).is_ok());
+        assert!(vault
+            .revocation_registry()
+            .check_key_valid(&primary_pk, 1700005000 - 10)
+            .is_ok());
         assert!(matches!(
-            vault.revocation_registry().check_key_valid(&primary_pk, 1700005000 + 10),
+            vault
+                .revocation_registry()
+                .check_key_valid(&primary_pk, 1700005000 + 10),
             Err(s3a_vault::VaultError::KeyRevokedError(_))
         ));
         let _ = fs::remove_dir_all(dir);
@@ -2747,4 +2951,3 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 }
-

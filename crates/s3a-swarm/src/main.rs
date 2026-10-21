@@ -1,11 +1,11 @@
 //! CLI Binary for `s3a-swarm` concurrency benchmark and human dispute queue.
 
-use std::path::PathBuf;
 use ed25519_dalek::SigningKey;
 use rand_core::{OsRng, RngCore};
 use s3a_swarm::run_swarm;
 use s3a_vcs::records::{RESOLUTION_CHOICE_SOURCE, RESOLUTION_CHOICE_TARGET};
 use s3a_vcs::VcsRepo;
+use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -52,20 +52,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             if let Some(remote) = remote_url {
                 let actual_agents = agents.unwrap_or(200);
-                let actual_results = results_path.unwrap_or_else(|| PathBuf::from("demo/results-cloudflare.json"));
-                println!(">>> Running remote swarm benchmark against Cloudflare Worker: {}", remote);
-                println!(">>> Agents: {}, Commits/agent: {}, Target results: {}", actual_agents, commits, actual_results.display());
+                let actual_results =
+                    results_path.unwrap_or_else(|| PathBuf::from("demo/results-cloudflare.json"));
+                println!(
+                    ">>> Running remote swarm benchmark against Cloudflare Worker: {}",
+                    remote
+                );
+                println!(
+                    ">>> Agents: {}, Commits/agent: {}, Target results: {}",
+                    actual_agents,
+                    commits,
+                    actual_results.display()
+                );
 
-                let metrics = s3a_swarm::run_remote_swarm(&remote, "s3a-swarm-main", actual_agents, commits, 50).await?;
+                let metrics = s3a_swarm::run_remote_swarm(
+                    &remote,
+                    "s3a-swarm-main",
+                    actual_agents,
+                    commits,
+                    50,
+                )
+                .await?;
                 println!("\n=== CLOUDFLARE WORKER REMOTE BENCHMARK RESULTS ===");
                 metrics.print_summary();
                 metrics.save_to_file(&actual_results)?;
                 println!(">>> Remote metrics saved to: {}", actual_results.display());
             } else {
                 let actual_agents = agents.unwrap_or(1000);
-                let actual_results = results_path.unwrap_or_else(|| PathBuf::from("demo/results.json"));
+                let actual_results =
+                    results_path.unwrap_or_else(|| PathBuf::from("demo/results.json"));
 
-                let (metrics, coordinator) = run_swarm(actual_agents, commits, shadow, out_path).await?;
+                let (metrics, coordinator) =
+                    run_swarm(actual_agents, commits, shadow, out_path).await?;
                 println!("\n=== LOCAL IN-PROCESS BENCHMARK RESULTS ===");
                 metrics.print_summary();
                 metrics.save_to_file(&actual_results)?;
@@ -80,8 +98,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                     let json = serde_json::to_string_pretty(&pending)?;
                     std::fs::write(&conflicts_path, json)?;
-                    println!(">>> {} claim conflicts pending in human queue. Saved to: {}",
-                        pending.len(), conflicts_path.display());
+                    println!(
+                        ">>> {} claim conflicts pending in human queue. Saved to: {}",
+                        pending.len(),
+                        conflicts_path.display()
+                    );
                     println!(">>> Inspect with: `s3a-swarm human list`");
                 }
             }
@@ -95,12 +116,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "list" => {
                     let conflicts_path = PathBuf::from("demo/pending_conflicts.json");
                     if !conflicts_path.exists() {
-                        println!("No pending conflicts file found at {}", conflicts_path.display());
+                        println!(
+                            "No pending conflicts file found at {}",
+                            conflicts_path.display()
+                        );
                         return Ok(());
                     }
                     let content = std::fs::read_to_string(&conflicts_path)?;
                     let list: Vec<s3a_swarm::AskHumanConflict> = serde_json::from_str(&content)?;
-                    println!("=== PENDING HUMAN SUPERVISOR CONFLICTS ({}) ===", list.len());
+                    println!(
+                        "=== PENDING HUMAN SUPERVISOR CONFLICTS ({}) ===",
+                        list.len()
+                    );
                     for c in &list {
                         println!("  Conflict ID:     {}", c.conflict_id);
                         println!("  Record ID:       {}", c.record_id);
@@ -109,7 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         println!("  Version B (Src): {}", c.source_version);
                         println!("  Author A:        {}", c.target_author);
                         println!("  Author B:        {}", c.source_author);
-                        println!("  Status:          {}", if c.resolved { "RESOLVED" } else { "PENDING" });
+                        println!(
+                            "  Status:          {}",
+                            if c.resolved { "RESOLVED" } else { "PENDING" }
+                        );
                         println!("------------------------------------------------------------");
                     }
                 }
@@ -120,7 +150,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                     let conflict_id = &args[3];
                     let mut choice_side = RESOLUTION_CHOICE_TARGET;
-                    let mut rationale = "Human supervisor accepted target version after review".to_string();
+                    let mut rationale =
+                        "Human supervisor accepted target version after review".to_string();
 
                     let mut i = 4;
                     while i < args.len() {
@@ -146,7 +177,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         return Ok(());
                     }
                     let content = std::fs::read_to_string(&conflicts_path)?;
-                    let mut list: Vec<s3a_swarm::AskHumanConflict> = serde_json::from_str(&content)?;
+                    let mut list: Vec<s3a_swarm::AskHumanConflict> =
+                        serde_json::from_str(&content)?;
 
                     let mut seed = [0u8; 32];
                     OsRng.fill_bytes(&mut seed);
@@ -165,9 +197,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             c.choice = Some(choice_side);
                             c.rationale = Some(rationale.clone());
                             found = true;
-                            println!("Conflict '{}' resolved with signed VcsResolutionRecord:", conflict_id);
+                            println!(
+                                "Conflict '{}' resolved with signed VcsResolutionRecord:",
+                                conflict_id
+                            );
                             println!("  Resolution ID: {}", hex::encode(resolution.resolution_id));
-                            println!("  Chosen Side:   {}", if choice_side == RESOLUTION_CHOICE_TARGET { "Target (1)" } else { "Source (2)" });
+                            println!(
+                                "  Chosen Side:   {}",
+                                if choice_side == RESOLUTION_CHOICE_TARGET {
+                                    "Target (1)"
+                                } else {
+                                    "Source (2)"
+                                }
+                            );
                             println!("  Rationale:     {}", rationale);
                             println!("  Signature Verified: {}", resolution.verify_signature());
                             break;
@@ -205,7 +247,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     eprintln!("Corrupt or forged commit: {}", hex::encode(c.commit_id));
                 }
             }
-            println!("Verification result: {} / {} commits verified valid.", valid, commits.len());
+            println!(
+                "Verification result: {} / {} commits verified valid.",
+                valid,
+                commits.len()
+            );
         }
         _ => print_usage(),
     }
@@ -218,6 +264,8 @@ fn print_usage() {
     println!("Usage:");
     println!("  s3a-swarm run [--remote <URL>] [--agents N] [--commits M] [--shadow] [--out <PATH>] [--results <PATH>]");
     println!("  s3a-swarm human list");
-    println!("  s3a-swarm human resolve <conflict_id> --choice <target|source> [--rationale \"...\"]");
+    println!(
+        "  s3a-swarm human resolve <conflict_id> --choice <target|source> [--rationale \"...\"]"
+    );
     println!("  s3a-swarm verify <archive_path>");
 }

@@ -1,10 +1,12 @@
-use std::io;
-use s3a_core::SimplexHull;
-use s3a_engine::lakehouse::{ArrowColumnVector, ArrowField, ArrowRecordBatchDescriptor, ArrowSchema};
-use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
-use s3a_simd::can_reject_tile_range;
 use crate::pack::GisTileType;
 use crate::records::GisSurveyPointRecord;
+use s3a_core::SimplexHull;
+use s3a_engine::lakehouse::{
+    ArrowColumnVector, ArrowField, ArrowRecordBatchDescriptor, ArrowSchema,
+};
+use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
+use s3a_simd::can_reject_tile_range;
+use std::io;
 
 pub trait GisCrudExt {
     fn create_gis_points(&self, points: &[GisSurveyPointRecord]) -> io::Result<u64>;
@@ -20,12 +22,24 @@ impl GisCrudExt for S3ACrudEngine {
             let lon = p.longitude_microdeg as f32;
             let elev = p.elevation_mm as f32;
 
-            if lat < hull.min_bounds[0] { hull.min_bounds[0] = lat; }
-            if lat > hull.max_bounds[0] { hull.max_bounds[0] = lat; }
-            if lon < hull.min_bounds[1] { hull.min_bounds[1] = lon; }
-            if lon > hull.max_bounds[1] { hull.max_bounds[1] = lon; }
-            if elev < hull.min_bounds[2] { hull.min_bounds[2] = elev; }
-            if elev > hull.max_bounds[2] { hull.max_bounds[2] = elev; }
+            if lat < hull.min_bounds[0] {
+                hull.min_bounds[0] = lat;
+            }
+            if lat > hull.max_bounds[0] {
+                hull.max_bounds[0] = lat;
+            }
+            if lon < hull.min_bounds[1] {
+                hull.min_bounds[1] = lon;
+            }
+            if lon > hull.max_bounds[1] {
+                hull.max_bounds[1] = lon;
+            }
+            if elev < hull.min_bounds[2] {
+                hull.min_bounds[2] = elev;
+            }
+            if elev > hull.max_bounds[2] {
+                hull.max_bounds[2] = elev;
+            }
         }
 
         let timestamps: Vec<u64> = points.iter().map(|p| p.timestamp_sec as u64).collect();
@@ -62,7 +76,14 @@ impl GisQueryExt for QuerySieve<'_> {
         min_elev_m: f64,
         max_elev_m: f64,
     ) -> Vec<GisSurveyPointRecord> {
-        self.reader().query_gis_mesh_3d(min_lat_deg, max_lat_deg, min_lon_deg, max_lon_deg, min_elev_m, max_elev_m)
+        self.reader().query_gis_mesh_3d(
+            min_lat_deg,
+            max_lat_deg,
+            min_lon_deg,
+            max_lon_deg,
+            min_elev_m,
+            max_elev_m,
+        )
     }
 }
 
@@ -109,9 +130,12 @@ impl GisQueryExt for MmapReader {
                 let lon = rec.longitude_deg();
                 let elev = rec.elevation_m();
 
-                if lat >= min_lat_deg && lat <= max_lat_deg
-                    && lon >= min_lon_deg && lon <= max_lon_deg
-                    && elev >= min_elev_m && elev <= max_elev_m
+                if lat >= min_lat_deg
+                    && lat <= max_lat_deg
+                    && lon >= min_lon_deg
+                    && lon <= max_lon_deg
+                    && elev >= min_elev_m
+                    && elev <= max_elev_m
                 {
                     results.push(*rec);
                 }
@@ -126,11 +150,31 @@ impl GisQueryExt for MmapReader {
 pub fn project_gis_to_arrow(records: &[GisSurveyPointRecord]) -> ArrowRecordBatchDescriptor {
     let schema = ArrowSchema {
         fields: vec![
-            ArrowField { name: "latitude_microdeg", data_type: "Int32", nullable: false },
-            ArrowField { name: "longitude_microdeg", data_type: "Int32", nullable: false },
-            ArrowField { name: "elevation_mm", data_type: "Int32", nullable: false },
-            ArrowField { name: "point_class", data_type: "UInt32", nullable: false },
-            ArrowField { name: "intensity", data_type: "UInt32", nullable: false },
+            ArrowField {
+                name: "latitude_microdeg",
+                data_type: "Int32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "longitude_microdeg",
+                data_type: "Int32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "elevation_mm",
+                data_type: "Int32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "point_class",
+                data_type: "UInt32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "intensity",
+                data_type: "UInt32",
+                nullable: false,
+            },
         ],
     };
 

@@ -1,7 +1,7 @@
-use core::fmt;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 /// Bitflags representing capabilities, constraints, and layout policies of a tile type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,7 +139,11 @@ pub enum RegistryError {
 impl fmt::Display for RegistryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RegistryError::DuplicateTileType { tile_type, existing_name, new_name } => {
+            RegistryError::DuplicateTileType {
+                tile_type,
+                existing_name,
+                new_name,
+            } => {
                 write!(f, "Duplicate registration for tile type {}: existing '{}' conflicts with new '{}'", tile_type, existing_name, new_name)
             }
             RegistryError::UnregisteredTileType(tt) => {
@@ -149,19 +153,48 @@ impl fmt::Display for RegistryError {
                 write!(f, "Tile type {} is marked RESERVED (no writes permitted; see docs/schema-evolution.md)", tt)
             }
             RegistryError::DeprecatedTile(tt) => {
-                write!(f, "Tile type {} is DEPRECATED (read-only; no writes permitted)", tt)
+                write!(
+                    f,
+                    "Tile type {} is DEPRECATED (read-only; no writes permitted)",
+                    tt
+                )
             }
             RegistryError::RetiredTile(tt) => {
-                write!(f, "Tile type {} is RETIRED (no reads or writes permitted)", tt)
+                write!(
+                    f,
+                    "Tile type {} is RETIRED (no reads or writes permitted)",
+                    tt
+                )
             }
-            RegistryError::MissingAddon { tile_type, pack, required_mask, actual_mask } => {
+            RegistryError::MissingAddon {
+                tile_type,
+                pack,
+                required_mask,
+                actual_mask,
+            } => {
                 write!(f, "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})", tile_type, pack, required_mask, actual_mask)
             }
-            RegistryError::UnsupportedLayoutVersionTooOld { tile_type, version, min_supported } => {
-                write!(f, "Tile type {} layout version {} is too old (minimum supported: {})", tile_type, version, min_supported)
+            RegistryError::UnsupportedLayoutVersionTooOld {
+                tile_type,
+                version,
+                min_supported,
+            } => {
+                write!(
+                    f,
+                    "Tile type {} layout version {} is too old (minimum supported: {})",
+                    tile_type, version, min_supported
+                )
             }
-            RegistryError::UnsupportedLayoutVersionTooNew { tile_type, version, current_supported } => {
-                write!(f, "Tile type {} layout version {} is too new (current supported: {})", tile_type, version, current_supported)
+            RegistryError::UnsupportedLayoutVersionTooNew {
+                tile_type,
+                version,
+                current_supported,
+            } => {
+                write!(
+                    f,
+                    "Tile type {} layout version {} is too new (current supported: {})",
+                    tile_type, version, current_supported
+                )
             }
             RegistryError::MigrationFailed(msg) => {
                 write!(f, "Tile payload migration failed: {}", msg)
@@ -233,8 +266,15 @@ impl TileTypeRegistry {
     }
 
     /// Validates an intended tile write against capability authorization and layout version boundaries.
-    pub fn validate_write(&self, tile_type: u32, layout_version: u32, addon_mask: u32) -> Result<(), RegistryError> {
-        let desc = self.get(tile_type).ok_or(RegistryError::UnregisteredTileType(tile_type))?;
+    pub fn validate_write(
+        &self,
+        tile_type: u32,
+        layout_version: u32,
+        addon_mask: u32,
+    ) -> Result<(), RegistryError> {
+        let desc = self
+            .get(tile_type)
+            .ok_or(RegistryError::UnregisteredTileType(tile_type))?;
 
         // Fail-closed on lifecycle state (Deprecated is read-only, Retired is inaccessible)
         if desc.lifecycle == TileLifecycle::Deprecated {
@@ -283,14 +323,20 @@ impl TileTypeRegistry {
     /// Validates an incoming tile read against supported layout versions.
     /// Wire layout version 0 is mapped to version 1 as a legacy compatibility alias.
     pub fn validate_read(&self, tile_type: u32, layout_version: u32) -> Result<(), RegistryError> {
-        let desc = self.get(tile_type).ok_or(RegistryError::UnregisteredTileType(tile_type))?;
+        let desc = self
+            .get(tile_type)
+            .ok_or(RegistryError::UnregisteredTileType(tile_type))?;
 
         if desc.lifecycle == TileLifecycle::Retired {
             return Err(RegistryError::RetiredTile(tile_type));
         }
 
         // Legacy compatibility alias: 0 means pre-Phase 2 unversioned header
-        let effective_version = if layout_version == 0 { 1 } else { layout_version };
+        let effective_version = if layout_version == 0 {
+            1
+        } else {
+            layout_version
+        };
 
         if effective_version < desc.min_supported_layout_version {
             return Err(RegistryError::UnsupportedLayoutVersionTooOld {
@@ -722,7 +768,9 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         record_size: 16,
         current_layout_version: 1,
         min_supported_layout_version: 1,
-        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT | TileTypeFlags::MICRO_TILE,
+        flags: TileTypeFlags::FIXED_POD
+            | TileTypeFlags::COPY_THROUGH_COMPACT
+            | TileTypeFlags::MICRO_TILE,
     })?;
 
     // Tile 4: Robotics Kinematic Trajectories
@@ -943,13 +991,12 @@ pub fn migrate_tile_payload(
 }
 
 #[cfg(feature = "std")]
-static GLOBAL_REGISTRY: std::sync::OnceLock<std::sync::RwLock<TileTypeRegistry>> = std::sync::OnceLock::new();
+static GLOBAL_REGISTRY: std::sync::OnceLock<std::sync::RwLock<TileTypeRegistry>> =
+    std::sync::OnceLock::new();
 
 #[cfg(feature = "std")]
 fn get_registry_lock() -> &'static std::sync::RwLock<TileTypeRegistry> {
-    GLOBAL_REGISTRY.get_or_init(|| {
-        std::sync::RwLock::new(TileTypeRegistry::with_standard_types())
-    })
+    GLOBAL_REGISTRY.get_or_init(|| std::sync::RwLock::new(TileTypeRegistry::with_standard_types()))
 }
 
 /// Returns a read guard to the process-global tile type registry.
@@ -1006,7 +1053,10 @@ mod tests {
             min_supported_layout_version: 2,
             flags: TileTypeFlags::NONE,
         };
-        assert!(matches!(reg.register(conflict), Err(RegistryError::DuplicateTileType { .. })));
+        assert!(matches!(
+            reg.register(conflict),
+            Err(RegistryError::DuplicateTileType { .. })
+        ));
     }
 
     #[test]
@@ -1023,7 +1073,8 @@ mod tests {
             current_layout_version: 1,
             min_supported_layout_version: 1,
             flags: TileTypeFlags::NONE,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Register deprecated (read-only) tile
         reg.register(TileTypeDescriptor {
@@ -1036,7 +1087,8 @@ mod tests {
             current_layout_version: 1,
             min_supported_layout_version: 1,
             flags: TileTypeFlags::NONE,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Register retired tile
         reg.register(TileTypeDescriptor {
@@ -1049,7 +1101,8 @@ mod tests {
             current_layout_version: 1,
             min_supported_layout_version: 1,
             flags: TileTypeFlags::NONE,
-        }).unwrap();
+        })
+        .unwrap();
 
         // Active: write and read ok
         assert!(reg.validate_write(100, 1, 0).is_ok());

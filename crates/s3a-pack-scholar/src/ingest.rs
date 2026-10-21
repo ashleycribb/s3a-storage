@@ -1,14 +1,13 @@
+use s3a_core::{S3ACoordinate, ADDON_EDU};
+use s3a_engine::S3ACrudEngine;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
-use s3a_core::{S3ACoordinate, ADDON_EDU};
-use s3a_engine::S3ACrudEngine;
 
-use crate::records::{
-    AcademicPaperRecord, AiTraceRecord, HumanLrsRecord, ResearchGraphEdgeRecord,
-    SrsWorkspaceRecord,
-};
 use crate::ext::ScholarCrudExt;
+use crate::records::{
+    AcademicPaperRecord, AiTraceRecord, HumanLrsRecord, ResearchGraphEdgeRecord, SrsWorkspaceRecord,
+};
 
 /// Ingestion statistics returned after ingesting intermediate files into an S3A archive.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -26,7 +25,9 @@ pub fn parse_json_u64(json: &str, key: &str) -> Option<u64> {
     let pattern = format!("\"{}\":", key);
     let start = json.find(&pattern)? + pattern.len();
     let rest = json[start..].trim_start();
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     if end == 0 {
         return None;
     }
@@ -76,7 +77,10 @@ pub fn ingest_scholar_intermediate_dir<P1: AsRef<Path>, P2: AsRef<Path>>(
     if !in_dir.exists() || !in_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Intermediate directory does not exist: {}", in_dir.display()),
+            format!(
+                "Intermediate directory does not exist: {}",
+                in_dir.display()
+            ),
         ));
     }
 
@@ -228,7 +232,13 @@ pub fn ingest_scholar_intermediate_dir<P1: AsRef<Path>, P2: AsRef<Path>>(
             let ai_coord = S3ACoordinate::new(0, ai_t, ai_r);
 
             batch.push(HumanLrsRecord::new(
-                [high, low], ts, actor, verb, score, ai_coord, obj,
+                [high, low],
+                ts,
+                actor,
+                verb,
+                score,
+                ai_coord,
+                obj,
             ));
             stats.human_count += 1;
 
@@ -268,7 +278,13 @@ pub fn ingest_scholar_intermediate_dir<P1: AsRef<Path>, P2: AsRef<Path>>(
             let hilbert = parse_json_u64(trimmed, "hilbert_index").unwrap_or(0) as u32;
 
             batch.push(AiTraceRecord::new(
-                [high, low], ts, agent, step, conf, h_coord, hilbert,
+                [high, low],
+                ts,
+                agent,
+                step,
+                conf,
+                h_coord,
+                hilbert,
             ));
             stats.ai_count += 1;
 

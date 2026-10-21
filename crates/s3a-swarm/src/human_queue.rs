@@ -4,12 +4,10 @@
 //! Epistemic claim/evidence disagreements are NEVER auto-resolved. They are routed
 //! to this queue and require a signed VcsResolutionRecord from an authorized human.
 
+use ed25519_dalek::SigningKey;
+use s3a_vcs::records::{VcsResolutionRecord, RESOLUTION_CHOICE_SOURCE, RESOLUTION_CHOICE_TARGET};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use ed25519_dalek::SigningKey;
-use s3a_vcs::records::{
-    VcsResolutionRecord, RESOLUTION_CHOICE_TARGET, RESOLUTION_CHOICE_SOURCE,
-};
 
 /// Pending claim/evidence conflict waiting for human supervisor judgment.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -90,17 +88,17 @@ impl AskHumanQueue {
             rationale: None,
         };
 
-        self.conflicts.lock().unwrap().insert(conflict_id.clone(), conflict);
+        self.conflicts
+            .lock()
+            .unwrap()
+            .insert(conflict_id.clone(), conflict);
         conflict_id
     }
 
     /// Returns list of all pending unresolved conflicts.
     pub fn list_pending(&self) -> Vec<AskHumanConflict> {
         let lock = self.conflicts.lock().unwrap();
-        lock.values()
-            .filter(|c| !c.resolved)
-            .cloned()
-            .collect()
+        lock.values().filter(|c| !c.resolved).cloned().collect()
     }
 
     /// Returns all conflicts (pending and resolved).
@@ -122,7 +120,8 @@ impl AskHumanQueue {
         }
 
         let mut lock = self.conflicts.lock().unwrap();
-        let conflict = lock.get_mut(conflict_id)
+        let conflict = lock
+            .get_mut(conflict_id)
             .ok_or_else(|| format!("Conflict '{}' not found in queue", conflict_id))?;
 
         if conflict.resolved {

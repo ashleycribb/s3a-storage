@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use s3a_core::{
-    ADDON_EDU, ADDON_FINTECH, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, HYPER_TILE_SIZE,
-    MarkRecord,
+    MarkRecord, ADDON_EDU, ADDON_FINTECH, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
+    HYPER_TILE_SIZE,
 };
 use s3a_engine::{
-    clean_orphan_temps, recover_archive, unique_compact_temp_path,
-    Compactor, HyperTileHeader, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter,
+    clean_orphan_temps, recover_archive, unique_compact_temp_path, Compactor, HyperTileHeader,
+    MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord, TileType, TileWriter,
 };
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -37,7 +37,13 @@ impl TestTempFile {
             .unwrap_or_default()
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_durability_{}_{}_{}_{}.s3a", suffix, std::process::id(), ts, id));
+        path.push(format!(
+            "s3a_durability_{}_{}_{}_{}.s3a",
+            suffix,
+            std::process::id(),
+            ts,
+            id
+        ));
         Self { path }
     }
 
@@ -62,7 +68,9 @@ fn test_crash_corrupt_active_slot_fallback() {
     // 1. Create archive (starts Gen 1 in Slot A) and commit tile 1 -> advances to Gen 2 in Slot B
     let mut writer = TileWriter::create(path).unwrap();
     let rec1 = TelemetryRecord::new(1000, 1, 100, 42.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None)
+        .unwrap();
     drop(writer);
 
     let reader1 = MmapReader::open(path).unwrap();
@@ -74,7 +82,9 @@ fn test_crash_corrupt_active_slot_fallback() {
     // 2. Open append and commit tile 2 -> advances to Gen 3 in Slot A
     let mut writer = TileWriter::open_append(path).unwrap();
     let rec2 = TelemetryRecord::new(2000, 1, 100, 84.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None)
+        .unwrap();
     drop(writer);
 
     let reader2 = MmapReader::open(path).unwrap();
@@ -86,7 +96,8 @@ fn test_crash_corrupt_active_slot_fallback() {
     // 3. Fault Injection: Corrupt active Slot A header bytes (invalidate CRC32C)
     {
         let mut f = OpenOptions::new().write(true).open(path).unwrap();
-        f.seek(SeekFrom::Start((FILE_HEADER_SLOT_A_OFFSET + 12) as u64)).unwrap();
+        f.seek(SeekFrom::Start((FILE_HEADER_SLOT_A_OFFSET + 12) as u64))
+            .unwrap();
         f.write_all(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
         f.flush().unwrap();
         f.sync_all().unwrap();
@@ -107,7 +118,9 @@ fn test_crash_corrupt_active_slot_fallback() {
     let mut writer2 = TileWriter::open_append(path).unwrap();
     assert_eq!(writer2.tile_count(), 1);
     let rec3 = TelemetryRecord::new(3000, 1, 100, 99.0);
-    writer2.write_hyper_tile(TileType::TELEMETRY, &[rec3], Some(&[3000]), None).unwrap();
+    writer2
+        .write_hyper_tile(TileType::TELEMETRY, &[rec3], Some(&[3000]), None)
+        .unwrap();
     drop(writer2);
 
     let reader3 = MmapReader::open(path).unwrap();
@@ -126,7 +139,9 @@ fn test_crash_torn_eof_partial_tile() {
     // 1. Create archive with 1 committed tile
     let mut writer = TileWriter::create(path).unwrap();
     let rec1 = TelemetryRecord::new(200, 1, 1000, 10.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None)
+        .unwrap();
     drop(writer);
 
     let expected_valid_size = FILE_HEADER_SIZE as u64 + (1 * HYPER_TILE_SIZE as u64);
@@ -140,7 +155,10 @@ fn test_crash_torn_eof_partial_tile() {
         f.flush().unwrap();
         f.sync_all().unwrap();
     }
-    assert_eq!(fs::metadata(path).unwrap().len(), expected_valid_size + 2048);
+    assert_eq!(
+        fs::metadata(path).unwrap().len(),
+        expected_valid_size + 2048
+    );
 
     // 3. Recovery: verify recover_archive truncates the torn bytes
     let recovered_header = recover_archive(path).unwrap();
@@ -151,7 +169,9 @@ fn test_crash_torn_eof_partial_tile() {
     let mut writer2 = TileWriter::open_append(path).unwrap();
     assert_eq!(writer2.tile_count(), 1);
     let rec2 = TelemetryRecord::new(200, 1, 2000, 20.0);
-    writer2.write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None).unwrap();
+    writer2
+        .write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None)
+        .unwrap();
     drop(writer2);
 
     let reader = MmapReader::open(path).unwrap();
@@ -168,7 +188,9 @@ fn test_crash_uncommitted_tile_before_header_sync() {
     // 1. Create archive with 1 tile committed
     let mut writer = TileWriter::create(path).unwrap();
     let rec1 = TelemetryRecord::new(300, 1, 1000, 15.0);
-    writer.write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &[rec1], Some(&[1000]), None)
+        .unwrap();
     drop(writer);
 
     let committed_size = FILE_HEADER_SIZE as u64 + (1 * HYPER_TILE_SIZE as u64);
@@ -181,7 +203,10 @@ fn test_crash_uncommitted_tile_before_header_sync() {
         f.flush().unwrap();
         f.sync_all().unwrap();
     }
-    assert_eq!(fs::metadata(path).unwrap().len(), committed_size + HYPER_TILE_SIZE as u64);
+    assert_eq!(
+        fs::metadata(path).unwrap().len(),
+        committed_size + HYPER_TILE_SIZE as u64
+    );
 
     // 3. Reader strictly honors resolve_active_header; uncommitted tile is invisible
     let reader = MmapReader::open(path).unwrap();
@@ -194,7 +219,9 @@ fn test_crash_uncommitted_tile_before_header_sync() {
     assert_eq!(fs::metadata(path).unwrap().len(), committed_size);
 
     let rec2 = TelemetryRecord::new(300, 1, 2000, 25.0);
-    writer2.write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None).unwrap();
+    writer2
+        .write_hyper_tile(TileType::TELEMETRY, &[rec2], Some(&[2000]), None)
+        .unwrap();
     drop(writer2);
 
     let reader2 = MmapReader::open(path).unwrap();
@@ -229,7 +256,10 @@ fn test_crash_mid_compact_temp_abandoned() {
     // 3. Recovery on open: live file is verified intact, orphan temp is cleaned
     let active_hdr = recover_archive(live_path).unwrap();
     assert_eq!(active_hdr.tile_count, initial_tile_count);
-    assert!(!orphan_temp.exists(), "Orphan compaction temp must be deleted during archive recovery");
+    assert!(
+        !orphan_temp.exists(),
+        "Orphan compaction temp must be deleted during archive recovery"
+    );
 
     // 4. Live database remains readable and valid
     let reader = MmapReader::open(live_path).unwrap();
@@ -301,9 +331,27 @@ fn test_compact_preserves_scholar_tiles_and_addon_mask() {
         _pad: [u64; 5],
     }
 
-    let paper_live = MockPaperRecord { paper_id: 101, timestamp: 1000, flags: 0, _pad: [0; 5] };
-    let paper_tomb = MockPaperRecord { paper_id: 102, timestamp: 1001, flags: 1, _pad: [0; 5] };
-    writer_a.write_hyper_tile_ext(12, &[paper_live, paper_tomb], Some(&[1000, 1001]), None, None).unwrap();
+    let paper_live = MockPaperRecord {
+        paper_id: 101,
+        timestamp: 1000,
+        flags: 0,
+        _pad: [0; 5],
+    };
+    let paper_tomb = MockPaperRecord {
+        paper_id: 102,
+        timestamp: 1001,
+        flags: 1,
+        _pad: [0; 5],
+    };
+    writer_a
+        .write_hyper_tile_ext(
+            12,
+            &[paper_live, paper_tomb],
+            Some(&[1000, 1001]),
+            None,
+            None,
+        )
+        .unwrap();
 
     // Write an arbitrary future domain pack tile (Tile 99)
     #[repr(C, align(8))]
@@ -315,21 +363,23 @@ fn test_compact_preserves_scholar_tiles_and_addon_mask() {
     let mut raw_hdr = HyperTileHeader::new(99, 99);
     raw_hdr.record_count = 1;
     raw_hdr.payload_bytes = std::mem::size_of::<MockUnknownRecord>() as u32;
-    writer_a.write_raw_hyper_tile(
-        &raw_hdr,
-        bytemuck::bytes_of(&unknown_rec),
-    ).unwrap();
+    writer_a
+        .write_raw_hyper_tile(&raw_hdr, bytemuck::bytes_of(&unknown_rec))
+        .unwrap();
     drop(writer_a);
 
     // 2. Create Archive B with ADDON_FINTECH (0x0002) containing telemetry
     let mut writer_b = TileWriter::create(input_b.path()).unwrap();
     writer_b.enable_addon(ADDON_FINTECH).unwrap();
     let tel_rec = TelemetryRecord::new(1000, 600, 1, 3.14);
-    writer_b.write_hyper_tile(TileType::TELEMETRY, &[tel_rec], Some(&[1000]), None).unwrap();
+    writer_b
+        .write_hyper_tile(TileType::TELEMETRY, &[tel_rec], Some(&[1000]), None)
+        .unwrap();
     drop(writer_b);
 
     // 3. Compact Archive A and Archive B into output archive
-    let compacted_tiles = Compactor::compact(&[input_a.path(), input_b.path()], out_file.path()).unwrap();
+    let compacted_tiles =
+        Compactor::compact(&[input_a.path(), input_b.path()], out_file.path()).unwrap();
     assert!(compacted_tiles >= 3);
 
     // 4. Verify Output Archive
@@ -371,14 +421,21 @@ fn test_marks_survive_compaction_and_remap() {
     let mut writer = TileWriter::create(input_file.path()).unwrap();
     let rec0 = TelemetryRecord::new(1000, 1, 10, 10.0);
     let rec1 = TelemetryRecord::new(1001, 1, 10, 20.0);
-    let tel_tid = writer.write_hyper_tile(TileType::TELEMETRY, &[rec0, rec1], Some(&[1000, 1001]), None).unwrap();
+    let tel_tid = writer
+        .write_hyper_tile(
+            TileType::TELEMETRY,
+            &[rec0, rec1],
+            Some(&[1000, 1001]),
+            None,
+        )
+        .unwrap();
 
     // 2. Add MARKS tile (Tile 1) with active and cleared marks targeting Tile 0
     let m_quarantine = MarkRecord::new(
         TileType::TELEMETRY,
         tel_tid, // target_tile_id
-        0, // record_index 0
-        1, // generation
+        0,       // record_index 0
+        1,       // generation
         s3a_core::MARK_QUARANTINE,
         s3a_core::MARK_SET,
         1005,
@@ -415,7 +472,14 @@ fn test_marks_survive_compaction_and_remap() {
         0xABCD,
     );
 
-    writer.write_hyper_tile(TileType::MARKS, &[m_quarantine, m_legal_hold, m_review_set, m_review_clear], None, None).unwrap();
+    writer
+        .write_hyper_tile(
+            TileType::MARKS,
+            &[m_quarantine, m_legal_hold, m_review_set, m_review_clear],
+            None,
+            None,
+        )
+        .unwrap();
     drop(writer);
 
     // 3. Compact into output archive (1 telemetry tile + 1 marks tile + 1 schema tile)
@@ -435,12 +499,18 @@ fn test_marks_survive_compaction_and_remap() {
     // The review mark was cleared so it should not be active.
     assert_eq!(active_marks.len(), 2);
 
-    let q_mark = active_marks.iter().find(|m| m.mark_kind == s3a_core::MARK_QUARANTINE).unwrap();
+    let q_mark = active_marks
+        .iter()
+        .find(|m| m.mark_kind == s3a_core::MARK_QUARANTINE)
+        .unwrap();
     assert_eq!(q_mark.target_tile_id, expected_new_tid); // remapped to new tile ID
     assert_eq!(q_mark.record_index, 0);
     assert_eq!(q_mark.actor_hash, 0xABCD);
 
-    let lh_mark = active_marks.iter().find(|m| m.mark_kind == s3a_core::MARK_LEGAL_HOLD).unwrap();
+    let lh_mark = active_marks
+        .iter()
+        .find(|m| m.mark_kind == s3a_core::MARK_LEGAL_HOLD)
+        .unwrap();
     assert_eq!(lh_mark.target_tile_id, expected_new_tid);
     assert_eq!(lh_mark.record_index, s3a_core::MARK_TARGET_ALL_RECORDS);
 

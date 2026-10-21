@@ -21,7 +21,12 @@ pub const MSG_INGEST_RESPONSE: u8 = 6;
 pub const MSG_ERROR: u8 = 7;
 
 /// Sends a framed S3AP message over a TCP stream with hardware CRC32C payload checksum.
-pub fn send_frame(stream: &mut TcpStream, msg_type: u8, request_id: u64, payload: &[u8]) -> io::Result<()> {
+pub fn send_frame(
+    stream: &mut TcpStream,
+    msg_type: u8,
+    request_id: u64,
+    payload: &[u8],
+) -> io::Result<()> {
     let mut header = [0u8; S3AP_HEADER_SIZE];
     header[0..4].copy_from_slice(&S3AP_MAGIC);
     header[4] = S3AP_VERSION;
@@ -46,10 +51,16 @@ pub fn read_frame(stream: &mut TcpStream) -> io::Result<(u8, u64, Vec<u8>)> {
     stream.read_exact(&mut header)?;
 
     if &header[0..4] != &S3AP_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid S3AP magic bytes"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid S3AP magic bytes",
+        ));
     }
     if header[4] != S3AP_VERSION {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported S3AP protocol version"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Unsupported S3AP protocol version",
+        ));
     }
 
     let msg_type = header[5];
@@ -59,7 +70,10 @@ pub fn read_frame(stream: &mut TcpStream) -> io::Result<(u8, u64, Vec<u8>)> {
 
     // Sanity limit: max 64 MB frame
     if payload_len > 64 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "S3AP payload exceeds 64MB limit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "S3AP payload exceeds 64MB limit",
+        ));
     }
 
     let mut payload = vec![0u8; payload_len];
@@ -69,7 +83,13 @@ pub fn read_frame(stream: &mut TcpStream) -> io::Result<(u8, u64, Vec<u8>)> {
 
     let actual_crc = crc32c::crc32c(&payload);
     if actual_crc != expected_crc {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("S3AP CRC mismatch: expected 0x{:08X}, got 0x{:08X}", expected_crc, actual_crc)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "S3AP CRC mismatch: expected 0x{:08X}, got 0x{:08X}",
+                expected_crc, actual_crc
+            ),
+        ));
     }
 
     Ok((msg_type, request_id, payload))
@@ -88,7 +108,10 @@ impl S3AClient {
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self { stream, next_request_id: 1 })
+        Ok(Self {
+            stream,
+            next_request_id: 1,
+        })
     }
 
     /// Measures round-trip ping latency to the S3A server.
@@ -101,7 +124,10 @@ impl S3AClient {
 
         let (msg_type, resp_id, _) = read_frame(&mut self.stream)?;
         if msg_type != MSG_PONG || resp_id != req_id {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid PING response"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid PING response",
+            ));
         }
         Ok(start.elapsed())
     }
@@ -111,11 +137,19 @@ impl S3AClient {
         let req_id = self.next_request_id;
         self.next_request_id += 1;
 
-        send_frame(&mut self.stream, MSG_QUERY_REQUEST, req_id, s3a_ql.as_bytes())?;
+        send_frame(
+            &mut self.stream,
+            MSG_QUERY_REQUEST,
+            req_id,
+            s3a_ql.as_bytes(),
+        )?;
 
         let (msg_type, resp_id, payload) = read_frame(&mut self.stream)?;
         if resp_id != req_id {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Mismatched request ID"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Mismatched request ID",
+            ));
         }
 
         let resp_str = String::from_utf8(payload)
@@ -138,7 +172,10 @@ impl S3AClient {
 
         let (msg_type, resp_id, payload) = read_frame(&mut self.stream)?;
         if resp_id != req_id {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Mismatched request ID"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Mismatched request ID",
+            ));
         }
 
         if msg_type == MSG_ERROR {
@@ -164,7 +201,10 @@ pub struct S3AProtocolServer {
 
 impl S3AProtocolServer {
     /// Binds the server to the specified address.
-    pub fn bind<A: ToSocketAddrs>(addr: A, ring_buffer: Option<Arc<L0RingBuffer<TelemetryRecord>>>) -> io::Result<Self> {
+    pub fn bind<A: ToSocketAddrs>(
+        addr: A,
+        ring_buffer: Option<Arc<L0RingBuffer<TelemetryRecord>>>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         Ok(Self {
             listener,
@@ -231,14 +271,21 @@ impl Drop for S3AProtocolServer {
     }
 }
 
-fn handle_client(stream: &mut TcpStream, ring_buffer: Option<Arc<L0RingBuffer<TelemetryRecord>>>) -> io::Result<()> {
+fn handle_client(
+    stream: &mut TcpStream,
+    ring_buffer: Option<Arc<L0RingBuffer<TelemetryRecord>>>,
+) -> io::Result<()> {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     loop {
         let (msg_type, request_id, payload) = match read_frame(stream) {
             Ok(frame) => frame,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof
-                || e.kind() == io::ErrorKind::TimedOut
-                || e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(e)
+                if e.kind() == io::ErrorKind::UnexpectedEof
+                    || e.kind() == io::ErrorKind::TimedOut
+                    || e.kind() == io::ErrorKind::WouldBlock =>
+            {
+                return Ok(())
+            }
             Err(e) => return Err(e),
         };
 
@@ -261,7 +308,12 @@ fn handle_client(stream: &mut TcpStream, ring_buffer: Option<Arc<L0RingBuffer<Te
             }
             MSG_INGEST_REQUEST => {
                 if payload.len() % std::mem::size_of::<TelemetryRecord>() != 0 {
-                    send_frame(stream, MSG_ERROR, request_id, b"Invalid TelemetryRecord batch size")?;
+                    send_frame(
+                        stream,
+                        MSG_ERROR,
+                        request_id,
+                        b"Invalid TelemetryRecord batch size",
+                    )?;
                     continue;
                 }
                 let records: &[TelemetryRecord] = bytemuck::cast_slice(&payload);
@@ -272,9 +324,19 @@ fn handle_client(stream: &mut TcpStream, ring_buffer: Option<Arc<L0RingBuffer<Te
                             inserted += 1;
                         }
                     }
-                    send_frame(stream, MSG_INGEST_RESPONSE, request_id, &inserted.to_le_bytes())?;
+                    send_frame(
+                        stream,
+                        MSG_INGEST_RESPONSE,
+                        request_id,
+                        &inserted.to_le_bytes(),
+                    )?;
                 } else {
-                    send_frame(stream, MSG_ERROR, request_id, b"L0 Ingestion Ring Buffer not configured on server")?;
+                    send_frame(
+                        stream,
+                        MSG_ERROR,
+                        request_id,
+                        b"L0 Ingestion Ring Buffer not configured on server",
+                    )?;
                 }
             }
             _ => {

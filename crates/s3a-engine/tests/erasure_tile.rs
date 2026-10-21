@@ -13,13 +13,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sha2::{Digest, Sha256};
 use s3a_core::consent::{actor_id_to_subject_id, ConsentPurpose};
 use s3a_core::erasure::ErasureReason;
 use s3a_core::TileType;
 use s3a_engine::{
     seal_archive, verify_sealed_archive, MmapReader, QuerySieve, S3ACrudEngine, TelemetryRecord,
 };
+use sha2::{Digest, Sha256};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -56,7 +56,12 @@ impl Drop for TestTempFile {
     }
 }
 
-fn create_sample_telemetry(sensor_id: u32, metric_id: u32, timestamp: u64, value: f64) -> TelemetryRecord {
+fn create_sample_telemetry(
+    sensor_id: u32,
+    metric_id: u32,
+    timestamp: u64,
+    value: f64,
+) -> TelemetryRecord {
     let mut rec = TelemetryRecord::default();
     rec.sensor_id = sensor_id;
     rec.metric_id = metric_id;
@@ -87,17 +92,19 @@ fn test_erase_record_gone_after_compaction_and_receipt_remains_and_verifies() {
     let rec1_hash: [u8; 32] = hasher.finalize().into();
 
     // Human/admin records erasure for rec1
-    let receipt = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        0, // record index 0
-        rec1_hash,
-        ErasureReason::Withdrawal,
-        9999, // Compliance officer ID
-        1050, // Requested at
-        1055, // Executed at
-        true, // is_admin_or_human
-    ).unwrap();
+    let receipt = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            0, // record index 0
+            rec1_hash,
+            ErasureReason::Withdrawal,
+            9999, // Compliance officer ID
+            1050, // Requested at
+            1055, // Executed at
+            true, // is_admin_or_human
+        )
+        .unwrap();
 
     assert!(receipt.verify_hash());
 
@@ -141,17 +148,19 @@ fn test_legal_hold_blocks_erasure() {
     let subject_id = actor_id_to_subject_id(sensor_id as u64);
 
     // Participant grants consent WITH legal_hold active
-    engine.grant_consent(
-        subject_id,
-        777, // study_id
-        ConsentPurpose::Research,
-        0,
-        1000,
-        0,
-        true, // legal_hold = true!
-        8888,
-        true,
-    ).unwrap();
+    engine
+        .grant_consent(
+            subject_id,
+            777, // study_id
+            ConsentPurpose::Research,
+            0,
+            1000,
+            0,
+            true, // legal_hold = true!
+            8888,
+            true,
+        )
+        .unwrap();
 
     let rec1 = create_sample_telemetry(sensor_id, 1, 1000, 99.0);
     let tile_id = engine.create_telemetry(&[rec1]).unwrap();
@@ -180,7 +189,10 @@ fn test_legal_hold_blocks_erasure() {
     // Also verify purge_telemetry_record is blocked
     let purge_res = engine.purge_telemetry_record(sensor_id, 1, 1000);
     assert!(purge_res.is_err());
-    assert_eq!(purge_res.err().unwrap().kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        purge_res.err().unwrap().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
 }
 
 #[test]
@@ -199,43 +211,49 @@ fn test_erasure_chain_hash_verified() {
         hasher.finalize().into()
     };
 
-    let e1 = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        0,
-        hash_of(&rec1),
-        ErasureReason::Withdrawal,
-        9001,
-        1100,
-        1105,
-        true,
-    ).unwrap();
+    let e1 = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            0,
+            hash_of(&rec1),
+            ErasureReason::Withdrawal,
+            9001,
+            1100,
+            1105,
+            true,
+        )
+        .unwrap();
     assert_eq!(e1.prev_erasure_hash, [0u8; 32]); // Genesis
 
-    let e2 = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        1,
-        hash_of(&rec2),
-        ErasureReason::RetentionExpiry,
-        9001,
-        1200,
-        1205,
-        true,
-    ).unwrap();
+    let e2 = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            1,
+            hash_of(&rec2),
+            ErasureReason::RetentionExpiry,
+            9001,
+            1200,
+            1205,
+            true,
+        )
+        .unwrap();
     assert_eq!(e2.prev_erasure_hash, e1.erasure_hash); // Chained
 
-    let e3 = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        2,
-        hash_of(&rec3),
-        ErasureReason::LegalRequest,
-        9001,
-        1300,
-        1305,
-        true,
-    ).unwrap();
+    let e3 = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            2,
+            hash_of(&rec3),
+            ErasureReason::LegalRequest,
+            9001,
+            1300,
+            1305,
+            true,
+        )
+        .unwrap();
     assert_eq!(e3.prev_erasure_hash, e2.erasure_hash); // Chained
 
     let reader = MmapReader::open(tmp.path()).unwrap();
@@ -255,30 +273,34 @@ fn test_re_erasing_same_record_is_idempotent() {
     hasher.update(bytemuck::bytes_of(&rec));
     let rec_hash: [u8; 32] = hasher.finalize().into();
 
-    let first = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        0,
-        rec_hash,
-        ErasureReason::Withdrawal,
-        9999,
-        1000,
-        1005,
-        true,
-    ).unwrap();
+    let first = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            0,
+            rec_hash,
+            ErasureReason::Withdrawal,
+            9999,
+            1000,
+            1005,
+            true,
+        )
+        .unwrap();
 
     // Call again with same target
-    let second = engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        0,
-        rec_hash,
-        ErasureReason::Withdrawal,
-        9999,
-        1000,
-        1005,
-        true,
-    ).unwrap();
+    let second = engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            0,
+            rec_hash,
+            ErasureReason::Withdrawal,
+            9999,
+            1000,
+            1005,
+            true,
+        )
+        .unwrap();
 
     assert_eq!(first, second);
 
@@ -302,17 +324,19 @@ fn test_seal_verify_passes_after_purge() {
     hasher.update(bytemuck::bytes_of(&rec1));
     let rec1_hash: [u8; 32] = hasher.finalize().into();
 
-    engine.record_erasure(
-        TileType::TELEMETRY,
-        tile_id,
-        0,
-        rec1_hash,
-        ErasureReason::Withdrawal,
-        9999,
-        1050,
-        1055,
-        true,
-    ).unwrap();
+    engine
+        .record_erasure(
+            TileType::TELEMETRY,
+            tile_id,
+            0,
+            rec1_hash,
+            ErasureReason::Withdrawal,
+            9999,
+            1050,
+            1055,
+            true,
+        )
+        .unwrap();
 
     // Compact archive
     engine.purge_and_compact().unwrap();
@@ -320,7 +344,10 @@ fn test_seal_verify_passes_after_purge() {
     // Seal archive to a new sealed file
     let sealed_tmp = TestTempFile::new("sealed_out");
     let seal_res = seal_archive(tmp.path(), sealed_tmp.path(), 16, 2);
-    assert!(seal_res.is_ok(), "Seal must succeed after compaction and purge");
+    assert!(
+        seal_res.is_ok(),
+        "Seal must succeed after compaction and purge"
+    );
 
     // Verify sealed archive passes 100%
     let report = verify_sealed_archive(sealed_tmp.path(), None).unwrap();

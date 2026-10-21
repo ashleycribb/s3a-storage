@@ -4,12 +4,12 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct RoboticsKinematicRecord {
-    pub timestamp_us: u64, // Microsecond-precision timestamp
-    pub robot_id: u32,      // Robot / Joint / Actuator ID
-    pub joint_mask: u32,    // Joint bitmask
-    pub position_xyz: [f32; 3], // 3D Position [X, Y, Z] in meters
+    pub timestamp_us: u64,          // Microsecond-precision timestamp
+    pub robot_id: u32,              // Robot / Joint / Actuator ID
+    pub joint_mask: u32,            // Joint bitmask
+    pub position_xyz: [f32; 3],     // 3D Position [X, Y, Z] in meters
     pub orientation_quat: [f32; 4], // Quaternion [W, X, Y, Z]
-    pub linear_velocity: [f32; 3], // Linear Velocity [Vx, Vy, Vz]
+    pub linear_velocity: [f32; 3],  // Linear Velocity [Vx, Vy, Vz]
     pub angular_velocity: [f32; 3], // Angular Velocity [Wx, Wy, Wz]
     pub _padding: u32,
 }

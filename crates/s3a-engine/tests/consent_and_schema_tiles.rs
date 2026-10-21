@@ -182,7 +182,11 @@ fn test_consent_withdraw_hidden_for_purpose_only() {
         .with_purpose(ConsentPurpose::Analytics)
         .with_now(200);
     let acts_analytics = sieve_analytics.query_learning_activities(0, u64::MAX, None, None);
-    assert_eq!(acts_analytics.len(), 1, "Analytics query must remain visible");
+    assert_eq!(
+        acts_analytics.len(),
+        1,
+        "Analytics query must remain visible"
+    );
     assert_eq!(acts_analytics[0].0.actor_id, 201);
 }
 
@@ -262,7 +266,10 @@ fn test_consent_legal_hold_blocks_purge() {
 
     // Attempting to purge a record for this actor must be blocked!
     let purge_res = engine.purge_telemetry_record(401, 1, 100);
-    assert!(purge_res.is_err(), "Purge must fail when subject is under legal hold");
+    assert!(
+        purge_res.is_err(),
+        "Purge must fail when subject is under legal hold"
+    );
     assert!(purge_res.unwrap_err().to_string().contains("legal hold"));
 
     // Ensure compaction also retains records under legal hold even if marked with tombstone
@@ -380,7 +387,11 @@ fn test_consent_chain_hash_verified() {
     let reader = MmapReader::open(temp.path()).expect("open reader");
     let sieve = QuerySieve::new(&reader);
 
-    assert_eq!(sieve.verify_consent_chain(&subject), Ok(true), "Chain should be valid");
+    assert_eq!(
+        sieve.verify_consent_chain(&subject),
+        Ok(true),
+        "Chain should be valid"
+    );
 
     // Test tamper resistance
     let other_subject = [9u8; 16];
@@ -548,10 +559,7 @@ fn test_inspect_shows_schema_names() {
 
     let reader = MmapReader::open(temp.path()).expect("open reader");
     // reader resolves 8888 to "CUSTOM_NEURAL_WEIGHTS" instead of "UNKNOWN"!
-    assert_eq!(
-        reader.resolve_tile_type_name(8888),
-        "CUSTOM_NEURAL_WEIGHTS"
-    );
+    assert_eq!(reader.resolve_tile_type_name(8888), "CUSTOM_NEURAL_WEIGHTS");
 
     // Test append_schema_tile_if_missing
     let temp_no_schema = TestTempFile::new("append_schema");

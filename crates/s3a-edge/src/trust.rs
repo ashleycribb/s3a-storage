@@ -33,7 +33,13 @@ pub fn verify_seal_chain_link(
     payload_hash: &[u8; 32],
     device_id: &[u8; 16],
 ) -> bool {
-    let expected = compute_seal_hash(prev_seal_hash, generation, tile_index, payload_hash, device_id);
+    let expected = compute_seal_hash(
+        prev_seal_hash,
+        generation,
+        tile_index,
+        payload_hash,
+        device_id,
+    );
     &expected == candidate_seal_hash
 }
 
@@ -89,13 +95,31 @@ mod tests {
         let payload1 = [0x22; 32];
         let seal1 = compute_seal_hash(&seal0, 2, 1, &payload1, &device_id);
 
-        assert!(verify_seal_chain_link(&seal0, &genesis_prev, 1, 0, &payload0, &device_id));
-        assert!(verify_seal_chain_link(&seal1, &seal0, 2, 1, &payload1, &device_id));
+        assert!(verify_seal_chain_link(
+            &seal0,
+            &genesis_prev,
+            1,
+            0,
+            &payload0,
+            &device_id
+        ));
+        assert!(verify_seal_chain_link(
+            &seal1, &seal0, 2, 1, &payload1, &device_id
+        ));
 
         // Mismatched prev_seal fails
-        assert!(!verify_seal_chain_link(&seal1, &genesis_prev, 2, 1, &payload1, &device_id));
+        assert!(!verify_seal_chain_link(
+            &seal1,
+            &genesis_prev,
+            2,
+            1,
+            &payload1,
+            &device_id
+        ));
         // Tampered payload fails
-        assert!(!verify_seal_chain_link(&seal1, &seal0, 2, 1, &payload0, &device_id));
+        assert!(!verify_seal_chain_link(
+            &seal1, &seal0, 2, 1, &payload0, &device_id
+        ));
     }
 
     #[cfg(feature = "sign")]
@@ -111,7 +135,11 @@ mod tests {
         let sig = sign_seal_hash(&signing_key, &seal_hash);
 
         assert!(verify_signature(&verifying_key, &seal_hash, &sig));
-        assert!(verify_signature_raw(&verifying_key.to_bytes(), &seal_hash, &sig));
+        assert!(verify_signature_raw(
+            &verifying_key.to_bytes(),
+            &seal_hash,
+            &sig
+        ));
 
         // Forgery or altered hash rejected
         let forged_hash = [0x88u8; 32];

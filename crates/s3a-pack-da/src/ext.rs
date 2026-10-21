@@ -1,8 +1,8 @@
-use std::io;
-use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
-use s3a_simd::can_reject_tile_time;
 use crate::pack::DaTileType;
 use crate::records::DaCommitmentRecord;
+use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine};
+use s3a_simd::can_reject_tile_time;
+use std::io;
 
 pub trait DaCrudExt {
     fn create_da_commitments(&self, commitments: &[DaCommitmentRecord]) -> io::Result<u64>;

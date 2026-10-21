@@ -57,19 +57,19 @@ impl ArrayDataType {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct ArrayTileHeader {
-    pub magic: [u8; 4],                           // *b"S3AA" (offset 0..4)
-    pub version: u16,                             // Version 1 (offset 4..6)
-    pub ndim: u16,                                // Dimensionality 1..8 (offset 6..8)
-    pub dtype: u16,                               // ArrayDataType enum (offset 8..10)
-    pub compression_codec: u16,                   // 0 = Raw (offset 10..12)
-    pub _reserved16: u32,                         // Alignment padding (offset 12..16)
-    pub shape: [u64; MAX_ARRAY_DIMENSIONS],       // Tensor dimensions of this chunk (offset 16..80)
+    pub magic: [u8; 4],                            // *b"S3AA" (offset 0..4)
+    pub version: u16,                              // Version 1 (offset 4..6)
+    pub ndim: u16,                                 // Dimensionality 1..8 (offset 6..8)
+    pub dtype: u16,                                // ArrayDataType enum (offset 8..10)
+    pub compression_codec: u16,                    // 0 = Raw (offset 10..12)
+    pub _reserved16: u32,                          // Alignment padding (offset 12..16)
+    pub shape: [u64; MAX_ARRAY_DIMENSIONS], // Tensor dimensions of this chunk (offset 16..80)
     pub chunk_shape: [u64; MAX_ARRAY_DIMENSIONS], // Standard chunk grid shape (offset 80..144)
-    pub chunk_coords: [u64; MAX_ARRAY_DIMENSIONS],// Coordinate offset in global array (offset 144..208)
-    pub fill_value: [u8; 8],                      // Default value for unwritten chunks (offset 208..216)
-    pub chunk_hash: [u8; 32],                     // SHA-256 over active chunk payload bytes (offset 216..248)
-    pub axis_names: [u8; 64],                     // Null-terminated comma-separated axis names (offset 248..312)
-    pub _reserved: [u8; 8],                       // Padding to 320 bytes (offset 312..320)
+    pub chunk_coords: [u64; MAX_ARRAY_DIMENSIONS], // Coordinate offset in global array (offset 144..208)
+    pub fill_value: [u8; 8], // Default value for unwritten chunks (offset 208..216)
+    pub chunk_hash: [u8; 32], // SHA-256 over active chunk payload bytes (offset 216..248)
+    pub axis_names: [u8; 64], // Null-terminated comma-separated axis names (offset 248..312)
+    pub _reserved: [u8; 8],  // Padding to 320 bytes (offset 312..320)
 }
 
 impl ArrayTileHeader {
@@ -117,7 +117,10 @@ impl ArrayTileHeader {
     }
 
     pub fn is_valid(&self) -> bool {
-        self.magic == Self::MAGIC && self.version == 1 && self.ndim >= 1 && (self.ndim as usize) <= MAX_ARRAY_DIMENSIONS
+        self.magic == Self::MAGIC
+            && self.version == 1
+            && self.ndim >= 1
+            && (self.ndim as usize) <= MAX_ARRAY_DIMENSIONS
     }
 
     pub fn total_elements(&self) -> usize {
@@ -146,7 +149,11 @@ impl ArrayTileHeader {
     }
 
     pub fn axis_names_as_str(&self) -> &str {
-        let len = self.axis_names.iter().position(|&b| b == 0).unwrap_or(self.axis_names.len());
+        let len = self
+            .axis_names
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.axis_names.len());
         core::str::from_utf8(&self.axis_names[..len]).unwrap_or("")
     }
 }
@@ -235,9 +242,12 @@ impl<'a> ArrayTileView<'a> {
         if payload.len() < ArrayTileHeader::SIZE {
             return Err("payload too small for ArrayTileHeader");
         }
-        let header: &ArrayTileHeader = bytemuck::try_from_bytes::<ArrayTileHeader>(&payload[..ArrayTileHeader::SIZE])
-            // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
-            .map_err(|_| "misaligned tile header (A4: borrowed view requires 8-byte alignment)")?;
+        let header: &ArrayTileHeader =
+            bytemuck::try_from_bytes::<ArrayTileHeader>(&payload[..ArrayTileHeader::SIZE])
+                // A4: view keeps a borrowed header (public API); misaligned input is an error, never a panic.
+                .map_err(|_| {
+                    "misaligned tile header (A4: borrowed view requires 8-byte alignment)"
+                })?;
         if !header.is_valid() {
             return Err("invalid ArrayTileHeader magic or version");
         }

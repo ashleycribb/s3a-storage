@@ -4,7 +4,9 @@ use s3a_engine::*;
 use std::path::PathBuf;
 
 fn regression(name: &str) -> Vec<u8> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/regressions/tile_header").join(name);
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/regressions/tile_header")
+        .join(name);
     std::fs::read(p).unwrap()
 }
 
@@ -37,7 +39,11 @@ fn exercise(bytes: &[u8]) {
 fn tempfile_dir() -> PathBuf {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static N: AtomicUsize = AtomicUsize::new(0);
-    let d = std::env::temp_dir().join(format!("s3a_a3_{}_{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+    let d = std::env::temp_dir().join(format!(
+        "s3a_a3_{}_{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -64,9 +70,11 @@ fn regression_unaligned_from_bytes_no_panic() {
 
 fn edge_file() -> Vec<u8> {
     let flash = RamFlash::<{ 64 * 1024 }>::new(256, 512);
-    let mut w = EdgeWriter::<_, 4096>::open_or_format(flash, [9; 16], [1, 2], 1_700_000_000).unwrap();
+    let mut w =
+        EdgeWriter::<_, 4096>::open_or_format(flash, [9; 16], [1, 2], 1_700_000_000).unwrap();
     for i in 0..5 {
-        w.append_sensor_record(&CompactEdgeSensorRecord::new(i, 1, 1, 3000, QUALITY_OK)).unwrap();
+        w.append_sensor_record(&CompactEdgeSensorRecord::new(i, 1, 1, 3000, QUALITY_OK))
+            .unwrap();
     }
     w.seal_tile(1_700_000_010).unwrap();
     let n = w.tile_count() as usize;
@@ -92,7 +100,10 @@ fn edge_crc_corruption_detected() {
     std::fs::write(&path, &d).unwrap();
     let r = MmapReader::open(&path).unwrap();
     let e = r.try_get_edge_tile(last).unwrap_err();
-    assert!(matches!(e.reason, CorruptReason::DataCrcMismatch { .. }), "{e}");
+    assert!(
+        matches!(e.reason, CorruptReason::DataCrcMismatch { .. }),
+        "{e}"
+    );
     assert!(r.get_edge_tile(last).is_none());
     drop(r);
 
@@ -125,6 +136,9 @@ fn truncated_file_rejected_by_open() {
     let e = r.validate_file_size().unwrap_err();
     assert!(matches!(e.reason, CorruptReason::SlotPastEof { .. }), "{e}");
     assert!(r.get_tile(last).is_none());
-    assert!(matches!(r.try_get_tile(last).unwrap_err().reason, CorruptReason::SlotPastEof { .. }));
+    assert!(matches!(
+        r.try_get_tile(last).unwrap_err().reason,
+        CorruptReason::SlotPastEof { .. }
+    ));
     assert_eq!(r.verify_checksums(), Err(S3AError::OutOfBounds));
 }

@@ -9,35 +9,37 @@ extern crate std as alloc;
 #[cfg(test)]
 extern crate std;
 
+use bytemuck::{Pod, Zeroable};
 use core::fmt;
 use core::str::FromStr;
-use bytemuck::{Pod, Zeroable};
 
-pub mod hilbert;
-pub mod dop;
-pub mod registry;
-pub mod lrs;
-pub mod consent;
-pub mod schema;
-pub mod erasure;
-pub mod columnar;
 pub mod array;
+pub mod columnar;
+pub mod consent;
+pub mod dop;
+pub mod erasure;
+pub mod hilbert;
+pub mod lrs;
+pub mod registry;
+pub mod schema;
 
-pub use hilbert::{point_to_hilbert_3d, hilbert_to_point_3d, compare_hilbert_vs_morton_locality, compare_hilbert_vs_morton_curve_continuity, morton_to_point_3d, s3a_morton_3d};
-pub use dop::{Dop14Hull, toroidal_distance_3d, toroidal_interval_contains};
-pub use registry::{
-    TileTypeFlags, TileTypeDescriptor, TileLifecycle, RegistryError, TileTypeRegistry,
-    register_core_types, register_standard_pack_types,
-    TilePayloadMigrator, migrate_tile_payload,
+pub use array::*;
+pub use columnar::*;
+pub use consent::*;
+pub use dop::{toroidal_distance_3d, toroidal_interval_contains, Dop14Hull};
+pub use erasure::*;
+pub use hilbert::{
+    compare_hilbert_vs_morton_curve_continuity, compare_hilbert_vs_morton_locality,
+    hilbert_to_point_3d, morton_to_point_3d, point_to_hilbert_3d, s3a_morton_3d,
 };
 pub use lrs::*;
-pub use consent::*;
-pub use schema::*;
-pub use erasure::*;
-pub use columnar::*;
-pub use array::*;
 #[cfg(feature = "std")]
 pub use registry::{global_registry, with_global_registry_mut};
+pub use registry::{
+    migrate_tile_payload, register_core_types, register_standard_pack_types, RegistryError,
+    TileLifecycle, TilePayloadMigrator, TileTypeDescriptor, TileTypeFlags, TileTypeRegistry,
+};
+pub use schema::*;
 
 /// Magic bytes at the start of an S3A file (`S3A1`).
 pub const S3A_MAGIC: [u8; 4] = *b"S3A1";
@@ -53,7 +55,6 @@ pub const FILE_HEADER_SLOT_A_OFFSET: usize = 0;
 
 /// S3A file header Slot B offset (64 bytes).
 pub const FILE_HEADER_SLOT_B_OFFSET: usize = 64;
-
 
 /// Standard Hyper-Tile block size (128 KB page-aligned block for servers/edge servers/robotics/GIS/DA).
 pub const HYPER_TILE_SIZE: usize = 128 * 1024; // 131,072 bytes
@@ -84,21 +85,27 @@ pub const FLAG_ACTIVE: u64 = 0;
 pub const FLAG_TOMBSTONE: u64 = 1 << 0;
 
 /// Archive Flags Bitmask for Edge Profile (FileHeader.flags, S3A-EDGE-PROFILE §2.2.2).
-pub const FLAG_PROFILE_EDGE: u16 = 1 << 0;       // 0x0001
-pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1;      // 0x0002
-pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2;      // 0x0004
-pub const FLAG_COMPACT_HEADER: u16 = 1 << 3;     // 0x0008
-pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4;  // 0x0010
-pub const FLAG_ED25519_SIGNED: u16 = 1 << 5;     // 0x0020
+pub const FLAG_PROFILE_EDGE: u16 = 1 << 0; // 0x0001
+pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1; // 0x0002
+pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2; // 0x0004
+pub const FLAG_COMPACT_HEADER: u16 = 1 << 3; // 0x0008
+pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4; // 0x0010
+pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020
 
 /// Error types returned by S3A core functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3AError {
     InvalidMagic,
     UnsupportedVersion(u16),
-    ChecksumMismatch { expected: u32, actual: u32 },
+    ChecksumMismatch {
+        expected: u32,
+        actual: u32,
+    },
     InvalidTileSize(usize),
-    BufferTooSmall { required: usize, provided: usize },
+    BufferTooSmall {
+        required: usize,
+        provided: usize,
+    },
     OutOfBounds,
     InvalidFormat,
     CorruptedHeader,
@@ -106,11 +113,18 @@ pub enum S3AError {
     RecordNotFound,
     InvalidCoordinate,
     UnsupportedLayoutVersion(u32),
-    FileUuidMismatch { expected: [u64; 2], actual: [u64; 2] },
+    FileUuidMismatch {
+        expected: [u64; 2],
+        actual: [u64; 2],
+    },
     SealedFooterCorrupt,
     SealedEndCapCorrupt,
     SealedTruncated,
-    UnrepairableCorruption { group_idx: usize, corrupted_count: usize, max_repairable: usize },
+    UnrepairableCorruption {
+        group_idx: usize,
+        corrupted_count: usize,
+        max_repairable: usize,
+    },
     SealedIndexHashMismatch,
     SealedChainBreak,
     SealedSwappedGeneration,
@@ -121,32 +135,59 @@ impl fmt::Display for S3AError {
         match self {
             S3AError::InvalidMagic => write!(f, "Invalid S3A file magic"),
             S3AError::UnsupportedVersion(v) => write!(f, "Unsupported file version: {}", v),
-            S3AError::UnsupportedLayoutVersion(v) => write!(f, "Unsupported record layout version: {}", v),
+            S3AError::UnsupportedLayoutVersion(v) => {
+                write!(f, "Unsupported record layout version: {}", v)
+            }
             S3AError::ChecksumMismatch { expected, actual } => {
-                write!(f, "Checksum mismatch: expected 0x{:08x}, got 0x{:08x}", expected, actual)
+                write!(
+                    f,
+                    "Checksum mismatch: expected 0x{:08x}, got 0x{:08x}",
+                    expected, actual
+                )
             }
             S3AError::InvalidTileSize(sz) => write!(f, "Invalid tile size: {}", sz),
             S3AError::BufferTooSmall { required, provided } => {
-                write!(f, "Buffer too small: required {}, provided {}", required, provided)
+                write!(
+                    f,
+                    "Buffer too small: required {}, provided {}",
+                    required, provided
+                )
             }
             S3AError::OutOfBounds => write!(f, "Index or offset out of bounds"),
             S3AError::InvalidFormat => write!(f, "Invalid S3A file format"),
             S3AError::CorruptedHeader => write!(f, "Corrupted block or file header"),
             S3AError::PayloadOverflow => write!(f, "Hyper-Tile payload capacity exceeded"),
             S3AError::RecordNotFound => write!(f, "Requested record was not found"),
-            S3AError::InvalidCoordinate => write!(f, "Invalid coordinate address format (expected L<level>:T<tile>:R<offset>)"),
+            S3AError::InvalidCoordinate => write!(
+                f,
+                "Invalid coordinate address format (expected L<level>:T<tile>:R<offset>)"
+            ),
             S3AError::FileUuidMismatch { expected, actual } => {
-                write!(f, "Tile file_uuid mismatch: expected {:016x}{:016x}, got {:016x}{:016x}", expected[0], expected[1], actual[0], actual[1])
+                write!(
+                    f,
+                    "Tile file_uuid mismatch: expected {:016x}{:016x}, got {:016x}{:016x}",
+                    expected[0], expected[1], actual[0], actual[1]
+                )
             }
             S3AError::SealedFooterCorrupt => write!(f, "Sealed container footer corrupted"),
             S3AError::SealedEndCapCorrupt => write!(f, "Sealed container end cap corrupted"),
             S3AError::SealedTruncated => write!(f, "Sealed container truncated"),
-            S3AError::UnrepairableCorruption { group_idx, corrupted_count, max_repairable } => {
-                write!(f, "Group {} has {} corrupted tiles, exceeding max repairable {}", group_idx, corrupted_count, max_repairable)
+            S3AError::UnrepairableCorruption {
+                group_idx,
+                corrupted_count,
+                max_repairable,
+            } => {
+                write!(
+                    f,
+                    "Group {} has {} corrupted tiles, exceeding max repairable {}",
+                    group_idx, corrupted_count, max_repairable
+                )
             }
             S3AError::SealedIndexHashMismatch => write!(f, "Sealed footer index hash mismatch"),
             S3AError::SealedChainBreak => write!(f, "Sealed hash chain break detected"),
-            S3AError::SealedSwappedGeneration => write!(f, "Sealed generation reordering or swapped seal detected"),
+            S3AError::SealedSwappedGeneration => {
+                write!(f, "Sealed generation reordering or swapped seal detected")
+            }
         }
     }
 }
@@ -155,10 +196,10 @@ impl fmt::Display for S3AError {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct S3ACoordinate {
-    pub level: u16,        // Stratum level (0 = Wearable Micro-Tile / GIS Mesh Tile, 1 = Hot L1 cache tile, 2 = Stratified)
+    pub level: u16, // Stratum level (0 = Wearable Micro-Tile / GIS Mesh Tile, 1 = Hot L1 cache tile, 2 = Stratified)
     pub _reserved: u16,
-    pub tile_id: u32,      // Tile index within archive (0-based)
-    pub record_offset: u32,// Record index within tile payload (0-based)
+    pub tile_id: u32,       // Tile index within archive (0-based)
+    pub record_offset: u32, // Record index within tile payload (0-based)
     pub _padding: u32,
 }
 
@@ -176,7 +217,11 @@ impl S3ACoordinate {
 
 impl fmt::Display for S3ACoordinate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "L{}:T{}:R{}", self.level, self.tile_id, self.record_offset)
+        write!(
+            f,
+            "L{}:T{}:R{}",
+            self.level, self.tile_id, self.record_offset
+        )
     }
 }
 
@@ -209,13 +254,13 @@ impl FromStr for S3ACoordinate {
 
 /// Addon identifier bitmasks for modular domain extensions.
 pub const ADDON_NONE: u32 = 0;
-pub const ADDON_EDU: u32 = 1 << 0;       // 0x0001: Scholar Explorer Educational & Cognitive Provenance Addon
-pub const ADDON_FINTECH: u32 = 1 << 1;   // 0x0002: High-Frequency Financial Tick Addon (reserved)
-pub const ADDON_ROBOTICS: u32 = 1 << 2;  // 0x0004: Kinematic Trajectory & Robotics Pack
-pub const ADDON_WEARABLE: u32 = 1 << 3;  // 0x0008: Wearable / Micro-Telemetry Pack
-pub const ADDON_GIS: u32 = 1 << 4;       // 0x0010: GIS Topographic Point Cloud & Mesh Pack
-pub const ADDON_DA: u32 = 1 << 5;        // 0x0020: Decentralized Data Availability / State Commitments Pack
-pub const ADDON_ONTOLOGY: u32 = 1 << 6;  // 0x0040: Formal Ontology & Axiom Registry Pack
+pub const ADDON_EDU: u32 = 1 << 0; // 0x0001: Scholar Explorer Educational & Cognitive Provenance Addon
+pub const ADDON_FINTECH: u32 = 1 << 1; // 0x0002: High-Frequency Financial Tick Addon (reserved)
+pub const ADDON_ROBOTICS: u32 = 1 << 2; // 0x0004: Kinematic Trajectory & Robotics Pack
+pub const ADDON_WEARABLE: u32 = 1 << 3; // 0x0008: Wearable / Micro-Telemetry Pack
+pub const ADDON_GIS: u32 = 1 << 4; // 0x0010: GIS Topographic Point Cloud & Mesh Pack
+pub const ADDON_DA: u32 = 1 << 5; // 0x0020: Decentralized Data Availability / State Commitments Pack
+pub const ADDON_ONTOLOGY: u32 = 1 << 6; // 0x0040: Formal Ontology & Axiom Registry Pack
 
 /// Resolves the required addon capability bitmask and pack name for a given tile type.
 /// Returns None for domain-agnostic core tiles (0, 1, 2, 7, 8, 9).
@@ -291,7 +336,12 @@ impl FileHeader {
         }
     }
 
-    pub fn with_commit(tile_count: u32, generation: u64, created_timestamp: u64, commit_timestamp: u64) -> Self {
+    pub fn with_commit(
+        tile_count: u32,
+        generation: u64,
+        created_timestamp: u64,
+        commit_timestamp: u64,
+    ) -> Self {
         Self {
             magic: S3A_MAGIC,
             version: 1,
@@ -329,7 +379,8 @@ impl FileHeader {
     }
 
     pub fn is_edge_profile(&self) -> bool {
-        (self.flags & FLAG_PROFILE_EDGE) != 0 || (self._reserved1 > 0 && (self._reserved1 as usize) < HYPER_TILE_SIZE)
+        (self.flags & FLAG_PROFILE_EDGE) != 0
+            || (self._reserved1 > 0 && (self._reserved1 as usize) < HYPER_TILE_SIZE)
     }
 
     pub fn verify(&self) -> Result<(), S3AError> {
@@ -363,7 +414,6 @@ impl DualFileHeader {
     }
 }
 
-
 /// Simplex convex hull bounding manifold embedded in Hyper-Tile header (208 bytes, 8-byte aligned).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
@@ -389,7 +439,9 @@ impl SimplexHull {
     }
 
     pub fn contains_point(&self, point: &[f32]) -> bool {
-        let d = (self.dim as usize).min(MAX_HULL_DIMENSIONS).min(point.len());
+        let d = (self.dim as usize)
+            .min(MAX_HULL_DIMENSIONS)
+            .min(point.len());
         for i in 0..d {
             if point[i] < self.min_bounds[i] || point[i] > self.max_bounds[i] {
                 return false;
@@ -478,7 +530,9 @@ impl TileType {
     pub const GATE_MAILBOX: u32 = 86;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
-    #[deprecated(note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10.")]
+    #[deprecated(
+        note = "Tile 9 is RESERVED_BOUNDARY. Greenfield LRS belongs in Scholar Pack Tile 10."
+    )]
     pub const LEARNING_RECORD_STORE: u32 = 9;
 }
 
@@ -503,16 +557,16 @@ pub const MARK_TARGET_ALL_RECORDS: u32 = u32::MAX;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct MarkRecord {
-    pub target_tile_type: u32,  // Tile type of target (e.g. TileType::TELEMETRY, ScholarTileType::HUMAN_LRS) (offset 0..4)
-    pub record_index: u32,       // Record offset within tile, or MARK_TARGET_ALL_RECORDS (u32::MAX) (offset 4..8)
-    pub target_tile_id: u64,     // Tile ID in archive (offset 8..16)
-    pub generation: u64,         // Archive generation when mark was appended (offset 16..24)
-    pub timestamp: u64,          // Timestamp of mark action in epoch seconds (offset 24..32)
-    pub actor_hash: u64,         // Identity hash of actor asserting or clearing mark (offset 32..40)
-    pub mark_kind: u32,          // MARK_QUARANTINE, MARK_NEEDS_REVIEW, etc. (offset 40..44)
-    pub set_or_clear: u8,        // MARK_SET (1) or MARK_CLEAR (0) (offset 44)
-    pub _padding: [u8; 3],       // Alignment padding (offset 45..48)
-    pub _reserved: [u64; 2],     // Reserved for future extensions (all zeros) (offset 48..64)
+    pub target_tile_type: u32, // Tile type of target (e.g. TileType::TELEMETRY, ScholarTileType::HUMAN_LRS) (offset 0..4)
+    pub record_index: u32, // Record offset within tile, or MARK_TARGET_ALL_RECORDS (u32::MAX) (offset 4..8)
+    pub target_tile_id: u64, // Tile ID in archive (offset 8..16)
+    pub generation: u64,   // Archive generation when mark was appended (offset 16..24)
+    pub timestamp: u64,    // Timestamp of mark action in epoch seconds (offset 24..32)
+    pub actor_hash: u64,   // Identity hash of actor asserting or clearing mark (offset 32..40)
+    pub mark_kind: u32,    // MARK_QUARANTINE, MARK_NEEDS_REVIEW, etc. (offset 40..44)
+    pub set_or_clear: u8,  // MARK_SET (1) or MARK_CLEAR (0) (offset 44)
+    pub _padding: [u8; 3], // Alignment padding (offset 45..48)
+    pub _reserved: [u64; 2], // Reserved for future extensions (all zeros) (offset 48..64)
 }
 
 impl MarkRecord {
@@ -566,10 +620,10 @@ impl MarkRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct TileFilterMetadata {
-    pub filter_type: u16,        // 0=None, 1=BlockedBloom960
-    pub hash_seed: u16,          // Seed for hash functions
-    pub distinct_sensors: u32,   // Exact or estimated distinct sensor count
-    pub bits: [u64; 15],         // 120 bytes (960-bit bitmask, total struct = 128 bytes)
+    pub filter_type: u16,      // 0=None, 1=BlockedBloom960
+    pub hash_seed: u16,        // Seed for hash functions
+    pub distinct_sensors: u32, // Exact or estimated distinct sensor count
+    pub bits: [u64; 15],       // 120 bytes (960-bit bitmask, total struct = 128 bytes)
 }
 
 impl Default for TileFilterMetadata {
@@ -587,7 +641,7 @@ impl Default for TileFilterMetadata {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct TileProvenanceMetadata {
-    pub merkle_root: [u8; 32],   // 256-bit BLAKE3/SHA-256 payload Merkle root
+    pub merkle_root: [u8; 32], // 256-bit BLAKE3/SHA-256 payload Merkle root
 }
 
 impl Default for TileProvenanceMetadata {
@@ -602,12 +656,12 @@ impl Default for TileProvenanceMetadata {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct TileLifecycleMetadata {
-    pub tombstone_count: u32,       // Number of soft-deleted records in tile
-    pub stratum_tier: u8,           // 0=L0 (memory), 1=L1 (hot), 2=L2 (warm), 3=L3 (cold)
-    pub compaction_epoch: u8,       // Compaction generation count
+    pub tombstone_count: u32, // Number of soft-deleted records in tile
+    pub stratum_tier: u8,     // 0=L0 (memory), 1=L1 (hot), 2=L2 (warm), 3=L3 (cold)
+    pub compaction_epoch: u8, // Compaction generation count
     pub _reserved_tier: u16,
-    pub min_expiry_timestamp: u64,  // Earliest record TTL in epoch seconds
-    pub max_expiry_timestamp: u64,  // Latest record TTL in epoch seconds
+    pub min_expiry_timestamp: u64, // Earliest record TTL in epoch seconds
+    pub max_expiry_timestamp: u64, // Latest record TTL in epoch seconds
 }
 
 impl Default for TileLifecycleMetadata {
@@ -648,9 +702,9 @@ impl Default for TileSecurityMetadata {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct TileEncodingMetadata {
-    pub value_base: f64,         // Minimum baseline value in tile
-    pub value_scale: f32,        // Delta quantization step
-    pub encoding_mode: u16,      // 0=Raw, 1=Delta-FoR, 2=RunLength
+    pub value_base: f64,    // Minimum baseline value in tile
+    pub value_scale: f32,   // Delta quantization step
+    pub encoding_mode: u16, // 0=Raw, 1=Delta-FoR, 2=RunLength
     pub _reserved: u16,
 }
 
@@ -669,8 +723,8 @@ impl Default for TileEncodingMetadata {
 #[repr(C, align(4))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 pub struct TileLearnedIndex {
-    pub slope: f32,              // Slope of monotonic timestamp progression
-    pub intercept: f32,          // Intercept / base offset
+    pub slope: f32,     // Slope of monotonic timestamp progression
+    pub intercept: f32, // Intercept / base offset
 }
 
 impl Default for TileLearnedIndex {
@@ -726,7 +780,10 @@ pub struct HyperTileHeader {
 impl HyperTileHeader {
     pub fn new(tile_id: u64, tile_type: u32) -> Self {
         #[cfg(feature = "std")]
-        let default_version = global_registry().get(tile_type).map(|d| d.current_layout_version).unwrap_or(1);
+        let default_version = global_registry()
+            .get(tile_type)
+            .map(|d| d.current_layout_version)
+            .unwrap_or(1);
         #[cfg(not(feature = "std"))]
         let default_version = 1;
 
@@ -963,7 +1020,7 @@ pub struct CompactEmbeddingRecord32 {
     pub id: u32,
     pub timestamp_sec: u32,
     pub quantized_vector: [i8; 32], // INT8 quantized embedding features
-    pub scale: f32,                // Quantization scale factor
+    pub scale: f32,                 // Quantization scale factor
     pub _reserved: u32,
 }
 
@@ -1013,7 +1070,11 @@ impl Default for EmbeddingRecord128 {
 
 impl EmbeddingRecord128 {
     pub fn new(id: u64, timestamp: u64, vector: [f32; 128]) -> Self {
-        Self { id, timestamp, vector }
+        Self {
+            id,
+            timestamp,
+            vector,
+        }
     }
 }
 
@@ -1048,8 +1109,12 @@ impl QuantizedEmbeddingRecord256 {
         let mut min_val = f32::INFINITY;
         let mut max_val = f32::NEG_INFINITY;
         for &v in float_vector {
-            if v < min_val { min_val = v; }
-            if v > max_val { max_val = v; }
+            if v < min_val {
+                min_val = v;
+            }
+            if v > max_val {
+                max_val = v;
+            }
         }
         let range = (max_val - min_val).max(1e-7);
         let scale = range / 254.0;
@@ -1121,8 +1186,12 @@ impl QuantizedEmbeddingRecord512 {
         let mut min_val = f32::INFINITY;
         let mut max_val = f32::NEG_INFINITY;
         for &v in float_vector {
-            if v < min_val { min_val = v; }
-            if v > max_val { max_val = v; }
+            if v < min_val {
+                min_val = v;
+            }
+            if v > max_val {
+                max_val = v;
+            }
         }
         let range = (max_val - min_val).max(1e-7);
         let scale = range / 15.0;
@@ -1172,16 +1241,16 @@ impl QuantizedEmbeddingRecord512 {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct LearningActivityRecord {
-    pub actor_id: u64,          // User ID / Student ID / AI Agent ID (offset 0)
-    pub timestamp_sec: u64,     // Timestamp of learning interaction or tool execution (offset 8)
-    pub verb_id: u32,           // Action / xAPI Verb (offset 16)
-    pub object_id: u32,         // Activity / Course / Tool ID / State ID (offset 20)
-    pub result_score: f32,      // Grade / Scaled Reward / Accuracy (offset 24)
-    pub duration_ms: u32,       // Execution latency / time spent in milliseconds (offset 28)
-    pub success_flag: u32,      // 1 = Passed / Succeeded, 0 = Failed (offset 32)
-    pub _reserved32: u32,       // Padding to align next u64 (offset 36)
-    pub flags: u64,             // FLAG_ACTIVE, FLAG_TOMBSTONE (offset 40)
-    pub _reserved: [u64; 2],    // Padding to exactly 64 bytes (offset 48..64)
+    pub actor_id: u64,       // User ID / Student ID / AI Agent ID (offset 0)
+    pub timestamp_sec: u64,  // Timestamp of learning interaction or tool execution (offset 8)
+    pub verb_id: u32,        // Action / xAPI Verb (offset 16)
+    pub object_id: u32,      // Activity / Course / Tool ID / State ID (offset 20)
+    pub result_score: f32,   // Grade / Scaled Reward / Accuracy (offset 24)
+    pub duration_ms: u32,    // Execution latency / time spent in milliseconds (offset 28)
+    pub success_flag: u32,   // 1 = Passed / Succeeded, 0 = Failed (offset 32)
+    pub _reserved32: u32,    // Padding to align next u64 (offset 36)
+    pub flags: u64,          // FLAG_ACTIVE, FLAG_TOMBSTONE (offset 40)
+    pub _reserved: [u64; 2], // Padding to exactly 64 bytes (offset 48..64)
 }
 
 impl LearningActivityRecord {
@@ -1311,4 +1380,3 @@ mod tests {
         assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
     }
 }
-

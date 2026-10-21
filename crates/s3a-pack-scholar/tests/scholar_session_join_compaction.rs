@@ -2,11 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use s3a_core::{ADDON_EDU, S3ACoordinate};
+use s3a_core::{S3ACoordinate, ADDON_EDU};
 use s3a_engine::{MmapReader, S3ACrudEngine};
-use s3a_pack_scholar::{
-    AiTraceRecord, HumanLrsRecord, ScholarCrudExt,
-};
+use s3a_pack_scholar::{AiTraceRecord, HumanLrsRecord, ScholarCrudExt};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -22,7 +20,13 @@ impl TestTempFile {
             .unwrap_or_default()
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("s3a_scholar_comp_{}_{}_{}_{}.s3a", suffix, std::process::id(), ts, id));
+        path.push(format!(
+            "s3a_scholar_comp_{}_{}_{}_{}.s3a",
+            suffix,
+            std::process::id(),
+            ts,
+            id
+        ));
         Self { path }
     }
 
@@ -65,7 +69,7 @@ fn test_scholar_session_uuid_join_between_tiles_10_and_11_identical_after_compac
         session_uuid_2,
         1700000002,
         0x05E8_1002,
-        11,          // verb_id: provided analogy
+        11, // verb_id: provided analogy
         0.85,
         S3ACoordinate::new(0, 2, 1),
         502,
@@ -95,11 +99,22 @@ fn test_scholar_session_uuid_join_between_tiles_10_and_11_identical_after_compac
 
     // Query joined session bundle before compaction
     let (humans_before, ais_before) = engine.query_session_bundle(session_uuid_1).unwrap();
-    assert_eq!(humans_before.len(), 1, "Must find exactly 1 human decision for session 1");
-    assert_eq!(ais_before.len(), 1, "Must find exactly 1 AI trace for session 1");
+    assert_eq!(
+        humans_before.len(),
+        1,
+        "Must find exactly 1 human decision for session 1"
+    );
+    assert_eq!(
+        ais_before.len(),
+        1,
+        "Must find exactly 1 AI trace for session 1"
+    );
     assert_eq!(humans_before[0].0.session_uuid, session_uuid_1);
     assert_eq!(ais_before[0].0.session_uuid, session_uuid_1);
-    assert_eq!(humans_before[0].0.session_uuid, ais_before[0].0.session_uuid);
+    assert_eq!(
+        humans_before[0].0.session_uuid,
+        ais_before[0].0.session_uuid
+    );
 
     // Also verify session 2 before compaction
     let (humans2_before, ais2_before) = engine.query_session_bundle(session_uuid_2).unwrap();
@@ -108,21 +123,44 @@ fn test_scholar_session_uuid_join_between_tiles_10_and_11_identical_after_compac
 
     // Execute Checkpoint-Gated Compaction via S3ACrudEngine
     let compacted_tile_count = engine.purge_and_compact().unwrap();
-    assert!(compacted_tile_count >= 2, "Compacted archive must contain preserved domain tiles");
+    assert!(
+        compacted_tile_count >= 2,
+        "Compacted archive must contain preserved domain tiles"
+    );
 
     // Verify archive checksums pass post-compaction
     let reader = MmapReader::open(path).unwrap();
-    assert!(reader.verify_checksums().is_ok(), "Post-compaction checksums must be valid");
+    assert!(
+        reader.verify_checksums().is_ok(),
+        "Post-compaction checksums must be valid"
+    );
 
     // Query joined session bundle after compaction
     let (humans_after, ais_after) = engine.query_session_bundle(session_uuid_1).unwrap();
-    assert_eq!(humans_after.len(), 1, "Must find exactly 1 human decision for session 1 post-compaction");
-    assert_eq!(ais_after.len(), 1, "Must find exactly 1 AI trace for session 1 post-compaction");
+    assert_eq!(
+        humans_after.len(),
+        1,
+        "Must find exactly 1 human decision for session 1 post-compaction"
+    );
+    assert_eq!(
+        ais_after.len(),
+        1,
+        "Must find exactly 1 AI trace for session 1 post-compaction"
+    );
 
     // Join result must be byte-for-byte and field-for-field identical!
-    assert_eq!(humans_before[0].0, humans_after[0].0, "HumanLrsRecord must be identical before and after compaction");
-    assert_eq!(ais_before[0].0, ais_after[0].0, "AiTraceRecord must be identical before and after compaction");
-    assert_eq!(humans_after[0].0.session_uuid, ais_after[0].0.session_uuid, "Session UUID join must hold post-compaction");
+    assert_eq!(
+        humans_before[0].0, humans_after[0].0,
+        "HumanLrsRecord must be identical before and after compaction"
+    );
+    assert_eq!(
+        ais_before[0].0, ais_after[0].0,
+        "AiTraceRecord must be identical before and after compaction"
+    );
+    assert_eq!(
+        humans_after[0].0.session_uuid, ais_after[0].0.session_uuid,
+        "Session UUID join must hold post-compaction"
+    );
 
     // Check session 2 after compaction as well
     let (humans2_after, ais2_after) = engine.query_session_bundle(session_uuid_2).unwrap();

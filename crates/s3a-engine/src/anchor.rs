@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use s3a_core::{
-    S3AError, SealedDirectoryEntry, SealedEndCap, FILE_HEADER_SIZE,
-    HYPER_TILE_SIZE, SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC, SEALED_ENDCAP_SIZE,
+    S3AError, SealedDirectoryEntry, SealedEndCap, FILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC, SEALED_ENDCAP_SIZE,
 };
 
 use crate::sealed::compute_endcap_crc32;
@@ -197,8 +197,8 @@ pub fn extract_anchors_from_footer(
 
 /// Serializes an anchor list into the binary ANCHORS footer section.
 pub fn serialize_anchors_section(anchors: &[AnchorProof]) -> io::Result<Vec<u8>> {
-    let json_bytes = serde_json::to_vec(anchors)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json_bytes =
+        serde_json::to_vec(anchors).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let mut out = Vec::with_capacity(12 + json_bytes.len());
     out.extend_from_slice(&SEALED_ANCHORS_MAGIC);
     out.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
@@ -229,29 +229,40 @@ pub fn attach_anchor_to_sealed_bytes(
     if endcap_bytes[0..8] == s3a_core::SEALED_ENDCAP_MAGIC_V2 {
         let mut endcap: s3a_core::SealedEndCapV2 = bytemuck::pod_read_unaligned(endcap_bytes);
         if endcap.endcap_crc32 != crate::sealed::compute_endcap_crc32_v2(&endcap) {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Corrupted v2 end cap CRC"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Corrupted v2 end cap CRC",
+            ));
         }
 
         let index_offset = endcap.index_offset as usize;
         let index_len = endcap.index_len as usize;
         if index_offset + index_len > endcap_offset {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Index truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Index truncated",
+            ));
         }
 
         let index_slice = &file_bytes[index_offset..index_offset + index_len];
         if index_slice.len() < s3a_core::SEALED_INDEX_HEADER_SIZE_V2 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Index header too small"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Index header too small",
+            ));
         }
         let index_hdr: s3a_core::SealedIndexHeaderV2 =
             bytemuck::pod_read_unaligned(&index_slice[..s3a_core::SEALED_INDEX_HEADER_SIZE_V2]);
 
         let data_end = FILE_HEADER_SIZE + (index_hdr.tile_count as usize * HYPER_TILE_SIZE);
-        let parity_len = if (endcap.flags & s3a_core::SEALED_FLAG_PARITY_ENABLED) != 0 && index_hdr.k > 0 {
-            let num_groups = (index_hdr.tile_count as usize + index_hdr.k as usize - 1) / (index_hdr.k as usize);
-            num_groups * (index_hdr.m as usize) * HYPER_TILE_SIZE
-        } else {
-            0
-        };
+        let parity_len =
+            if (endcap.flags & s3a_core::SEALED_FLAG_PARITY_ENABLED) != 0 && index_hdr.k > 0 {
+                let num_groups = (index_hdr.tile_count as usize + index_hdr.k as usize - 1)
+                    / (index_hdr.k as usize);
+                num_groups * (index_hdr.m as usize) * HYPER_TILE_SIZE
+            } else {
+                0
+            };
 
         let anchors_start = data_end + parity_len;
         let anchors_end = index_offset;
@@ -457,18 +468,20 @@ pub fn target_from_nbits(nbits: u32) -> [u8; 32] {
 /// Fetches an 80-byte raw Bitcoin block header at a specified block height.
 pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result<[u8; 80]> {
     match source {
-        BlockHeaderSource::OfflineMap(map) => {
-            map.get(&height).copied().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Bitcoin block header for height {} not in offline map", height),
-                )
-            })
-        }
+        BlockHeaderSource::OfflineMap(map) => map.get(&height).copied().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Bitcoin block header for height {} not in offline map",
+                    height
+                ),
+            )
+        }),
         BlockHeaderSource::Esplora(base_url) => {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let height_url = format!("{}/block-height/{}", base_url.trim_end_matches('/'), height);
+                let height_url =
+                    format!("{}/block-height/{}", base_url.trim_end_matches('/'), height);
                 let resp = ureq::get(&height_url)
                     .timeout(std::time::Duration::from_secs(10))
                     .call()
@@ -476,7 +489,11 @@ pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result
                 let block_hash = resp
                     .into_string()
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let header_url = format!("{}/block/{}/header", base_url.trim_end_matches('/'), block_hash.trim());
+                let header_url = format!(
+                    "{}/block/{}/header",
+                    base_url.trim_end_matches('/'),
+                    block_hash.trim()
+                );
                 let header_resp = ureq::get(&header_url)
                     .timeout(std::time::Duration::from_secs(10))
                     .call()
@@ -485,47 +502,50 @@ pub fn fetch_block_header(height: u64, source: &BlockHeaderSource) -> io::Result
                     .into_string()
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 let header_bytes = hex::decode(header_hex.trim())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            if header_bytes.len() != 80 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Invalid Bitcoin block header length: {}", header_bytes.len()),
-                ));
-            }
-            let mut out = [0u8; 80];
-            out.copy_from_slice(&header_bytes);
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                if header_bytes.len() != 80 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid Bitcoin block header length: {}",
+                            header_bytes.len()
+                        ),
+                    ));
+                }
+                let mut out = [0u8; 80];
+                out.copy_from_slice(&header_bytes);
 
-            // 1. Verify double-SHA256(header) reversed == hash returned by /block-height/{h}
-            let h1 = Sha256::digest(&out);
-            let mut h2 = Sha256::digest(&h1);
-            h2.reverse();
-            let computed_hash_hex = hex::encode(h2);
-            if computed_hash_hex.to_lowercase() != block_hash.trim().to_lowercase() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Block header hash mismatch: computed {}, expected {}",
-                        computed_hash_hex,
-                        block_hash.trim()
-                    ),
-                ));
-            }
+                // 1. Verify double-SHA256(header) reversed == hash returned by /block-height/{h}
+                let h1 = Sha256::digest(&out);
+                let mut h2 = Sha256::digest(&h1);
+                h2.reverse();
+                let computed_hash_hex = hex::encode(h2);
+                if computed_hash_hex.to_lowercase() != block_hash.trim().to_lowercase() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Block header hash mismatch: computed {}, expected {}",
+                            computed_hash_hex,
+                            block_hash.trim()
+                        ),
+                    ));
+                }
 
-            // 2. Verify that the hash meets the header's nBits target
-            let n_bits = u32::from_le_bytes(out[72..76].try_into().unwrap());
-            let target = target_from_nbits(n_bits);
-            if h2.as_slice() > target.as_slice() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Block header hash {} exceeds nBits target {}",
-                        computed_hash_hex,
-                        hex::encode(target)
-                    ),
-                ));
-            }
+                // 2. Verify that the hash meets the header's nBits target
+                let n_bits = u32::from_le_bytes(out[72..76].try_into().unwrap());
+                let target = target_from_nbits(n_bits);
+                if h2.as_slice() > target.as_slice() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Block header hash {} exceeds nBits target {}",
+                            computed_hash_hex,
+                            hex::encode(target)
+                        ),
+                    ));
+                }
 
-            Ok(out)
+                Ok(out)
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -631,10 +651,7 @@ pub fn submit_ots(fingerprint: [u8; 32], calendars: &[String]) -> io::Result<Vec
 
 /// Upgrades a pending OpenTimestamps anchor proof to confirmed Bitcoin attestation.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn upgrade_ots(
-    proof: &mut AnchorProof,
-    calendar_override: Option<&str>,
-) -> io::Result<bool> {
+pub fn upgrade_ots(proof: &mut AnchorProof, calendar_override: Option<&str>) -> io::Result<bool> {
     if proof.method != "opentimestamps" {
         return Ok(false);
     }
@@ -642,19 +659,24 @@ pub fn upgrade_ots(
         return Ok(true);
     }
 
-    let mut detached = DetachedTimestampFile::from_reader(&proof.proof_bytes[..])
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse OTS proof: {}", e)))?;
+    let mut detached = DetachedTimestampFile::from_reader(&proof.proof_bytes[..]).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Failed to parse OTS proof: {}", e),
+        )
+    })?;
 
-    let pending_items: Vec<(String, Vec<u8>)> = collect_attestations(&detached.timestamp.first_step)
-        .into_iter()
-        .filter_map(|(att, comm)| {
-            if let Attestation::Pending { uri } = att {
-                Some((uri.clone(), comm.to_vec()))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let pending_items: Vec<(String, Vec<u8>)> =
+        collect_attestations(&detached.timestamp.first_step)
+            .into_iter()
+            .filter_map(|(att, comm)| {
+                if let Attestation::Pending { uri } = att {
+                    Some((uri.clone(), comm.to_vec()))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
     let has_bitcoin = collect_attestations(&detached.timestamp.first_step)
         .into_iter()
@@ -711,8 +733,12 @@ pub fn upgrade_ots(
 
     if any_upgraded {
         let mut new_proof_bytes = Vec::new();
-        detached.to_writer(&mut new_proof_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to serialize upgraded OTS: {}", e)))?;
+        detached.to_writer(&mut new_proof_bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to serialize upgraded OTS: {}", e),
+            )
+        })?;
         proof.proof_bytes = new_proof_bytes;
         Ok(true)
     } else {
@@ -736,7 +762,10 @@ pub fn verify_ots(
         .map_err(|e| format!("Corrupt OpenTimestamps proof: {}", e))?;
 
     if detached.digest_type != DigestType::Sha256 {
-        return Err(format!("Unsupported OTS digest type: {:?}", detached.digest_type));
+        return Err(format!(
+            "Unsupported OTS digest type: {:?}",
+            detached.digest_type
+        ));
     }
 
     if detached.timestamp.start_digest.as_slice() != expected_fingerprint {
@@ -762,8 +791,12 @@ pub fn verify_ots(
         match att {
             Attestation::Bitcoin { height } => {
                 let h = *height as u64;
-                let header = fetch_block_header(h, src)
-                    .map_err(|e| format!("Failed to fetch Bitcoin block header at height {}: {}", h, e))?;
+                let header = fetch_block_header(h, src).map_err(|e| {
+                    format!(
+                        "Failed to fetch Bitcoin block header at height {}: {}",
+                        h, e
+                    )
+                })?;
                 let merkle_root = extract_merkle_root_from_header(&header);
                 if calculated_hash != &merkle_root {
                     return Err(format!(
@@ -817,7 +850,7 @@ use der::{
     Decode, Encode,
 };
 use spki::AlgorithmIdentifier;
-use x509_tsp::{MessageImprint, TimeStampReq, TimeStampResp, TstInfo, TspVersion};
+use x509_tsp::{MessageImprint, TimeStampReq, TimeStampResp, TspVersion, TstInfo};
 
 pub const SHA256_OID_STR: &str = "2.16.840.1.101.3.4.2.1";
 
@@ -830,7 +863,8 @@ pub fn parse_pem_certificates(pem_str: &str) -> Result<Vec<x509_cert::Certificat
     let mut pos = 0;
     while let Some(start) = pem_str[pos..].find(begin_tag) {
         let abs_start = pos + start;
-        let end = pem_str[abs_start..].find(end_tag)
+        let end = pem_str[abs_start..]
+            .find(end_tag)
             .ok_or_else(|| "Unclosed BEGIN CERTIFICATE block in PEM data".to_string())?;
         let abs_end = abs_start + end + end_tag.len();
         let block = &pem_str[abs_start..abs_end];
@@ -846,9 +880,16 @@ pub fn parse_pem_certificates(pem_str: &str) -> Result<Vec<x509_cert::Certificat
 }
 
 /// Loads one or more PEM-encoded certificates from a file on disk.
-pub fn load_pem_certificates<P: AsRef<Path>>(path: P) -> Result<Vec<x509_cert::Certificate>, String> {
-    let s = std::fs::read_to_string(path.as_ref())
-        .map_err(|e| format!("Failed to read certificate PEM file {:?}: {}", path.as_ref(), e))?;
+pub fn load_pem_certificates<P: AsRef<Path>>(
+    path: P,
+) -> Result<Vec<x509_cert::Certificate>, String> {
+    let s = std::fs::read_to_string(path.as_ref()).map_err(|e| {
+        format!(
+            "Failed to read certificate PEM file {:?}: {}",
+            path.as_ref(),
+            e
+        )
+    })?;
     parse_pem_certificates(&s)
 }
 
@@ -860,7 +901,9 @@ fn verify_signature_over_data(
 ) -> Result<(), String> {
     use rsa::pkcs1::DecodeRsaPublicKey;
     use signature::Verifier;
-    let pk_bytes = spki.subject_public_key.as_bytes()
+    let pk_bytes = spki
+        .subject_public_key
+        .as_bytes()
         .ok_or_else(|| "Invalid subject public key bit string".to_string())?;
 
     let rsa_encryption = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
@@ -898,20 +941,36 @@ fn verify_signature_over_data(
             .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
         Ok(())
     } else {
-        Err(format!("Unsupported public key algorithm OID: {}", spki.algorithm.oid))
+        Err(format!(
+            "Unsupported public key algorithm OID: {}",
+            spki.algorithm.oid
+        ))
     }
 }
 
-fn is_trust_root(cert: &x509_cert::Certificate, trust_roots: &[x509_cert::Certificate]) -> Result<bool, String> {
-    let cert_der = cert.to_der().map_err(|e| format!("Failed to encode certificate to DER: {}", e))?;
-    let cert_spki = cert.tbs_certificate.subject_public_key_info.to_der()
+fn is_trust_root(
+    cert: &x509_cert::Certificate,
+    trust_roots: &[x509_cert::Certificate],
+) -> Result<bool, String> {
+    let cert_der = cert
+        .to_der()
+        .map_err(|e| format!("Failed to encode certificate to DER: {}", e))?;
+    let cert_spki = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
         .map_err(|e| format!("Failed to encode SPKI to DER: {}", e))?;
     for root in trust_roots {
-        let root_der = root.to_der().map_err(|e| format!("Failed to encode root to DER: {}", e))?;
+        let root_der = root
+            .to_der()
+            .map_err(|e| format!("Failed to encode root to DER: {}", e))?;
         if cert_der == root_der {
             return Ok(true);
         }
-        let root_spki = root.tbs_certificate.subject_public_key_info.to_der()
+        let root_spki = root
+            .tbs_certificate
+            .subject_public_key_info
+            .to_der()
             .map_err(|e| format!("Failed to encode root SPKI to DER: {}", e))?;
         if cert_spki == root_spki && cert.tbs_certificate.subject == root.tbs_certificate.subject {
             return Ok(true);
@@ -937,19 +996,22 @@ fn check_cert_validity(
 
 pub fn cert_matches_ski(cert: &x509_cert::Certificate, ski: &[u8]) -> bool {
     let ski_oid = ObjectIdentifier::new_unwrap("2.5.29.14");
-    cert.tbs_certificate.extensions.as_ref().map_or(false, |exts| {
-        exts.iter().any(|ext| {
-            if ext.extn_id == ski_oid {
-                if let Ok(inner) = OctetString::from_der(ext.extn_value.as_bytes()) {
-                    inner.as_bytes() == ski
+    cert.tbs_certificate
+        .extensions
+        .as_ref()
+        .map_or(false, |exts| {
+            exts.iter().any(|ext| {
+                if ext.extn_id == ski_oid {
+                    if let Ok(inner) = OctetString::from_der(ext.extn_value.as_bytes()) {
+                        inner.as_bytes() == ski
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
-            } else {
-                false
-            }
+            })
         })
-    })
 }
 
 fn verify_certificate_chain(
@@ -984,9 +1046,13 @@ fn verify_certificate_chain(
         check_cert_validity(parent, gen_time)?;
 
         let p_spki = &parent.tbs_certificate.subject_public_key_info;
-        let tbs_der = current.tbs_certificate.to_der()
+        let tbs_der = current
+            .tbs_certificate
+            .to_der()
             .map_err(|e| format!("Failed to encode TBSCertificate to DER: {}", e))?;
-        let sig = current.signature.as_bytes()
+        let sig = current
+            .signature
+            .as_bytes()
             .ok_or_else(|| "Invalid signature bit string in certificate".to_string())?;
 
         verify_signature_over_data(p_spki, &tbs_der, sig, &current.signature_algorithm.oid)
@@ -1015,8 +1081,10 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
     let sha256_oid = ObjectIdentifier::new_unwrap(SHA256_OID_STR);
     let hash_algorithm = AlgorithmIdentifier {
         oid: sha256_oid,
-        parameters: Some(der::Any::new(der::Tag::Null, vec![])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?),
+        parameters: Some(
+            der::Any::new(der::Tag::Null, vec![])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
+        ),
     };
     let hashed_message = OctetString::new(&fingerprint)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -1041,7 +1109,8 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
         extensions: None,
     };
 
-    let req_der = req.to_der()
+    let req_der = req
+        .to_der()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     let res = ureq::post(tsa_url)
@@ -1058,30 +1127,55 @@ pub fn submit_rfc3161(fingerprint: [u8; 32], tsa_url: &str) -> io::Result<Anchor
                 .read_to_end(&mut token)
                 .map_err(|e| io::Error::new(io::ErrorKind::UnexpectedEof, e))?;
 
-            let resp = TimeStampResp::from_der(&token)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Failed to parse RFC 3161 response: {}", e)))?;
+            let resp = TimeStampResp::from_der(&token).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Failed to parse RFC 3161 response: {}", e),
+                )
+            })?;
 
-            if resp.status.status != PkiStatus::Accepted && resp.status.status != PkiStatus::GrantedWithMods {
+            if resp.status.status != PkiStatus::Accepted
+                && resp.status.status != PkiStatus::GrantedWithMods
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("RFC 3161 TSA rejected request with status: {:?}", resp.status.status),
+                    format!(
+                        "RFC 3161 TSA rejected request with status: {:?}",
+                        resp.status.status
+                    ),
                 ));
             }
 
             let ts_token = resp.time_stamp_token.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "TSA reply missing timeStampToken")
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "TSA reply missing timeStampToken",
+                )
             })?;
 
-            let sd = SignedData::from_der(&ts_token.content.to_der()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid CMS SignedData: {}", e)))?;
+            let sd = SignedData::from_der(
+                &ts_token
+                    .content
+                    .to_der()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
+            )
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid CMS SignedData: {}", e),
+                )
+            })?;
 
             let encap = sd.encap_content_info.econtent.as_ref().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "Missing econtent in SignedData")
             })?;
 
-            let tst = TstInfo::from_der(encap.value())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid TSTInfo: {}", e)))?;
+            let tst = TstInfo::from_der(encap.value()).map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid TSTInfo: {}", e),
+                )
+            })?;
 
             let resp_nonce = tst.nonce.as_ref().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "TSA reply missing nonce")
@@ -1144,11 +1238,17 @@ pub fn verify_rfc3161(
     };
 
     let (sd_bytes, status_ok) = if let Ok(resp) = TimeStampResp::from_der(&proof.proof_bytes) {
-        let is_ok = resp.status.status == PkiStatus::Accepted || resp.status.status == PkiStatus::GrantedWithMods;
+        let is_ok = resp.status.status == PkiStatus::Accepted
+            || resp.status.status == PkiStatus::GrantedWithMods;
         if !is_ok {
-            return Err(format!("RFC 3161 token status not accepted: {:?}", resp.status.status));
+            return Err(format!(
+                "RFC 3161 token status not accepted: {:?}",
+                resp.status.status
+            ));
         }
-        let token = resp.time_stamp_token.ok_or("Missing timeStampToken in TimeStampResp")?;
+        let token = resp
+            .time_stamp_token
+            .ok_or("Missing timeStampToken in TimeStampResp")?;
         (token.content.to_der().map_err(|e| e.to_string())?, true)
     } else if let Ok(token) = x509_tsp::TimeStampToken::from_der(&proof.proof_bytes) {
         (token.content.to_der().map_err(|e| e.to_string())?, true)
@@ -1162,9 +1262,13 @@ pub fn verify_rfc3161(
 
     let sd = SignedData::from_der(&sd_bytes)
         .map_err(|e| format!("Failed to parse SignedData: {}", e))?;
-    let encap = sd.encap_content_info.econtent.as_ref().ok_or("Missing econtent in SignedData")?;
-    let tst = TstInfo::from_der(encap.value())
-        .map_err(|e| format!("Failed to parse TSTInfo: {}", e))?;
+    let encap = sd
+        .encap_content_info
+        .econtent
+        .as_ref()
+        .ok_or("Missing econtent in SignedData")?;
+    let tst =
+        TstInfo::from_der(encap.value()).map_err(|e| format!("Failed to parse TSTInfo: {}", e))?;
 
     let sha256_oid = ObjectIdentifier::new_unwrap(SHA256_OID_STR);
     if tst.message_imprint.hash_algorithm.oid != sha256_oid {
@@ -1179,10 +1283,15 @@ pub fn verify_rfc3161(
     }
 
     // Check signed attributes
-    let signer_info = sd.signer_infos.0.get(0)
+    let signer_info = sd
+        .signer_infos
+        .0
+        .get(0)
         .ok_or("SignedData has empty signer_infos")?;
 
-    let signed_attrs = signer_info.signed_attrs.as_ref()
+    let signed_attrs = signer_info
+        .signed_attrs
+        .as_ref()
         .ok_or("SignerInfo missing signed attributes")?;
 
     let id_content_type = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.3");
@@ -1195,24 +1304,33 @@ pub fn verify_rfc3161(
     for attr in signed_attrs.iter() {
         if attr.oid == id_content_type {
             let val = attr.values.get(0).ok_or("Empty contentType value")?;
-            let val_der = val.to_der().map_err(|e| format!("Invalid contentType DER: {}", e))?;
+            let val_der = val
+                .to_der()
+                .map_err(|e| format!("Invalid contentType DER: {}", e))?;
             let val_oid = ObjectIdentifier::from_der(&val_der)
                 .map_err(|e| format!("Invalid contentType OID: {}", e))?;
             if val_oid == id_ct_tstinfo {
                 found_content_type = true;
             } else {
-                return Err(format!("Signed attribute contentType mismatch: expected {}, got {}", id_ct_tstinfo, val_oid));
+                return Err(format!(
+                    "Signed attribute contentType mismatch: expected {}, got {}",
+                    id_ct_tstinfo, val_oid
+                ));
             }
         } else if attr.oid == id_message_digest {
             let val = attr.values.get(0).ok_or("Empty messageDigest value")?;
-            let val_der = val.to_der().map_err(|e| format!("Invalid messageDigest DER: {}", e))?;
+            let val_der = val
+                .to_der()
+                .map_err(|e| format!("Invalid messageDigest DER: {}", e))?;
             let val_oct = OctetString::from_der(&val_der)
                 .map_err(|e| format!("Invalid messageDigest OctetString: {}", e))?;
             let expected_digest = Sha256::digest(encap.value());
             if val_oct.as_bytes() == expected_digest.as_slice() {
                 found_message_digest = true;
             } else {
-                return Err("Signed attribute messageDigest does not match SHA-256(eContent)".into());
+                return Err(
+                    "Signed attribute messageDigest does not match SHA-256(eContent)".into(),
+                );
             }
         }
     }
@@ -1225,7 +1343,8 @@ pub fn verify_rfc3161(
     }
 
     // RFC 5652 §5.4: Encode signed attributes as SET OF
-    let mut set_der = signed_attrs.to_der()
+    let mut set_der = signed_attrs
+        .to_der()
         .map_err(|e| format!("Failed to encode signed attributes: {}", e))?;
     if set_der.is_empty() {
         return Err("Empty signed attributes DER".into());
@@ -1267,22 +1386,30 @@ pub fn verify_rfc3161(
     let eku_oid = ObjectIdentifier::new_unwrap("2.5.29.37");
     let id_kp_timestamping = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.8");
 
-    let has_ts_eku = tsa_cert.tbs_certificate.extensions.as_ref().map_or(false, |exts| {
-        exts.iter().any(|ext| {
-            if ext.extn_id == eku_oid {
-                if let Ok(seq) = der::asn1::SequenceOf::<ObjectIdentifier, 16>::from_der(ext.extn_value.as_bytes()) {
-                    seq.iter().any(|oid| *oid == id_kp_timestamping)
+    let has_ts_eku = tsa_cert
+        .tbs_certificate
+        .extensions
+        .as_ref()
+        .map_or(false, |exts| {
+            exts.iter().any(|ext| {
+                if ext.extn_id == eku_oid {
+                    if let Ok(seq) = der::asn1::SequenceOf::<ObjectIdentifier, 16>::from_der(
+                        ext.extn_value.as_bytes(),
+                    ) {
+                        seq.iter().any(|oid| *oid == id_kp_timestamping)
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
-            } else {
-                false
-            }
-        })
-    });
+            })
+        });
 
     if !has_ts_eku {
-        return Err("TSA certificate missing required EKU id-kp-timeStamping (1.3.6.1.5.5.7.3.8)".into());
+        return Err(
+            "TSA certificate missing required EKU id-kp-timeStamping (1.3.6.1.5.5.7.3.8)".into(),
+        );
     }
 
     // Enforce validity window on TSA cert at TSTInfo genTime
@@ -1292,7 +1419,12 @@ pub fn verify_rfc3161(
     // Verify signature over DER(signedAttrs as SET) with TSA cert public key
     let spki = &tsa_cert.tbs_certificate.subject_public_key_info;
     let sig_bytes = signer_info.signature.as_bytes();
-    verify_signature_over_data(spki, &set_der, sig_bytes, &signer_info.signature_algorithm.oid)?;
+    verify_signature_over_data(
+        spki,
+        &set_der,
+        sig_bytes,
+        &signer_info.signature_algorithm.oid,
+    )?;
 
     // Verify certificate chain to trust store and enforce validity window at TSTInfo genTime
     verify_certificate_chain(&tsa_cert, &pool, roots, gen_time)?;
@@ -1419,7 +1551,8 @@ pub mod mock_calendar {
                                     let lock = conf_clone.lock().unwrap();
                                     if let Some(&(height, header)) = lock.get(commit_hex) {
                                         let merkle_root = extract_merkle_root_from_header(&header);
-                                        let commit_bytes = hex::decode(commit_hex).unwrap_or_default();
+                                        let commit_bytes =
+                                            hex::decode(commit_hex).unwrap_or_default();
 
                                         let upgraded_step = Step {
                                             data: StepData::Attestation(Attestation::Bitcoin {
@@ -1445,7 +1578,8 @@ pub mod mock_calendar {
                                         let _ = stream.write_all(resp.as_bytes());
                                         let _ = stream.write_all(&reply);
                                     } else {
-                                        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                                        let resp =
+                                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
                                         let _ = stream.write_all(resp.as_bytes());
                                     }
                                 }
@@ -1474,15 +1608,20 @@ pub mod mock_calendar {
                                         );
                                         let _ = stream.write_all(resp.as_bytes());
                                     } else {
-                                        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                                        let resp =
+                                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
                                         let _ = stream.write_all(resp.as_bytes());
                                     }
                                 }
-                            } else if req_line.starts_with("GET /block/") && req_line.contains("/header") {
+                            } else if req_line.starts_with("GET /block/")
+                                && req_line.contains("/header")
+                            {
                                 let parts: Vec<&str> = req_line.split_whitespace().collect();
                                 if parts.len() > 1 {
                                     let path = parts[1];
-                                    let hash = path.trim_start_matches("/block/").trim_end_matches("/header");
+                                    let hash = path
+                                        .trim_start_matches("/block/")
+                                        .trim_end_matches("/header");
                                     let lock = conf_clone.lock().unwrap();
                                     let mut found_header = None;
                                     for (_commit, &(_h, header)) in lock.iter() {
@@ -1496,7 +1635,9 @@ pub mod mock_calendar {
                                         }
                                     }
                                     if let Some(mut header) = found_header {
-                                        if corrupt_esplora_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                                        if corrupt_esplora_clone
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                        {
                                             header[0] ^= 0xff;
                                         }
                                         let header_hex = hex::encode(header);
@@ -1506,7 +1647,8 @@ pub mod mock_calendar {
                                         );
                                         let _ = stream.write_all(resp.as_bytes());
                                     } else {
-                                        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                                        let resp =
+                                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
                                         let _ = stream.write_all(resp.as_bytes());
                                     }
                                 }
@@ -1610,8 +1752,8 @@ mod tests {
             block_hash: None,
         };
 
-        let report = verify_ots(&proof, &expected_fp, Some(&src))
-            .expect("verify confirmed fixture");
+        let report =
+            verify_ots(&proof, &expected_fp, Some(&src)).expect("verify confirmed fixture");
         assert_eq!(report.status, "confirmed");
         assert_eq!(report.block_height, Some(429808));
         assert!(report.commitment_matched);
@@ -1644,8 +1786,7 @@ mod tests {
         let empty_map = HashMap::new();
         let src = BlockHeaderSource::OfflineMap(&empty_map);
 
-        let report = verify_ots(&proof, &expected_fp, Some(&src))
-            .expect("verify pending fixture");
+        let report = verify_ots(&proof, &expected_fp, Some(&src)).expect("verify pending fixture");
         assert_eq!(report.status, "pending");
         assert!(report.commitment_matched);
     }
@@ -1657,7 +1798,13 @@ mod tests {
         let resp = TimeStampResp::from_der(&token).unwrap();
         let ts_token = resp.time_stamp_token.unwrap();
         let sd = SignedData::from_der(&ts_token.content.to_der().unwrap()).unwrap();
-        println!("econtent len: {:?}", sd.encap_content_info.econtent.as_ref().map(|v| v.value().len()));
+        println!(
+            "econtent len: {:?}",
+            sd.encap_content_info
+                .econtent
+                .as_ref()
+                .map(|v| v.value().len())
+        );
         if let Some(ec) = &sd.encap_content_info.econtent {
             println!("econtent hex: {}", hex::encode(ec.value()));
             let tst_res = TstInfo::from_der(ec.value());
@@ -1743,7 +1890,10 @@ mod tests {
         let fp = [0x77u8; 32];
 
         let res = submit_ots(fp, &calendars);
-        assert!(res.is_err(), "Garbage calendar reply MUST fail submission without fabrication");
+        assert!(
+            res.is_err(),
+            "Garbage calendar reply MUST fail submission without fabrication"
+        );
     }
 
     #[test]
@@ -1829,10 +1979,7 @@ mod tests {
         std::fs::write(&ots_path, &proofs[0].proof_bytes).expect("write ots");
 
         // Execute official opentimestamps-client ots verify
-        let status = Command::new("ots")
-            .arg("verify")
-            .arg(&ots_path)
-            .status();
+        let status = Command::new("ots").arg("verify").arg(&ots_path).status();
 
         match status {
             Ok(s) => assert!(s.success(), "ots verify failed on stamped file"),
@@ -1859,7 +2006,9 @@ mod tests {
         {
             let mut writer = TileWriter::create(&raw_path).expect("create raw");
             let rec = vec![TelemetryRecord::new(100, 1, 1, 42.0)];
-            writer.write_hyper_tile(TileType::TELEMETRY, &rec, None, None).expect("write");
+            writer
+                .write_hyper_tile(TileType::TELEMETRY, &rec, None, None)
+                .expect("write");
             drop(writer);
         }
 
@@ -1896,7 +2045,8 @@ mod tests {
         // Tamper 1 byte in the directory inside the sealed file
         let mut tampered_bytes = std::fs::read(&sealed_path).expect("read");
         let endcap_offset = tampered_bytes.len() - s3a_core::SEALED_ENDCAP_SIZE;
-        let endcap: s3a_core::SealedEndCap = bytemuck::pod_read_unaligned(&tampered_bytes[endcap_offset..]);
+        let endcap: s3a_core::SealedEndCap =
+            bytemuck::pod_read_unaligned(&tampered_bytes[endcap_offset..]);
         let dir_offset = endcap.footer_offset as usize;
         tampered_bytes[dir_offset + 5] ^= 0xFF;
         let tampered_path = dir.join(format!("test_tampered_{}.s3a", unique));
@@ -1904,7 +2054,10 @@ mod tests {
 
         let tampered_fp = compute_sealed_bytes_fingerprint(&tampered_bytes);
         if let Ok(new_fp) = tampered_fp {
-            assert_ne!(new_fp, initial_fp, "Tampered fingerprint MUST differ from anchor proof");
+            assert_ne!(
+                new_fp, initial_fp,
+                "Tampered fingerprint MUST differ from anchor proof"
+            );
         }
 
         let _ = std::fs::remove_file(&raw_path);
@@ -1950,7 +2103,10 @@ mod tests {
         let token = resp.time_stamp_token.unwrap();
         let sd = SignedData::from_der(&token.content.to_der().unwrap()).unwrap();
         let sig_bytes = sd.signer_infos.0.as_slice()[0].signature.as_bytes();
-        let sig_pos = tsr_bytes.windows(sig_bytes.len()).position(|w| w == sig_bytes).unwrap();
+        let sig_pos = tsr_bytes
+            .windows(sig_bytes.len())
+            .position(|w| w == sig_bytes)
+            .unwrap();
 
         let mut tampered_bytes = tsr_bytes.to_vec();
         tampered_bytes[sig_pos + 10] ^= 0xff;
@@ -2021,13 +2177,17 @@ mod tests {
 
         // When verified against the real DigiCert trust store, the forged token MUST fail
         let res = verify_rfc3161(&proof, &fp, Some(&trust_store));
-        assert!(res.is_err(), "Token re-signed with self-made key MUST fail against real trust store: {:?}", res);
+        assert!(
+            res.is_err(),
+            "Token re-signed with self-made key MUST fail against real trust store: {:?}",
+            res
+        );
     }
 
     #[test]
     fn test_rfc3161_nonce_mismatch_rejected() {
+        use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
-        use std::io::{BufReader, BufRead, Write};
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2058,10 +2218,13 @@ mod tests {
             let mut resp = TimeStampResp::from_der(tsr_bytes).unwrap();
             let mut token = resp.time_stamp_token.unwrap();
             let mut sd = SignedData::from_der(&token.content.to_der().unwrap()).unwrap();
-            let mut tst = TstInfo::from_der(sd.encap_content_info.econtent.as_ref().unwrap().value()).unwrap();
+            let mut tst =
+                TstInfo::from_der(sd.encap_content_info.econtent.as_ref().unwrap().value())
+                    .unwrap();
             let mismatch_nonce = der::asn1::Int::new(&[0x12, 0x34, 0x56, 0x78]).unwrap();
             tst.nonce = Some(mismatch_nonce);
-            sd.encap_content_info.econtent = Some(der::Any::new(der::Tag::OctetString, tst.to_der().unwrap()).unwrap());
+            sd.encap_content_info.econtent =
+                Some(der::Any::new(der::Tag::OctetString, tst.to_der().unwrap()).unwrap());
             token.content = der::Any::from_der(&sd.to_der().unwrap()).unwrap();
             resp.time_stamp_token = Some(token);
             let reply_bytes = resp.to_der().unwrap();
@@ -2076,9 +2239,16 @@ mod tests {
 
         let fp = [0x42u8; 32];
         let res = submit_rfc3161(fp, &server_url);
-        assert!(res.is_err(), "Nonce mismatch MUST be rejected by submit_rfc3161");
+        assert!(
+            res.is_err(),
+            "Nonce mismatch MUST be rejected by submit_rfc3161"
+        );
         let err_str = res.unwrap_err().to_string();
-        assert!(err_str.contains("Nonce mismatch"), "Expected nonce mismatch error, got: {}", err_str);
+        assert!(
+            err_str.contains("Nonce mismatch"),
+            "Expected nonce mismatch error, got: {}",
+            err_str
+        );
     }
 
     #[test]
@@ -2133,16 +2303,25 @@ mod tests {
             signature: der::asn1::BitString::from_bytes(forged_sig.to_vec().as_slice()).unwrap(),
         };
 
-        let gen_time = real_root.tbs_certificate.validity.not_before.to_system_time()
+        let gen_time = real_root
+            .tbs_certificate
+            .validity
+            .not_before
+            .to_system_time()
             + std::time::Duration::from_secs(3600);
 
         // 1. Used as leaf -> MUST fail (full DER and SPKI differ from trust root)
         let res_leaf = verify_certificate_chain(&forged_cert, &[], &trust_store, gen_time);
-        assert!(res_leaf.is_err(), "Forged cert copying root subject+serial MUST fail as leaf: {:?}", res_leaf);
+        assert!(
+            res_leaf.is_err(),
+            "Forged cert copying root subject+serial MUST fail as leaf: {:?}",
+            res_leaf
+        );
 
         // 2. Used as intermediate / CA in certificate pool -> MUST fail
         let mut leaf_tbs = real_root.tbs_certificate.clone();
-        leaf_tbs.serial_number = x509_cert::serial_number::SerialNumber::new(&[0x11, 0x22]).unwrap();
+        leaf_tbs.serial_number =
+            x509_cert::serial_number::SerialNumber::new(&[0x11, 0x22]).unwrap();
         // Give leaf its own key and distinct subject so it is not mistaken for the trust root
         let leaf_priv = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let leaf_pub = leaf_priv.to_public_key();
@@ -2159,11 +2338,23 @@ mod tests {
             signature: der::asn1::BitString::from_bytes(leaf_sig.to_vec().as_slice()).unwrap(),
         };
 
-        let res_inter = verify_certificate_chain(&attacker_leaf, &[forged_cert.clone()], &trust_store, gen_time);
-        assert!(res_inter.is_err(), "Forged cert copying root subject+serial MUST fail as intermediate: {:?}", res_inter);
+        let res_inter = verify_certificate_chain(
+            &attacker_leaf,
+            &[forged_cert.clone()],
+            &trust_store,
+            gen_time,
+        );
+        assert!(
+            res_inter.is_err(),
+            "Forged cert copying root subject+serial MUST fail as intermediate: {:?}",
+            res_inter
+        );
 
         // 3. Confirm is_trust_root directly rejects the forged cert
-        assert!(!is_trust_root(&forged_cert, &trust_store).unwrap(), "forged_cert must not be recognized as trust root");
+        assert!(
+            !is_trust_root(&forged_cert, &trust_store).unwrap(),
+            "forged_cert must not be recognized as trust root"
+        );
     }
 
     #[test]
@@ -2178,21 +2369,26 @@ mod tests {
         // 1. Direct unit test on check_cert_validity with expired / not yet valid time
         let cert = &trust_store[0];
         let pre_epoch = std::time::UNIX_EPOCH;
-        assert!(check_cert_validity(cert, pre_epoch).is_err(), "Pre-epoch genTime must fail validity check");
+        assert!(
+            check_cert_validity(cert, pre_epoch).is_err(),
+            "Pre-epoch genTime must fail validity check"
+        );
 
         // 2. Full end-to-end test on re-signed fixture with shifted genTime
         let fp = [0x42u8; 32];
         let resp = TimeStampResp::from_der(tsr_bytes).unwrap();
         let token = resp.time_stamp_token.clone().unwrap();
         let mut sd = SignedData::from_der(&token.content.to_der().unwrap()).unwrap();
-        let mut tst = TstInfo::from_der(sd.encap_content_info.econtent.as_ref().unwrap().value()).unwrap();
+        let mut tst =
+            TstInfo::from_der(sd.encap_content_info.econtent.as_ref().unwrap().value()).unwrap();
 
         // Shift gen_time to year 1999 (far outside validity window)
         let shifted_date = der::DateTime::new(1999, 1, 1, 0, 0, 0).unwrap();
         tst.gen_time = der::asn1::GeneralizedTime::from_date_time(shifted_date);
 
         let tst_der = tst.to_der().unwrap();
-        sd.encap_content_info.econtent = Some(der::Any::new(der::Tag::OctetString, tst_der.clone()).unwrap());
+        sd.encap_content_info.econtent =
+            Some(der::Any::new(der::Tag::OctetString, tst_der.clone()).unwrap());
 
         let mut signer_info = sd.signer_infos.0.as_slice()[0].clone();
         let id_message_digest = ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.4");
@@ -2203,7 +2399,8 @@ mod tests {
             if attr.oid == id_message_digest {
                 let oct = OctetString::new(new_digest.to_vec()).unwrap();
                 let mut vals = der::asn1::SetOfVec::new();
-                vals.insert(der::Any::from_der(&oct.to_der().unwrap()).unwrap()).unwrap();
+                vals.insert(der::Any::from_der(&oct.to_der().unwrap()).unwrap())
+                    .unwrap();
                 new_attrs.push(x509_cert::attr::Attribute {
                     oid: id_message_digest,
                     values: vals,
@@ -2244,9 +2441,17 @@ mod tests {
         };
 
         let res = verify_rfc3161(&proof, &fp, Some(&trust_store));
-        assert!(res.is_err(), "Shifted genTime outside validity window MUST fail: {:?}", res);
+        assert!(
+            res.is_err(),
+            "Shifted genTime outside validity window MUST fail: {:?}",
+            res
+        );
         let err_msg = res.unwrap_err();
-        assert!(err_msg.contains("validity window"), "Expected validity window error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("validity window"),
+            "Expected validity window error, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -2257,20 +2462,34 @@ mod tests {
 
         // Find SKI extension (2.5.29.14) in the cert
         let ski_oid = ObjectIdentifier::new_unwrap("2.5.29.14");
-        let ext = cert.tbs_certificate.extensions.as_ref().unwrap()
-            .iter().find(|e| e.extn_id == ski_oid).expect("Root CA has SKI extension");
+        let ext = cert
+            .tbs_certificate
+            .extensions
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|e| e.extn_id == ski_oid)
+            .expect("Root CA has SKI extension");
 
         // The outer extn_value is an OCTET STRING containing the DER-encoded inner OCTET STRING
         let inner_ski = OctetString::from_der(ext.extn_value.as_bytes()).unwrap();
 
         // 1. Matches when comparing against inner decoded key identifier octets
-        assert!(cert_matches_ski(cert, inner_ski.as_bytes()), "Decoded inner SKI must match");
+        assert!(
+            cert_matches_ski(cert, inner_ski.as_bytes()),
+            "Decoded inner SKI must match"
+        );
 
         // 2. Fails when passing raw extn_value bytes (which include outer ASN.1 tag 0x04 and length prefix)
-        assert!(!cert_matches_ski(cert, ext.extn_value.as_bytes()), "Raw extn_value with tag/len must NOT match");
+        assert!(
+            !cert_matches_ski(cert, ext.extn_value.as_bytes()),
+            "Raw extn_value with tag/len must NOT match"
+        );
 
         // 3. Fails when passing wrong SKI bytes
-        assert!(!cert_matches_ski(cert, &[0x99; 20]), "Mismatched SKI must NOT match");
+        assert!(
+            !cert_matches_ski(cert, &[0x99; 20]),
+            "Mismatched SKI must NOT match"
+        );
     }
 }
-

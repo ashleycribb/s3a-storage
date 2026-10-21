@@ -46,7 +46,8 @@ pub fn register_ql_handlers() {
                 }
             }
 
-            let mut results = reader.query_gis_mesh_3d(min_lat, max_lat, min_lon, max_lon, min_elev, max_elev);
+            let mut results =
+                reader.query_gis_mesh_3d(min_lat, max_lat, min_lon, max_lon, min_elev, max_elev);
             if let Some(lim) = sift.limit {
                 results.truncate(lim);
             }
@@ -89,7 +90,13 @@ mod tests {
 
     #[test]
     fn test_gis_write_and_query_mesh_3d() {
-        let temp = std::env::temp_dir().join(format!("s3a_test_gis_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp = std::env::temp_dir().join(format!(
+            "s3a_test_gis_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let engine = S3ACrudEngine::open_or_create(&temp).unwrap();
         engine.enable_addon(ADDON_GIS).unwrap();
 

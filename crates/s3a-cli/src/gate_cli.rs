@@ -3,11 +3,11 @@
 //! Provides CLI and programmatic client capabilities for registering sovereign gate
 //! identities via challenge-response cryptographic proofs and resolving permanent gate:// URIs.
 
+use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use rand_core::{OsRng, RngCore};
-use serde::{Deserialize, Serialize};
 
 use s3a_vault::address::GateAddress;
 use s3a_vault::keystore::{FileKeyStore, KeyStore};
@@ -75,16 +75,19 @@ pub fn default_vault_path() -> PathBuf {
 pub fn resolve_gate(directory_url: &str, name: &str) -> Result<DirectoryEntry, String> {
     let base_url = normalize_directory_url(directory_url);
     let url = format!("{}/resolve/{}", base_url, name.trim());
-    let resp = ureq::get(&url)
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(404, _) => format!("Gate name '{}' not found in directory ({})", name, url),
-            ureq::Error::Status(code, r) => {
-                let msg = r.into_string().unwrap_or_default();
-                format!("Failed to resolve gate name '{}' (HTTP {}): {}", name, code, msg)
-            }
-            ureq::Error::Transport(t) => format!("Transport error connecting to {}: {}", url, t),
-        })?;
+    let resp = ureq::get(&url).call().map_err(|e| match e {
+        ureq::Error::Status(404, _) => {
+            format!("Gate name '{}' not found in directory ({})", name, url)
+        }
+        ureq::Error::Status(code, r) => {
+            let msg = r.into_string().unwrap_or_default();
+            format!(
+                "Failed to resolve gate name '{}' (HTTP {}): {}",
+                name, code, msg
+            )
+        }
+        ureq::Error::Transport(t) => format!("Transport error connecting to {}: {}", url, t),
+    })?;
 
     let text = resp
         .into_string()
@@ -250,7 +253,12 @@ pub fn handle_gate_command(args: &[String]) {
             let pass_arg = get_arg_val(args, "--passphrase");
             let endpoints_csv = get_arg_val(args, "--endpoints");
             let endpoints: Vec<String> = endpoints_csv
-                .map(|csv| csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .map(|csv| {
+                    csv.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let ks_path = keystore_arg.unwrap_or_else(|| {
@@ -338,7 +346,10 @@ pub fn handle_gate_command(args: &[String]) {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Warning: could not create vault archive {:?}: {}", vault_path, e);
+                            eprintln!(
+                                "Warning: could not create vault archive {:?}: {}",
+                                vault_path, e
+                            );
                             if let Err(gen_err) = ks.generate_keypair(&new_id) {
                                 eprintln!("Failed to generate identity keypair: {}", gen_err);
                                 return;
@@ -357,7 +368,10 @@ pub fn handle_gate_command(args: &[String]) {
                     return;
                 }
 
-                println!("Created new sovereign Person identity in keystore: {:?}", ks_path);
+                println!(
+                    "Created new sovereign Person identity in keystore: {:?}",
+                    ks_path
+                );
                 (ks, new_id)
             };
 
@@ -396,7 +410,9 @@ pub fn print_gate_usage() {
     println!("  s3a-cli gate resolve <name> --directory <url>");
     println!();
     println!("OPTIONS:");
-    println!("  --directory <url>     Gate directory URL (e.g. https://34.74.163.88.sslip.io/gate/)");
+    println!(
+        "  --directory <url>     Gate directory URL (e.g. https://34.74.163.88.sslip.io/gate/)"
+    );
     println!("  --keystore <path>     Path to encrypted FileKeyStore (default: ~/.s3a/vault/person.keystore)");
     println!("  --vault <path>        Path to .vault.s3a archive (default: ~/.s3a/vault/person.vault.s3a)");
     println!("  --passphrase <pass>   Passphrase for Argon2id key decryption (or via prompt/env)");

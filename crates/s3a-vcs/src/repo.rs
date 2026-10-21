@@ -9,14 +9,11 @@ use sha2::{Digest, Sha256};
 
 use s3a_core::consent::ConsentRecord;
 use s3a_core::{
-    FileHeader, HyperTileHeader, MarkRecord, SealedEndCapV2, SealedIndexHeaderV2,
-    TileType, FILE_HEADER_SIZE, HYPER_TILE_SIZE,
-    MARK_CONSENT_WITHDRAWN, SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE,
-    SEALED_INDEX_HEADER_SIZE_V2,
+    FileHeader, HyperTileHeader, MarkRecord, SealedEndCapV2, SealedIndexHeaderV2, TileType,
+    FILE_HEADER_SIZE, HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, SEALED_ENDCAP_MAGIC_V2,
+    SEALED_ENDCAP_SIZE, SEALED_INDEX_HEADER_SIZE_V2,
 };
-use s3a_engine::sealed::{
-    seal_buffer_v2, SealOptionsV2,
-};
+use s3a_engine::sealed::{seal_buffer_v2, SealOptionsV2};
 use s3a_engine::{MmapReader, TileWriter};
 use s3a_pack_scholar::ScholarTileType;
 use s3a_vault::address::GateAddress;
@@ -57,7 +54,10 @@ impl VcsRepo {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, VcsError> {
         let p = path.as_ref().to_path_buf();
         if !p.exists() {
-            return Err(VcsError::Generic(format!("Archive file not found: {:?}", p)));
+            return Err(VcsError::Generic(format!(
+                "Archive file not found: {:?}",
+                p
+            )));
         }
         Ok(Self { path: p })
     }
@@ -89,7 +89,9 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(
+                                    &payload[c * commit_size..(c + 1) * commit_size],
+                                );
                             commits.push(*rec);
                         }
                     }
@@ -111,8 +113,9 @@ impl VcsRepo {
                     let count = (hdr.payload_bytes as usize) / ref_size;
                     for c in 0..count {
                         if (c + 1) * ref_size <= payload.len() {
-                            let rec: &VcsRefRecord =
-                                &bytemuck::pod_read_unaligned::<VcsRefRecord>(&payload[c * ref_size..(c + 1) * ref_size]);
+                            let rec: &VcsRefRecord = &bytemuck::pod_read_unaligned::<VcsRefRecord>(
+                                &payload[c * ref_size..(c + 1) * ref_size],
+                            );
                             refs.push(*rec);
                         }
                     }
@@ -141,7 +144,9 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * res_size <= payload.len() {
                             let rec: &VcsResolutionRecord =
-                                &bytemuck::pod_read_unaligned::<VcsResolutionRecord>(&payload[c * res_size..(c + 1) * res_size]);
+                                &bytemuck::pod_read_unaligned::<VcsResolutionRecord>(
+                                    &payload[c * res_size..(c + 1) * res_size],
+                                );
                             resolutions.push(*rec);
                         }
                     }
@@ -154,7 +159,9 @@ impl VcsRepo {
     /// Appends a signed human resolution record to the archive.
     pub fn write_resolution(&self, resolution: &VcsResolutionRecord) -> Result<(), VcsError> {
         if !resolution.verify_signature() {
-            return Err(VcsError::InvalidSignature("Invalid human resolution signature".to_string()));
+            return Err(VcsError::InvalidSignature(
+                "Invalid human resolution signature".to_string(),
+            ));
         }
         self.append_records(TileType::VCS_RESOLUTION, &[*resolution])?;
         Ok(())
@@ -179,12 +186,8 @@ impl VcsRepo {
             .unwrap_or_default()
             .as_secs();
 
-        let env = VcsRefRecord::compute_envelope_bytes(
-            REF_KIND_BRANCH,
-            name,
-            &target_seal_hash,
-            now,
-        );
+        let env =
+            VcsRefRecord::compute_envelope_bytes(REF_KIND_BRANCH, name, &target_seal_hash, now);
         let sig: ed25519_dalek::Signature = signing_key.sign(&env);
         let pubkey = signing_key.verifying_key().to_bytes();
 
@@ -226,12 +229,7 @@ impl VcsRepo {
             .unwrap_or_default()
             .as_secs();
 
-        let env = VcsRefRecord::compute_envelope_bytes(
-            REF_KIND_TAG,
-            name,
-            &target_seal_hash,
-            now,
-        );
+        let env = VcsRefRecord::compute_envelope_bytes(REF_KIND_TAG, name, &target_seal_hash, now);
         let sig: ed25519_dalek::Signature = signing_key.sign(&env);
         let pubkey = signing_key.verifying_key().to_bytes();
 
@@ -377,10 +375,8 @@ impl VcsRepo {
     /// Traverses commit history from a ref or commit hash backwards along parent chain.
     pub fn log(&self, from_ref_or_hash: Option<&str>) -> Result<Vec<VcsCommitRecord>, VcsError> {
         let all_commits = self.list_commits()?;
-        let commit_map: HashMap<[u8; 32], VcsCommitRecord> = all_commits
-            .iter()
-            .map(|c| (c.seal_hash, *c))
-            .collect();
+        let commit_map: HashMap<[u8; 32], VcsCommitRecord> =
+            all_commits.iter().map(|c| (c.seal_hash, *c)).collect();
 
         let start_seal = if let Some(target) = from_ref_or_hash {
             if let Some(r) = self.get_ref(target)? {
@@ -422,7 +418,11 @@ impl VcsRepo {
     }
 
     /// Evaluates difference between two commit seal hashes.
-    pub fn diff(&self, from_seal: &[u8; 32], to_seal: &[u8; 32]) -> Result<VcsDiffReport, VcsError> {
+    pub fn diff(
+        &self,
+        from_seal: &[u8; 32],
+        to_seal: &[u8; 32],
+    ) -> Result<VcsDiffReport, VcsError> {
         let reader = MmapReader::open(&self.path)?;
         let count = reader.tile_count() as usize;
         let commit_size = std::mem::size_of::<VcsCommitRecord>();
@@ -436,7 +436,9 @@ impl VcsRepo {
                     for c in 0..c_count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(
+                                    &payload[c * commit_size..(c + 1) * commit_size],
+                                );
                             commit_tile_indices.insert(rec.seal_hash, i);
                         }
                     }
@@ -484,13 +486,18 @@ impl VcsRepo {
                 }
 
                 if i < from_limit {
-                    from_records.entry(hdr.tile_type).or_default().extend(keys.clone());
+                    from_records
+                        .entry(hdr.tile_type)
+                        .or_default()
+                        .extend(keys.clone());
                     if hdr.tile_type == TileType::CONSENT {
                         let c_count = (hdr.payload_bytes as usize) / consent_size;
                         for c in 0..c_count {
                             if (c + 1) * consent_size <= payload.len() {
                                 let rec: &ConsentRecord =
-                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
+                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(
+                                        &payload[c * consent_size..(c + 1) * consent_size],
+                                    );
                                 if rec.withdrawn_at > 0 {
                                     withdrawn_from += 1;
                                 }
@@ -500,8 +507,9 @@ impl VcsRepo {
                         let m_count = (hdr.payload_bytes as usize) / mark_size;
                         for m in 0..m_count {
                             if (m + 1) * mark_size <= payload.len() {
-                                let rec: &MarkRecord =
-                                    &bytemuck::pod_read_unaligned::<MarkRecord>(&payload[m * mark_size..(m + 1) * mark_size]);
+                                let rec: &MarkRecord = &bytemuck::pod_read_unaligned::<MarkRecord>(
+                                    &payload[m * mark_size..(m + 1) * mark_size],
+                                );
                                 if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
                                     withdrawn_from += 1;
                                 }
@@ -517,7 +525,9 @@ impl VcsRepo {
                         for c in 0..c_count {
                             if (c + 1) * consent_size <= payload.len() {
                                 let rec: &ConsentRecord =
-                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
+                                    &bytemuck::pod_read_unaligned::<ConsentRecord>(
+                                        &payload[c * consent_size..(c + 1) * consent_size],
+                                    );
                                 if rec.withdrawn_at > 0 {
                                     withdrawn_to += 1;
                                 }
@@ -527,8 +537,9 @@ impl VcsRepo {
                         let m_count = (hdr.payload_bytes as usize) / mark_size;
                         for m in 0..m_count {
                             if (m + 1) * mark_size <= payload.len() {
-                                let rec: &MarkRecord =
-                                    &bytemuck::pod_read_unaligned::<MarkRecord>(&payload[m * mark_size..(m + 1) * mark_size]);
+                                let rec: &MarkRecord = &bytemuck::pod_read_unaligned::<MarkRecord>(
+                                    &payload[m * mark_size..(m + 1) * mark_size],
+                                );
                                 if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
                                     withdrawn_to += 1;
                                 }
@@ -597,7 +608,10 @@ impl VcsRepo {
 
         // 1. Fast-forward check: if target is ancestor of source, simply advance
         let src_log = self.log(Some(source_branch))?;
-        if src_log.iter().any(|c| c.seal_hash == tgt_ref.target_seal_hash) {
+        if src_log
+            .iter()
+            .any(|c| c.seal_hash == tgt_ref.target_seal_hash)
+        {
             self.set_branch(target_branch, src_ref.target_seal_hash, signing_key)?;
             let last_commit = src_log.first().copied().unwrap();
             return Ok(VcsMergeResult::Merged(last_commit));
@@ -626,7 +640,9 @@ impl VcsRepo {
                     for c in 0..count {
                         if (c + 1) * commit_size <= payload.len() {
                             let rec: &VcsCommitRecord =
-                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(&payload[c * commit_size..(c + 1) * commit_size]);
+                                &bytemuck::pod_read_unaligned::<VcsCommitRecord>(
+                                    &payload[c * commit_size..(c + 1) * commit_size],
+                                );
                             commit_tile_indices.insert(rec.seal_hash, i);
                             sorted_commit_indices.push(i);
                         }
@@ -748,12 +764,21 @@ impl VcsRepo {
 
         // 4. All conflicts resolved or clean union -> seal merge commit
         let msg = format!("Merge branch '{}' into '{}'", source_branch, target_branch);
-        let commit_record = self.commit(&msg, target_branch, signing_key, Some(src_ref.target_seal_hash))?;
+        let commit_record = self.commit(
+            &msg,
+            target_branch,
+            signing_key,
+            Some(src_ref.target_seal_hash),
+        )?;
         Ok(VcsMergeResult::Merged(commit_record))
     }
 
     /// Appends arbitrary records to archive via TileWriter.
-    fn append_records<T: bytemuck::Pod>(&self, tile_type: u32, records: &[T]) -> Result<(), VcsError> {
+    fn append_records<T: bytemuck::Pod>(
+        &self,
+        tile_type: u32,
+        records: &[T],
+    ) -> Result<(), VcsError> {
         let mut writer = TileWriter::open_append(&self.path)?;
         writer.write_hyper_tile(tile_type, records, None, None)?;
         Ok(())
@@ -798,11 +823,16 @@ fn extract_records_from_tile(
         for r in 0..count {
             if (r + 1) * claim_size <= payload.len() {
                 let rec: &s3a_pack_scholar::records::ScholarNoteClaimRecord =
-                    &bytemuck::pod_read_unaligned::<s3a_pack_scholar::records::ScholarNoteClaimRecord>(&payload[r * claim_size..(r + 1) * claim_size]);
+                    &bytemuck::pod_read_unaligned::<
+                        s3a_pack_scholar::records::ScholarNoteClaimRecord,
+                    >(&payload[r * claim_size..(r + 1) * claim_size]);
                 let rec_id = if rec.session_uuid[0] == 0 && rec.session_uuid[1] > 0 {
                     format!("claim_{}", rec.session_uuid[1])
                 } else if rec.session_uuid != [0, 0] {
-                    format!("claim_{:016x}{:016x}", rec.session_uuid[0], rec.session_uuid[1])
+                    format!(
+                        "claim_{:016x}{:016x}",
+                        rec.session_uuid[0], rec.session_uuid[1]
+                    )
                 } else if rec.author_hash > 0 {
                     format!("claim_{}_{}", rec.author_hash, rec.kind)
                 } else {
@@ -811,11 +841,15 @@ fn extract_records_from_tile(
                 let content_hash = rec.quote_sha256;
                 let summary = format!(
                     "Claim(kind={}, conf={:.2}, text_hash={:08x})",
-                    rec.kind,
-                    rec.confidence,
-                    rec.text_hash
+                    rec.kind, rec.confidence, rec.text_hash
                 );
-                out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+                out.push((
+                    rec_id,
+                    hdr.tile_type,
+                    type_name.to_string(),
+                    content_hash,
+                    summary,
+                ));
             }
         }
     } else if hdr.tile_type == TileType::TELEMETRY {
@@ -824,13 +858,24 @@ fn extract_records_from_tile(
         for r in 0..count {
             if (r + 1) * tel_size <= payload.len() {
                 let rec: &s3a_core::TelemetryRecord =
-                    &bytemuck::pod_read_unaligned::<s3a_core::TelemetryRecord>(&payload[r * tel_size..(r + 1) * tel_size]);
-                let rec_id = format!("telemetry_{}_{}_{}", rec.sensor_id, rec.metric_id, rec.timestamp);
+                    &bytemuck::pod_read_unaligned::<s3a_core::TelemetryRecord>(
+                        &payload[r * tel_size..(r + 1) * tel_size],
+                    );
+                let rec_id = format!(
+                    "telemetry_{}_{}_{}",
+                    rec.sensor_id, rec.metric_id, rec.timestamp
+                );
                 let mut hasher = Sha256::new();
                 hasher.update(&rec.value.to_le_bytes());
                 let content_hash: [u8; 32] = hasher.finalize().into();
                 let summary = format!("Telemetry(val={})", rec.value);
-                out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+                out.push((
+                    rec_id,
+                    hdr.tile_type,
+                    type_name.to_string(),
+                    content_hash,
+                    summary,
+                ));
             }
         }
     } else {
@@ -842,8 +887,15 @@ fn extract_records_from_tile(
                     let slice = &payload[r * rec_size..(r + 1) * rec_size];
                     let rec_id = format!("{}_rec_{}", type_name, r);
                     let content_hash: [u8; 32] = Sha256::digest(slice).into();
-                    let summary = format!("{}(hash={})", type_name, hex::encode(&content_hash[..8]));
-                    out.push((rec_id, hdr.tile_type, type_name.to_string(), content_hash, summary));
+                    let summary =
+                        format!("{}(hash={})", type_name, hex::encode(&content_hash[..8]));
+                    out.push((
+                        rec_id,
+                        hdr.tile_type,
+                        type_name.to_string(),
+                        content_hash,
+                        summary,
+                    ));
                 }
             }
         }
@@ -866,7 +918,9 @@ fn get_active_data_len(buf: &[u8]) -> Result<usize, VcsError> {
 
 pub fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
     if buf.len() < FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE {
-        return Err(VcsError::Generic("Buffer too small for sealed end cap".into()));
+        return Err(VcsError::Generic(
+            "Buffer too small for sealed end cap".into(),
+        ));
     }
     let endcap_slice = &buf[buf.len() - SEALED_ENDCAP_SIZE..];
     let endcap: &SealedEndCapV2 = &bytemuck::pod_read_unaligned::<SealedEndCapV2>(endcap_slice);
@@ -880,6 +934,8 @@ pub fn extract_seal_hash_from_buffer(buf: &[u8]) -> Result<[u8; 32], VcsError> {
         return Err(VcsError::Generic("Truncated index".into()));
     }
 
-    let idx_hdr: &SealedIndexHeaderV2 = &bytemuck::pod_read_unaligned::<SealedIndexHeaderV2>(&buf[index_offset..index_offset + SEALED_INDEX_HEADER_SIZE_V2]);
+    let idx_hdr: &SealedIndexHeaderV2 = &bytemuck::pod_read_unaligned::<SealedIndexHeaderV2>(
+        &buf[index_offset..index_offset + SEALED_INDEX_HEADER_SIZE_V2],
+    );
     Ok(idx_hdr.seal_hash)
 }

@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use sha2::{Digest, Sha256};
 use core::fmt;
+use sha2::{Digest, Sha256};
 
 /// Declarative research participant consent purpose enum.
 #[repr(u32)]
@@ -48,15 +48,15 @@ pub struct ConsentRecord {
     pub subject_id: [u8; 16],        // 128-bit UUID (offset 0..16)
     pub study_id: u64,               // Study or protocol ID (offset 16..24)
     pub purpose: u32,                // ConsentPurpose enum (offset 24..28)
-    pub scope: u32,                  // Tile type / record kind scope (0 = all / wildcard) (offset 28..32)
-    pub granted_at: u64,             // Timestamp granted (Unix epoch) (offset 32..40)
-    pub expires_at: u64,             // Expiration timestamp (0 = no expiry) (offset 40..48)
-    pub withdrawn_at: u64,           // Timestamp withdrawn (0 = active) (offset 48..56)
-    pub legal_hold: u8,              // 1 = active legal hold, 0 = standard (offset 56..57)
-    pub _reserved: [u8; 7],          // Alignment padding (offset 57..64)
-    pub granted_by: u64,             // Actor ID of authorized human/admin (offset 64..72)
+    pub scope: u32, // Tile type / record kind scope (0 = all / wildcard) (offset 28..32)
+    pub granted_at: u64, // Timestamp granted (Unix epoch) (offset 32..40)
+    pub expires_at: u64, // Expiration timestamp (0 = no expiry) (offset 40..48)
+    pub withdrawn_at: u64, // Timestamp withdrawn (0 = active) (offset 48..56)
+    pub legal_hold: u8, // 1 = active legal hold, 0 = standard (offset 56..57)
+    pub _reserved: [u8; 7], // Alignment padding (offset 57..64)
+    pub granted_by: u64, // Actor ID of authorized human/admin (offset 64..72)
     pub prev_consent_hash: [u8; 32], // Cryptographic chain hash per subject (offset 72..104)
-    pub consent_hash: [u8; 32],      // SHA-256 digest over preceding 104 bytes (offset 104..136)
+    pub consent_hash: [u8; 32], // SHA-256 digest over preceding 104 bytes (offset 104..136)
 }
 
 impl ConsentRecord {

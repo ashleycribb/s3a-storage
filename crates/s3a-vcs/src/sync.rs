@@ -41,7 +41,9 @@ pub fn sync_push(
     if let Some(t_ref) = &tgt_ref {
         if t_ref.target_seal_hash != src_ref.target_seal_hash {
             let src_history = source_repo.log(Some(branch))?;
-            let is_ancestor = src_history.iter().any(|c| c.seal_hash == t_ref.target_seal_hash);
+            let is_ancestor = src_history
+                .iter()
+                .any(|c| c.seal_hash == t_ref.target_seal_hash);
             if !is_ancestor && !allow_non_fast_forward {
                 return Err(VcsError::NonFastForward {
                     branch: branch.to_string(),
@@ -80,7 +82,9 @@ pub fn sync_push(
                             for c in 0..c_count {
                                 if (c + 1) * consent_size <= payload.len() {
                                     let rec: &ConsentRecord =
-                                        &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
+                                        &bytemuck::pod_read_unaligned::<ConsentRecord>(
+                                            &payload[c * consent_size..(c + 1) * consent_size],
+                                        );
                                     if rec.purpose != req_purpose && rec.withdrawn_at == 0 {
                                         return Err(VcsError::ConsentRestricted(format!(
                                             "Participant record purpose {} is incompatible with sync request scope {}",

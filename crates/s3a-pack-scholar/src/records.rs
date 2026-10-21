@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use sha2::Digest;
 use s3a_core::{S3ACoordinate, FLAG_ACTIVE, FLAG_TOMBSTONE};
+use sha2::Digest;
 
 /// HUMAN ACTIVITY SQL LRS RECORD (64 bytes, 8-byte aligned).
 /// Captures human researcher reviews, approvals, rework decisions, and xAPI activity statements.
@@ -8,14 +8,14 @@ use s3a_core::{S3ACoordinate, FLAG_ACTIVE, FLAG_TOMBSTONE};
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct HumanLrsRecord {
-    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
-    pub timestamp_sec: u64,            // Recorded timestamp (offset 16..24)
-    pub actor_hash: u64,               // Hash of researcher / human actor (offset 24..32)
-    pub verb_id: u32,                  // xAPI verb ID (e.g. accepted, reworked, decided) (offset 32..36)
-    pub decision_score: f32,           // Feedback / rework score (offset 36..40)
+    pub session_uuid: [u64; 2], // 128-bit shared session/registration UUID (offset 0..16)
+    pub timestamp_sec: u64,     // Recorded timestamp (offset 16..24)
+    pub actor_hash: u64,        // Hash of researcher / human actor (offset 24..32)
+    pub verb_id: u32,           // xAPI verb ID (e.g. accepted, reworked, decided) (offset 32..36)
+    pub decision_score: f32,    // Feedback / rework score (offset 36..40)
     pub ai_trace_coord: S3ACoordinate, // Direct O(1) pointer to AI agent trace step (offset 40..56)
-    pub object_hash: u32,              // Hash of target artifact / paper / claim (offset 56..60)
-    pub flags: u32,                    // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 60..64)
+    pub object_hash: u32,       // Hash of target artifact / paper / claim (offset 56..60)
+    pub flags: u32,             // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 60..64)
 }
 
 impl HumanLrsRecord {
@@ -65,7 +65,10 @@ pub const CLAIM_KIND_HYPOTHESIS: u16 = 4;
 /// Computes a 32-bit token Bloom filter from text for sub-microsecond keyword rejection.
 pub fn compute_keyword_bloom(text: &str) -> u32 {
     let mut bloom = 0u32;
-    for word in text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+    for word in text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
         let mut lower = [0u8; 64];
         let bytes = word.as_bytes();
         let len = bytes.len().min(64);
@@ -95,26 +98,26 @@ pub fn matches_keyword_bloom(record_bloom: u32, query: &str) -> bool {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct ScholarNoteClaimRecord {
-    pub claim_id: u64,                 // 64-bit ID or hash of claim (offset 0..8)
-    pub timestamp_sec: u64,            // Assertion timestamp in epoch seconds (offset 8..16)
-    pub session_uuid: [u64; 2],        // 128-bit session (offset 16..32)
-    pub author_hash: u64,              // Author agent or researcher hash (offset 32..40)
-    pub confidence: f32,               // Confidence / validation score (0.0..1.0) (offset 40..44)
-    pub kind: u16,                     // CLAIM_KIND_EMPIRICAL, NOTE, HYPOTHESIS, etc. (offset 44..46)
-    pub flags: u16,                    // FLAG_ACTIVE, etc. (offset 46..48)
-    pub keyword_bloom: u32,            // 32-bit token bloom filter for rapid text rejection (offset 48..52)
-    pub text_hash: u32,                // CRC32C hash of the full text content (offset 52..56)
-    pub embedding_tile_id: u32,        // Tile ID of embedding if stored in archive (offset 56..60)
-    pub embedding_offset: u32,         // Record offset in embedding tile (offset 60..64)
-    pub citation_fingerprint_id: u64,  // 64-bit ID of CitationFingerprintRecord / paper_id (offset 64..72)
-    pub passage_page: u32,             // Page number in source document (offset 72..76)
-    pub passage_char_offset: u32,      // Character start offset within page (offset 76..80)
-    pub passage_char_length: u32,      // Character length of passage (offset 80..84)
-    pub _reserved_passage: u32,        // Alignment padding (offset 84..88)
-    pub quote_sha256: [u8; 32],        // SHA-256 hash of the exact quoted passage text (offset 88..120)
-    pub producer_id: u64,              // Human researcher or AI agent ID (offset 120..128)
+    pub claim_id: u64,                // 64-bit ID or hash of claim (offset 0..8)
+    pub timestamp_sec: u64,           // Assertion timestamp in epoch seconds (offset 8..16)
+    pub session_uuid: [u64; 2],       // 128-bit session (offset 16..32)
+    pub author_hash: u64,             // Author agent or researcher hash (offset 32..40)
+    pub confidence: f32,              // Confidence / validation score (0.0..1.0) (offset 40..44)
+    pub kind: u16,  // CLAIM_KIND_EMPIRICAL, NOTE, HYPOTHESIS, etc. (offset 44..46)
+    pub flags: u16, // FLAG_ACTIVE, etc. (offset 46..48)
+    pub keyword_bloom: u32, // 32-bit token bloom filter for rapid text rejection (offset 48..52)
+    pub text_hash: u32, // CRC32C hash of the full text content (offset 52..56)
+    pub embedding_tile_id: u32, // Tile ID of embedding if stored in archive (offset 56..60)
+    pub embedding_offset: u32, // Record offset in embedding tile (offset 60..64)
+    pub citation_fingerprint_id: u64, // 64-bit ID of CitationFingerprintRecord / paper_id (offset 64..72)
+    pub passage_page: u32,            // Page number in source document (offset 72..76)
+    pub passage_char_offset: u32,     // Character start offset within page (offset 76..80)
+    pub passage_char_length: u32,     // Character length of passage (offset 80..84)
+    pub _reserved_passage: u32,       // Alignment padding (offset 84..88)
+    pub quote_sha256: [u8; 32], // SHA-256 hash of the exact quoted passage text (offset 88..120)
+    pub producer_id: u64,       // Human researcher or AI agent ID (offset 120..128)
     pub verification_statement_uuid: [u64; 2], // 128-bit statement UUID (verified-claim / flagged-hallucination) (offset 128..144)
-    pub _reserved: [u64; 2],           // Reserved zero padding to 160 bytes (offset 144..160)
+    pub _reserved: [u64; 2], // Reserved zero padding to 160 bytes (offset 144..160)
 }
 
 impl ScholarNoteClaimRecord {
@@ -235,14 +238,14 @@ impl ScholarNoteClaimRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct AiTraceRecord {
-    pub session_uuid: [u64; 2],        // 128-bit shared session/registration UUID (offset 0..16)
-    pub timestamp_sec: u64,            // Execution timestamp (offset 16..24)
-    pub agent_id: u64,                 // AI Agent hash (offset 24..32)
-    pub step_type: u32,                // Step category (reasoning, tool_call, claim, hallucination) (offset 32..36)
-    pub confidence: f32,               // Model confidence / reward score (offset 36..40)
-    pub human_coord: S3ACoordinate,    // Direct O(1) pointer to corresponding human decision (offset 40..56)
-    pub hilbert_index: u32,            // 3D spatial cluster coordinate (offset 56..60)
-    pub flags: u32,                    // Active, tombstone, warning flags (offset 60..64)
+    pub session_uuid: [u64; 2], // 128-bit shared session/registration UUID (offset 0..16)
+    pub timestamp_sec: u64,     // Execution timestamp (offset 16..24)
+    pub agent_id: u64,          // AI Agent hash (offset 24..32)
+    pub step_type: u32, // Step category (reasoning, tool_call, claim, hallucination) (offset 32..36)
+    pub confidence: f32, // Model confidence / reward score (offset 36..40)
+    pub human_coord: S3ACoordinate, // Direct O(1) pointer to corresponding human decision (offset 40..56)
+    pub hilbert_index: u32,         // 3D spatial cluster coordinate (offset 56..60)
+    pub flags: u32,                 // Active, tombstone, warning flags (offset 60..64)
 }
 
 impl AiTraceRecord {
@@ -281,19 +284,19 @@ impl AiTraceRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct AcademicPaperRecord {
-    pub paper_id: u64,                 // 64-bit hash of DOI / URI (offset 0..8)
-    pub timestamp_sec: u64,            // Publication timestamp (offset 8..16)
-    pub hilbert_index: u64,            // 3D Skilling Hilbert curve index (offset 16..24)
-    pub topic_x: f32,                  // 3D coordinate X (topic/cluster) (offset 24..28)
-    pub topic_y: f32,                  // 3D coordinate Y (methodology/field) (offset 28..32)
-    pub topic_z: f32,                  // 3D coordinate Z (year/recency) (offset 32..36)
-    pub citation_count: u32,           // Citation count (offset 36..40)
-    pub year: u16,                     // Publication year (offset 40..42)
-    pub venue_id: u16,                 // Venue / service ID (offset 42..44)
-    pub open_access_flag: u16,         // 1 = OA PDF, 0 = Paywalled (offset 44..46)
-    pub warning_count: u16,            // Provenance warning count (offset 46..48)
-    pub doi_prefix_hash: u64,          // Hash of publisher DOI prefix (offset 48..56)
-    pub flags: u64,                    // Active, tombstone, reviewed (offset 56..64)
+    pub paper_id: u64,         // 64-bit hash of DOI / URI (offset 0..8)
+    pub timestamp_sec: u64,    // Publication timestamp (offset 8..16)
+    pub hilbert_index: u64,    // 3D Skilling Hilbert curve index (offset 16..24)
+    pub topic_x: f32,          // 3D coordinate X (topic/cluster) (offset 24..28)
+    pub topic_y: f32,          // 3D coordinate Y (methodology/field) (offset 28..32)
+    pub topic_z: f32,          // 3D coordinate Z (year/recency) (offset 32..36)
+    pub citation_count: u32,   // Citation count (offset 36..40)
+    pub year: u16,             // Publication year (offset 40..42)
+    pub venue_id: u16,         // Venue / service ID (offset 42..44)
+    pub open_access_flag: u16, // 1 = OA PDF, 0 = Paywalled (offset 44..46)
+    pub warning_count: u16,    // Provenance warning count (offset 46..48)
+    pub doi_prefix_hash: u64,  // Hash of publisher DOI prefix (offset 48..56)
+    pub flags: u64,            // Active, tombstone, reviewed (offset 56..64)
 }
 
 impl AcademicPaperRecord {
@@ -362,14 +365,14 @@ impl AcademicPaperRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct ResearchGraphEdgeRecord {
-    pub subject_hash: u64,             // Node A identifier hash (offset 0..8)
-    pub object_hash: u64,              // Node B identifier hash (offset 8..16)
-    pub timestamp_sec: u64,            // Extraction timestamp (offset 16..24)
-    pub hilbert_coord: u64,            // Spatial cluster coordinate (offset 24..32)
-    pub predicate_id: u32,             // Predicate type (contains, authored_by, cites) (offset 32..36)
-    pub weight: f32,                   // Edge weight / confidence (offset 36..40)
-    pub flags: u64,                    // Active, tombstone (offset 40..48)
-    pub _reserved: [u64; 2],           // Padding to 64 bytes (offset 48..64)
+    pub subject_hash: u64,   // Node A identifier hash (offset 0..8)
+    pub object_hash: u64,    // Node B identifier hash (offset 8..16)
+    pub timestamp_sec: u64,  // Extraction timestamp (offset 16..24)
+    pub hilbert_coord: u64,  // Spatial cluster coordinate (offset 24..32)
+    pub predicate_id: u32,   // Predicate type (contains, authored_by, cites) (offset 32..36)
+    pub weight: f32,         // Edge weight / confidence (offset 36..40)
+    pub flags: u64,          // Active, tombstone (offset 40..48)
+    pub _reserved: [u64; 2], // Padding to 64 bytes (offset 48..64)
 }
 
 impl ResearchGraphEdgeRecord {
@@ -408,19 +411,19 @@ impl ResearchGraphEdgeRecord {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct SrsManifestHeader {
-    pub magic: [u8; 8],                // b"S3ASTOR1" (offset 0..8)
-    pub schema_version: u32,           // SRS specification version (e.g. 1) (offset 8..12)
-    pub archive_flags: u32,            // Bitmask: IS_IMMUTABLE, IS_SNAPSHOT, etc. (offset 12..16)
-    pub project_uuid: [u64; 2],        // 128-bit persistent project identifier (offset 16..32)
-    pub snapshot_uuid: [u64; 2],       // 128-bit unique checkpoint identifier (offset 32..48)
-    pub parent_snapshot_uuid: [u64; 2],// 128-bit parent checkpoint (0 if initial root) (offset 48..64)
-    pub origin_session_uuid: [u64; 2], // 128-bit active session identifier (offset 64..80)
-    pub created_at_sec: u64,           // Unix epoch seconds (offset 80..88)
-    pub tile_count: u32,               // Number of Hyper-Tiles in container (offset 88..92)
-    pub crc32c_checksum: u32,          // Hardware CRC32C of entire payload (offset 92..96)
-    pub total_records: u64,            // Total record count across all tiles (offset 96..104)
-    pub _reserved1: [u64; 32],         // Zero-padded: 256 bytes (offset 104..360)
-    pub _reserved2: [u64; 19],         // Zero-padded: 152 bytes (offset 360..512)
+    pub magic: [u8; 8],                 // b"S3ASTOR1" (offset 0..8)
+    pub schema_version: u32,            // SRS specification version (e.g. 1) (offset 8..12)
+    pub archive_flags: u32,             // Bitmask: IS_IMMUTABLE, IS_SNAPSHOT, etc. (offset 12..16)
+    pub project_uuid: [u64; 2],         // 128-bit persistent project identifier (offset 16..32)
+    pub snapshot_uuid: [u64; 2],        // 128-bit unique checkpoint identifier (offset 32..48)
+    pub parent_snapshot_uuid: [u64; 2], // 128-bit parent checkpoint (0 if initial root) (offset 48..64)
+    pub origin_session_uuid: [u64; 2],  // 128-bit active session identifier (offset 64..80)
+    pub created_at_sec: u64,            // Unix epoch seconds (offset 80..88)
+    pub tile_count: u32,                // Number of Hyper-Tiles in container (offset 88..92)
+    pub crc32c_checksum: u32,           // Hardware CRC32C of entire payload (offset 92..96)
+    pub total_records: u64,             // Total record count across all tiles (offset 96..104)
+    pub _reserved1: [u64; 32],          // Zero-padded: 256 bytes (offset 104..360)
+    pub _reserved2: [u64; 19],          // Zero-padded: 152 bytes (offset 360..512)
 }
 
 pub const SCHOLAR_LAYOUT_VERSION_V1: u32 = 1;
@@ -477,14 +480,14 @@ impl SrsManifestHeader {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Default)]
 pub struct SrsWorkspaceRecord {
-    pub project_uuid: [u64; 2],        // 128-bit project UUID (offset 0..16)
-    pub question_hash: u64,            // Hash of current research question (offset 16..24)
-    pub collection_mask: u64,          // Active collection bitmask (offset 24..32)
-    pub topic_centroid_xyz: [f32; 3],  // Topic cluster centroid coordinates (offset 32..44)
-    pub status: u32,                   // Workspace status (open, investigating, synthesized) (offset 44..48)
-    pub pinned_works_count: u32,       // Number of pinned works (offset 48..52)
-    pub claims_count: u32,             // Number of extracted claims (offset 52..56)
-    pub flags: u64,                    // Flags (offset 56..64)
+    pub project_uuid: [u64; 2],       // 128-bit project UUID (offset 0..16)
+    pub question_hash: u64,           // Hash of current research question (offset 16..24)
+    pub collection_mask: u64,         // Active collection bitmask (offset 24..32)
+    pub topic_centroid_xyz: [f32; 3], // Topic cluster centroid coordinates (offset 32..44)
+    pub status: u32, // Workspace status (open, investigating, synthesized) (offset 44..48)
+    pub pinned_works_count: u32, // Number of pinned works (offset 48..52)
+    pub claims_count: u32, // Number of extracted claims (offset 52..56)
+    pub flags: u64,  // Flags (offset 56..64)
 }
 
 impl SrsWorkspaceRecord {
@@ -547,11 +550,22 @@ impl core::fmt::Display for AgentDenied {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             AgentDenied::AgentDisabled => write!(f, "Agent is disabled in registry"),
-            AgentDenied::ToolExplicitlyDenied { tool_bit } => write!(f, "Tool bit 0x{:08X} is explicitly denied", tool_bit),
-            AgentDenied::ToolNotAllowlisted { tool_bit } => write!(f, "Tool bit 0x{:08X} is not in allowed_tool_mask", tool_bit),
-            AgentDenied::VerbNotAllowlisted { verb_bit } => write!(f, "Verb bit 0x{:08X} is not in allowed_verb_mask", verb_bit),
-            AgentDenied::RequiresHumanGate => write!(f, "Agent action requires human/TA gate approval"),
-            AgentDenied::CorruptionDetected => write!(f, "Corruption detected: redundant safety fields mismatch (possible bit flip)"),
+            AgentDenied::ToolExplicitlyDenied { tool_bit } => {
+                write!(f, "Tool bit 0x{:08X} is explicitly denied", tool_bit)
+            }
+            AgentDenied::ToolNotAllowlisted { tool_bit } => {
+                write!(f, "Tool bit 0x{:08X} is not in allowed_tool_mask", tool_bit)
+            }
+            AgentDenied::VerbNotAllowlisted { verb_bit } => {
+                write!(f, "Verb bit 0x{:08X} is not in allowed_verb_mask", verb_bit)
+            }
+            AgentDenied::RequiresHumanGate => {
+                write!(f, "Agent action requires human/TA gate approval")
+            }
+            AgentDenied::CorruptionDetected => write!(
+                f,
+                "Corruption detected: redundant safety fields mismatch (possible bit flip)"
+            ),
         }
     }
 }
@@ -561,16 +575,16 @@ impl core::fmt::Display for AgentDenied {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 pub struct AgentRegistryRecord {
-    pub agent_id: u64,              // 64-bit stable hash of agent slug (e.g. FNV-1a of "claim-checker") (offset 0..8)
+    pub agent_id: u64, // 64-bit stable hash of agent slug (e.g. FNV-1a of "claim-checker") (offset 0..8)
     pub xapi_profile_iri_hash: u64, // 64-bit hash of bound xAPI Profile IRI (offset 8..16)
     pub owl_ontology_iri_hash: u64, // 64-bit hash of bound OWL Ontology IRI (offset 16..24)
-    pub allowed_verb_mask: u32,     // Bitmask of permitted verbs (offset 24..28)
-    pub allowed_tool_mask: u32,     // Bitmask of permitted tools (offset 28..32)
-    pub denied_tool_mask: u32,      // Hard denials (e.g. publish, credential_export) (offset 32..36)
-    pub agent_kind: u16,            // 1=orchestrator, 2=verifier, 3=custodian, 4=review_coord, 5=citation (offset 36..38)
-    pub flags: u16,                 // Bit 0: ACTIVE, Bit 1: REQUIRES_HUMAN_GATE, Bit 2: DISABLED (offset 38..40)
-    pub version: u64,               // Packed semver (major.minor.patch) or build id (offset 40..48)
-    pub _reserved: [u8; 16],        // Must be zero (offset 48..64)
+    pub allowed_verb_mask: u32, // Bitmask of permitted verbs (offset 24..28)
+    pub allowed_tool_mask: u32, // Bitmask of permitted tools (offset 28..32)
+    pub denied_tool_mask: u32, // Hard denials (e.g. publish, credential_export) (offset 32..36)
+    pub agent_kind: u16, // 1=orchestrator, 2=verifier, 3=custodian, 4=review_coord, 5=citation (offset 36..38)
+    pub flags: u16, // Bit 0: ACTIVE, Bit 1: REQUIRES_HUMAN_GATE, Bit 2: DISABLED (offset 38..40)
+    pub version: u64, // Packed semver (major.minor.patch) or build id (offset 40..48)
+    pub _reserved: [u8; 16], // Must be zero (offset 48..64)
 }
 
 impl AgentRegistryRecord {
@@ -652,7 +666,11 @@ impl AgentRegistryRecord {
     ///
     /// Note: To simultaneously enforce both static allowlists and dynamic human-in-the-loop
     /// supervisory gating for agents with AGENT_FLAG_REQUIRES_HUMAN_GATE, call `assert_allows_gated`.
-    pub fn assert_allows(&self, verb_bit: Option<u32>, tool_bit: Option<u32>) -> Result<(), AgentDenied> {
+    pub fn assert_allows(
+        &self,
+        verb_bit: Option<u32>,
+        tool_bit: Option<u32>,
+    ) -> Result<(), AgentDenied> {
         self.assert_allows_gated(verb_bit, tool_bit, true)
     }
 
@@ -834,15 +852,15 @@ pub const CONTENT_KIND_ABSTRACT: u32 = 3;
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
 pub struct CitationFingerprintRecord {
-    pub paper_id: u64,                 // 64-bit ID or hash of paper / DOI (offset 0..8)
-    pub doi_hash: u64,                 // 64-bit hash of normalized DOI string (offset 8..16)
-    pub content_sha256: [u8; 32],      // SHA-256 cryptographic digest of fetched content bytes (offset 16..48)
-    pub content_kind: u32,             // CONTENT_KIND_PDF (1), HTML (2), ABSTRACT (3) (offset 48..52)
-    pub crossref_version: u32,         // Crossref work update sequence / version number (offset 52..56)
-    pub fetched_at: u64,               // Timestamp when content was fetched in epoch seconds (offset 56..64)
-    pub source_url_hash: u64,          // 64-bit hash of source URL (offset 64..72)
-    pub flags: u64,                    // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 72..80)
-    pub _reserved: [u64; 2],           // Reserved zero padding to 96 bytes (offset 80..96)
+    pub paper_id: u64,            // 64-bit ID or hash of paper / DOI (offset 0..8)
+    pub doi_hash: u64,            // 64-bit hash of normalized DOI string (offset 8..16)
+    pub content_sha256: [u8; 32], // SHA-256 cryptographic digest of fetched content bytes (offset 16..48)
+    pub content_kind: u32,        // CONTENT_KIND_PDF (1), HTML (2), ABSTRACT (3) (offset 48..52)
+    pub crossref_version: u32,    // Crossref work update sequence / version number (offset 52..56)
+    pub fetched_at: u64, // Timestamp when content was fetched in epoch seconds (offset 56..64)
+    pub source_url_hash: u64, // 64-bit hash of source URL (offset 64..72)
+    pub flags: u64,      // FLAG_ACTIVE, FLAG_TOMBSTONE, etc. (offset 72..80)
+    pub _reserved: [u64; 2], // Reserved zero padding to 96 bytes (offset 80..96)
 }
 
 impl CitationFingerprintRecord {
@@ -1024,16 +1042,22 @@ mod tests {
         assert!(legacy.is_legacy_unstamped());
         assert!(legacy.is_active());
         // Permitted action is allowed without inverted-check failure
-        assert!(legacy.assert_allows(None, Some(TOOL_OPENALEX_QUERY)).is_ok());
+        assert!(legacy
+            .assert_allows(None, Some(TOOL_OPENALEX_QUERY))
+            .is_ok());
         // Explicitly denied action is still denied
         assert_eq!(
             legacy.assert_allows(None, Some(TOOL_PUBLISH)),
-            Err(AgentDenied::ToolExplicitlyDenied { tool_bit: TOOL_PUBLISH })
+            Err(AgentDenied::ToolExplicitlyDenied {
+                tool_bit: TOOL_PUBLISH
+            })
         );
         // Unallowlisted tool is denied
         assert_eq!(
             legacy.assert_allows(None, Some(TOOL_MUTATE_GRAPH)),
-            Err(AgentDenied::ToolNotAllowlisted { tool_bit: TOOL_MUTATE_GRAPH })
+            Err(AgentDenied::ToolNotAllowlisted {
+                tool_bit: TOOL_MUTATE_GRAPH
+            })
         );
     }
 
@@ -1062,7 +1086,8 @@ mod tests {
             assert_eq!(
                 flipped.assert_allows(None, Some(TOOL_OPENALEX_QUERY)),
                 Err(AgentDenied::CorruptionDetected),
-                "Flipping bit {} of denied_tool_mask must return CorruptionDetected", bit
+                "Flipping bit {} of denied_tool_mask must return CorruptionDetected",
+                bit
             );
         }
 
@@ -1086,11 +1111,13 @@ mod tests {
             assert_eq!(
                 flipped.assert_allows(None, Some(TOOL_OPENALEX_QUERY)),
                 Err(AgentDenied::CorruptionDetected),
-                "Flipping bit {} of flags must return CorruptionDetected", bit
+                "Flipping bit {} of flags must return CorruptionDetected",
+                bit
             );
             assert!(
                 !flipped.is_active(),
-                "Flipping bit {} of flags must result in inactive agent", bit
+                "Flipping bit {} of flags must result in inactive agent",
+                bit
             );
         }
 
@@ -1102,19 +1129,22 @@ mod tests {
                 assert_eq!(
                     flipped.assert_allows(None, Some(TOOL_OPENALEX_QUERY)),
                     Err(AgentDenied::CorruptionDetected),
-                    "Flipping byte {} bit {} of flags_inv must return CorruptionDetected", byte_idx, bit
+                    "Flipping byte {} bit {} of flags_inv must return CorruptionDetected",
+                    byte_idx,
+                    bit
                 );
                 assert!(
                     !flipped.is_active(),
-                    "Flipping byte {} bit {} of flags_inv must result in inactive agent", byte_idx, bit
+                    "Flipping byte {} bit {} of flags_inv must result in inactive agent",
+                    byte_idx,
+                    bit
                 );
             }
         }
 
         // 5. Test ACTIVE vs TOMBSTONE single bit flips on records
-        let mut active_paper = AcademicPaperRecord::new(
-            1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0,
-        );
+        let mut active_paper =
+            AcademicPaperRecord::new(1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0);
         assert_eq!(active_paper.flags, FLAG_ACTIVE as u64);
         assert!(!active_paper.is_tombstone());
 
@@ -1124,11 +1154,13 @@ mod tests {
 
         // For all other bits (1..64), flipping the bit departs from FLAG_ACTIVE (0)
         for bit in 1..64 {
-            let mut p = AcademicPaperRecord::new(
-                1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0,
-            );
+            let mut p = AcademicPaperRecord::new(1, 100, 0, 0.0, 0.0, 0.0, 10, 2024, 1, 1, 0, 0);
             p.flags ^= 1 << bit;
-            assert_ne!(p.flags, FLAG_ACTIVE as u64, "Bit {} flip cannot leave FLAG_ACTIVE unchanged", bit);
+            assert_ne!(
+                p.flags, FLAG_ACTIVE as u64,
+                "Bit {} flip cannot leave FLAG_ACTIVE unchanged",
+                bit
+            );
         }
     }
 
@@ -1170,19 +1202,16 @@ mod tests {
         assert_eq!(manifest.snapshot_uuid, snapshot_uuid);
         assert_eq!(manifest.tile_count, 5);
         assert_eq!(manifest.total_records, 1250);
-        assert_eq!(manifest.archive_flags & SrsManifestHeader::FLAG_SNAPSHOT, SrsManifestHeader::FLAG_SNAPSHOT);
+        assert_eq!(
+            manifest.archive_flags & SrsManifestHeader::FLAG_SNAPSHOT,
+            SrsManifestHeader::FLAG_SNAPSHOT
+        );
     }
 
     #[test]
     fn test_srs_workspace_record_layout() {
         let project_uuid = [0x123456789abcdef0, 0x0fedcba987654321];
-        let ws = SrsWorkspaceRecord::new(
-            project_uuid,
-            999888,
-            0b1011,
-            [0.25, 0.5, 0.75],
-            1,
-        );
+        let ws = SrsWorkspaceRecord::new(project_uuid, 999888, 0b1011, [0.25, 0.5, 0.75], 1);
 
         assert_eq!(ws.project_uuid, project_uuid);
         assert_eq!(ws.question_hash, 999888);
@@ -1205,7 +1234,8 @@ mod tests {
             0.92,
             CLAIM_KIND_EMPIRICAL,
             "Majorana zero modes observed in semiconductor nanowire junctions",
-        ).with_evidence(
+        )
+        .with_evidence(
             101,
             12,
             340,
@@ -1224,7 +1254,10 @@ mod tests {
         assert_eq!(claim.passage_char_length, 88);
         assert_eq!(claim.producer_id, 0xCAFE);
         assert_eq!(claim.quote_sha256_hex().len(), 64);
-        assert_eq!(claim.verification_statement_uuid_string(), "11112222-3333-4444-5555-666677778888");
+        assert_eq!(
+            claim.verification_statement_uuid_string(),
+            "11112222-3333-4444-5555-666677778888"
+        );
         assert!(claim.matches_query("Majorana"));
         assert!(claim.matches_query("nanowire"));
         assert!(claim.matches_query("semiconductor junctions"));
@@ -1260,4 +1293,3 @@ mod tests {
         assert!(!rec2.is_active());
     }
 }
-

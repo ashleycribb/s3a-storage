@@ -2,8 +2,11 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 
+use s3a_engine::{
+    Compactor, MmapReader, QuerySieve, S3ACoordinate, S3ACrudEngine, TelemetryRecord,
+    TileFusionEngine,
+};
 use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, SrsManifestHeader};
-use s3a_engine::{Compactor, MmapReader, QuerySieve, S3ACrudEngine, TileFusionEngine, TelemetryRecord, S3ACoordinate};
 
 #[repr(C)]
 pub struct S3AHandle {
@@ -247,7 +250,10 @@ pub unsafe extern "C" fn s3a_export_srs(
     };
 
     let p_uuid = [project_uuid_high, project_uuid_low];
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let manifest = SrsManifestHeader::new(p_uuid, [0x1111, ts], [0, 0], [0, 0], ts, 0, 0);
 
     match S3ACrudEngine::open_or_create(live_str) {
@@ -284,10 +290,18 @@ pub unsafe extern "C" fn s3a_intake_srs(
 
     match intake_srs_snapshot(snap_str) {
         Ok(bundle) => {
-            if !out_papers_count.is_null() { *out_papers_count = bundle.papers.len(); }
-            if !out_edges_count.is_null() { *out_edges_count = bundle.evidence_edges.len(); }
-            if !out_human_count.is_null() { *out_human_count = bundle.human_decisions.len(); }
-            if !out_ai_count.is_null() { *out_ai_count = bundle.ai_traces.len(); }
+            if !out_papers_count.is_null() {
+                *out_papers_count = bundle.papers.len();
+            }
+            if !out_edges_count.is_null() {
+                *out_edges_count = bundle.evidence_edges.len();
+            }
+            if !out_human_count.is_null() {
+                *out_human_count = bundle.human_decisions.len();
+            }
+            if !out_ai_count.is_null() {
+                *out_ai_count = bundle.ai_traces.len();
+            }
             0
         }
         Err(_) => -1,
@@ -297,8 +311,8 @@ pub unsafe extern "C" fn s3a_intake_srs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
     use s3a_engine::{TileType, TileWriter};
+    use std::ffi::CString;
 
     struct TestTempFile {
         path: std::path::PathBuf,
@@ -314,7 +328,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let mut path = std::env::temp_dir();
-            path.push(format!("s3a_cabi_test_{}_{}_{}.s3a", std::process::id(), ts, id));
+            path.push(format!(
+                "s3a_cabi_test_{}_{}_{}.s3a",
+                std::process::id(),
+                ts,
+                id
+            ));
             Self { path }
         }
 
@@ -335,16 +354,29 @@ mod tests {
         let temp_file2 = TestTempFile::new();
         let temp_out = TestTempFile::new();
 
-
         let path_str1 = temp_file1.path().to_str().unwrap();
         let path_str2 = temp_file2.path().to_str().unwrap();
         let out_str = temp_out.path().to_str().unwrap();
 
         let mut writer1 = TileWriter::create(temp_file1.path()).unwrap();
-        writer1.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(500, 1, 10, 99.9)], Some(&[500]), None).unwrap();
+        writer1
+            .write_hyper_tile(
+                TileType::TELEMETRY,
+                &[TelemetryRecord::new(500, 1, 10, 99.9)],
+                Some(&[500]),
+                None,
+            )
+            .unwrap();
 
         let mut writer2 = TileWriter::create(temp_file2.path()).unwrap();
-        writer2.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(600, 1, 10, 101.2)], Some(&[600]), None).unwrap();
+        writer2
+            .write_hyper_tile(
+                TileType::TELEMETRY,
+                &[TelemetryRecord::new(600, 1, 10, 101.2)],
+                Some(&[600]),
+                None,
+            )
+            .unwrap();
 
         let c_p1 = CString::new(path_str1).unwrap();
         let c_p2 = CString::new(path_str2).unwrap();
@@ -364,7 +396,8 @@ mod tests {
 
             let mut out_records = [TelemetryRecord::new(0, 0, 0, 0.0); 10];
             let mut out_len = 0;
-            let res = s3a_query_telemetry(handle, 0, 1000, out_records.as_mut_ptr(), 10, &mut out_len);
+            let res =
+                s3a_query_telemetry(handle, 0, 1000, out_records.as_mut_ptr(), 10, &mut out_len);
             assert_eq!(res, 0);
             assert_eq!(out_len, 2);
 
@@ -397,8 +430,8 @@ mod tests {
 
     #[test]
     fn test_cabi_srs_snapshot_export_and_intake() {
-        use s3a_pack_scholar::{AcademicPaperRecord, ScholarCrudExt};
         use s3a_core::ADDON_EDU;
+        use s3a_pack_scholar::{AcademicPaperRecord, ScholarCrudExt};
 
         let live_db = TestTempFile::new();
         let snap_file = TestTempFile::new();
@@ -409,12 +442,19 @@ mod tests {
         // Seed live DB with a paper
         let engine = S3ACrudEngine::open_or_create(live_db.path()).unwrap();
         engine.enable_addon(ADDON_EDU).unwrap();
-        let paper = AcademicPaperRecord::new(5555, 1600000000, 100, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 99);
+        let paper =
+            AcademicPaperRecord::new(5555, 1600000000, 100, 0.1, 0.2, 0.3, 10, 2024, 1, 1, 0, 99);
         engine.create_academic_papers(&[paper]).unwrap();
 
         unsafe {
             let mut total_records = 0u64;
-            let export_res = s3a_export_srs(live_path.as_ptr(), snap_path.as_ptr(), 0x1122, 0x3344, &mut total_records);
+            let export_res = s3a_export_srs(
+                live_path.as_ptr(),
+                snap_path.as_ptr(),
+                0x1122,
+                0x3344,
+                &mut total_records,
+            );
             assert_eq!(export_res, 0);
             assert_eq!(total_records, 1);
 
@@ -423,7 +463,13 @@ mod tests {
             let mut human = 0usize;
             let mut ai = 0usize;
 
-            let intake_res = s3a_intake_srs(snap_path.as_ptr(), &mut papers, &mut edges, &mut human, &mut ai);
+            let intake_res = s3a_intake_srs(
+                snap_path.as_ptr(),
+                &mut papers,
+                &mut edges,
+                &mut human,
+                &mut ai,
+            );
             assert_eq!(intake_res, 0);
             assert_eq!(papers, 1);
             assert_eq!(edges, 0);
@@ -432,4 +478,3 @@ mod tests {
         }
     }
 }
-

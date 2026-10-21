@@ -40,7 +40,12 @@ impl TempArchiveFile {
     fn new(suffix: &str) -> Self {
         let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("s3a_vcs_test_{}_{}_{}.s3a", suffix, std::process::id(), count));
+        p.push(format!(
+            "s3a_vcs_test_{}_{}_{}.s3a",
+            suffix,
+            std::process::id(),
+            count
+        ));
         Self { path: p }
     }
 
@@ -68,7 +73,9 @@ fn test_vcs_commit_signature_verify_and_forgery_rejected() {
     let archive = TempArchiveFile::new("sig_test");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
@@ -76,16 +83,25 @@ fn test_vcs_commit_signature_verify_and_forgery_rejected() {
 
     // 1. Commit and verify signature
     let commit = repo.commit("Initial commit", "main", &key, None).unwrap();
-    assert!(commit.verify_signature(), "Original commit signature must verify cleanly");
+    assert!(
+        commit.verify_signature(),
+        "Original commit signature must verify cleanly"
+    );
 
     // 2. Tampered commit envelope should fail verification
     let mut tampered = commit;
     tampered.message_bytes[0] ^= 0xFF;
-    assert!(!tampered.verify_signature(), "Tampered message must fail signature verification");
+    assert!(
+        !tampered.verify_signature(),
+        "Tampered message must fail signature verification"
+    );
 
     let mut tampered_seal = commit;
     tampered_seal.seal_hash[0] ^= 0xAA;
-    assert!(!tampered_seal.verify_signature(), "Tampered seal hash must fail signature verification");
+    assert!(
+        !tampered_seal.verify_signature(),
+        "Tampered seal hash must fail signature verification"
+    );
 }
 
 #[test]
@@ -93,21 +109,29 @@ fn test_vcs_log_dag_order() {
     let archive = TempArchiveFile::new("log_order");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs1 = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
     let repo = VcsRepo::open(archive.path()).unwrap();
 
-    let c1 = repo.commit("Commit 1: Genesis", "main", &key, None).unwrap();
+    let c1 = repo
+        .commit("Commit 1: Genesis", "main", &key, None)
+        .unwrap();
 
     // Append second tile
     let mut writer2 = TileWriter::open_append(archive.path()).unwrap();
     let recs2 = vec![TelemetryRecord::new(200, 2, 1, 20.0)];
-    writer2.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None).unwrap();
+    writer2
+        .write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)
+        .unwrap();
     drop(writer2);
 
-    let c2 = repo.commit("Commit 2: Second sensor", "main", &key, None).unwrap();
+    let c2 = repo
+        .commit("Commit 2: Second sensor", "main", &key, None)
+        .unwrap();
 
     // Inspect history
     let history = repo.log(Some("main")).unwrap();
@@ -124,7 +148,9 @@ fn test_vcs_branch_and_checkout_isolation() {
     let archive = TempArchiveFile::new("branch_iso");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
@@ -143,7 +169,10 @@ fn test_vcs_branch_and_checkout_isolation() {
 
     // Tag cannot be reassigned to a different commit
     let forged_seal = [0x55u8; 32];
-    assert!(repo.set_tag("v1.0.0", forged_seal, &key).is_err(), "Tags must be immutable");
+    assert!(
+        repo.set_tag("v1.0.0", forged_seal, &key).is_err(),
+        "Tags must be immutable"
+    );
 }
 
 #[test]
@@ -151,7 +180,9 @@ fn test_vcs_diff_counts_without_restricted_payloads() {
     let archive = TempArchiveFile::new("diff_privacy");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
@@ -174,7 +205,9 @@ fn test_vcs_merge_union_and_conflict_detection() {
     let archive = TempArchiveFile::new("merge_union");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
@@ -187,10 +220,14 @@ fn test_vcs_merge_union_and_conflict_detection() {
     // Commit on feature branch
     let mut writer2 = TileWriter::open_append(archive.path()).unwrap();
     let recs2 = vec![TelemetryRecord::new(200, 2, 1, 20.0)];
-    writer2.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None).unwrap();
+    writer2
+        .write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)
+        .unwrap();
     drop(writer2);
 
-    let c_feat = repo.commit("Feature commit", "feature", &key, None).unwrap();
+    let c_feat = repo
+        .commit("Feature commit", "feature", &key, None)
+        .unwrap();
 
     // Merge feature into main (should fast-forward)
     let merge_commit = repo.merge("feature", "main", &key, true).unwrap();
@@ -204,14 +241,20 @@ fn test_vcs_sync_inventory_missing_tiles_only() {
 
     let mut w_src = TileWriter::create(src_file.path()).unwrap();
     let recs1 = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    w_src.write_hyper_tile(TileType::TELEMETRY, &recs1, None, None).unwrap();
+    w_src
+        .write_hyper_tile(TileType::TELEMETRY, &recs1, None, None)
+        .unwrap();
     let recs2 = vec![TelemetryRecord::new(200, 2, 1, 20.0)];
-    w_src.write_hyper_tile(TileType::TELEMETRY, &recs2, None, None).unwrap();
+    w_src
+        .write_hyper_tile(TileType::TELEMETRY, &recs2, None, None)
+        .unwrap();
     drop(w_src);
 
     let key = generate_test_key();
     let src_repo = VcsRepo::open(src_file.path()).unwrap();
-    src_repo.commit("Source commit", "main", &key, None).unwrap();
+    src_repo
+        .commit("Source commit", "main", &key, None)
+        .unwrap();
 
     // Initialize empty target repository
     let tgt_repo = VcsRepo::init(tgt_file.path()).unwrap();
@@ -231,19 +274,37 @@ fn test_vcs_non_fast_forward_rejected() {
     let tgt_file = TempArchiveFile::new("nff_tgt");
 
     let mut w_src = TileWriter::create(src_file.path()).unwrap();
-    w_src.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(100, 1, 1, 1.0)], None, None).unwrap();
+    w_src
+        .write_hyper_tile(
+            TileType::TELEMETRY,
+            &[TelemetryRecord::new(100, 1, 1, 1.0)],
+            None,
+            None,
+        )
+        .unwrap();
     drop(w_src);
 
     let key = generate_test_key();
     let src_repo = VcsRepo::open(src_file.path()).unwrap();
-    src_repo.commit("Source commit", "main", &key, None).unwrap();
+    src_repo
+        .commit("Source commit", "main", &key, None)
+        .unwrap();
 
     let mut w_tgt = TileWriter::create(tgt_file.path()).unwrap();
-    w_tgt.write_hyper_tile(TileType::TELEMETRY, &[TelemetryRecord::new(999, 9, 9, 9.0)], None, None).unwrap();
+    w_tgt
+        .write_hyper_tile(
+            TileType::TELEMETRY,
+            &[TelemetryRecord::new(999, 9, 9, 9.0)],
+            None,
+            None,
+        )
+        .unwrap();
     drop(w_tgt);
 
     let tgt_repo = VcsRepo::open(tgt_file.path()).unwrap();
-    tgt_repo.commit("Divergent target commit", "main", &key, None).unwrap();
+    tgt_repo
+        .commit("Divergent target commit", "main", &key, None)
+        .unwrap();
 
     // Push should fail with NonFastForward
     let res = sync_push(&src_repo, &tgt_repo, "main", false, None, &key);
@@ -267,18 +328,32 @@ fn test_vcs_consent_enforcement_on_push() {
         1,
         [0u8; 32],
     );
-    w_src.write_hyper_tile(TileType::CONSENT, &[consent_rec], None, None).unwrap();
+    w_src
+        .write_hyper_tile(TileType::CONSENT, &[consent_rec], None, None)
+        .unwrap();
     drop(w_src);
 
     let key = generate_test_key();
     let src_repo = VcsRepo::open(src_file.path()).unwrap();
-    src_repo.commit("Consent commit", "main", &key, None).unwrap();
+    src_repo
+        .commit("Consent commit", "main", &key, None)
+        .unwrap();
 
     let tgt_repo = VcsRepo::init(tgt_file.path()).unwrap();
 
     // Push requesting ConsentPurpose::Research (1) should be rejected because record is Marketing (2)
-    let res = sync_push(&src_repo, &tgt_repo, "main", false, Some(1 /* Research */), &key);
-    assert!(res.is_err(), "Push with mismatched consent purpose must be rejected");
+    let res = sync_push(
+        &src_repo,
+        &tgt_repo,
+        "main",
+        false,
+        Some(1 /* Research */),
+        &key,
+    );
+    assert!(
+        res.is_err(),
+        "Push with mismatched consent purpose must be rejected"
+    );
 }
 
 #[test]
@@ -286,15 +361,22 @@ fn test_vcs_export_git_produces_valid_repo() {
     let archive = TempArchiveFile::new("export_git");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
     let repo = VcsRepo::open(archive.path()).unwrap();
-    repo.commit("First git export commit", "main", &key, None).unwrap();
+    repo.commit("First git export commit", "main", &key, None)
+        .unwrap();
 
     let mut git_out = std::env::temp_dir();
-    git_out.push(format!("s3a_git_export_{}_{}", std::process::id(), TEST_COUNTER.fetch_add(1, Ordering::SeqCst)));
+    git_out.push(format!(
+        "s3a_git_export_{}_{}",
+        std::process::id(),
+        TEST_COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
 
     export_git(&repo, &git_out).unwrap();
 
@@ -317,17 +399,26 @@ fn test_manifest_created_timestamp_populated() {
     let archive = TempArchiveFile::new("created_ts");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let recs = vec![TelemetryRecord::new(1700000000, 1, 1, 10.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
     let repo = VcsRepo::open(archive.path()).unwrap();
-    repo.commit("Testing created timestamp", "main", &key, None).unwrap();
+    repo.commit("Testing created timestamp", "main", &key, None)
+        .unwrap();
 
     let reader = MmapReader::open(archive.path()).unwrap();
     let manifest = reader.get_manifest().expect("Manifest must be present");
-    assert!(!manifest.contains("Genesis (Unset)"), "Created timestamp must never be 'Genesis (Unset)'");
-    assert!(manifest.contains("Created:          202"), "Created timestamp must display valid year (202x)");
+    assert!(
+        !manifest.contains("Genesis (Unset)"),
+        "Created timestamp must never be 'Genesis (Unset)'"
+    );
+    assert!(
+        manifest.contains("Created:          202"),
+        "Created timestamp must display valid year (202x)"
+    );
 }
 
 #[test]
@@ -336,7 +427,9 @@ fn test_vcs_claim_conflict_requires_human_no_merge_commit() {
     let mut writer = TileWriter::create(archive.path()).unwrap();
     writer.enable_addon(s3a_core::ADDON_EDU).unwrap();
     let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
@@ -344,7 +437,8 @@ fn test_vcs_claim_conflict_requires_human_no_merge_commit() {
     let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
 
     // Branch feature from base
-    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+    repo.set_branch("feature", base_commit.seal_hash, &key)
+        .unwrap();
 
     // Commit claim version A on main
     let mut w_main = TileWriter::open_append(archive.path()).unwrap();
@@ -357,7 +451,9 @@ fn test_vcs_claim_conflict_requires_human_no_merge_commit() {
         CLAIM_KIND_EMPIRICAL,
         "Trial result: Drug efficacy 85% in target cohort",
     )];
-    w_main.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None).unwrap();
+    w_main
+        .write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None)
+        .unwrap();
     drop(w_main);
     let main_commit = repo.commit("Main claim A", "main", &key, None).unwrap();
 
@@ -372,14 +468,21 @@ fn test_vcs_claim_conflict_requires_human_no_merge_commit() {
         CLAIM_KIND_EMPIRICAL,
         "Trial result: Drug efficacy 42% in target cohort",
     )];
-    w_feat.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None).unwrap();
+    w_feat
+        .write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None)
+        .unwrap();
     drop(w_feat);
-    let _feat_commit = repo.commit("Feature claim B", "feature", &key, None).unwrap();
+    let _feat_commit = repo
+        .commit("Feature claim B", "feature", &key, None)
+        .unwrap();
 
     // Merge feature into main: must NOT auto-resolve or pick a side!
     let merge_res = repo.merge("feature", "main", &key, false).unwrap();
     match merge_res {
-        VcsMergeResult::ConflictNeedsHuman { conflicting_records, message } => {
+        VcsMergeResult::ConflictNeedsHuman {
+            conflicting_records,
+            message,
+        } => {
             assert_eq!(conflicting_records.len(), 1);
             assert_eq!(conflicting_records[0].record_id, "claim_42");
             assert!(conflicting_records[0].requires_human_judgment);
@@ -402,14 +505,17 @@ fn test_vcs_signed_human_resolution_allows_merge_to_complete() {
     let mut writer = TileWriter::create(archive.path()).unwrap();
     writer.enable_addon(s3a_core::ADDON_EDU).unwrap();
     let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
     let repo = VcsRepo::open(archive.path()).unwrap();
     let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
 
-    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+    repo.set_branch("feature", base_commit.seal_hash, &key)
+        .unwrap();
 
     // Main claim A
     let mut w_main = TileWriter::open_append(archive.path()).unwrap();
@@ -422,7 +528,9 @@ fn test_vcs_signed_human_resolution_allows_merge_to_complete() {
         CLAIM_KIND_EMPIRICAL,
         "Efficacy 85%",
     )];
-    w_main.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None).unwrap();
+    w_main
+        .write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_a, None, None)
+        .unwrap();
     drop(w_main);
     let main_commit = repo.commit("Main claim A", "main", &key, None).unwrap();
 
@@ -437,13 +545,20 @@ fn test_vcs_signed_human_resolution_allows_merge_to_complete() {
         CLAIM_KIND_EMPIRICAL,
         "Efficacy 42%",
     )];
-    w_feat.write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None).unwrap();
+    w_feat
+        .write_hyper_tile(ScholarTileType::NOTE_CLAIMS, &claim_b, None, None)
+        .unwrap();
     drop(w_feat);
-    let feat_commit = repo.commit("Feature claim B", "feature", &key, None).unwrap();
+    let feat_commit = repo
+        .commit("Feature claim B", "feature", &key, None)
+        .unwrap();
 
     // Merge initially blocked
     let first_merge = repo.merge("feature", "main", &key, false).unwrap();
-    assert!(matches!(first_merge, VcsMergeResult::ConflictNeedsHuman { .. }));
+    assert!(matches!(
+        first_merge,
+        VcsMergeResult::ConflictNeedsHuman { .. }
+    ));
 
     // Human supervisor signs resolution selecting target (Main claim A)
     let supervisor_key = generate_test_key();
@@ -465,7 +580,10 @@ fn test_vcs_signed_human_resolution_allows_merge_to_complete() {
             assert_eq!(c.parent_seal_hashes[0], main_commit.seal_hash);
             assert_eq!(c.parent_seal_hashes[1], feat_commit.seal_hash);
         }
-        _ => panic!("Expected Merged after signed resolution, got {:?}", second_merge),
+        _ => panic!(
+            "Expected Merged after signed resolution, got {:?}",
+            second_merge
+        ),
     }
 
     // Verify main branch now points to merge commit
@@ -478,37 +596,51 @@ fn test_vcs_non_claim_conflicts_unchanged() {
     let archive = TempArchiveFile::new("non_claim_conflict");
     let mut writer = TileWriter::create(archive.path()).unwrap();
     let base_rec = vec![TelemetryRecord::new(100, 1, 1, 1.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &base_rec, None, None)
+        .unwrap();
     drop(writer);
 
     let key = generate_test_key();
     let repo = VcsRepo::open(archive.path()).unwrap();
     let base_commit = repo.commit("Base commit", "main", &key, None).unwrap();
 
-    repo.set_branch("feature", base_commit.seal_hash, &key).unwrap();
+    repo.set_branch("feature", base_commit.seal_hash, &key)
+        .unwrap();
 
     // Divergent TelemetryRecord on main (sensor 9, metric 9, timestamp 500, value 10.0)
     let mut w_main = TileWriter::open_append(archive.path()).unwrap();
     let tel_a = vec![TelemetryRecord::new(500, 9, 9, 10.0)];
-    w_main.write_hyper_tile(TileType::TELEMETRY, &tel_a, None, None).unwrap();
+    w_main
+        .write_hyper_tile(TileType::TELEMETRY, &tel_a, None, None)
+        .unwrap();
     drop(w_main);
     repo.commit("Main telemetry", "main", &key, None).unwrap();
 
     // Divergent TelemetryRecord on feature (same sensor 9, metric 9, timestamp 500, value 99.0)
     let mut w_feat = TileWriter::open_append(archive.path()).unwrap();
     let tel_b = vec![TelemetryRecord::new(500, 9, 9, 99.0)];
-    w_feat.write_hyper_tile(TileType::TELEMETRY, &tel_b, None, None).unwrap();
+    w_feat
+        .write_hyper_tile(TileType::TELEMETRY, &tel_b, None, None)
+        .unwrap();
     drop(w_feat);
-    repo.commit("Feature telemetry", "feature", &key, None).unwrap();
+    repo.commit("Feature telemetry", "feature", &key, None)
+        .unwrap();
 
     // Merge produces standard MergeConflict error without human judgment gating
     let merge_err = repo.merge("feature", "main", &key, false).unwrap_err();
     match merge_err {
-        VcsError::MergeConflict { requires_human_judgment, conflicting_record_ids, .. } => {
-            assert!(!requires_human_judgment, "Non-claim conflict must not require human judgment");
+        VcsError::MergeConflict {
+            requires_human_judgment,
+            conflicting_record_ids,
+            ..
+        } => {
+            assert!(
+                !requires_human_judgment,
+                "Non-claim conflict must not require human judgment"
+            );
             assert!(conflicting_record_ids.contains(&"telemetry_9_9_500".to_string()));
         }
         _ => panic!("Expected standard MergeConflict, got {:?}", merge_err),
     }
 }
-

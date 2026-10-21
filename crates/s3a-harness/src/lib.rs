@@ -18,11 +18,11 @@ pub mod tools;
 pub mod trajectory;
 pub mod vcs;
 
-pub use vcs::harness_merge;
 pub use repair::{
     parse_structured_failures, run_repair_loop, RepairAttemptResult, RepairLoopReport,
     RepairOutcome,
 };
+pub use vcs::harness_merge;
 
 pub use agent::{
     EpistemicConfidenceTier, GateRejectionLog, GateStatus, HallucinationRisk, HumanGateRequest,

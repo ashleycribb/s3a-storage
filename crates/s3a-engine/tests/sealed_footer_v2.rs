@@ -75,7 +75,9 @@ fn test_index_lookup_reads_only_footer_bytes() {
             TelemetryRecord::new(100 + i, 1, 1, 10.0 * (i as f64)),
             TelemetryRecord::new(200 + i, 1, 2, 20.0 * (i as f64)),
         ];
-        writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+            .unwrap();
     }
     drop(writer);
 
@@ -118,7 +120,9 @@ fn test_corrupted_index_hash_rejected() {
 
     let mut writer = TileWriter::create(&raw.path).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 42.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let opts = SealOptionsV2::default();
@@ -251,7 +255,9 @@ fn test_anchors_verify_against_seal_hash() {
 
     let mut writer = TileWriter::create(&raw.path).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 42.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     let opts = SealOptionsV2::default();
@@ -289,7 +295,9 @@ fn test_optional_parity_repairs_up_to_m_and_fails_beyond() {
     let mut writer = TileWriter::create(&raw.path).unwrap();
     for i in 0..4 {
         let recs = vec![TelemetryRecord::new(100 + i, i as u32, 1, 10.0)];
-        writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+        writer
+            .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+            .unwrap();
     }
     drop(writer);
 
@@ -338,7 +346,11 @@ fn test_optional_parity_repairs_up_to_m_and_fails_beyond() {
 
     let err3 = verify_sealed_archive(&sealed.path, None).unwrap_err();
     match err3 {
-        S3AError::UnrepairableCorruption { group_idx, corrupted_count, max_repairable } => {
+        S3AError::UnrepairableCorruption {
+            group_idx,
+            corrupted_count,
+            max_repairable,
+        } => {
             assert_eq!(group_idx, 0);
             assert_eq!(corrupted_count, 3);
             assert_eq!(max_repairable, 2);
@@ -372,7 +384,9 @@ fn test_v1_file_still_opens_and_verifies_backcompat() {
 
     let mut writer = TileWriter::create(&raw.path).unwrap();
     let recs = vec![TelemetryRecord::new(100, 1, 1, 42.0)];
-    writer.write_hyper_tile(TileType::TELEMETRY, &recs, None, None).unwrap();
+    writer
+        .write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+        .unwrap();
     drop(writer);
 
     // Write with explicit v1 format

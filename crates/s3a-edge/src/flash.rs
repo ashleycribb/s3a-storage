@@ -25,10 +25,24 @@ pub trait FlashStorage {
 /// Errors returned by the in-memory RAM flash simulator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RamFlashError {
-    OutOfBounds { offset: usize, requested: usize, capacity: usize },
-    UnalignedErase { offset: usize, len: usize, sector_size: usize },
-    CannotWriteWithoutErase { offset: usize, current: u8, attempted: u8 },
-    SimulatedPowerCut { bytes_written_before_cut: usize },
+    OutOfBounds {
+        offset: usize,
+        requested: usize,
+        capacity: usize,
+    },
+    UnalignedErase {
+        offset: usize,
+        len: usize,
+        sector_size: usize,
+    },
+    CannotWriteWithoutErase {
+        offset: usize,
+        current: u8,
+        attempted: u8,
+    },
+    SimulatedPowerCut {
+        bytes_written_before_cut: usize,
+    },
 }
 
 /// Simulated SPI NOR Flash memory buffer for deterministic unit testing.

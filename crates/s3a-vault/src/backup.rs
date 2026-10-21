@@ -1,13 +1,13 @@
 //! Encrypted vault disaster recovery backup and restore containers (§6.3).
 
-use std::fs;
-use std::path::Path;
 use argon2::Argon2;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
 use rand_core::{OsRng, RngCore};
+use std::fs;
+use std::path::Path;
 use zeroize::Zeroize;
 
 use crate::errors::VaultError;
@@ -88,9 +88,11 @@ pub fn restore_backup(
         .map_err(|e| VaultError::KeyStoreError(format!("Cipher init failed: {}", e)))?;
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let decrypted = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| VaultError::KeyStoreError("Backup decryption failed (invalid passphrase or corrupted container)".into()))?;
+    let decrypted = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        VaultError::KeyStoreError(
+            "Backup decryption failed (invalid passphrase or corrupted container)".into(),
+        )
+    })?;
 
     derived_key.zeroize();
 
@@ -113,7 +115,8 @@ mod tests {
         let backup_file = temp_dir.path().join("vault.backup");
         let restored_vault = temp_dir.path().join("restored.vault.s3a");
 
-        let original_data = b"S3A2\x01\x00Mock Vault Archive Content For Testing Roundtrip 1234567890";
+        let original_data =
+            b"S3A2\x01\x00Mock Vault Archive Content For Testing Roundtrip 1234567890";
         fs::write(&src_vault, original_data).unwrap();
 
         let pass = "vault-backup-master-phrase";

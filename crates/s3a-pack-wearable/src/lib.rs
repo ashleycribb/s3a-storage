@@ -16,7 +16,10 @@ mod tests {
     #[test]
     fn test_wearable_record_layout_and_quantization() {
         assert_eq!(size_of::<CompactWearableRecord>(), 16);
-        assert_eq!(MICRO_TILE_PAYLOAD_SIZE / size_of::<CompactWearableRecord>(), 248);
+        assert_eq!(
+            MICRO_TILE_PAYLOAD_SIZE / size_of::<CompactWearableRecord>(),
+            248
+        );
 
         let rec = CompactWearableRecord::new(100, 1, 10, 72.5);
         assert_eq!(rec.sensor_id, 1);
@@ -35,7 +38,13 @@ mod tests {
 
     #[test]
     fn test_wearable_write_and_query_roundtrip() {
-        let temp = std::env::temp_dir().join(format!("s3a_test_wearable_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp = std::env::temp_dir().join(format!(
+            "s3a_test_wearable_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let engine = S3ACrudEngine::open_or_create(&temp).unwrap();
         engine.enable_addon(ADDON_WEARABLE).unwrap();
 

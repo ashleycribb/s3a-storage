@@ -14,15 +14,14 @@ use sha2::{Digest, Sha256};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use s3a_core::*;
-use s3a_engine::{
-    format_iso8601_ms, u64_pair_to_uuid, uuid_to_u64_pair, LrsStore, LrsStoreError,
-    StatementFilter,
-};
 use s3a_engine::concurrent_writer::ConcurrentTileWriter;
+use s3a_engine::{
+    format_iso8601_ms, u64_pair_to_uuid, uuid_to_u64_pair, LrsStore, LrsStoreError, StatementFilter,
+};
 
-pub mod learner_api;
-pub mod gate_directory;
 pub mod batch_sync;
+pub mod gate_directory;
+pub mod learner_api;
 
 /// Represents an authorized credential with granular xAPI scopes and optional archive mapping.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -45,7 +44,10 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (&x, &y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (&x, &y)| acc | (x ^ y))
+        == 0
 }
 
 /// Writes an audit entry to the dedicated audit archive.
@@ -89,7 +91,9 @@ pub fn run_daily_anchor_job(
         .as_secs();
     let date_str = s3a_engine::format_iso8601_ms(now * 1000)[..10].to_string();
 
-    let parent_dir = archive_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let parent_dir = archive_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     let snap_path = parent_dir.join(format!("lrs_snapshot_{}.snapshot.s3a", date_str));
     let audit_snap_path = parent_dir.join(format!("lrs_audit_{}.snapshot.s3a", date_str));
 
@@ -100,7 +104,10 @@ pub fn run_daily_anchor_job(
 
     // 2. Seal audit archive into snapshot
     if audit_archive_path.exists()
-        && std::fs::metadata(audit_archive_path).map(|m| m.len()).unwrap_or(0) >= FILE_HEADER_SIZE as u64
+        && std::fs::metadata(audit_archive_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+            >= FILE_HEADER_SIZE as u64
     {
         if let Ok(audit_bytes) = std::fs::read(audit_archive_path) {
             if let Ok(sealed_audit) = s3a_engine::seal_buffer(&audit_bytes, 16, 2) {
@@ -115,14 +122,18 @@ pub fn run_daily_anchor_job(
     // 3. Compute fingerprints
     let fp = s3a_engine::compute_sealed_file_fingerprint(&snap_path)?;
     let fp_hex = hex::encode(fp);
-    let audit_fp = s3a_engine::compute_sealed_file_fingerprint(&audit_snap_path).unwrap_or([0u8; 32]);
+    let audit_fp =
+        s3a_engine::compute_sealed_file_fingerprint(&audit_snap_path).unwrap_or([0u8; 32]);
     let audit_fp_hex = hex::encode(audit_fp);
 
     // 4. Anchor snapshot
     let calendars: Vec<String> = if let Some(c) = calendar_urls {
         c.to_vec()
     } else {
-        s3a_engine::DEFAULT_OTS_CALENDARS.iter().map(|&s| s.to_string()).collect()
+        s3a_engine::DEFAULT_OTS_CALENDARS
+            .iter()
+            .map(|&s| s.to_string())
+            .collect()
     };
 
     if let Some(tsa) = tsa_url {
@@ -186,7 +197,8 @@ pub fn is_valid_archive_name(name: &str) -> bool {
     if stem.is_empty() {
         return false;
     }
-    stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+    stem.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
 }
 
 /// Configuration for the S3A LRS Server.
@@ -268,10 +280,18 @@ impl AppState {
         audit_writer: Arc<ConcurrentTileWriter>,
     ) -> Result<Arc<AppState>, String> {
         // Ensure data directory exists and canonicalize it
-        std::fs::create_dir_all(&config.data_dir)
-            .map_err(|e| format!("Failed to create data directory {:?}: {}", config.data_dir, e))?;
-        config.data_dir = std::fs::canonicalize(&config.data_dir)
-            .map_err(|e| format!("Failed to canonicalize data directory {:?}: {}", config.data_dir, e))?;
+        std::fs::create_dir_all(&config.data_dir).map_err(|e| {
+            format!(
+                "Failed to create data directory {:?}: {}",
+                config.data_dir, e
+            )
+        })?;
+        config.data_dir = std::fs::canonicalize(&config.data_dir).map_err(|e| {
+            format!(
+                "Failed to canonicalize data directory {:?}: {}",
+                config.data_dir, e
+            )
+        })?;
 
         let archive_name = config
             .archive_path
@@ -288,9 +308,16 @@ impl AppState {
         }
         config.archive_path = config.data_dir.join(&archive_name);
 
-        println!("[s3a-lrs-server] Opening S3A archive: {:?}", config.archive_path);
-        let default_store = LrsStore::open_or_create(&config.archive_path)
-            .map_err(|e| format!("Failed to open default S3A archive {:?}: {}", config.archive_path, e))?;
+        println!(
+            "[s3a-lrs-server] Opening S3A archive: {:?}",
+            config.archive_path
+        );
+        let default_store = LrsStore::open_or_create(&config.archive_path).map_err(|e| {
+            format!(
+                "Failed to open default S3A archive {:?}: {}",
+                config.archive_path, e
+            )
+        })?;
 
         if config.enable_scholar {
             let _ = default_store.writer().enable_addon(s3a_core::ADDON_EDU);
@@ -350,8 +377,12 @@ impl AppState {
                 }
 
                 // Open or create the credential archive; never panic on failure!
-                let cred_store = LrsStore::open_or_create(&arch_path)
-                    .map_err(|e| format!("Failed to open credential archive '{}' at {:?}: {}", arch, arch_path, e))?;
+                let cred_store = LrsStore::open_or_create(&arch_path).map_err(|e| {
+                    format!(
+                        "Failed to open credential archive '{}' at {:?}: {}",
+                        arch, arch_path, e
+                    )
+                })?;
 
                 if config.enable_scholar {
                     let _ = cred_store.writer().enable_addon(s3a_core::ADDON_EDU);
@@ -382,8 +413,9 @@ impl AppState {
         } else {
             None
         };
-        let gate_directory_svc = gate_directory::GateDirectoryService::open_or_create(gate_dir_path, gate_limits)
-            .map_err(|e| format!("Failed to initialize Gate Directory: {}", e))?;
+        let gate_directory_svc =
+            gate_directory::GateDirectoryService::open_or_create(gate_dir_path, gate_limits)
+                .map_err(|e| format!("Failed to initialize Gate Directory: {}", e))?;
 
         let batch_sync_svc = batch_sync::BatchSyncService::new(batch_sync::BatchSyncLimits {
             max_body_bytes: config.max_batch_body_bytes,
@@ -429,7 +461,10 @@ impl AppState {
     /// Any archive name must be a bare filename matching ^[A-Za-z0-9_.-]+\.s3a$,
     /// resolved inside data_dir, canonicalized and confirmed to land inside it.
     /// Refuses to create new archive files through a request.
-    pub fn get_or_open_store(&self, archive_str: &str) -> Result<Arc<LrsStore>, s3a_engine::LrsStoreError> {
+    pub fn get_or_open_store(
+        &self,
+        archive_str: &str,
+    ) -> Result<Arc<LrsStore>, s3a_engine::LrsStoreError> {
         if !is_valid_archive_name(archive_str) {
             return Err(s3a_engine::LrsStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -518,16 +553,21 @@ impl AppState {
         if let Some(c) = cred {
             if let Some(ref arch) = c.archive {
                 if !is_valid_archive_name(arch) {
-                    return Err(format!("Credential assigned invalid archive name '{}'", arch));
+                    return Err(format!(
+                        "Credential assigned invalid archive name '{}'",
+                        arch
+                    ));
                 }
-                let st = self.get_or_open_store(arch)
-                    .map_err(|e| format!("Failed to open credential archive '{}': {:?}", arch, e))?;
+                let st = self.get_or_open_store(arch).map_err(|e| {
+                    format!("Failed to open credential archive '{}': {:?}", arch, e)
+                })?;
                 return Ok((st, arch.clone()));
             }
         }
 
         // 2. Check override param/header for credentials without an assigned archive
-        let override_opt = params.get("archive")
+        let override_opt = params
+            .get("archive")
             .or_else(|| headers.get("x-s3a-archive"))
             .or_else(|| headers.get("x-archive"));
 
@@ -541,18 +581,27 @@ impl AppState {
 
             let is_admin = cred.map(|c| c.has_scope("admin")).unwrap_or(false);
             if is_admin && self.config.admin_api_override {
-                let st = self.get_or_open_store(override_arch)
-                    .map_err(|e| format!("Failed to open override archive '{}': {:?}", override_arch, e))?;
+                let st = self.get_or_open_store(override_arch).map_err(|e| {
+                    format!(
+                        "Failed to open override archive '{}': {:?}",
+                        override_arch, e
+                    )
+                })?;
                 return Ok((st, override_arch.clone()));
             }
         }
 
         // 3. Fallback to default configured archive
-        let default_name = self.config.archive_path.file_name().and_then(|s| s.to_str()).unwrap_or("lrs_data.s3a").to_string();
+        let default_name = self
+            .config
+            .archive_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("lrs_data.s3a")
+            .to_string();
         Ok((self.default_store.clone(), default_name))
     }
 }
-
 
 fn main() {
     let mut config = ServerConfig::default();
@@ -579,7 +628,8 @@ fn main() {
             }
             "--max-mailbox-total-bytes" => {
                 if i + 1 < args.len() {
-                    config.max_mailbox_total_bytes = args[i + 1].parse().unwrap_or(100 * 1024 * 1024);
+                    config.max_mailbox_total_bytes =
+                        args[i + 1].parse().unwrap_or(100 * 1024 * 1024);
                     i += 1;
                 }
             }
@@ -672,7 +722,9 @@ fn main() {
                         } else {
                             for line in content.lines() {
                                 let line = line.trim();
-                                if line.is_empty() || line.starts_with('#') { continue; }
+                                if line.is_empty() || line.starts_with('#') {
+                                    continue;
+                                }
                                 let parts: Vec<&str> = line.split(':').collect();
                                 if parts.len() >= 2 {
                                     let scopes = if parts.len() >= 3 {
@@ -680,7 +732,8 @@ fn main() {
                                     } else {
                                         vec!["all".to_string()]
                                     };
-                                    let archive = if parts.len() >= 4 && !parts[3].trim().is_empty() {
+                                    let archive = if parts.len() >= 4 && !parts[3].trim().is_empty()
+                                    {
                                         let a = parts[3].trim().to_string();
                                         if !is_valid_archive_name(&a) {
                                             eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
@@ -795,9 +848,15 @@ fn main() {
 
     // Ensure data directory exists and canonicalize it
     std::fs::create_dir_all(&config.data_dir).expect("Failed to create data directory");
-    config.data_dir = std::fs::canonicalize(&config.data_dir).expect("Failed to canonicalize data directory");
+    config.data_dir =
+        std::fs::canonicalize(&config.data_dir).expect("Failed to canonicalize data directory");
 
-    let archive_name = config.archive_path.file_name().and_then(|s| s.to_str()).unwrap_or("lrs_data.s3a").to_string();
+    let archive_name = config
+        .archive_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("lrs_data.s3a")
+        .to_string();
     if !is_valid_archive_name(&archive_name) {
         eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}': must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", archive_name);
         std::process::exit(1);
@@ -818,14 +877,23 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("[s3a-lrs-server] Opening audit archive: {:?}", config.audit_archive_path);
+    println!(
+        "[s3a-lrs-server] Opening audit archive: {:?}",
+        config.audit_archive_path
+    );
     let audit_writer = if config.audit_archive_path.exists()
-        && std::fs::metadata(&config.audit_archive_path).map(|m| m.len()).unwrap_or(0) >= FILE_HEADER_SIZE as u64
+        && std::fs::metadata(&config.audit_archive_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+            >= FILE_HEADER_SIZE as u64
     {
         match ConcurrentTileWriter::open_append(&config.audit_archive_path) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("[s3a-lrs-server] ERROR: Failed to open audit archive {:?}: {}", config.audit_archive_path, e);
+                eprintln!(
+                    "[s3a-lrs-server] ERROR: Failed to open audit archive {:?}: {}",
+                    config.audit_archive_path, e
+                );
                 std::process::exit(1);
             }
         }
@@ -833,7 +901,10 @@ fn main() {
         match ConcurrentTileWriter::create(&config.audit_archive_path) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("[s3a-lrs-server] ERROR: Failed to create audit archive {:?}: {}", config.audit_archive_path, e);
+                eprintln!(
+                    "[s3a-lrs-server] ERROR: Failed to create audit archive {:?}: {}",
+                    config.audit_archive_path, e
+                );
                 std::process::exit(1);
             }
         }
@@ -853,38 +924,36 @@ fn main() {
     let server = match Server::http(addr) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[s3a-lrs-server] ERROR: Failed to bind HTTP server on {}: {}", addr, e);
+            eprintln!(
+                "[s3a-lrs-server] ERROR: Failed to bind HTTP server on {}: {}",
+                addr, e
+            );
             std::process::exit(1);
         }
     };
     println!("[s3a-lrs-server] Listening on http://{}", addr);
-
 
     if state.config.enable_daily_anchoring {
         let store_clone = state.default_store.clone();
         let archive_path = state.config.archive_path.clone();
         let audit_path = state.config.audit_archive_path.clone();
         let interval_secs = state.config.anchoring_interval_secs;
-        thread::spawn(move || {
-            loop {
-                thread::sleep(std::time::Duration::from_secs(interval_secs));
-                let _ = run_daily_anchor_job(&store_clone, &archive_path, &audit_path, None, None);
-            }
+        thread::spawn(move || loop {
+            thread::sleep(std::time::Duration::from_secs(interval_secs));
+            let _ = run_daily_anchor_job(&store_clone, &archive_path, &audit_path, None, None);
         });
     }
 
     if state.config.enable_gate_directory {
         let gate_dir = state.gate_directory.clone();
-        thread::spawn(move || {
-            loop {
-                thread::sleep(std::time::Duration::from_secs(3600));
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if let Ok(mut dir) = gate_dir.lock() {
-                    let _ = dir.purge_expired_items(now);
-                }
+        thread::spawn(move || loop {
+            thread::sleep(std::time::Duration::from_secs(3600));
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if let Ok(mut dir) = gate_dir.lock() {
+                let _ = dir.purge_expired_items(now);
             }
         });
     }
@@ -926,7 +995,10 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     let mut method = req.method().clone();
     let mut headers_map: HashMap<String, String> = HashMap::new();
     for h in req.headers() {
-        headers_map.insert(h.field.to_string().to_ascii_lowercase(), h.value.to_string());
+        headers_map.insert(
+            h.field.to_string().to_ascii_lowercase(),
+            h.value.to_string(),
+        );
     }
 
     let mut query_params = parse_query(&query_str);
@@ -958,8 +1030,14 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
                     "learner_goals": "/api/goal"
                 },
                 "status": "ready"
-            }).to_string();
-            let resp = make_response(200, "application/json", info_json.as_bytes(), method == Method::Head);
+            })
+            .to_string();
+            let resp = make_response(
+                200,
+                "application/json",
+                info_json.as_bytes(),
+                method == Method::Head,
+            );
             let _ = req.respond(resp);
             return;
         }
@@ -969,8 +1047,18 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // Alternate Request Syntax (xAPI 1.0.3 §4.2)
     // -------------------------------------------------------------------------
     if req.method() != &Method::Post && query_params.contains_key("method") {
-        let resp = make_error_response(400, "Method query parameter is only allowed on POST requests (xAPI 1.0.3 §4.2)");
-        log_audit(&state.audit_writer, "unknown", req.method().as_str(), &path, "", 400);
+        let resp = make_error_response(
+            400,
+            "Method query parameter is only allowed on POST requests (xAPI 1.0.3 §4.2)",
+        );
+        log_audit(
+            &state.audit_writer,
+            "unknown",
+            req.method().as_str(),
+            &path,
+            "",
+            400,
+        );
         let _ = req.respond(resp);
         return;
     }
@@ -980,7 +1068,14 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
             // Check if there are any other query parameters besides "method"
             if query_params.len() > 1 {
                 let resp = make_error_response(400, "Alternate request syntax MUST NOT submit any parameter as a query string parameter other than 'method' (xAPI 1.0.3 §4.2)");
-                log_audit(&state.audit_writer, "unknown", req.method().as_str(), &path, "", 400);
+                log_audit(
+                    &state.audit_writer,
+                    "unknown",
+                    req.method().as_str(),
+                    &path,
+                    "",
+                    400,
+                );
                 let _ = req.respond(resp);
                 return;
             }
@@ -1026,9 +1121,20 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
                 }
             }
 
-            if (method == Method::Put || method == Method::Post) && !has_content && body_bytes.is_empty() {
-                let resp = make_error_response(400, "Missing 'content' parameter in form-urlencoded body");
-                log_audit(&state.audit_writer, "unknown", method.as_str(), &path, "", 400);
+            if (method == Method::Put || method == Method::Post)
+                && !has_content
+                && body_bytes.is_empty()
+            {
+                let resp =
+                    make_error_response(400, "Missing 'content' parameter in form-urlencoded body");
+                log_audit(
+                    &state.audit_writer,
+                    "unknown",
+                    method.as_str(),
+                    &path,
+                    "",
+                    400,
+                );
                 let _ = req.respond(resp);
                 return;
             }
@@ -1041,13 +1147,32 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     if path == "/about" || path == "/about/" {
         if method == Method::Get || method == Method::Head {
             let about_json = r#"{"version":["1.0.3"]}"#;
-            let resp = make_response(200, "application/json", about_json.as_bytes(), method == Method::Head);
-            log_audit(&state.audit_writer, "public", method.as_str(), &path, "", 200);
+            let resp = make_response(
+                200,
+                "application/json",
+                about_json.as_bytes(),
+                method == Method::Head,
+            );
+            log_audit(
+                &state.audit_writer,
+                "public",
+                method.as_str(),
+                &path,
+                "",
+                200,
+            );
             let _ = req.respond(resp);
             return;
         } else {
             let resp = make_error_response(405, "Method Not Allowed");
-            log_audit(&state.audit_writer, "public", method.as_str(), &path, "", 405);
+            log_audit(
+                &state.audit_writer,
+                "public",
+                method.as_str(),
+                &path,
+                "",
+                405,
+            );
             let _ = req.respond(resp);
             return;
         }
@@ -1056,8 +1181,19 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // -------------------------------------------------------------------------
     // LEARNER API (IEEE P2997 Subset / ADL ELRR REST Service)
     // -------------------------------------------------------------------------
-    if path.starts_with("/api/") || path == "/api" || path.starts_with("/admin/") || path == "/admin" {
-        let resp = learner_api::handle_learner_api(&method, &path, &query_params, &headers_map, &body_bytes, &state);
+    if path.starts_with("/api/")
+        || path == "/api"
+        || path.starts_with("/admin/")
+        || path == "/admin"
+    {
+        let resp = learner_api::handle_learner_api(
+            &method,
+            &path,
+            &query_params,
+            &headers_map,
+            &body_bytes,
+            &state,
+        );
         let _ = req.respond(resp);
         return;
     }
@@ -1070,7 +1206,13 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
             .remote_addr()
             .map(|a| a.ip().to_string())
             .unwrap_or_else(|| "127.0.0.1".to_string());
-        let resp = gate_directory::handle_gate_directory(&method, &path, &body_bytes, &client_id, &state.gate_directory);
+        let resp = gate_directory::handle_gate_directory(
+            &method,
+            &path,
+            &body_bytes,
+            &client_id,
+            &state.gate_directory,
+        );
         let _ = req.respond(resp);
         return;
     }
@@ -1107,8 +1249,18 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
             Some(c) => c,
             None => {
                 let mut resp = make_error_response(401, "Unauthorized");
-                resp.add_header(Header::from_bytes(&b"WWW-Authenticate"[..], &b"Basic realm=\"S3A-LRS\""[..]).unwrap());
-                log_audit(&state.audit_writer, "anonymous", method.as_str(), &path, "", 401);
+                resp.add_header(
+                    Header::from_bytes(&b"WWW-Authenticate"[..], &b"Basic realm=\"S3A-LRS\""[..])
+                        .unwrap(),
+                );
+                log_audit(
+                    &state.audit_writer,
+                    "anonymous",
+                    method.as_str(),
+                    &path,
+                    "",
+                    401,
+                );
                 let _ = req.respond(resp);
                 return;
             }
@@ -1138,7 +1290,14 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
 
         if !has_scope {
             let resp = make_error_response(403, "Forbidden: credential lacks required scope");
-            log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 403);
+            log_audit(
+                &state.audit_writer,
+                &authenticated_user,
+                method.as_str(),
+                &path,
+                "",
+                403,
+            );
             let _ = req.respond(resp);
             return;
         }
@@ -1166,27 +1325,43 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
 
         if !has_scope {
             let resp = make_error_response(403, "Forbidden: credential lacks required scope");
-            log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 403);
+            log_audit(
+                &state.audit_writer,
+                &authenticated_user,
+                method.as_str(),
+                &path,
+                "",
+                403,
+            );
             let _ = req.respond(resp);
             return;
         }
     }
 
-    let (active_store, active_archive) = match state.resolve_store_and_archive(matched_cred, &query_params, &headers_map) {
-        Ok(res) => res,
-        Err(err_msg) => {
-            let resp = make_error_response(403, &format!("Forbidden: {}", err_msg));
-            log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 403);
-            let _ = req.respond(resp);
-            return;
-        }
-    };
+    let (active_store, active_archive) =
+        match state.resolve_store_and_archive(matched_cred, &query_params, &headers_map) {
+            Ok(res) => res,
+            Err(err_msg) => {
+                let resp = make_error_response(403, &format!("Forbidden: {}", err_msg));
+                log_audit(
+                    &state.audit_writer,
+                    &authenticated_user,
+                    method.as_str(),
+                    &path,
+                    "",
+                    403,
+                );
+                let _ = req.respond(resp);
+                return;
+            }
+        };
 
     // -------------------------------------------------------------------------
     // X-Experience-API-Version Header Validation (xAPI 1.0.3 §4.1.1)
     // -------------------------------------------------------------------------
     if !path.starts_with("/s3a/batch") {
-        let xapi_version = headers_map.get("x-experience-api-version")
+        let xapi_version = headers_map
+            .get("x-experience-api-version")
             .or_else(|| query_params.get("x-experience-api-version"))
             .or_else(|| query_params.get("version"));
         match xapi_version {
@@ -1197,8 +1372,18 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
                 // Permitted in insecure-dev mode (e.g. Scholar Explorer UI, direct browser inspection)
             }
             _ => {
-                let resp = make_error_response(400, "Missing or invalid X-Experience-API-Version header (must be 1.0.x)");
-                log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, "", 400);
+                let resp = make_error_response(
+                    400,
+                    "Missing or invalid X-Experience-API-Version header (must be 1.0.x)",
+                );
+                log_audit(
+                    &state.audit_writer,
+                    &authenticated_user,
+                    method.as_str(),
+                    &path,
+                    "",
+                    400,
+                );
                 let _ = req.respond(resp);
                 return;
             }
@@ -1207,15 +1392,44 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
 
     // Dispatch routed resources
     let response = if path == "/statements" || path == "/statements/" {
-        handle_statements(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store, &active_archive)
+        handle_statements(
+            method.clone(),
+            &query_params,
+            &headers_map,
+            &body_bytes,
+            &state,
+            &active_store,
+            &active_archive,
+        )
     } else if path == "/s3a/batch" || path == "/s3a/batch/" {
         batch_sync::handle_batch_sync(&method, &headers_map, &body_bytes, &state)
     } else if path == "/activities/state" || path == "/activities/state/" {
-        handle_activities_state(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store)
+        handle_activities_state(
+            method.clone(),
+            &query_params,
+            &headers_map,
+            &body_bytes,
+            &state,
+            &active_store,
+        )
     } else if path == "/activities/profile" || path == "/activities/profile/" {
-        handle_activities_profile(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store)
+        handle_activities_profile(
+            method.clone(),
+            &query_params,
+            &headers_map,
+            &body_bytes,
+            &state,
+            &active_store,
+        )
     } else if path == "/agents/profile" || path == "/agents/profile/" {
-        handle_agents_profile(method.clone(), &query_params, &headers_map, &body_bytes, &state, &active_store)
+        handle_agents_profile(
+            method.clone(),
+            &query_params,
+            &headers_map,
+            &body_bytes,
+            &state,
+            &active_store,
+        )
     } else if path == "/activities" || path == "/activities/" {
         handle_activities(method.clone(), &query_params, &headers_map, &active_store)
     } else if path == "/agents" || path == "/agents/" {
@@ -1227,7 +1441,8 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     };
 
     let status_code = response.status_code().0;
-    let extracted_ids = query_params.get("statementId")
+    let extracted_ids = query_params
+        .get("statementId")
         .or_else(|| query_params.get("voidedStatementId"))
         .or_else(|| query_params.get("stateId"))
         .or_else(|| query_params.get("profileId"))
@@ -1235,24 +1450,48 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
         .cloned()
         .unwrap_or_default();
 
-    log_audit(&state.audit_writer, &authenticated_user, method.as_str(), &path, &extracted_ids, status_code);
+    log_audit(
+        &state.audit_writer,
+        &authenticated_user,
+        method.as_str(),
+        &path,
+        &extracted_ids,
+        status_code,
+    );
     let _ = req.respond(response);
 }
 
 fn make_statement_error_response(status_code: u16, msg: &str) -> Response<Cursor<Vec<u8>>> {
     let mut resp = make_error_response(status_code, msg);
     let consistent_iso = format_iso8601_ms(s3a_engine::now_ms());
-    resp.add_header(Header::from_bytes(&b"X-Experience-API-Consistent-Through"[..], consistent_iso.as_bytes()).unwrap());
+    resp.add_header(
+        Header::from_bytes(
+            &b"X-Experience-API-Consistent-Through"[..],
+            consistent_iso.as_bytes(),
+        )
+        .unwrap(),
+    );
     resp
 }
 
-fn apply_statement_format(val: &mut serde_json::Value, format: Option<&str>, accept_lang: Option<&str>) {
+fn apply_statement_format(
+    val: &mut serde_json::Value,
+    format: Option<&str>,
+    accept_lang: Option<&str>,
+) {
     let fmt = format.unwrap_or("exact");
     match fmt {
         "ids" => {
             // Simplify Actor
             if let Some(actor) = val.get_mut("actor").and_then(|a| a.as_object_mut()) {
-                let keep = ["mbox", "mbox_sha1sum", "openid", "account", "objectType", "member"];
+                let keep = [
+                    "mbox",
+                    "mbox_sha1sum",
+                    "openid",
+                    "account",
+                    "objectType",
+                    "member",
+                ];
                 actor.retain(|k, _| keep.contains(&k.as_str()));
             }
             // Simplify Verb: remove display
@@ -1261,12 +1500,22 @@ fn apply_statement_format(val: &mut serde_json::Value, format: Option<&str>, acc
             }
             // Simplify Object
             if let Some(obj) = val.get_mut("object").and_then(|o| o.as_object_mut()) {
-                let ot = obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+                let ot = obj
+                    .get("objectType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Activity");
                 if ot == "Activity" {
                     obj.retain(|k, _| k == "id");
                 } else if ot == "SubStatement" {
                     if let Some(sub_actor) = obj.get_mut("actor").and_then(|a| a.as_object_mut()) {
-                        let keep = ["mbox", "mbox_sha1sum", "openid", "account", "objectType", "member"];
+                        let keep = [
+                            "mbox",
+                            "mbox_sha1sum",
+                            "openid",
+                            "account",
+                            "objectType",
+                            "member",
+                        ];
                         sub_actor.retain(|k, _| keep.contains(&k.as_str()));
                     }
                     if let Some(sub_verb) = obj.get_mut("verb").and_then(|v| v.as_object_mut()) {
@@ -1279,12 +1528,27 @@ fn apply_statement_format(val: &mut serde_json::Value, format: Option<&str>, acc
             }
             // Simplify Context
             if let Some(ctx) = val.get_mut("context").and_then(|c| c.as_object_mut()) {
-                if let Some(instructor) = ctx.get_mut("instructor").and_then(|i| i.as_object_mut()) {
-                    let keep = ["mbox", "mbox_sha1sum", "openid", "account", "objectType", "member"];
+                if let Some(instructor) = ctx.get_mut("instructor").and_then(|i| i.as_object_mut())
+                {
+                    let keep = [
+                        "mbox",
+                        "mbox_sha1sum",
+                        "openid",
+                        "account",
+                        "objectType",
+                        "member",
+                    ];
                     instructor.retain(|k, _| keep.contains(&k.as_str()));
                 }
                 if let Some(team) = ctx.get_mut("team").and_then(|t| t.as_object_mut()) {
-                    let keep = ["mbox", "mbox_sha1sum", "openid", "account", "objectType", "member"];
+                    let keep = [
+                        "mbox",
+                        "mbox_sha1sum",
+                        "openid",
+                        "account",
+                        "objectType",
+                        "member",
+                    ];
                     team.retain(|k, _| keep.contains(&k.as_str()));
                 }
             }
@@ -1320,7 +1584,10 @@ fn filter_language_maps_recursive(val: &mut serde_json::Value, accept_lang: &str
     }
 }
 
-fn filter_single_language_map(map: &mut serde_json::Map<String, serde_json::Value>, accept_lang: &str) {
+fn filter_single_language_map(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    accept_lang: &str,
+) {
     if map.is_empty() {
         return;
     }
@@ -1392,13 +1659,20 @@ fn handle_statements(
 
             // Check if multipart/mixed
             let content_type = headers.get("content-type").cloned().unwrap_or_default();
-            if content_type.starts_with("multipart/") && !content_type.starts_with("multipart/mixed") {
-                return make_error_response(400, "Only multipart/mixed is supported for attachments");
+            if content_type.starts_with("multipart/")
+                && !content_type.starts_with("multipart/mixed")
+            {
+                return make_error_response(
+                    400,
+                    "Only multipart/mixed is supported for attachments",
+                );
             }
             let (statement_json, attachments) = if content_type.starts_with("multipart/mixed") {
                 match parse_multipart_request(&content_type, body) {
                     Ok(res) => res,
-                    Err(e) => return make_error_response(400, &format!("Multipart parse error: {}", e)),
+                    Err(e) => {
+                        return make_error_response(400, &format!("Multipart parse error: {}", e))
+                    }
                 }
             } else {
                 let json_str = String::from_utf8_lossy(body).to_string();
@@ -1418,7 +1692,10 @@ fn handle_statements(
             if let Some(body_id) = val.get("id").and_then(|v| v.as_str()) {
                 if let Ok(body_uuid) = uuid_to_u64_pair(body_id) {
                     if body_uuid != stmt_uuid {
-                        return make_error_response(400, "statementId parameter does not match statement.id in body");
+                        return make_error_response(
+                            400,
+                            "statementId parameter does not match statement.id in body",
+                        );
                     }
                 } else {
                     return make_error_response(400, "Invalid statement.id UUID format");
@@ -1435,8 +1712,13 @@ fn handle_statements(
             // Strict validation for scholar-explorer-usage/v1 profile on usage archives
             let is_usage_archive = archive_name.to_ascii_lowercase().contains("usage");
             if is_usage_archive {
-                if let Err(e) = s3a_pack_scholar::xapi::validate_scholar_explorer_usage_profile(&val) {
-                    return make_error_response(400, &format!("Scholar Explorer Usage profile error: {}", e));
+                if let Err(e) =
+                    s3a_pack_scholar::xapi::validate_scholar_explorer_usage_profile(&val)
+                {
+                    return make_error_response(
+                        400,
+                        &format!("Scholar Explorer Usage profile error: {}", e),
+                    );
                 }
             }
 
@@ -1444,14 +1726,19 @@ fn handle_statements(
             let mut scholar_violation = false;
             if state.config.enable_scholar {
                 // AI agent allowlist check (403 on denial)
-                if let Err(e) = s3a_pack_scholar::xapi::validate_ai_agent_allowlist(&state.agent_registry, &val) {
+                if let Err(e) =
+                    s3a_pack_scholar::xapi::validate_ai_agent_allowlist(&state.agent_registry, &val)
+                {
                     return make_error_response(403, &format!("Agent action denied: {}", e));
                 }
 
                 // Scholar profile validation
                 if let Err(e) = s3a_pack_scholar::xapi::validate_scholar_profile(&val) {
                     if state.config.profile_mode_strict {
-                        return make_error_response(400, &format!("Scholar profile validation error: {}", e));
+                        return make_error_response(
+                            400,
+                            &format!("Scholar profile validation error: {}", e),
+                        );
                     } else {
                         scholar_violation = true;
                     }
@@ -1483,13 +1770,20 @@ fn handle_statements(
 
         Method::Post => {
             let content_type = headers.get("content-type").cloned().unwrap_or_default();
-            if content_type.starts_with("multipart/") && !content_type.starts_with("multipart/mixed") {
-                return make_error_response(400, "Only multipart/mixed is supported for attachments");
+            if content_type.starts_with("multipart/")
+                && !content_type.starts_with("multipart/mixed")
+            {
+                return make_error_response(
+                    400,
+                    "Only multipart/mixed is supported for attachments",
+                );
             }
             let (statement_json, attachments) = if content_type.starts_with("multipart/mixed") {
                 match parse_multipart_request(&content_type, body) {
                     Ok(res) => res,
-                    Err(e) => return make_error_response(400, &format!("Multipart parse error: {}", e)),
+                    Err(e) => {
+                        return make_error_response(400, &format!("Multipart parse error: {}", e))
+                    }
                 }
             } else {
                 let json_str = String::from_utf8_lossy(body).to_string();
@@ -1509,7 +1803,12 @@ fn handle_statements(
                     arr
                 }
                 serde_json::Value::Object(_) => vec![val],
-                _ => return make_error_response(400, "Statement payload must be a JSON object or array"),
+                _ => {
+                    return make_error_response(
+                        400,
+                        "Statement payload must be a JSON object or array",
+                    )
+                }
             };
 
             if let Err(e) = validate_batch_attachments(&statements_to_process, &attachments) {
@@ -1524,17 +1823,28 @@ fn handle_statements(
                     return make_error_response(400, &format!("Invalid statement: {}", e));
                 }
                 if is_usage_archive {
-                    if let Err(e) = s3a_pack_scholar::xapi::validate_scholar_explorer_usage_profile(stmt_val) {
-                        return make_error_response(400, &format!("Scholar Explorer Usage profile error: {}", e));
+                    if let Err(e) =
+                        s3a_pack_scholar::xapi::validate_scholar_explorer_usage_profile(stmt_val)
+                    {
+                        return make_error_response(
+                            400,
+                            &format!("Scholar Explorer Usage profile error: {}", e),
+                        );
                     }
                 }
                 if state.config.enable_scholar {
-                    if let Err(e) = s3a_pack_scholar::xapi::validate_ai_agent_allowlist(&state.agent_registry, stmt_val) {
+                    if let Err(e) = s3a_pack_scholar::xapi::validate_ai_agent_allowlist(
+                        &state.agent_registry,
+                        stmt_val,
+                    ) {
                         return make_error_response(403, &format!("Agent action denied: {}", e));
                     }
                     if state.config.profile_mode_strict {
                         if let Err(e) = s3a_pack_scholar::xapi::validate_scholar_profile(stmt_val) {
-                            return make_error_response(400, &format!("Scholar profile validation error: {}", e));
+                            return make_error_response(
+                                400,
+                                &format!("Scholar profile validation error: {}", e),
+                            );
                         }
                     }
                 }
@@ -1548,7 +1858,8 @@ fn handle_statements(
                     Ok(id) => {
                         if state.config.enable_scholar {
                             if s3a_pack_scholar::xapi::validate_scholar_profile(stmt_val).is_err() {
-                                let _ = store.mark_statement(id, s3a_core::MARK_NEEDS_REVIEW, true, 0);
+                                let _ =
+                                    store.mark_statement(id, s3a_core::MARK_NEEDS_REVIEW, true, 0);
                             }
                             let _ = s3a_pack_scholar::xapi::enrich_scholar_statement(
                                 store.writer(),
@@ -1558,11 +1869,18 @@ fn handle_statements(
                         }
                         stored_ids.push(u64_pair_to_uuid(id));
                     }
-                    Err(LrsStoreError::StatementConflict(msg)) => return make_error_response(409, &msg),
+                    Err(LrsStoreError::StatementConflict(msg)) => {
+                        return make_error_response(409, &msg)
+                    }
                     Err(LrsStoreError::CannotVoidVoidingStatement) => {
                         return make_error_response(400, "Cannot void a voiding statement")
                     }
-                    Err(e) => return make_error_response(400, &format!("Failed to store statement: {}", e)),
+                    Err(e) => {
+                        return make_error_response(
+                            400,
+                            &format!("Failed to store statement: {}", e),
+                        )
+                    }
                 }
             }
 
@@ -1594,7 +1912,10 @@ fn handle_statements(
             ];
             for k in params.keys() {
                 if !ALLOWED_GET_PARAMS.contains(&k.as_str()) {
-                    return make_statement_error_response(400, &format!("Unknown parameter: {}", k));
+                    return make_statement_error_response(
+                        400,
+                        &format!("Unknown parameter: {}", k),
+                    );
                 }
             }
 
@@ -1602,7 +1923,10 @@ fn handle_statements(
             let voided_id = params.get("voidedStatementId");
 
             if stmt_id.is_some() && voided_id.is_some() {
-                return make_statement_error_response(400, "Cannot specify both statementId and voidedStatementId");
+                return make_statement_error_response(
+                    400,
+                    "Cannot specify both statementId and voidedStatementId",
+                );
             }
 
             const COLLECTION_EXCLUSIVE_PARAMS: &[&str] = &[
@@ -1621,7 +1945,10 @@ fn handle_statements(
             if stmt_id.is_some() {
                 for p in COLLECTION_EXCLUSIVE_PARAMS {
                     if params.contains_key(*p) {
-                        return make_statement_error_response(400, &format!("Cannot specify {} with statementId", p));
+                        return make_statement_error_response(
+                            400,
+                            &format!("Cannot specify {} with statementId", p),
+                        );
                     }
                 }
             }
@@ -1629,26 +1956,39 @@ fn handle_statements(
             if voided_id.is_some() {
                 for p in COLLECTION_EXCLUSIVE_PARAMS {
                     if params.contains_key(*p) {
-                        return make_statement_error_response(400, &format!("Cannot specify {} with voidedStatementId", p));
+                        return make_statement_error_response(
+                            400,
+                            &format!("Cannot specify {} with voidedStatementId", p),
+                        );
                     }
                 }
             }
 
             let format_param = params.get("format").map(|s| s.as_str());
             let accept_lang = headers.get("accept-language").map(|s| s.as_str());
-            let want_attachments = params.get("attachments").map(|v| v == "true").unwrap_or(false);
+            let want_attachments = params
+                .get("attachments")
+                .map(|v| v == "true")
+                .unwrap_or(false);
 
             // Single statement by ID
             if let Some(id_str) = stmt_id {
                 let id = match uuid_to_u64_pair(id_str) {
                     Ok(u) => u,
-                    Err(_) => return make_statement_error_response(400, "Invalid statementId UUID"),
+                    Err(_) => {
+                        return make_statement_error_response(400, "Invalid statementId UUID")
+                    }
                 };
                 match store.get_statement(id, false) {
                     Ok((idx, json_str, atts)) => {
                         let mut val: serde_json::Value = match serde_json::from_str(&json_str) {
                             Ok(v) => v,
-                            Err(e) => return make_statement_error_response(500, &format!("Corrupt stored statement: {}", e)),
+                            Err(e) => {
+                                return make_statement_error_response(
+                                    500,
+                                    &format!("Corrupt stored statement: {}", e),
+                                )
+                            }
                         };
                         apply_statement_format(&mut val, format_param, accept_lang);
                         let out_json = val.to_string();
@@ -1660,12 +2000,19 @@ fn handle_statements(
                         };
                         let consistent_iso = format_iso8601_ms(s3a_engine::now_ms());
                         resp.add_header(
-                            Header::from_bytes(&b"X-Experience-API-Consistent-Through"[..], consistent_iso.as_bytes()).unwrap(),
+                            Header::from_bytes(
+                                &b"X-Experience-API-Consistent-Through"[..],
+                                consistent_iso.as_bytes(),
+                            )
+                            .unwrap(),
                         );
                         let (_, etag) = LrsStore::calculate_etag(out_json.as_bytes());
                         resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
                         let modified_iso = format_iso8601_ms(idx.stored_timestamp_ms);
-                        resp.add_header(Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap());
+                        resp.add_header(
+                            Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes())
+                                .unwrap(),
+                        );
                         return resp;
                     }
                     Err(LrsStoreError::StatementNotFound) | Err(LrsStoreError::StatementVoided) => {
@@ -1679,13 +2026,20 @@ fn handle_statements(
             if let Some(id_str) = voided_id {
                 let id = match uuid_to_u64_pair(id_str) {
                     Ok(u) => u,
-                    Err(_) => return make_statement_error_response(400, "Invalid voidedStatementId UUID"),
+                    Err(_) => {
+                        return make_statement_error_response(400, "Invalid voidedStatementId UUID")
+                    }
                 };
                 match store.get_statement(id, true) {
                     Ok((idx, json_str, atts)) => {
                         let mut val: serde_json::Value = match serde_json::from_str(&json_str) {
                             Ok(v) => v,
-                            Err(e) => return make_statement_error_response(500, &format!("Corrupt stored statement: {}", e)),
+                            Err(e) => {
+                                return make_statement_error_response(
+                                    500,
+                                    &format!("Corrupt stored statement: {}", e),
+                                )
+                            }
                         };
                         apply_statement_format(&mut val, format_param, accept_lang);
                         let out_json = val.to_string();
@@ -1697,15 +2051,24 @@ fn handle_statements(
                         };
                         let consistent_iso = format_iso8601_ms(s3a_engine::now_ms());
                         resp.add_header(
-                            Header::from_bytes(&b"X-Experience-API-Consistent-Through"[..], consistent_iso.as_bytes()).unwrap(),
+                            Header::from_bytes(
+                                &b"X-Experience-API-Consistent-Through"[..],
+                                consistent_iso.as_bytes(),
+                            )
+                            .unwrap(),
                         );
                         let (_, etag) = LrsStore::calculate_etag(out_json.as_bytes());
                         resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
                         let modified_iso = format_iso8601_ms(idx.stored_timestamp_ms);
-                        resp.add_header(Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap());
+                        resp.add_header(
+                            Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes())
+                                .unwrap(),
+                        );
                         return resp;
                     }
-                    Err(_) => return make_statement_error_response(404, "Voided statement not found"),
+                    Err(_) => {
+                        return make_statement_error_response(404, "Voided statement not found")
+                    }
                 }
             }
 
@@ -1714,7 +2077,12 @@ fn handle_statements(
             if let Some(agent_str) = params.get("agent") {
                 let agent_val = match serde_json::from_str::<serde_json::Value>(agent_str) {
                     Ok(v) if v.is_object() => v,
-                    _ => return make_statement_error_response(400, "agent parameter must be a valid JSON Object"),
+                    _ => {
+                        return make_statement_error_response(
+                            400,
+                            "agent parameter must be a valid JSON Object",
+                        )
+                    }
                 };
                 filter.agent_hash = Some(s3a_engine::hash_actor_value(&agent_val));
             }
@@ -1727,7 +2095,9 @@ fn handle_statements(
             if let Some(reg) = params.get("registration") {
                 match uuid_to_u64_pair(reg) {
                     Ok(u) => filter.registration = Some(u),
-                    Err(_) => return make_statement_error_response(400, "Invalid registration UUID"),
+                    Err(_) => {
+                        return make_statement_error_response(400, "Invalid registration UUID")
+                    }
                 }
             }
             if let Some(rel_act) = params.get("related_activities") {
@@ -1751,7 +2121,12 @@ fn handle_statements(
             if let Some(lim) = params.get("limit") {
                 match lim.parse::<usize>() {
                     Ok(n) if n > 0 => filter.limit = n,
-                    _ => return make_statement_error_response(400, "limit parameter must be a positive integer"),
+                    _ => {
+                        return make_statement_error_response(
+                            400,
+                            "limit parameter must be a positive integer",
+                        )
+                    }
                 }
             }
             if let Some(asc) = params.get("ascending") {
@@ -1763,7 +2138,12 @@ fn handle_statements(
             if let Some(off) = params.get("offset") {
                 match off.parse::<usize>() {
                     Ok(n) => filter.offset = n,
-                    _ => return make_statement_error_response(400, "offset parameter must be a non-negative integer"),
+                    _ => {
+                        return make_statement_error_response(
+                            400,
+                            "offset parameter must be a non-negative integer",
+                        )
+                    }
                 }
             }
             if let Some(inc) = params.get("include_hidden") {
@@ -1780,8 +2160,14 @@ fn handle_statements(
                         }
                     }
                     let mut result_obj = serde_json::Map::new();
-                    result_obj.insert("statements".to_string(), serde_json::Value::Array(stmts_raw));
-                    let more_val = page.more_token.map(|t| format!("/xapi/statements?{}", t)).unwrap_or_default();
+                    result_obj.insert(
+                        "statements".to_string(),
+                        serde_json::Value::Array(stmts_raw),
+                    );
+                    let more_val = page
+                        .more_token
+                        .map(|t| format!("/xapi/statements?{}", t))
+                        .unwrap_or_default();
                     result_obj.insert("more".to_string(), serde_json::Value::String(more_val));
 
                     let resp_json = serde_json::Value::Object(result_obj).to_string();
@@ -1792,7 +2178,11 @@ fn handle_statements(
                     };
                     let consistent_iso = format_iso8601_ms(s3a_engine::now_ms());
                     resp.add_header(
-                        Header::from_bytes(&b"X-Experience-API-Consistent-Through"[..], consistent_iso.as_bytes()).unwrap(),
+                        Header::from_bytes(
+                            &b"X-Experience-API-Consistent-Through"[..],
+                            consistent_iso.as_bytes(),
+                        )
+                        .unwrap(),
                     );
                     resp
                 }
@@ -1826,7 +2216,7 @@ fn handle_activities_state(
 
     // Agent must be a valid JSON Object
     match serde_json::from_str::<serde_json::Value>(agent_str) {
-        Ok(v) if v.is_object() => {},
+        Ok(v) if v.is_object() => {}
         _ => return make_error_response(400, "agent parameter must be a valid JSON Object"),
     }
 
@@ -1863,7 +2253,9 @@ fn handle_activities_state(
                     let mut resp = make_response(200, content_type, &content, is_head);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
                     let modified_iso = format_iso8601_ms(hdr.timestamp_ms);
-                    resp.add_header(Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap());
+                    resp.add_header(
+                        Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap(),
+                    );
                     resp
                 } else {
                     make_error_response(404, "State document not found")
@@ -1888,8 +2280,19 @@ fn handle_activities_state(
             if state_id.is_none() {
                 return make_error_response(400, "Missing stateId on PUT");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
-            match store.put_document(DOC_KIND_STATE, &compound_key, body, is_json, if_match, if_none_match, false) {
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
+            match store.put_document(
+                DOC_KIND_STATE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                false,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -1905,14 +2308,25 @@ fn handle_activities_state(
             if state_id.is_none() {
                 return make_error_response(400, "Missing stateId on POST");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
             if is_json {
                 match serde_json::from_slice::<serde_json::Value>(body) {
-                    Ok(v) if v.is_object() => {},
+                    Ok(v) if v.is_object() => {}
                     _ => return make_error_response(400, "Posted document must be a JSON object"),
                 }
             }
-            match store.put_document(DOC_KIND_STATE, &compound_key, body, is_json, if_match, if_none_match, true) {
+            match store.put_document(
+                DOC_KIND_STATE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                true,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -1977,7 +2391,9 @@ fn handle_activities_profile(
         Method::Get | Method::Head => {
             let is_head = method == Method::Head;
             if profile_id.is_some() {
-                if let Some((hdr, content, _)) = store.get_document(DOC_KIND_ACTIVITY_PROFILE, &compound_key) {
+                if let Some((hdr, content, _)) =
+                    store.get_document(DOC_KIND_ACTIVITY_PROFILE, &compound_key)
+                {
                     let (_, etag) = LrsStore::calculate_etag(&content);
                     let content_type = if (hdr.flags & DOC_FLAG_IS_JSON) != 0 {
                         "application/json"
@@ -1987,7 +2403,9 @@ fn handle_activities_profile(
                     let mut resp = make_response(200, content_type, &content, is_head);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
                     let modified_iso = format_iso8601_ms(hdr.timestamp_ms);
-                    resp.add_header(Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap());
+                    resp.add_header(
+                        Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap(),
+                    );
                     resp
                 } else {
                     make_error_response(404, "Activity profile not found")
@@ -2011,8 +2429,19 @@ fn handle_activities_profile(
             if profile_id.is_none() {
                 return make_error_response(400, "Missing profileId on PUT");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
-            match store.put_document(DOC_KIND_ACTIVITY_PROFILE, &compound_key, body, is_json, if_match, if_none_match, false) {
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
+            match store.put_document(
+                DOC_KIND_ACTIVITY_PROFILE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                false,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -2028,14 +2457,25 @@ fn handle_activities_profile(
             if profile_id.is_none() {
                 return make_error_response(400, "Missing profileId on POST");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
             if is_json {
                 match serde_json::from_slice::<serde_json::Value>(body) {
-                    Ok(v) if v.is_object() => {},
+                    Ok(v) if v.is_object() => {}
                     _ => return make_error_response(400, "Posted document must be a JSON object"),
                 }
             }
-            match store.put_document(DOC_KIND_ACTIVITY_PROFILE, &compound_key, body, is_json, if_match, if_none_match, true) {
+            match store.put_document(
+                DOC_KIND_ACTIVITY_PROFILE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                true,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -2080,7 +2520,7 @@ fn handle_agents_profile(
 
     // Agent must be a valid JSON Object
     match serde_json::from_str::<serde_json::Value>(agent_str) {
-        Ok(v) if v.is_object() => {},
+        Ok(v) if v.is_object() => {}
         _ => return make_error_response(400, "agent parameter must be a valid JSON Object"),
     }
 
@@ -2100,7 +2540,9 @@ fn handle_agents_profile(
         Method::Get | Method::Head => {
             let is_head = method == Method::Head;
             if profile_id.is_some() {
-                if let Some((hdr, content, _)) = store.get_document(DOC_KIND_AGENT_PROFILE, &compound_key) {
+                if let Some((hdr, content, _)) =
+                    store.get_document(DOC_KIND_AGENT_PROFILE, &compound_key)
+                {
                     let (_, etag) = LrsStore::calculate_etag(&content);
                     let content_type = if (hdr.flags & DOC_FLAG_IS_JSON) != 0 {
                         "application/json"
@@ -2110,7 +2552,9 @@ fn handle_agents_profile(
                     let mut resp = make_response(200, content_type, &content, is_head);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
                     let modified_iso = format_iso8601_ms(hdr.timestamp_ms);
-                    resp.add_header(Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap());
+                    resp.add_header(
+                        Header::from_bytes(&b"Last-Modified"[..], modified_iso.as_bytes()).unwrap(),
+                    );
                     resp
                 } else {
                     make_error_response(404, "Agent profile not found")
@@ -2134,8 +2578,19 @@ fn handle_agents_profile(
             if profile_id.is_none() {
                 return make_error_response(400, "Missing profileId on PUT");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
-            match store.put_document(DOC_KIND_AGENT_PROFILE, &compound_key, body, is_json, if_match, if_none_match, false) {
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
+            match store.put_document(
+                DOC_KIND_AGENT_PROFILE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                false,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -2151,14 +2606,25 @@ fn handle_agents_profile(
             if profile_id.is_none() {
                 return make_error_response(400, "Missing profileId on POST");
             }
-            let is_json = headers.get("content-type").map(|c| c.contains("application/json")).unwrap_or(false);
+            let is_json = headers
+                .get("content-type")
+                .map(|c| c.contains("application/json"))
+                .unwrap_or(false);
             if is_json {
                 match serde_json::from_slice::<serde_json::Value>(body) {
-                    Ok(v) if v.is_object() => {},
+                    Ok(v) if v.is_object() => {}
                     _ => return make_error_response(400, "Posted document must be a JSON object"),
                 }
             }
-            match store.put_document(DOC_KIND_AGENT_PROFILE, &compound_key, body, is_json, if_match, if_none_match, true) {
+            match store.put_document(
+                DOC_KIND_AGENT_PROFILE,
+                &compound_key,
+                body,
+                is_json,
+                if_match,
+                if_none_match,
+                true,
+            ) {
                 Ok(etag) => {
                     let mut resp = make_response_empty(204);
                     resp.add_header(Header::from_bytes(&b"ETag"[..], etag.as_bytes()).unwrap());
@@ -2222,8 +2688,14 @@ fn handle_activities(
 
     // Construct Activity object
     let mut obj = serde_json::Map::new();
-    obj.insert("objectType".to_string(), serde_json::Value::String("Activity".to_string()));
-    obj.insert("id".to_string(), serde_json::Value::String(activity_id.clone()));
+    obj.insert(
+        "objectType".to_string(),
+        serde_json::Value::String("Activity".to_string()),
+    );
+    obj.insert(
+        "id".to_string(),
+        serde_json::Value::String(activity_id.clone()),
+    );
 
     // Try to find definitions from stored statements and merge them chronologically
     let query_filter = StatementFilter {
@@ -2236,8 +2708,16 @@ fn handle_activities(
         let mut merged_def = serde_json::Map::new();
         for s in &page.statements {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
-                if v.get("object").and_then(|o| o.get("id")).and_then(|i| i.as_str()) == Some(activity_id.as_str()) {
-                    if let Some(def) = v.get("object").and_then(|o| o.get("definition")).and_then(|d| d.as_object()) {
+                if v.get("object")
+                    .and_then(|o| o.get("id"))
+                    .and_then(|i| i.as_str())
+                    == Some(activity_id.as_str())
+                {
+                    if let Some(def) = v
+                        .get("object")
+                        .and_then(|o| o.get("definition"))
+                        .and_then(|d| d.as_object())
+                    {
                         for (k, val) in def {
                             match merged_def.get_mut(k) {
                                 Some(existing) => {
@@ -2253,7 +2733,10 @@ fn handle_activities(
             }
         }
         if !merged_def.is_empty() {
-            obj.insert("definition".to_string(), serde_json::Value::Object(merged_def));
+            obj.insert(
+                "definition".to_string(),
+                serde_json::Value::Object(merged_def),
+            );
         }
     }
 
@@ -2294,10 +2777,23 @@ fn handle_agents(
         }
     }
 
-    let ifi_count = (if agent_val.get("mbox").is_some() { 1 } else { 0 })
-        + (if agent_val.get("mbox_sha1sum").is_some() { 1 } else { 0 })
-        + (if agent_val.get("openid").is_some() { 1 } else { 0 })
-        + (if agent_val.get("account").is_some() { 1 } else { 0 });
+    let ifi_count = (if agent_val.get("mbox").is_some() {
+        1
+    } else {
+        0
+    }) + (if agent_val.get("mbox_sha1sum").is_some() {
+        1
+    } else {
+        0
+    }) + (if agent_val.get("openid").is_some() {
+        1
+    } else {
+        0
+    }) + (if agent_val.get("account").is_some() {
+        1
+    } else {
+        0
+    });
 
     if ifi_count != 1 {
         return make_error_response(400, "Agent must contain exactly one Inverse Functional Identifier (mbox, mbox_sha1sum, openid, or account)");
@@ -2311,7 +2807,10 @@ fn handle_agents(
 
     // Construct Person object per xAPI 1.0.3 §4.1.4
     let mut person = serde_json::Map::new();
-    person.insert("objectType".to_string(), serde_json::Value::String("Person".to_string()));
+    person.insert(
+        "objectType".to_string(),
+        serde_json::Value::String("Person".to_string()),
+    );
 
     if let Some(name) = agent_val.get("name").and_then(|v| v.as_str()) {
         person.insert("name".to_string(), serde_json::json!([name]));
@@ -2336,13 +2835,20 @@ fn handle_agents(
 // -----------------------------------------------------------------------------
 // MULTIPART/MIXED PARSING AND RECONSTRUCTION
 // -----------------------------------------------------------------------------
-fn parse_multipart_request(content_type: &str, body: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
-    let boundary_idx = content_type.find("boundary=").ok_or("Missing boundary in multipart/mixed")?;
+fn parse_multipart_request(
+    content_type: &str,
+    body: &[u8],
+) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+    let boundary_idx = content_type
+        .find("boundary=")
+        .ok_or("Missing boundary in multipart/mixed")?;
     let boundary = content_type[boundary_idx + 9..].trim().trim_matches('"');
     let delimiter = format!("--{}", boundary).into_bytes();
 
     let find_subslice = |haystack: &[u8], needle: &[u8]| -> Option<usize> {
-        haystack.windows(needle.len()).position(|window| window == needle)
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
     };
 
     let mut parts: Vec<&[u8]> = Vec::new();
@@ -2410,7 +2916,9 @@ fn parse_multipart_request(content_type: &str, body: &[u8]) -> Result<(String, V
                 }
             }
             if !is_json {
-                return Err("First part of multipart/mixed must have Content-Type: application/json".into());
+                return Err(
+                    "First part of multipart/mixed must have Content-Type: application/json".into(),
+                );
             }
 
             statement_json = String::from_utf8(content.to_vec())
@@ -2491,7 +2999,10 @@ fn validate_batch_attachments(
     for (part_sha2, _) in multipart_attachments {
         let part_lower = part_sha2.to_ascii_lowercase();
         if !declared_hashes.contains(&part_lower) {
-            return Err(format!("Multipart attachment with sha2 {} is not listed in statement", part_sha2));
+            return Err(format!(
+                "Multipart attachment with sha2 {} is not listed in statement",
+                part_sha2
+            ));
         }
         provided_hashes.push(part_lower);
     }
@@ -2502,7 +3013,10 @@ fn validate_batch_attachments(
 
     for req_sha in &missing_binary_hashes {
         if !provided_hashes.contains(req_sha) {
-            return Err(format!("Missing multipart attachment binary for attachment with sha2 {}", req_sha));
+            return Err(format!(
+                "Missing multipart attachment binary for attachment with sha2 {}",
+                req_sha
+            ));
         }
     }
 
@@ -2550,8 +3064,14 @@ pub fn build_options_response(headers_map: &HashMap<String, String>) -> Response
         Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap(),
         Header::from_bytes(&b"Access-Control-Expose-Headers"[..], &b"ETag, Last-Modified, X-Experience-API-Version, X-Experience-API-Consistent-Through"[..]).unwrap(),
     ];
-    if headers_map.get("access-control-request-private-network").map(|v| v.trim().eq_ignore_ascii_case("true")).unwrap_or(false) {
-        headers.push(Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap());
+    if headers_map
+        .get("access-control-request-private-network")
+        .map(|v| v.trim().eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        headers.push(
+            Header::from_bytes(&b"Access-Control-Allow-Private-Network"[..], &b"true"[..]).unwrap(),
+        );
     }
     Response::new(
         StatusCode(204),
@@ -2562,7 +3082,12 @@ pub fn build_options_response(headers_map: &HashMap<String, String>) -> Response
     )
 }
 
-fn make_response(status_code: u16, content_type: &str, body: &[u8], is_head: bool) -> Response<Cursor<Vec<u8>>> {
+fn make_response(
+    status_code: u16,
+    content_type: &str,
+    body: &[u8],
+    is_head: bool,
+) -> Response<Cursor<Vec<u8>>> {
     let final_body = if is_head { Vec::new() } else { body.to_vec() };
     let resp = Response::new(
         StatusCode(status_code),
@@ -2643,8 +3168,12 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         let mut parts = pair.splitn(2, '=');
         let key = parts.next().unwrap_or_default();
         let val = parts.next().unwrap_or_default();
-        let decoded_k = urlencoding::decode(key).unwrap_or(std::borrow::Cow::Borrowed(key)).to_string();
-        let decoded_v = urlencoding::decode(val).unwrap_or(std::borrow::Cow::Borrowed(val)).to_string();
+        let decoded_k = urlencoding::decode(key)
+            .unwrap_or(std::borrow::Cow::Borrowed(key))
+            .to_string();
+        let decoded_v = urlencoding::decode(val)
+            .unwrap_or(std::borrow::Cow::Borrowed(val))
+            .to_string();
         map.insert(decoded_k, decoded_v);
     }
     map
@@ -2708,7 +3237,10 @@ fn handle_registration_export(
     // Path format: /registrations/<uuid>/export
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if parts.len() != 3 || parts[0] != "registrations" || parts[2] != "export" {
-        return make_error_response(400, "Invalid export path format: expected /registrations/{uuid}/export");
+        return make_error_response(
+            400,
+            "Invalid export path format: expected /registrations/{uuid}/export",
+        );
     }
     let reg_uuid_str = parts[1];
     let reg_pair = match uuid_to_u64_pair(reg_uuid_str) {
@@ -2717,9 +3249,12 @@ fn handle_registration_export(
     };
 
     match store.export_registration_xapi_json(reg_pair) {
-        Ok(json_str) => {
-            make_response(200, "application/json; charset=utf-8", json_str.as_bytes(), false)
-        }
+        Ok(json_str) => make_response(
+            200,
+            "application/json; charset=utf-8",
+            json_str.as_bytes(),
+            false,
+        ),
         Err(e) => make_error_response(500, &format!("Export failed: {}", e)),
     }
 }
@@ -2755,8 +3290,15 @@ mod tests {
         assert!(researcher.has_scope("statements/read"));
         assert!(researcher.has_scope("all"));
 
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("s3a_test_routing_{}_{}", std::process::id(), unique));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "s3a_test_routing_{}_{}",
+            std::process::id(),
+            unique
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let default_path = temp_dir.join("test_routing_default.s3a");
         let audit_path = temp_dir.join("test_routing_audit.s3a");
@@ -2768,9 +3310,18 @@ mod tests {
         let usage_store = LrsStore::open_or_create(&usage_path).unwrap();
         let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("test_routing_default.s3a".to_string(), default_store.clone());
-        stores.write().unwrap().insert("scholar.s3a".to_string(), scholar_store.clone());
-        stores.write().unwrap().insert("usage.s3a".to_string(), usage_store.clone());
+        stores.write().unwrap().insert(
+            "test_routing_default.s3a".to_string(),
+            default_store.clone(),
+        );
+        stores
+            .write()
+            .unwrap()
+            .insert("scholar.s3a".to_string(), scholar_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("usage.s3a".to_string(), usage_store.clone());
 
         let mut config = ServerConfig::default();
         config.data_dir = temp_dir.clone();
@@ -2783,19 +3334,29 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         let empty_params = HashMap::new();
         let empty_headers = HashMap::new();
 
         // 1. Researcher credential resolves to scholar.s3a
-        let (_res_store, res_archive) = state.resolve_store_and_archive(Some(&researcher), &empty_params, &empty_headers).unwrap();
+        let (_res_store, res_archive) = state
+            .resolve_store_and_archive(Some(&researcher), &empty_params, &empty_headers)
+            .unwrap();
         assert_eq!(res_archive, "scholar.s3a");
 
         // 2. Explorer credential resolves to usage.s3a
-        let (_exp_store, exp_archive) = state.resolve_store_and_archive(Some(&explorer), &empty_params, &empty_headers).unwrap();
+        let (_exp_store, exp_archive) = state
+            .resolve_store_and_archive(Some(&explorer), &empty_params, &empty_headers)
+            .unwrap();
         assert_eq!(exp_archive, "usage.s3a");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -2803,8 +3364,15 @@ mod tests {
 
     #[test]
     fn test_usage_archive_strict_profile_validation() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("s3a_test_usage_strict_{}_{}", std::process::id(), unique));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "s3a_test_usage_strict_{}_{}",
+            std::process::id(),
+            unique
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let usage_path = temp_dir.join("test_usage_strict.s3a");
         let audit_path = temp_dir.join("test_usage_audit.s3a");
@@ -2812,7 +3380,10 @@ mod tests {
         let usage_store = LrsStore::open_or_create(&usage_path).unwrap();
         let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("usage.s3a".to_string(), usage_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("usage.s3a".to_string(), usage_store.clone());
 
         let state = Arc::new(AppState {
             default_store: usage_store.clone(),
@@ -2821,8 +3392,14 @@ mod tests {
             audit_writer,
             config: ServerConfig::default(),
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         let params = HashMap::new();
@@ -2848,8 +3425,21 @@ mod tests {
                 }
             });
             let body = serde_json::to_vec(&stmt).unwrap();
-            let resp = handle_statements(Method::Post, &params, &headers, &body, &state, &usage_store, "usage.s3a");
-            assert_eq!(resp.status_code().0, 200, "Permitted verb '{}' must be accepted with 200", verb);
+            let resp = handle_statements(
+                Method::Post,
+                &params,
+                &headers,
+                &body,
+                &state,
+                &usage_store,
+                "usage.s3a",
+            );
+            assert_eq!(
+                resp.status_code().0,
+                200,
+                "Permitted verb '{}' must be accepted with 200",
+                verb
+            );
         }
 
         // 2. Removed and other non-usage verbs must be rejected with 400
@@ -2872,8 +3462,21 @@ mod tests {
                 }
             });
             let body = serde_json::to_vec(&stmt).unwrap();
-            let resp = handle_statements(Method::Post, &params, &headers, &body, &state, &usage_store, "usage.s3a");
-            assert_eq!(resp.status_code().0, 400, "Unpermitted verb '{}' must be rejected with 400", verb);
+            let resp = handle_statements(
+                Method::Post,
+                &params,
+                &headers,
+                &body,
+                &state,
+                &usage_store,
+                "usage.s3a",
+            );
+            assert_eq!(
+                resp.status_code().0,
+                400,
+                "Unpermitted verb '{}' must be rejected with 400",
+                verb
+            );
         }
 
         // 3. Statement with usage profile category via PUT
@@ -2894,7 +3497,15 @@ mod tests {
         });
         let body_put = serde_json::to_vec(&valid_put).unwrap();
 
-        let resp_put_ok = handle_statements(Method::Put, &put_params, &headers, &body_put, &state, &usage_store, "usage.s3a");
+        let resp_put_ok = handle_statements(
+            Method::Put,
+            &put_params,
+            &headers,
+            &body_put,
+            &state,
+            &usage_store,
+            "usage.s3a",
+        );
         assert_eq!(resp_put_ok.status_code().0, 204);
 
         let _ = std::fs::remove_file(&usage_path);
@@ -2903,8 +3514,15 @@ mod tests {
 
     #[test]
     fn test_admin_delete_by_actor_account_and_retention_purge() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!("s3a_test_admin_delete_{}_{}", std::process::id(), unique));
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "s3a_test_admin_delete_{}_{}",
+            std::process::id(),
+            unique
+        ));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let usage_path = temp_dir.join("test_admin_usage.s3a");
         let audit_path = temp_dir.join("test_admin_audit.s3a");
@@ -2912,7 +3530,10 @@ mod tests {
         let usage_store = LrsStore::open_or_create(&usage_path).unwrap();
         let audit_writer = Arc::new(ConcurrentTileWriter::create(&audit_path).unwrap());
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("test_admin_usage.s3a".to_string(), usage_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("test_admin_usage.s3a".to_string(), usage_store.clone());
 
         let mut config = ServerConfig::default();
         config.insecure_dev = true;
@@ -2924,8 +3545,14 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         // Seed statement for device-777
@@ -2939,13 +3566,16 @@ mod tests {
                 }
             }
         });
-        let _ = usage_store.store_statement(&dev777_stmt.to_string(), &[]).unwrap();
+        let _ = usage_store
+            .store_statement(&dev777_stmt.to_string(), &[])
+            .unwrap();
 
         // 1. Purge by actor account / device ID via /admin/delete-by-actor-account
         let purge_req = serde_json::to_vec(&serde_json::json!({
             "deviceId": "device-777",
             "archive": "test_admin_usage.s3a"
-        })).unwrap();
+        }))
+        .unwrap();
 
         let resp = learner_api::handle_learner_api(
             &Method::Post,
@@ -2961,7 +3591,8 @@ mod tests {
         let compact_req = serde_json::to_vec(&serde_json::json!({
             "retention_days": 90,
             "archive": "test_admin_usage.s3a"
-        })).unwrap();
+        }))
+        .unwrap();
 
         let resp_compact = learner_api::handle_learner_api(
             &Method::Post,
@@ -2981,7 +3612,10 @@ mod tests {
     fn test_cors_preflight_private_network_and_expose_headers() {
         // 1. Preflight with Access-Control-Request-Private-Network: true
         let mut preflight_headers = HashMap::new();
-        preflight_headers.insert("access-control-request-private-network".to_string(), "true".to_string());
+        preflight_headers.insert(
+            "access-control-request-private-network".to_string(),
+            "true".to_string(),
+        );
         preflight_headers.insert("origin".to_string(), "http://localhost:3000".to_string());
 
         let preflight_resp = build_options_response(&preflight_headers);
@@ -3004,8 +3638,14 @@ mod tests {
                 has_expose_headers = true;
             }
         }
-        assert!(has_allow_private, "Preflight must respond with Access-Control-Allow-Private-Network: true");
-        assert!(has_expose_headers, "Preflight must respond with Access-Control-Expose-Headers");
+        assert!(
+            has_allow_private,
+            "Preflight must respond with Access-Control-Allow-Private-Network: true"
+        );
+        assert!(
+            has_expose_headers,
+            "Preflight must respond with Access-Control-Expose-Headers"
+        );
 
         // 2. Preflight without Access-Control-Request-Private-Network
         let preflight_normal_headers = HashMap::new();
@@ -3022,32 +3662,50 @@ mod tests {
         let ok_resp = make_response(200, "application/json", b"{}", false);
         let mut expose_found = false;
         for h in ok_resp.headers() {
-            if h.field.to_string().eq_ignore_ascii_case("Access-Control-Expose-Headers") {
+            if h.field
+                .to_string()
+                .eq_ignore_ascii_case("Access-Control-Expose-Headers")
+            {
                 assert_eq!(h.value.to_string(), "ETag, Last-Modified, X-Experience-API-Version, X-Experience-API-Consistent-Through");
                 expose_found = true;
             }
         }
-        assert!(expose_found, "make_response must include Access-Control-Expose-Headers");
+        assert!(
+            expose_found,
+            "make_response must include Access-Control-Expose-Headers"
+        );
 
         let empty_resp = make_response_empty(204);
         let mut empty_expose_found = false;
         for h in empty_resp.headers() {
-            if h.field.to_string().eq_ignore_ascii_case("Access-Control-Expose-Headers") {
+            if h.field
+                .to_string()
+                .eq_ignore_ascii_case("Access-Control-Expose-Headers")
+            {
                 assert_eq!(h.value.to_string(), "ETag, Last-Modified, X-Experience-API-Version, X-Experience-API-Consistent-Through");
                 empty_expose_found = true;
             }
         }
-        assert!(empty_expose_found, "make_response_empty must include Access-Control-Expose-Headers");
+        assert!(
+            empty_expose_found,
+            "make_response_empty must include Access-Control-Expose-Headers"
+        );
 
         let err_resp = make_error_response(400, "Bad Request");
         let mut err_expose_found = false;
         for h in err_resp.headers() {
-            if h.field.to_string().eq_ignore_ascii_case("Access-Control-Expose-Headers") {
+            if h.field
+                .to_string()
+                .eq_ignore_ascii_case("Access-Control-Expose-Headers")
+            {
                 assert_eq!(h.value.to_string(), "ETag, Last-Modified, X-Experience-API-Version, X-Experience-API-Consistent-Through");
                 err_expose_found = true;
             }
         }
-        assert!(err_expose_found, "make_error_response must include Access-Control-Expose-Headers");
+        assert!(
+            err_expose_found,
+            "make_error_response must include Access-Control-Expose-Headers"
+        );
     }
 
     #[test]
@@ -3074,7 +3732,9 @@ mod tests {
             "object": { "id": "http://example.com/activity/1" }
         });
         let initial_json = serde_json::to_string(&initial_stmt).unwrap();
-        store.store_statement(&initial_json, &[]).expect("store statement");
+        store
+            .store_statement(&initial_json, &[])
+            .expect("store statement");
 
         // Start mock OTS calendars
         let cal1 = MockOtsCalendar::start();
@@ -3098,7 +3758,9 @@ mod tests {
         }
 
         // Verify the store has the xAPI "anchored" statement
-        let page = store.query_statements(StatementFilter::default()).expect("query");
+        let page = store
+            .query_statements(StatementFilter::default())
+            .expect("query");
         let anchored_stmt = page.statements.iter().find_map(|s| {
             let v: serde_json::Value = serde_json::from_str(s).ok()?;
             if v["verb"]["id"].as_str() == Some("https://ashecribb.dev/xapi/verbs/anchored") {
@@ -3107,8 +3769,15 @@ mod tests {
                 None
             }
         });
-        assert!(anchored_stmt.is_some(), "Store must contain an anchored statement");
-        let ext_fp = anchored_stmt.unwrap()["object"]["definition"]["extensions"]["https://ashecribb.dev/xapi/ext/fingerprint"].as_str().unwrap().to_string();
+        assert!(
+            anchored_stmt.is_some(),
+            "Store must contain an anchored statement"
+        );
+        let ext_fp = anchored_stmt.unwrap()["object"]["definition"]["extensions"]
+            ["https://ashecribb.dev/xapi/ext/fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(ext_fp, fp_hex);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -3149,7 +3818,10 @@ mod tests {
 
     #[test]
     fn test_explorer_with_override_param_still_writes_to_assigned_usage_archive() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_exp_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3171,9 +3843,18 @@ mod tests {
         };
 
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
-        stores.write().unwrap().insert("usage.s3a".to_string(), usage_store.clone());
-        stores.write().unwrap().insert("scholar.s3a".to_string(), scholar_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("usage.s3a".to_string(), usage_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("scholar.s3a".to_string(), scholar_store.clone());
 
         let mut config = ServerConfig::default();
         config.data_dir = temp_dir.clone();
@@ -3188,8 +3869,14 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         // 1. Direct resolution check: explorer with ?archive=scholar.s3a ignores override and resolves to usage.s3a
@@ -3197,7 +3884,9 @@ mod tests {
         params.insert("archive".to_string(), "scholar.s3a".to_string());
         let headers = HashMap::new();
 
-        let (_resolved_store, resolved_name) = state.resolve_store_and_archive(Some(&explorer), &params, &headers).unwrap();
+        let (_resolved_store, resolved_name) = state
+            .resolve_store_and_archive(Some(&explorer), &params, &headers)
+            .unwrap();
         assert_eq!(resolved_name, "usage.s3a");
 
         // 2. HTTP request test through server
@@ -3234,19 +3923,34 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         // Verify it wrote to usage.s3a
-        let usage_page = usage_store.query_statements(StatementFilter::default()).unwrap();
-        assert_eq!(usage_page.statements.len(), 1, "Statement must be written to usage.s3a");
+        let usage_page = usage_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
+        assert_eq!(
+            usage_page.statements.len(),
+            1,
+            "Statement must be written to usage.s3a"
+        );
 
         // Verify scholar.s3a remains untouched
-        let scholar_page = scholar_store.query_statements(StatementFilter::default()).unwrap();
-        assert_eq!(scholar_page.statements.len(), 0, "scholar.s3a must NOT have any statements written");
+        let scholar_page = scholar_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
+        assert_eq!(
+            scholar_page.statements.len(),
+            0,
+            "scholar.s3a must NOT have any statements written"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_archive_override_path_traversal_rejected_with_403() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_trav_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3263,7 +3967,10 @@ mod tests {
         config.insecure_dev = true;
 
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("lrs_data.s3a".to_string(), default_store.clone());
 
         let state = Arc::new(AppState {
             default_store: default_store.clone(),
@@ -3272,8 +3979,14 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         // 1. Direct resolve check
@@ -3316,7 +4029,10 @@ mod tests {
 
     #[test]
     fn test_archive_override_absolute_path_rejected_with_403() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_abs_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3333,7 +4049,10 @@ mod tests {
         config.insecure_dev = true;
 
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("lrs_data.s3a".to_string(), default_store.clone());
 
         let state = Arc::new(AppState {
             default_store: default_store.clone(),
@@ -3342,14 +4061,22 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         // 1. Direct resolve check with absolute path
         let mut params = HashMap::new();
         params.insert("archive".to_string(), "/etc/x.s3a".to_string());
-        assert!(state.resolve_store_and_archive(None, &params, &HashMap::new()).is_err());
+        assert!(state
+            .resolve_store_and_archive(None, &params, &HashMap::new())
+            .is_err());
 
         // 2. HTTP request check
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -3381,7 +4108,10 @@ mod tests {
 
     #[test]
     fn test_unknown_archive_name_rejected_and_no_file_created() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_unknown_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3406,7 +4136,10 @@ mod tests {
         config.credentials.push(admin.clone());
 
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("lrs_data.s3a".to_string(), default_store.clone());
 
         let state = Arc::new(AppState {
             default_store: default_store.clone(),
@@ -3415,19 +4148,37 @@ mod tests {
             audit_writer: audit_writer.clone(),
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         let nonexistent_target = temp_dir.join("unknown_random_archive.s3a");
-        assert!(!nonexistent_target.exists(), "Target file must not exist before test");
+        assert!(
+            !nonexistent_target.exists(),
+            "Target file must not exist before test"
+        );
 
         // 1. Direct resolve check
         let mut params = HashMap::new();
-        params.insert("archive".to_string(), "unknown_random_archive.s3a".to_string());
+        params.insert(
+            "archive".to_string(),
+            "unknown_random_archive.s3a".to_string(),
+        );
         let res = state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new());
-        assert!(res.is_err(), "Unknown archive name must be rejected with Err");
-        assert!(!nonexistent_target.exists(), "No file must be created by resolve_store_and_archive");
+        assert!(
+            res.is_err(),
+            "Unknown archive name must be rejected with Err"
+        );
+        assert!(
+            !nonexistent_target.exists(),
+            "No file must be created by resolve_store_and_archive"
+        );
 
         // 2. HTTP request check
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -3441,25 +4192,37 @@ mod tests {
             }
         });
 
-        let resp = ureq::get(&format!("{}/xapi/statements?archive=unknown_random_archive.s3a", addr))
-            .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=") // admin:admin123
-            .set("X-Experience-API-Version", "1.0.3")
-            .call();
+        let resp = ureq::get(&format!(
+            "{}/xapi/statements?archive=unknown_random_archive.s3a",
+            addr
+        ))
+        .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=") // admin:admin123
+        .set("X-Experience-API-Version", "1.0.3")
+        .call();
 
         match resp {
             Err(ureq::Error::Status(403, _)) => {}
-            other => panic!("Expected 403 Forbidden for unknown archive, got {:?}", other),
+            other => panic!(
+                "Expected 403 Forbidden for unknown archive, got {:?}",
+                other
+            ),
         }
 
         // Verify that no file was created!
-        assert!(!nonexistent_target.exists(), "Unknown archive file must NOT be created on disk");
+        assert!(
+            !nonexistent_target.exists(),
+            "Unknown archive file must NOT be created on disk"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_admin_with_override_flag_picks_existing_allowed_archive() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_admin_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3486,8 +4249,14 @@ mod tests {
         config.credentials.push(admin.clone());
 
         let stores = Arc::new(std::sync::RwLock::new(HashMap::new()));
-        stores.write().unwrap().insert("lrs_data.s3a".to_string(), default_store.clone());
-        stores.write().unwrap().insert("custom_allowed.s3a".to_string(), allowed_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("lrs_data.s3a".to_string(), default_store.clone());
+        stores
+            .write()
+            .unwrap()
+            .insert("custom_allowed.s3a".to_string(), allowed_store.clone());
 
         let state = Arc::new(AppState {
             default_store: default_store.clone(),
@@ -3496,14 +4265,22 @@ mod tests {
             audit_writer,
             config,
             agent_registry: Vec::new(),
-            gate_directory: Arc::new(std::sync::Mutex::new(crate::gate_directory::GateDirectoryService::new())),
-            batch_sync: Arc::new(std::sync::Mutex::new(crate::batch_sync::BatchSyncService::new(crate::batch_sync::BatchSyncLimits::default()))),
+            gate_directory: Arc::new(std::sync::Mutex::new(
+                crate::gate_directory::GateDirectoryService::new(),
+            )),
+            batch_sync: Arc::new(std::sync::Mutex::new(
+                crate::batch_sync::BatchSyncService::new(
+                    crate::batch_sync::BatchSyncLimits::default(),
+                ),
+            )),
         });
 
         // 1. With admin_api_override = true, admin successfully picks custom_allowed.s3a
         let mut params = HashMap::new();
         params.insert("archive".to_string(), "custom_allowed.s3a".to_string());
-        let (_store_res, name_res) = state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new()).unwrap();
+        let (_store_res, name_res) = state
+            .resolve_store_and_archive(Some(&admin), &params, &HashMap::new())
+            .unwrap();
         assert_eq!(name_res, "custom_allowed.s3a");
 
         // HTTP POST through server writing to custom_allowed.s3a
@@ -3525,18 +4302,33 @@ mod tests {
         });
         let body = serde_json::to_vec(&stmt).unwrap();
 
-        let resp = ureq::post(&format!("{}/xapi/statements?archive=custom_allowed.s3a", addr))
-            .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=")
-            .set("X-Experience-API-Version", "1.0.3")
-            .set("Content-Type", "application/json")
-            .send_bytes(&body)
-            .expect("Admin write to custom_allowed.s3a must succeed");
+        let resp = ureq::post(&format!(
+            "{}/xapi/statements?archive=custom_allowed.s3a",
+            addr
+        ))
+        .set("Authorization", "Basic YWRtaW46YWRtaW4xMjM=")
+        .set("X-Experience-API-Version", "1.0.3")
+        .set("Content-Type", "application/json")
+        .send_bytes(&body)
+        .expect("Admin write to custom_allowed.s3a must succeed");
 
         assert_eq!(resp.status(), 200);
-        let custom_page = allowed_store.query_statements(StatementFilter::default()).unwrap();
-        assert_eq!(custom_page.statements.len(), 1, "custom_allowed.s3a must contain the written statement");
-        let default_page = default_store.query_statements(StatementFilter::default()).unwrap();
-        assert_eq!(default_page.statements.len(), 0, "default store must NOT contain the statement");
+        let custom_page = allowed_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
+        assert_eq!(
+            custom_page.statements.len(),
+            1,
+            "custom_allowed.s3a must contain the written statement"
+        );
+        let default_page = default_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
+        assert_eq!(
+            default_page.statements.len(),
+            0,
+            "default store must NOT contain the statement"
+        );
 
         // 2. If admin_api_override is false, override is NOT honored and admin uses default archive only
         let mut disabled_config = state.config.clone();
@@ -3544,15 +4336,23 @@ mod tests {
         let mut disabled_state = (*state).clone();
         disabled_state.config = disabled_config;
 
-        let (_d_store, d_name) = disabled_state.resolve_store_and_archive(Some(&admin), &params, &HashMap::new()).unwrap();
-        assert_eq!(d_name, "lrs_data.s3a", "Override must be ignored when --admin-api-override is not set");
+        let (_d_store, d_name) = disabled_state
+            .resolve_store_and_archive(Some(&admin), &params, &HashMap::new())
+            .unwrap();
+        assert_eq!(
+            d_name, "lrs_data.s3a",
+            "Override must be ignored when --admin-api-override is not set"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
     fn test_startup_with_archive_matching_credential_shares_store_instance() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_pinned_matching_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3569,17 +4369,22 @@ mod tests {
         };
         config.credentials.push(pinned_cred.clone());
 
-        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("scholar.audit.s3a")).unwrap());
+        let audit_writer =
+            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("scholar.audit.s3a")).unwrap());
 
         // 1. Startup must NOT panic with "Archive file is already locked by another process"
         let state = AppState::init_with_audit(config, audit_writer)
             .expect("Server initialization must succeed without lock panic when credential archive matches --archive");
 
         // 2. Both the default store and the pinned credential resolve to the exact same Arc<LrsStore>
-        let (default_store, default_name) = state.resolve_store_and_archive(None, &HashMap::new(), &HashMap::new()).unwrap();
+        let (default_store, default_name) = state
+            .resolve_store_and_archive(None, &HashMap::new(), &HashMap::new())
+            .unwrap();
         assert_eq!(default_name, "scholar.s3a");
 
-        let (cred_store, cred_name) = state.resolve_store_and_archive(Some(&pinned_cred), &HashMap::new(), &HashMap::new()).unwrap();
+        let (cred_store, cred_name) = state
+            .resolve_store_and_archive(Some(&pinned_cred), &HashMap::new(), &HashMap::new())
+            .unwrap();
         assert_eq!(cred_name, "scholar.s3a");
 
         assert!(
@@ -3617,10 +4422,14 @@ mod tests {
         assert_eq!(resp.status(), 200);
 
         // Statement is visible from both references because they point to the exact same store
-        let page_default = default_store.query_statements(StatementFilter::default()).unwrap();
+        let page_default = default_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
         assert_eq!(page_default.statements.len(), 1);
 
-        let page_cred = cred_store.query_statements(StatementFilter::default()).unwrap();
+        let page_cred = cred_store
+            .query_statements(StatementFilter::default())
+            .unwrap();
         assert_eq!(page_cred.statements.len(), 1);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -3628,7 +4437,10 @@ mod tests {
 
     #[test]
     fn test_credential_archive_open_error_refuses_to_start_without_panic() {
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_open_fail_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3649,14 +4461,19 @@ mod tests {
         };
         config.credentials.push(bad_cred);
 
-        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let audit_writer =
+            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
 
         let res = AppState::init_with_audit(config, audit_writer);
-        assert!(res.is_err(), "Must refuse to start when a credential archive cannot be opened");
+        assert!(
+            res.is_err(),
+            "Must refuse to start when a credential archive cannot be opened"
+        );
         let err_msg = res.err().unwrap();
         assert!(
             err_msg.contains("Failed to open credential archive 'conflict.s3a'"),
-            "Error message must clearly identify the failed archive: {}", err_msg
+            "Error message must clearly identify the failed archive: {}",
+            err_msg
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -3665,9 +4482,14 @@ mod tests {
     #[test]
     fn test_batch_sync_in_order_and_idempotent_duplicate() {
         use ed25519_dalek::{Signer, SigningKey};
-        use s3a_pack_scholar::{HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket};
+        use s3a_pack_scholar::{
+            HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket,
+        };
 
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_sync_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3682,7 +4504,8 @@ mod tests {
             archive: None,
         });
 
-        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let audit_writer =
+            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -3703,8 +4526,18 @@ mod tests {
 
         let mut packet = SrsSyncDeltaPacket::new([1, 2], [3, 4], 1);
         for i in 0..3 {
-            let rec = HumanLrsRecord::new([1, 2], 1600000000, 100, 1, 1.0, S3ACoordinate::default(), i as u32);
-            packet.entries.push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
+            let rec = HumanLrsRecord::new(
+                [1, 2],
+                1600000000,
+                100,
+                1,
+                1.0,
+                S3ACoordinate::default(),
+                i as u32,
+            );
+            packet
+                .entries
+                .push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
         }
         let delta_bytes = packet.export_bytes();
         let checksum = crc32c::crc32c(&delta_bytes);
@@ -3730,14 +4563,18 @@ mod tests {
             .expect("Batch sync POST must succeed");
 
         assert_eq!(resp.status(), 200);
-        let resp_json: serde_json::Value = serde_json::from_reader(resp.into_reader()).expect("parse response JSON");
+        let resp_json: serde_json::Value =
+            serde_json::from_reader(resp.into_reader()).expect("parse response JSON");
         assert_eq!(resp_json["status"], "ok");
         assert_eq!(resp_json["accepted_cursor"], 3);
         assert_eq!(resp_json["duplicate"], false);
         assert_eq!(resp_json["records_appended"], 3);
 
         // Verify scholar.s3a was created in data_dir
-        assert!(temp_dir.join("scholar.s3a").exists(), "scholar.s3a must be created");
+        assert!(
+            temp_dir.join("scholar.s3a").exists(),
+            "scholar.s3a must be created"
+        );
 
         // 3. Re-send exact same batch (Idempotent 200 OK no-op)
         let resp2 = ureq::post(&format!("{}/xapi/s3a/batch", addr))
@@ -3747,7 +4584,8 @@ mod tests {
             .expect("Duplicate re-send must succeed");
 
         assert_eq!(resp2.status(), 200);
-        let resp2_json: serde_json::Value = serde_json::from_reader(resp2.into_reader()).expect("parse response JSON");
+        let resp2_json: serde_json::Value =
+            serde_json::from_reader(resp2.into_reader()).expect("parse response JSON");
         assert_eq!(resp2_json["status"], "ok");
         assert_eq!(resp2_json["accepted_cursor"], 3);
         assert_eq!(resp2_json["duplicate"], true);
@@ -3759,9 +4597,14 @@ mod tests {
     #[test]
     fn test_batch_sync_gap_and_out_of_order_rejection() {
         use ed25519_dalek::{Signer, SigningKey};
-        use s3a_pack_scholar::{HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket};
+        use s3a_pack_scholar::{
+            HumanLrsRecord, ScholarTileType, SrsDeltaEntry, SrsSyncDeltaPacket,
+        };
 
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_gap_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3774,7 +4617,8 @@ mod tests {
             archive: None,
         });
 
-        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let audit_writer =
+            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -3793,7 +4637,9 @@ mod tests {
 
         let mut packet = SrsSyncDeltaPacket::new([1, 2], [3, 4], 1);
         let rec = HumanLrsRecord::new([1, 2], 1600000000, 100, 1, 1.0, S3ACoordinate::default(), 0);
-        packet.entries.push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
+        packet
+            .entries
+            .push(SrsDeltaEntry::from_record(ScholarTileType::HUMAN_LRS, &rec).unwrap());
         let delta_bytes = packet.export_bytes();
         let checksum = crc32c::crc32c(&delta_bytes);
         let sig = signing_key.sign(&delta_bytes);
@@ -3837,7 +4683,10 @@ mod tests {
         } else {
             None
         };
-        assert!(sync_attempt.is_none(), "Consent-off must emit zero requests");
+        assert!(
+            sync_attempt.is_none(),
+            "Consent-off must emit zero requests"
+        );
 
         // When user grants consent: sync is enabled
         user_consented = true;
@@ -3853,7 +4702,10 @@ mod tests {
     fn test_batch_sync_limits_payload_size_and_invalid_signature() {
         use ed25519_dalek::SigningKey;
 
-        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let temp_dir = std::env::temp_dir().join(format!("s3a_test_batch_limits_{}", unique));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -3867,7 +4719,8 @@ mod tests {
             archive: None,
         });
 
-        let audit_writer = Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
+        let audit_writer =
+            Arc::new(ConcurrentTileWriter::create(&temp_dir.join("lrs_data.audit.s3a")).unwrap());
         let state = AppState::init_with_audit(config, audit_writer).expect("init state");
 
         let server = Server::http("127.0.0.1:0").expect("bind test server");
@@ -3923,4 +4776,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

@@ -1,11 +1,13 @@
-use std::io;
-use std::path::Path;
-use s3a_core::{SimplexHull, ADDON_ROBOTICS, HYPER_TILE_PAYLOAD_SIZE};
-use s3a_engine::lakehouse::{ArrowColumnVector, ArrowField, ArrowRecordBatchDescriptor, ArrowSchema};
-use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine, TileWriter};
-use s3a_simd::can_reject_tile_range;
 use crate::pack::RoboticsTileType;
 use crate::records::RoboticsKinematicRecord;
+use s3a_core::{SimplexHull, ADDON_ROBOTICS, HYPER_TILE_PAYLOAD_SIZE};
+use s3a_engine::lakehouse::{
+    ArrowColumnVector, ArrowField, ArrowRecordBatchDescriptor, ArrowSchema,
+};
+use s3a_engine::{MmapReader, QuerySieve, S3ACrudEngine, TileWriter};
+use s3a_simd::can_reject_tile_range;
+use std::io;
+use std::path::Path;
 
 /// High-Frequency Low-Latency Ring-Buffered Writer for Autonomous Robots, Drones, and Humanoid Manipulators.
 pub struct RoboticsStreamWriter {
@@ -20,7 +22,8 @@ impl RoboticsStreamWriter {
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut writer = TileWriter::create(path)?;
         writer.enable_addon(ADDON_ROBOTICS)?;
-        let capacity_per_tile = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<RoboticsKinematicRecord>();
+        let capacity_per_tile =
+            HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<RoboticsKinematicRecord>();
 
         Ok(Self {
             writer,
@@ -129,7 +132,8 @@ impl RoboticsQueryExt for QuerySieve<'_> {
         min_ts_us: u64,
         max_ts_us: u64,
     ) -> Vec<RoboticsKinematicRecord> {
-        self.reader().query_robotics_trajectory_3d(min_xyz, max_xyz, min_ts_us, max_ts_us)
+        self.reader()
+            .query_robotics_trajectory_3d(min_xyz, max_xyz, min_ts_us, max_ts_us)
     }
 }
 
@@ -167,9 +171,12 @@ impl RoboticsQueryExt for MmapReader {
             let records: &[RoboticsKinematicRecord] = bytemuck::cast_slice(valid_payload);
             for rec in records {
                 if rec.timestamp_us >= min_ts_us && rec.timestamp_us <= max_ts_us {
-                    if rec.position_xyz[0] >= min_xyz[0] && rec.position_xyz[0] <= max_xyz[0]
-                        && rec.position_xyz[1] >= min_xyz[1] && rec.position_xyz[1] <= max_xyz[1]
-                        && rec.position_xyz[2] >= min_xyz[2] && rec.position_xyz[2] <= max_xyz[2]
+                    if rec.position_xyz[0] >= min_xyz[0]
+                        && rec.position_xyz[0] <= max_xyz[0]
+                        && rec.position_xyz[1] >= min_xyz[1]
+                        && rec.position_xyz[1] <= max_xyz[1]
+                        && rec.position_xyz[2] >= min_xyz[2]
+                        && rec.position_xyz[2] <= max_xyz[2]
                     {
                         results.push(*rec);
                     }
@@ -182,14 +189,36 @@ impl RoboticsQueryExt for MmapReader {
 }
 
 /// Projects a slice of S3A RoboticsKinematicRecords into an Apache Arrow Columnar RecordBatch.
-pub fn project_robotics_to_arrow(records: &[RoboticsKinematicRecord]) -> ArrowRecordBatchDescriptor {
+pub fn project_robotics_to_arrow(
+    records: &[RoboticsKinematicRecord],
+) -> ArrowRecordBatchDescriptor {
     let schema = ArrowSchema {
         fields: vec![
-            ArrowField { name: "timestamp_us", data_type: "UInt64", nullable: false },
-            ArrowField { name: "robot_id", data_type: "UInt32", nullable: false },
-            ArrowField { name: "joint_mask", data_type: "UInt32", nullable: false },
-            ArrowField { name: "position_xyz", data_type: "FixedSizeBinary[12]", nullable: false },
-            ArrowField { name: "orientation_quat", data_type: "FixedSizeBinary[16]", nullable: false },
+            ArrowField {
+                name: "timestamp_us",
+                data_type: "UInt64",
+                nullable: false,
+            },
+            ArrowField {
+                name: "robot_id",
+                data_type: "UInt32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "joint_mask",
+                data_type: "UInt32",
+                nullable: false,
+            },
+            ArrowField {
+                name: "position_xyz",
+                data_type: "FixedSizeBinary[12]",
+                nullable: false,
+            },
+            ArrowField {
+                name: "orientation_quat",
+                data_type: "FixedSizeBinary[16]",
+                nullable: false,
+            },
         ],
     };
 
@@ -219,8 +248,14 @@ pub fn project_robotics_to_arrow(records: &[RoboticsKinematicRecord]) -> ArrowRe
             ArrowColumnVector::UInt64(col_ts),
             ArrowColumnVector::UInt32(col_robot),
             ArrowColumnVector::UInt32(col_joint),
-            ArrowColumnVector::FixedSizeBinary { data: col_pos, byte_width: 12 },
-            ArrowColumnVector::FixedSizeBinary { data: col_quat, byte_width: 16 },
+            ArrowColumnVector::FixedSizeBinary {
+                data: col_pos,
+                byte_width: 12,
+            },
+            ArrowColumnVector::FixedSizeBinary {
+                data: col_quat,
+                byte_width: 16,
+            },
         ],
     }
 }

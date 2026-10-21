@@ -6,9 +6,7 @@ pub mod parser;
 
 pub use ast::*;
 pub use error::QlError;
-pub use executor::{
-    register_pack_sift_handler, PackSiftHandler, QueryResult, S3AQLEngine,
-};
+pub use executor::{register_pack_sift_handler, PackSiftHandler, QueryResult, S3AQLEngine};
 pub use lexer::{Lexer, Token};
 pub use parser::Parser;
 

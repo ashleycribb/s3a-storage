@@ -16,19 +16,11 @@ pub enum QlError {
         feature: &'static str,
     },
     /// The archive header addon_mask does not have the required capability bit enabled.
-    AddonRequired {
-        addon_mask: u32,
-        name: &'static str,
-    },
+    AddonRequired { addon_mask: u32, name: &'static str },
     /// The tile layout version is incompatible with current reader capabilities.
-    UnsupportedLayout {
-        tile_type: u32,
-        version: u32,
-    },
+    UnsupportedLayout { tile_type: u32, version: u32 },
     /// Direct coordinate fetch did not find a record.
-    NotFound {
-        coordinate: String,
-    },
+    NotFound { coordinate: String },
     /// Underlying filesystem or memory mapping I/O error.
     Io(io::Error),
     /// Internal execution or engine failure.
@@ -107,13 +99,25 @@ impl fmt::Display for QlError {
                 write!(f, "Parse error at line {}, col {}: {}", line, col, message)
             }
             QlError::PackRequired { pack, feature } => {
-                write!(f, "Pack required: feature '{}' requires domain pack '{}'", feature, pack)
+                write!(
+                    f,
+                    "Pack required: feature '{}' requires domain pack '{}'",
+                    feature, pack
+                )
             }
             QlError::AddonRequired { addon_mask, name } => {
-                write!(f, "Capability required: archive requires addon bit 0x{:04x} ('{}')", addon_mask, name)
+                write!(
+                    f,
+                    "Capability required: archive requires addon bit 0x{:04x} ('{}')",
+                    addon_mask, name
+                )
             }
             QlError::UnsupportedLayout { tile_type, version } => {
-                write!(f, "Unsupported layout: tile type {} layout version {} is not supported", tile_type, version)
+                write!(
+                    f,
+                    "Unsupported layout: tile type {} layout version {} is not supported",
+                    tile_type, version
+                )
             }
             QlError::NotFound { coordinate } => {
                 write!(f, "Record not found at coordinate '{}'", coordinate)

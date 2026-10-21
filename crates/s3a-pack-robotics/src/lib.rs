@@ -89,7 +89,13 @@ mod tests {
 
     #[test]
     fn test_robotics_stream_writer_and_3d_trajectory_query() {
-        let temp = std::env::temp_dir().join(format!("s3a_test_robotics_{}.s3a", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp = std::env::temp_dir().join(format!(
+            "s3a_test_robotics_{}.s3a",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let mut stream_writer = RoboticsStreamWriter::create(&temp).unwrap();
 
         for i in 0..100 {
@@ -106,12 +112,8 @@ mod tests {
         stream_writer.flush_tile().unwrap();
 
         let reader = MmapReader::open(&temp).unwrap();
-        let results = reader.query_robotics_trajectory_3d(
-            [0.0, 0.0, 0.0],
-            [5.0, 5.0, 1.0],
-            0,
-            1_000_000,
-        );
+        let results =
+            reader.query_robotics_trajectory_3d([0.0, 0.0, 0.0], [5.0, 5.0, 1.0], 0, 1_000_000);
 
         assert!(!results.is_empty());
         for r in &results {

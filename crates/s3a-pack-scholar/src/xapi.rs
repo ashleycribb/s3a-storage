@@ -4,10 +4,12 @@
 //! Maps wire-level 32-bit `verb_id` values to canonical IRIs and human-readable labels.
 
 /// Canonical Scholar Explorer xAPI Profile IRI.
-pub const SCHOLAR_XAPI_PROFILE_IRI: &str = "https://ashecribb.dev/xapi/profiles/scholar-explorer/v1";
+pub const SCHOLAR_XAPI_PROFILE_IRI: &str =
+    "https://ashecribb.dev/xapi/profiles/scholar-explorer/v1";
 
 /// Canonical Scholar Explorer Usage xAPI Profile IRI.
-pub const SCHOLAR_EXPLORER_USAGE_PROFILE_IRI: &str = "https://ashecribb.dev/xapi/profiles/scholar-explorer-usage/v1";
+pub const SCHOLAR_EXPLORER_USAGE_PROFILE_IRI: &str =
+    "https://ashecribb.dev/xapi/profiles/scholar-explorer-usage/v1";
 
 pub const USAGE_VERB_SEARCHED: &str = "https://ashecribb.dev/xapi/verbs/searched";
 pub const USAGE_VERB_PROMPTED: &str = "https://ashecribb.dev/xapi/verbs/prompted";
@@ -242,14 +244,26 @@ static VERB_ALIASES: &[(&str, u32)] = &[
     ("http://activitystrea.ms/schema/1.0/create", VERB_ID_CREATED),
     ("https://ashecribb.dev/xapi/verbs/asked", VERB_ID_ASKED),
     ("http://adlnet.gov/expapi/verbs/asked", VERB_ID_ASKED),
-    ("https://ashecribb.dev/xapi/verbs/logged-out", VERB_ID_LOGGED_OUT),
-    ("http://adlnet.gov/expapi/verbs/logged-out", VERB_ID_LOGGED_OUT),
-    ("http://activitystrea.ms/schema/1.0/search", VERB_ID_SEARCHED),
+    (
+        "https://ashecribb.dev/xapi/verbs/logged-out",
+        VERB_ID_LOGGED_OUT,
+    ),
+    (
+        "http://adlnet.gov/expapi/verbs/logged-out",
+        VERB_ID_LOGGED_OUT,
+    ),
+    (
+        "http://activitystrea.ms/schema/1.0/search",
+        VERB_ID_SEARCHED,
+    ),
     ("http://activitystrea.ms/schema/1.0/open", VERB_ID_OPENED),
     ("http://id.tincanapi.com/verb/viewed", VERB_ID_VIEWED),
     ("http://activitystrea.ms/schema/1.0/save", VERB_ID_SAVED),
     ("http://activitystrea.ms/schema/1.0/remove", VERB_ID_REMOVED),
-    ("http://activitystrea.ms/schema/1.0/accept", VERB_ID_ACCEPTED),
+    (
+        "http://activitystrea.ms/schema/1.0/accept",
+        VERB_ID_ACCEPTED,
+    ),
 ];
 
 /// Resolves a VerbSpec by its 32-bit wire integer identifier.
@@ -285,49 +299,66 @@ pub fn hash_iri(iri: &str) -> u64 {
     hash
 }
 
+use crate::pack::ScholarTileType;
+use crate::records::{
+    AgentDenied, AgentRegistryRecord, AiTraceRecord, HumanLrsRecord, STEP_TOOL_CALL,
+};
 use bytemuck::bytes_of;
 use s3a_core::{HyperTileHeader, S3ACoordinate};
 use s3a_engine::concurrent_writer::ConcurrentTileWriter;
-use s3a_engine::lrs_store::{uuid_to_u64_pair, hash_actor_value, now_ms};
-use crate::pack::ScholarTileType;
-use crate::records::{
-    AgentDenied, AgentRegistryRecord, AiTraceRecord, HumanLrsRecord,
-    STEP_TOOL_CALL,
-};
+use s3a_engine::lrs_store::{hash_actor_value, now_ms, uuid_to_u64_pair};
 
 /// Validates statement compliance with the Scholar Explorer and Research Traceability profile.
 pub fn validate_scholar_profile(statement: &serde_json::Value) -> Result<(), String> {
-    let verb_iri = statement.get("verb")
+    let verb_iri = statement
+        .get("verb")
         .and_then(|v| v.get("id"))
         .and_then(|id| id.as_str())
         .unwrap_or_default();
 
     if let Some(spec) = resolve_verb_by_iri(verb_iri) {
         // Enforce StatementTemplate rules
-        let obj = statement.get("object").and_then(|o| o.as_object())
+        let obj = statement
+            .get("object")
+            .and_then(|o| o.as_object())
             .ok_or_else(|| "Scholar profile statement must have an object".to_string())?;
 
-        let ot = obj.get("objectType").and_then(|v| v.as_str()).unwrap_or("Activity");
+        let ot = obj
+            .get("objectType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Activity");
         if ot == "Activity" {
-            let act_id = obj.get("id").and_then(|v| v.as_str())
+            let act_id = obj
+                .get("id")
+                .and_then(|v| v.as_str())
                 .ok_or_else(|| "Scholar activity object must have an id".to_string())?;
             if !s3a_engine::lrs_store::is_valid_iri(act_id) {
-                return Err(format!("Scholar activity object id is not valid IRI: {}", act_id));
+                return Err(format!(
+                    "Scholar activity object id is not valid IRI: {}",
+                    act_id
+                ));
             }
         }
 
         // Verb-specific requirements
         match spec.verb_id {
             VERB_ID_APPROVED | VERB_ID_TA_APPROVED_DRAFT => {
-                let res = statement.get("result").and_then(|r| r.as_object())
+                let res = statement
+                    .get("result")
+                    .and_then(|r| r.as_object())
                     .ok_or_else(|| format!("Verb '{}' requires result object", spec.label))?;
                 if res.get("success").and_then(|s| s.as_bool()).is_none() {
-                    return Err(format!("Verb '{}' requires result.success boolean", spec.label));
+                    return Err(format!(
+                        "Verb '{}' requires result.success boolean",
+                        spec.label
+                    ));
                 }
             }
             VERB_ID_CITED => {
                 if !obj.contains_key("id") {
-                    return Err("Verb 'cited' requires object.id reference to cited work".to_string());
+                    return Err(
+                        "Verb 'cited' requires object.id reference to cited work".to_string()
+                    );
                 }
             }
             _ => {}
@@ -348,10 +379,10 @@ pub fn is_usage_profile_verb(verb_iri: &str) -> bool {
             | "https://ashecribb.dev/xapi/verbs/viewed-source"
             | "https://ashecribb.dev/xapi/verbs/exported"
     ) || lower.ends_with("/searched")
-      || lower.ends_with("/prompted")
-      || lower.ends_with("/ai-responded")
-      || lower.ends_with("/viewed-source")
-      || lower.ends_with("/exported")
+        || lower.ends_with("/prompted")
+        || lower.ends_with("/ai-responded")
+        || lower.ends_with("/viewed-source")
+        || lower.ends_with("/exported")
 }
 
 /// Checks if a statement declares the scholar-explorer-usage/v1 profile in its context activities.
@@ -361,7 +392,9 @@ pub fn statement_has_usage_profile(statement: &serde_json::Value) -> bool {
             if let Some(categories) = ca.get("category").and_then(|c| c.as_array()) {
                 for item in categories {
                     if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                        if id == SCHOLAR_EXPLORER_USAGE_PROFILE_IRI || id.contains("scholar-explorer-usage/v1") {
+                        if id == SCHOLAR_EXPLORER_USAGE_PROFILE_IRI
+                            || id.contains("scholar-explorer-usage/v1")
+                        {
                             return true;
                         }
                     }
@@ -374,12 +407,15 @@ pub fn statement_has_usage_profile(statement: &serde_json::Value) -> bool {
 
 /// Validates that a statement adheres strictly to the `scholar-explorer-usage/v1` profile.
 /// Rejects any statement that does not declare the profile or uses a verb outside the 5 allowed verbs.
-pub fn validate_scholar_explorer_usage_profile(statement: &serde_json::Value) -> Result<(), String> {
+pub fn validate_scholar_explorer_usage_profile(
+    statement: &serde_json::Value,
+) -> Result<(), String> {
     if !statement_has_usage_profile(statement) {
         return Err("Statement does not declare the 'scholar-explorer-usage/v1' profile in context.contextActivities.category".to_string());
     }
 
-    let verb_iri = statement.get("verb")
+    let verb_iri = statement
+        .get("verb")
         .and_then(|v| v.get("id"))
         .and_then(|id| id.as_str())
         .unwrap_or_default();
@@ -405,12 +441,14 @@ pub fn validate_ai_agent_allowlist(
         None => return Ok(()),
     };
 
-    let is_agent = actor_val.get("account")
+    let is_agent = actor_val
+        .get("account")
         .and_then(|acc| acc.get("homePage"))
         .and_then(|hp| hp.as_str())
         .map(|s| s.contains("agent") || s.contains("s3a"))
         .unwrap_or(false)
-        || actor_val.get("name")
+        || actor_val
+            .get("name")
             .and_then(|n| n.as_str())
             .map(|s| s.starts_with("Agent:") || s.starts_with("AI:"))
             .unwrap_or(false);
@@ -420,16 +458,23 @@ pub fn validate_ai_agent_allowlist(
     }
 
     let actor_hash = hash_actor_value(actor_val);
-    let name_hash = actor_val.get("name")
+    let name_hash = actor_val
+        .get("name")
         .and_then(|n| n.as_str())
-        .map(|n| n.trim_start_matches("Agent:").trim_start_matches("AI:").trim())
+        .map(|n| {
+            n.trim_start_matches("Agent:")
+                .trim_start_matches("AI:")
+                .trim()
+        })
         .map(hash_iri);
-    let acc_name_hash = actor_val.get("account")
+    let acc_name_hash = actor_val
+        .get("account")
         .and_then(|acc| acc.get("name"))
         .and_then(|n| n.as_str())
         .map(hash_iri);
 
-    let verb_iri = statement_val.get("verb")
+    let verb_iri = statement_val
+        .get("verb")
         .and_then(|v| v.get("id"))
         .and_then(|id| id.as_str())
         .unwrap_or_default();
@@ -460,13 +505,15 @@ pub fn enrich_scholar_statement(
     statement_val: &serde_json::Value,
     _body_hash_xxh3: [u8; 16],
 ) -> std::io::Result<()> {
-    let session_uuid = statement_val.get("context")
+    let session_uuid = statement_val
+        .get("context")
         .and_then(|c| c.get("registration"))
         .and_then(|r| r.as_str())
         .and_then(|s| uuid_to_u64_pair(s).ok())
         .unwrap_or([0, 0]);
 
-    let timestamp_sec = statement_val.get("timestamp")
+    let timestamp_sec = statement_val
+        .get("timestamp")
         .and_then(|t| t.as_str())
         .and_then(s3a_engine::lrs_store::chrono_parse_ms)
         .map(|ms| ms / 1000)
@@ -475,12 +522,14 @@ pub fn enrich_scholar_statement(
     let actor_val = statement_val.get("actor");
     let actor_hash = actor_val.map(hash_actor_value).unwrap_or(0);
 
-    let is_agent = actor_val.and_then(|a| a.get("account"))
+    let is_agent = actor_val
+        .and_then(|a| a.get("account"))
         .and_then(|acc| acc.get("homePage"))
         .and_then(|hp| hp.as_str())
         .map(|s| s.contains("agent") || s.contains("s3a"))
         .unwrap_or(false)
-        || actor_val.and_then(|a| a.get("name"))
+        || actor_val
+            .and_then(|a| a.get("name"))
             .and_then(|n| n.as_str())
             .map(|s| s.starts_with("Agent:") || s.starts_with("AI:"))
             .unwrap_or(false);
@@ -501,15 +550,22 @@ pub fn enrich_scholar_statement(
         hdr.record_count = 1;
         hdr.payload_bytes = bytes.len() as u32;
         hdr.data_crc32 = crc32c::crc32c(bytes);
-        s3a_simd::bloom_filter_insert(&mut hdr.filter.bits, session_uuid[0] ^ session_uuid[1], hdr.filter.hash_seed);
+        s3a_simd::bloom_filter_insert(
+            &mut hdr.filter.bits,
+            session_uuid[0] ^ session_uuid[1],
+            hdr.filter.hash_seed,
+        );
         s3a_simd::bloom_filter_insert(&mut hdr.filter.bits, actor_hash, hdr.filter.hash_seed);
         writer.write_raw_hyper_tile(&hdr, bytes)?;
     } else {
-        let verb_iri = statement_val.get("verb")
+        let verb_iri = statement_val
+            .get("verb")
             .and_then(|v| v.get("id"))
             .and_then(|id| id.as_str())
             .unwrap_or_default();
-        let verb_id = resolve_verb_by_iri(verb_iri).map(|v| v.verb_id).unwrap_or(0);
+        let verb_id = resolve_verb_by_iri(verb_iri)
+            .map(|v| v.verb_id)
+            .unwrap_or(0);
 
         let human_rec = HumanLrsRecord::new(
             session_uuid,
@@ -525,7 +581,11 @@ pub fn enrich_scholar_statement(
         hdr.record_count = 1;
         hdr.payload_bytes = bytes.len() as u32;
         hdr.data_crc32 = crc32c::crc32c(bytes);
-        s3a_simd::bloom_filter_insert(&mut hdr.filter.bits, session_uuid[0] ^ session_uuid[1], hdr.filter.hash_seed);
+        s3a_simd::bloom_filter_insert(
+            &mut hdr.filter.bits,
+            session_uuid[0] ^ session_uuid[1],
+            hdr.filter.hash_seed,
+        );
         s3a_simd::bloom_filter_insert(&mut hdr.filter.bits, actor_hash, hdr.filter.hash_seed);
         writer.write_raw_hyper_tile(&hdr, bytes)?;
     }
@@ -613,24 +673,31 @@ pub fn extract_citation_fingerprint_from_statement(
     let mut digest = [0u8; 32];
     hex::decode_to_slice(sha_hex, &mut digest).ok()?;
 
-    let kind_str = ctx.get(EXT_CONTENT_KIND).and_then(|v| v.as_str()).unwrap_or("pdf");
+    let kind_str = ctx
+        .get(EXT_CONTENT_KIND)
+        .and_then(|v| v.as_str())
+        .unwrap_or("pdf");
     let kind = crate::records::CitationFingerprintRecord::parse_content_kind(kind_str);
-    let url_str = ctx.get(EXT_SOURCE_URL).and_then(|v| v.as_str()).unwrap_or("");
-    let version = ctx.get(EXT_CROSSREF_VERSION).and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let url_str = ctx
+        .get(EXT_SOURCE_URL)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let version = ctx
+        .get(EXT_CROSSREF_VERSION)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as u32;
 
-    let obj_id = statement.get("object").and_then(|o| o.get("id")).and_then(|i| i.as_str()).unwrap_or("");
+    let obj_id = statement
+        .get("object")
+        .and_then(|o| o.get("id"))
+        .and_then(|i| i.as_str())
+        .unwrap_or("");
     let doi_hash = hash_iri(obj_id);
     let url_hash = hash_iri(url_str);
     let now_sec = s3a_engine::lrs_store::now_ms() / 1000;
 
     Some(crate::records::CitationFingerprintRecord::new(
-        paper_id,
-        doi_hash,
-        digest,
-        kind,
-        version,
-        now_sec,
-        url_hash,
+        paper_id, doi_hash, digest, kind, version, now_sec, url_hash,
     ))
 }
 
@@ -660,22 +727,33 @@ mod tests {
         let profile_json: serde_json::Value = serde_json::from_str(profile_str)
             .expect("scholar-xapi-profile.jsonld must be valid JSON");
 
-        let concepts = profile_json.get("concepts")
+        let concepts = profile_json
+            .get("concepts")
             .and_then(|c| c.as_array())
             .expect("profile must contain concepts array");
 
-        let profile_verbs: Vec<&serde_json::Value> = concepts.iter()
+        let profile_verbs: Vec<&serde_json::Value> = concepts
+            .iter()
             .filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("Verb"))
             .collect();
 
         // 1. Every verb in the formal profile must exist in SCHOLAR_VERBS
         for pv in &profile_verbs {
             let iri = pv.get("id").and_then(|i| i.as_str()).unwrap();
-            let label = pv.get("prefLabel").and_then(|p| p.get("en")).and_then(|l| l.as_str()).unwrap();
+            let label = pv
+                .get("prefLabel")
+                .and_then(|p| p.get("en"))
+                .and_then(|l| l.as_str())
+                .unwrap();
 
             let spec = resolve_verb_by_iri(iri)
                 .or_else(|| resolve_verb_by_label(label))
-                .unwrap_or_else(|| panic!("Verb in profile '{}' ({}) missing from SCHOLAR_VERBS", label, iri));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Verb in profile '{}' ({}) missing from SCHOLAR_VERBS",
+                        label, iri
+                    )
+                });
 
             assert_eq!(spec.label, label, "Label mismatch for verb {}", iri);
         }
@@ -776,7 +854,10 @@ mod tests {
             },
             "verb": {"id": "http://adlnet.gov/expapi/verbs/experienced"}
         });
-        assert_eq!(validate_ai_agent_allowlist(&registry, &agent_stmt_ok), Ok(()));
+        assert_eq!(
+            validate_ai_agent_allowlist(&registry, &agent_stmt_ok),
+            Ok(())
+        );
 
         // 3. Registered AI agent ('lab-assistant') with unpermitted verb ('rejected', bit 7)
         let agent_stmt_denied_verb = serde_json::json!({
@@ -868,8 +949,15 @@ mod tests {
     #[test]
     fn test_enrich_scholar_statement_tiles_10_and_11() {
         let mut temp_path = std::env::temp_dir();
-        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        temp_path.push(format!("s3a_enrich_test_{}_{}.s3a", std::process::id(), nonce));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        temp_path.push(format!(
+            "s3a_enrich_test_{}_{}.s3a",
+            std::process::id(),
+            nonce
+        ));
 
         let writer = ConcurrentTileWriter::create(&temp_path).unwrap();
         writer.enable_addon(s3a_core::ADDON_EDU).unwrap();
@@ -998,11 +1086,14 @@ mod tests {
             1,
         );
 
-        let ext_hash = stmt["context"]["extensions"][EXT_CONTENT_SHA256].as_str().unwrap();
+        let ext_hash = stmt["context"]["extensions"][EXT_CONTENT_SHA256]
+            .as_str()
+            .unwrap();
         assert_eq!(ext_hash, fp.content_sha256_hex());
         assert_eq!(stmt["context"]["extensions"][EXT_CONTENT_KIND], "pdf");
 
-        let extracted = extract_citation_fingerprint_from_statement(&stmt, 42).expect("Must extract fingerprint");
+        let extracted = extract_citation_fingerprint_from_statement(&stmt, 42)
+            .expect("Must extract fingerprint");
         assert_eq!(extracted.paper_id, 42);
         assert_eq!(extracted.content_sha256, fp.content_sha256);
         assert_eq!(extracted.content_kind, crate::records::CONTENT_KIND_PDF);
