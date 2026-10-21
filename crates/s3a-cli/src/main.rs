@@ -506,6 +506,31 @@ fn main() {
                 run_anchor_file(file, tsa_opt, cal_opt, mock_mode);
             }
         }
+        "migrate" => {
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            let pos: Vec<&String> = args[2..].iter().filter(|a| !a.starts_with("--")).collect();
+            if pos.len() != 2 {
+                println!("Usage: s3a-cli migrate <in_file> <out_file> [--dry-run]");
+                return;
+            }
+            let hex = |b: &[u8]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
+            match s3a_engine::migrate::migrate_file(std::path::Path::new(pos[0]), std::path::Path::new(pos[1]), dry_run) {
+                Ok(r) => {
+                    println!("{} {} -> {}", if r.dry_run { "DRY RUN OK:" } else { "MIGRATED + VERIFIED:" }, pos[0], pos[1]);
+                    println!("  source version: {}", r.source_version.as_str());
+                    println!("  tiles: {}  records: {}  generation: {}", r.tile_count, r.record_count, r.generation);
+                    println!("  source sha256: {}", hex(&r.source_sha256));
+                    println!("  output sha256: {}{}", hex(&r.output_sha256), if r.dry_run { " (uuid differs on real run)" } else { "" });
+                    if !r.dry_run {
+                        println!("  new file_uuid: {:016x}{:016x}", r.new_file_uuid[0], r.new_file_uuid[1]);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("migrate failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         "verify" => {
             let json_mode = args.iter().any(|a| a == "--json");
             let anchor_mode = args.iter().any(|a| a == "--anchor");
@@ -1032,6 +1057,7 @@ fn print_usage() {
     println!("  s3a-cli tour [--json] [--floor N] <archive>        Tour archive: lobby, floors, array slice, cross-section, history");
     println!("  s3a-cli verify [--json] [--anchor] [--repair <out>] <archive> Verify sealed parity, self-addressing, or anchors");
     println!("  s3a-cli seal <in_file> <out_file>                 Seal cold archive with Reed-Solomon K+M parity & directory");
+    println!("  s3a-cli migrate <in_file> <out_file> [--dry-run]  Migrate a legacy v1.0/v1.1-unaddressed file into a NEW verified file");
     println!("  s3a-cli anchor <sealed_file> [--tsa <url>]        Anchor archive fingerprint to OpenTimestamps / RFC 3161");
     println!("  s3a-cli anchor upgrade <sealed_file>              Upgrade pending OpenTimestamps anchor to Bitcoin confirmed");
     println!("  s3a-cli status [--json] <archive>                 Quick archive state, generation, slot, and addon mask");
