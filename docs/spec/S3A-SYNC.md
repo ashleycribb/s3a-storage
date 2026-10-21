@@ -99,7 +99,8 @@ Enabled by `flags.bit1`. Intended for links with long delay, scheduled contacts 
 1. **Self-contained bundles.** Each message MUST be signed and carry `lifetime_s` and `priority`,
    so it is valid when read days later from any medium.
 2. **Bundle Protocol v7 carriage.** An envelope MAY be the payload block of a BPv7 bundle
-   (RFC 9171). The bundle lifetime SHOULD equal `lifetime_s`; bundle priority SHOULD map from `priority`.
+   (RFC 9171). The bundle lifetime SHOULD equal `lifetime_s`. BPv7 has no priority field
+   (RFC 9171 Appendix A), so `priority` stays in the envelope.
 3. **Custody.** A sender MUST retain data until it holds a valid signed `RECEIPT` from the next hop
    covering the `msg_id` (and chunk hashes). Only then MAY it delete. Receipts are idempotent.
 4. **Sequence counters.** `seq` is strictly increasing per `stream_id`. Receivers track the
@@ -114,6 +115,8 @@ Enabled by `flags.bit1`. Intended for links with long delay, scheduled contacts 
    (a directory of `*.s3as` files, one envelope each) and `gate://` endpoints.
 
 ## 3. Edge packet stores (spec only; future edge-writer change)
+
+Full rules (modes, custody release, power-cut, budget): `S3A-EDGE-PROFILE.md` §16.
 
 An edge device MAY hold named **packet stores**:
 
