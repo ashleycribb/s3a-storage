@@ -170,7 +170,7 @@ pub fn build_claim_proof<P: AsRef<Path>>(archive_path: P, claim_id: u64) -> io::
     let mut offset = FILE_HEADER_SIZE;
     while offset + HYPER_TILE_SIZE <= file_bytes.len() {
         let tile_bytes = &file_bytes[offset..offset + HYPER_TILE_SIZE];
-        let tile_header: &HyperTileHeader = bytemuck::from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
 
         if tile_header.tile_type == ScholarTileType::NOTE_CLAIMS {
             let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];
@@ -349,7 +349,7 @@ pub fn export_bibliography_with_proof<P: AsRef<Path>, O: AsRef<Path>>(
     let mut offset = FILE_HEADER_SIZE;
     while offset + HYPER_TILE_SIZE <= file_bytes.len() {
         let tile_bytes = &file_bytes[offset..offset + HYPER_TILE_SIZE];
-        let tile_header: &HyperTileHeader = bytemuck::from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
 
         if tile_header.tile_type == ScholarTileType::CITATION_FINGERPRINT {
             let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + tile_header.payload_bytes as usize];

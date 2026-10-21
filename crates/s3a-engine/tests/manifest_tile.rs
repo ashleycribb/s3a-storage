@@ -85,7 +85,7 @@ fn test_manifest_present_and_plain_text_readable_after_seal() {
 
     // At offset 512, Tile 0 HyperTileHeader
     let hdr_slice = &bytes[FILE_HEADER_SIZE..FILE_HEADER_SIZE + HYPER_TILE_HEADER_SIZE];
-    let hdr: &HyperTileHeader = bytemuck::from_bytes(hdr_slice);
+    let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(hdr_slice);
     assert_eq!(hdr.tile_type, TileType::MANIFEST);
     assert_eq!(hdr.tile_index, 0);
 

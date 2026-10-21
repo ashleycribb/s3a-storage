@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use bytemuck::{bytes_of, from_bytes};
+use bytemuck::{bytes_of};
 use s3a_core::{
     HyperTileHeader, MarkRecord, S3AError, StatementIndexRecord, TelemetryRecord, TileType,
     ADDON_EDU, HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, MARK_SET,
@@ -739,7 +739,7 @@ fn generate_invalid_unsupported_layout_version(dir: &Path) -> io::Result<String>
     file.seek(SeekFrom::Start(512))?;
     file.read_exact(&mut tile_hdr_buf)?;
 
-    let mut tile_hdr: HyperTileHeader = *from_bytes(&tile_hdr_buf);
+    let mut tile_hdr: HyperTileHeader = bytemuck::pod_read_unaligned(&tile_hdr_buf);
     tile_hdr.record_layout_version = 99;
     tile_hdr.header_crc32 = compute_tile_header_crc32(&tile_hdr);
 
@@ -1229,7 +1229,7 @@ fn generate_foreign_tile(dir: &Path) -> io::Result<String> {
 
     // Corrupt file_uuid of tile 1 to a foreign file_uuid
     let tile1_offset = 512 + HYPER_TILE_SIZE;
-    let mut tile1_hdr: HyperTileHeader = *from_bytes(&file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
+    let mut tile1_hdr: HyperTileHeader = bytemuck::pod_read_unaligned(&file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
     tile1_hdr.file_uuid = [0xDEAD_BEEF, 0xCAFE_BABE];
     tile1_hdr.header_crc32 = compute_tile_header_crc32(&tile1_hdr);
     file_bytes[tile1_offset..tile1_offset + s3a_core::HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&tile1_hdr));
@@ -1273,7 +1273,7 @@ fn generate_legacy_unaddressed_tiles(dir: &Path) -> io::Result<String> {
     // Overwrite tile 0 header to zero out file_uuid and tile_index (simulating legacy pre-v1.1 tile)
     let mut file_bytes = fs::read(&file_path)?;
     let tile_offset = 512;
-    let mut hdr: HyperTileHeader = *from_bytes(&file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
+    let mut hdr: HyperTileHeader = bytemuck::pod_read_unaligned(&file_bytes[tile_offset..tile_offset + s3a_core::HYPER_TILE_HEADER_SIZE]);
     hdr.file_uuid = [0, 0];
     hdr.tile_index = 0;
     hdr.record_layout_version = 1;

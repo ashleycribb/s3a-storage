@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use bytemuck::from_bytes;
 use crate::{MmapReader, TileWriter};
 
 /// Report summarizing an edge archive import and merge operation.
@@ -71,7 +70,7 @@ pub fn import_edge_archive<P: AsRef<Path>, Q: AsRef<Path>>(
             if (edge_hdr.type_id == s3a_edge::TILE_TYPE_RECORD || edge_hdr.type_id == 33)
                 && payload.len() >= core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()
             {
-                let id_rec: &s3a_edge::DeviceIdentityRecord = from_bytes(&payload[..core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()]);
+                let id_rec: &s3a_edge::DeviceIdentityRecord = &bytemuck::pod_read_unaligned::<s3a_edge::DeviceIdentityRecord>(&payload[..core::mem::size_of::<s3a_edge::DeviceIdentityRecord>()]);
                 if id_rec.verify() && id_rec.device_id != [0u8; 16] {
                     device_id = id_rec.device_id;
                     break;

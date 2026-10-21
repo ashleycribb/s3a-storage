@@ -6,7 +6,6 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use bytemuck::from_bytes;
 use ed25519_dalek::{Signature, VerifyingKey};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -181,8 +180,8 @@ fn get_active_data_len(buf: &[u8]) -> Result<usize, GateDirectoryError> {
             "Archive buffer too small for S3A header".into(),
         ));
     }
-    let slot_a: &FileHeader = from_bytes(&buf[0..64]);
-    let slot_b: &FileHeader = from_bytes(&buf[64..128]);
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&buf[0..64]);
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&buf[64..128]);
     let (active, _) = s3a_engine::resolve_active_header(slot_a, slot_b)
         .map_err(|e| GateDirectoryError::Internal(e.to_string()))?;
     let len = FILE_HEADER_SIZE + (active.tile_count as usize * HYPER_TILE_SIZE);
@@ -270,7 +269,7 @@ impl GateDirectoryService {
                                 for e in 0..count {
                                     if (e + 1) * rec_size <= payload.len() {
                                         let rec: &ErasureRecord =
-                                            from_bytes(&payload[e * rec_size..(e + 1) * rec_size]);
+                                            &bytemuck::pod_read_unaligned::<ErasureRecord>(&payload[e * rec_size..(e + 1) * rec_size]);
                                         erased_hashes.insert(rec.erased_record_hash);
                                     }
                                 }

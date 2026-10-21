@@ -1,4 +1,4 @@
-use bytemuck::{bytes_of, cast_slice, from_bytes, Pod, Zeroable};
+use bytemuck::{bytes_of, cast_slice, Pod, Zeroable};
 use s3a_core::{MarkRecord, S3AError, TileType};
 
 use crate::pack::ScholarTileType;
@@ -221,7 +221,7 @@ impl SrsSyncDeltaPacket {
             });
         }
 
-        let header: SrsSyncDeltaHeader = *from_bytes(&bytes[..SrsSyncDeltaHeader::HEADER_SIZE]);
+        let header: SrsSyncDeltaHeader = bytemuck::pod_read_unaligned(&bytes[..SrsSyncDeltaHeader::HEADER_SIZE]);
         if header.magic != SrsSyncDeltaHeader::MAGIC {
             return Err(SyncError::InvalidMagic);
         }
@@ -298,7 +298,7 @@ impl SrsSyncDeltaPacket {
                     // Valid domain pack tile types
                 }
                 TileType::MARKS => {
-                    let r: MarkRecord = *from_bytes(&entry.record_bytes()[..64]);
+                    let r: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                     if r.set_or_clear == s3a_core::MARK_SET {
                         if r.mark_kind != s3a_core::MARK_NEEDS_REVIEW
                             && r.mark_kind != s3a_core::MARK_CONSENT_WITHDRAWN
@@ -336,41 +336,41 @@ impl SrsSyncDeltaPacket {
          for entry in &self.entries {
              match entry.tile_type {
                  ScholarTileType::HUMAN_LRS => {
-                     let r: HumanLrsRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: HumanLrsRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.human_decisions.push(r);
                      count += 1;
                  }
                  ScholarTileType::AI_TRACE_LOG => {
-                     let r: AiTraceRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: AiTraceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.ai_traces.push(r);
                      count += 1;
                  }
                  ScholarTileType::ACADEMIC_PAPERS => {
-                     let r: AcademicPaperRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: AcademicPaperRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.papers.push(r);
                      count += 1;
                  }
                  ScholarTileType::RESEARCH_GRAPH => {
-                     let r: ResearchGraphEdgeRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: ResearchGraphEdgeRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.evidence_edges.push(r);
                      count += 1;
                  }
                  ScholarTileType::SRS_WORKSPACE => {
-                     let r: SrsWorkspaceRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: SrsWorkspaceRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.workspace = Some(r);
                      count += 1;
                  }
                  ScholarTileType::NOTE_CLAIMS => {
-                     let r: ScholarNoteClaimRecord = *from_bytes(&entry.record_bytes()[..160]);
+                     let r: ScholarNoteClaimRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
                      bundle.claims.push(r);
                      count += 1;
                  }
                  ScholarTileType::CITATION_FINGERPRINT => {
-                     let _r: CitationFingerprintRecord = *from_bytes(&entry.record_bytes()[..96]);
+                     let _r: CitationFingerprintRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..96]);
                      count += 1;
                  }
                  TileType::MARKS => {
-                     let r: MarkRecord = *from_bytes(&entry.record_bytes()[..64]);
+                     let r: MarkRecord = bytemuck::pod_read_unaligned(&entry.record_bytes()[..64]);
                      bundle.policy_marks.push(r);
                      count += 1;
                  }
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(parsed.entries[0].tile_type, ScholarTileType::HUMAN_LRS);
         assert_eq!(parsed.entries[1].tile_type, ScholarTileType::AI_TRACE_LOG);
 
-        let parsed_human: HumanLrsRecord = *from_bytes(&parsed.entries[0].record_bytes()[..64]);
+        let parsed_human: HumanLrsRecord = bytemuck::pod_read_unaligned(&parsed.entries[0].record_bytes()[..64]);
         assert_eq!(parsed_human.actor_hash, 0xFEEDFACE);
         assert_eq!(parsed_human.decision_score, 0.95);
     }

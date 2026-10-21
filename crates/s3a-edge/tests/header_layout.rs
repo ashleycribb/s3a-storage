@@ -24,7 +24,6 @@ fn le32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes(b[o..o + 4].try_into().u
 
 /// Parse a real written edge tile from raw flash bytes using only the spec's offsets.
 #[test]
-#[cfg_attr(debug_assertions, ignore = "A4: EdgeWriter::open_or_format calls bytemuck::from_bytes on an unaligned stack buffer and panics in debug builds; runs under --release; un-ignore after A4")]
 fn real_edge_tile_bytes_match_spec() {
     let flash = RamFlash::<{ 64 * 1024 }>::new(256, 512);
     let mut w = EdgeWriter::<_, 4096>::open_or_format(flash, [0x42; 16], [1, 2], 1_700_000_000).unwrap();

@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use bytemuck::from_bytes;
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
@@ -81,7 +80,7 @@ pub fn sync_push(
                             for c in 0..c_count {
                                 if (c + 1) * consent_size <= payload.len() {
                                     let rec: &ConsentRecord =
-                                        from_bytes(&payload[c * consent_size..(c + 1) * consent_size]);
+                                        &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
                                     if rec.purpose != req_purpose && rec.withdrawn_at == 0 {
                                         return Err(VcsError::ConsentRestricted(format!(
                                             "Participant record purpose {} is incompatible with sync request scope {}",

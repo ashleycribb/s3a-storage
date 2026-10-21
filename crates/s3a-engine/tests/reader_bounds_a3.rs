@@ -53,13 +53,11 @@ fn regression_add_overflow_lib865_no_panic() {
 }
 
 #[test]
-#[ignore = "A4: this input's file-claimed edge stride is not 8-aligned, so walking tiles reaches the unaligned from_bytes cast"]
 fn regression_add_overflow_lib865_walk_tiles_no_panic() {
     exercise(&regression("add_overflow_lib865.bin"));
 }
 
 #[test]
-#[ignore = "A4: unaligned bytemuck::from_bytes still panics until A4"]
 fn regression_unaligned_from_bytes_no_panic() {
     exercise(&regression("unaligned_from_bytes.bin"));
 }
@@ -76,7 +74,6 @@ fn edge_file() -> Vec<u8> {
 }
 
 #[test]
-#[cfg_attr(debug_assertions, ignore = "A4: EdgeWriter panics on unaligned cast in debug builds; runs under --release")]
 fn edge_crc_corruption_detected() {
     let bytes = edge_file();
     let dir = tempfile_dir();

@@ -1,4 +1,3 @@
-use bytemuck::from_bytes;
 use s3a_core::{
     EmbeddingRecord128, FileHeader, HyperTileHeader, MarkRecord, TileType,
     FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET,
@@ -38,8 +37,8 @@ impl<'a> WasmSnapshotView<'a> {
             return Err("Buffer too small for S3A dual file header");
         }
 
-        let slot_a: &FileHeader = from_bytes(&bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
-        let slot_b: &FileHeader = from_bytes(&bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE]);
+        let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE]);
 
         let header = match (slot_a.verify(), slot_b.verify()) {
             (Ok(_), Ok(_)) => {
@@ -75,7 +74,7 @@ impl<'a> WasmSnapshotView<'a> {
                 break; // Premature EOF
             }
 
-            let tile_header: &HyperTileHeader = from_bytes(&bytes[offset..offset + HYPER_TILE_HEADER_SIZE]);
+            let tile_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&bytes[offset..offset + HYPER_TILE_HEADER_SIZE]);
             let payload_start = offset + HYPER_TILE_HEADER_SIZE;
             let payload_end = payload_start + tile_header.payload_bytes as usize;
             if payload_end > offset + HYPER_TILE_SIZE {

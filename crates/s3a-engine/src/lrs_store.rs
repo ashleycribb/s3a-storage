@@ -9,7 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use bytemuck::{bytes_of, from_bytes};
+use bytemuck::{bytes_of};
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh3::{xxh3_128, xxh3_64};
 
@@ -1472,7 +1472,7 @@ impl LrsStore {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<MarkRecord>() <= payload.len() {
                             let mark_slice = &payload[offset..offset + std::mem::size_of::<MarkRecord>()];
-                            let mark: &MarkRecord = from_bytes(mark_slice);
+                            let mark: &MarkRecord = &bytemuck::pod_read_unaligned::<MarkRecord>(mark_slice);
                             offset += std::mem::size_of::<MarkRecord>();
                             if mark.target_tile_type == TILE_STATEMENT_INDEX {
                                 let stmt_id = mark._reserved;
@@ -1500,7 +1500,7 @@ impl LrsStore {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<DocumentRecordHeader>() <= payload.len() {
                             let doc_hdr_slice = &payload[offset..offset + std::mem::size_of::<DocumentRecordHeader>()];
-                            let doc_hdr: &DocumentRecordHeader = from_bytes(doc_hdr_slice);
+                            let doc_hdr: &DocumentRecordHeader = &bytemuck::pod_read_unaligned::<DocumentRecordHeader>(doc_hdr_slice);
                             offset += std::mem::size_of::<DocumentRecordHeader>();
 
                             let key_len = doc_hdr.key_len as usize;
@@ -1525,7 +1525,7 @@ impl LrsStore {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<AttachmentBlobHeader>() <= payload.len() {
                             let att_hdr_slice = &payload[offset..offset + std::mem::size_of::<AttachmentBlobHeader>()];
-                            let att_hdr: &AttachmentBlobHeader = from_bytes(att_hdr_slice);
+                            let att_hdr: &AttachmentBlobHeader = &bytemuck::pod_read_unaligned::<AttachmentBlobHeader>(att_hdr_slice);
                             offset += std::mem::size_of::<AttachmentBlobHeader>();
 
                             let chunk_len = att_hdr.chunk_bytes as usize;
@@ -1541,7 +1541,7 @@ impl LrsStore {
                     TILE_ELR_PERSON => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1557,7 +1557,7 @@ impl LrsStore {
                     TILE_ELR_ORGANIZATION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1573,7 +1573,7 @@ impl LrsStore {
                     TILE_ELR_LEARNING_RESOURCE => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1589,7 +1589,7 @@ impl LrsStore {
                     TILE_ELR_LEARNING_EVENT => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1605,7 +1605,7 @@ impl LrsStore {
                     TILE_ELR_COMPETENCY_ASSERTION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1621,7 +1621,7 @@ impl LrsStore {
                     TILE_ELR_CREDENTIAL_ASSERTION => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1637,7 +1637,7 @@ impl LrsStore {
                     TILE_ELR_GOAL => {
                         let mut offset = 0;
                         while offset + std::mem::size_of::<ElrRecordHeader>() <= payload.len() {
-                            let hdr: &ElrRecordHeader = from_bytes(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
+                            let hdr: &ElrRecordHeader = &bytemuck::pod_read_unaligned::<ElrRecordHeader>(&payload[offset..offset + std::mem::size_of::<ElrRecordHeader>()]);
                             offset += std::mem::size_of::<ElrRecordHeader>();
                             let len = hdr.payload_len as usize;
                             if offset + len > payload.len() { break; }
@@ -1746,7 +1746,7 @@ impl LrsStore {
             return Ok(None);
         }
 
-        let blob_hdr: &StatementBlobHeader = from_bytes(&payload[..std::mem::size_of::<StatementBlobHeader>()]);
+        let blob_hdr: &StatementBlobHeader = &bytemuck::pod_read_unaligned::<StatementBlobHeader>(&payload[..std::mem::size_of::<StatementBlobHeader>()]);
         let total_chunks = blob_hdr.total_chunks;
         let mut assembled_bytes = Vec::with_capacity(blob_hdr.total_bytes as usize);
 
@@ -1757,7 +1757,7 @@ impl LrsStore {
             for c in 1..total_chunks {
                 if let Some((_, next_payload)) = reader.get_tile(start_tile + c as usize) {
                     if next_payload.len() >= std::mem::size_of::<StatementBlobHeader>() {
-                        let next_hdr: &StatementBlobHeader = from_bytes(&next_payload[..std::mem::size_of::<StatementBlobHeader>()]);
+                        let next_hdr: &StatementBlobHeader = &bytemuck::pod_read_unaligned::<StatementBlobHeader>(&next_payload[..std::mem::size_of::<StatementBlobHeader>()]);
                         let next_data = &next_payload[std::mem::size_of::<StatementBlobHeader>()..];
                         assembled_bytes.extend_from_slice(&next_data[..next_hdr.chunk_bytes as usize]);
                     }

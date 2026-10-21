@@ -281,7 +281,7 @@ fn cmd_receive(args: &[String]) {
         eprintln!("Invalid transfer record file size");
         std::process::exit(1);
     }
-    let transfer: ItemTransferRecord = *bytemuck::from_bytes(&bytes);
+    let transfer: ItemTransferRecord = bytemuck::pod_read_unaligned(&bytes);
 
     let mut vault = Vault::open(vault_path).expect("Failed to open vault");
     vault.add_transfer(transfer).expect("Failed to ingest transfer link");

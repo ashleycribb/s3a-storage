@@ -4,7 +4,6 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-use bytemuck::from_bytes;
 use s3a_core::{HyperTileHeader, HYPER_TILE_HEADER_SIZE};
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -304,7 +303,7 @@ pub fn verify_written_tile_from_disk(
     let mut header_buf = [0u8; HYPER_TILE_HEADER_SIZE];
     file.read_exact(&mut header_buf)?;
 
-    let disk_header: &HyperTileHeader = from_bytes(&header_buf);
+    let disk_header: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&header_buf);
     let disk_header_crc = compute_tile_header_crc32(disk_header);
     if disk_header.header_crc32 != expected_header_crc || disk_header.header_crc32 != disk_header_crc {
         file.seek(SeekFrom::End(0))?;

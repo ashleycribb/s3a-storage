@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use bytemuck::{bytes_of, cast_slice, from_bytes};
+use bytemuck::{bytes_of, cast_slice};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 
@@ -404,10 +404,10 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
         ));
     }
 
-    let slot_a: &FileHeader = from_bytes(
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &in_bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
-    let slot_b: &FileHeader = from_bytes(
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &in_bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
 
@@ -444,7 +444,7 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     for i in 0..tile_count as usize {
         let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
         let mut hdr: HyperTileHeader =
-            *from_bytes(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
+            bytemuck::pod_read_unaligned(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
         let mut changed = false;
 
         if hdr.file_uuid == [0, 0] {
@@ -470,7 +470,7 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     for i in 0..tile_count as usize {
         let offset = (FILE_HEADER_SIZE + i * HYPER_TILE_SIZE) as u64;
         let tile_bytes = &out_data[offset as usize..offset as usize + HYPER_TILE_SIZE];
-        let hdr: &HyperTileHeader = from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
         let hash = xxhash_rust::xxh3::xxh3_64(tile_bytes);
         directory.push(SealedDirectoryEntry {
             tile_index: hdr.tile_index,
@@ -593,10 +593,10 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         ));
     }
 
-    let slot_a: &FileHeader = from_bytes(
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &in_bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
-    let slot_b: &FileHeader = from_bytes(
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &in_bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
 
@@ -644,7 +644,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         for i in 0..tile_count as usize {
             let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
             let tile_slice = &out_data[offset..offset + HYPER_TILE_SIZE];
-            let hdr: &HyperTileHeader = from_bytes(&tile_slice[..HYPER_TILE_HEADER_SIZE]);
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_slice[..HYPER_TILE_HEADER_SIZE]);
 
             if hdr.min_timestamp > 0 && hdr.min_timestamp < created_ts {
                 created_ts = hdr.min_timestamp;
@@ -660,7 +660,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 let payload = &tile_slice[HYPER_TILE_HEADER_SIZE..];
                 for c in 0..rec_count {
                     if (c + 1) * consent_size <= payload.len() {
-                        let rec: &ConsentRecord = from_bytes(&payload[c * consent_size..(c + 1) * consent_size]);
+                        let rec: &ConsentRecord = &bytemuck::pod_read_unaligned::<ConsentRecord>(&payload[c * consent_size..(c + 1) * consent_size]);
                         let is_active = rec.withdrawn_at == 0;
                         subject_map.insert(rec.subject_id, is_active);
                     }
@@ -670,7 +670,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 let payload = &tile_slice[HYPER_TILE_HEADER_SIZE..];
                 for m in 0..rec_count {
                     if (m + 1) * mark_size <= payload.len() {
-                        let rec: &MarkRecord = from_bytes(&payload[m * mark_size..(m + 1) * mark_size]);
+                        let rec: &MarkRecord = &bytemuck::pod_read_unaligned::<MarkRecord>(&payload[m * mark_size..(m + 1) * mark_size]);
                         if rec.mark_kind == MARK_CONSENT_WITHDRAWN {
                             mark_withdrawn_count += 1;
                         }
@@ -719,7 +719,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
 
         for (idx, tile_bytes) in existing_data_tiles.iter().enumerate() {
-            let hdr: &HyperTileHeader = from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
             let floor_idx = next_floor + idx as u32;
             let type_name = resolve_type_name(hdr.tile_type);
             tile_summaries.push((floor_idx, hdr.tile_type, type_name, hdr.record_count, HYPER_TILE_SIZE));
@@ -808,7 +808,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     for i in 0..tile_count as usize {
         let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
         let mut hdr: HyperTileHeader =
-            *from_bytes(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
+            bytemuck::pod_read_unaligned(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
         let mut changed = false;
 
         if hdr.file_uuid == [0, 0] {
@@ -834,7 +834,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     for i in 0..tile_count as usize {
         let offset = (FILE_HEADER_SIZE + i * HYPER_TILE_SIZE) as u64;
         let tile_bytes = &out_data[offset as usize..offset as usize + HYPER_TILE_SIZE];
-        let hdr: &HyperTileHeader = from_bytes(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+        let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
         let payload_bytes = hdr.payload_bytes as usize;
         let payload = if HYPER_TILE_HEADER_SIZE + payload_bytes <= HYPER_TILE_SIZE {
             &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_bytes]
@@ -1066,10 +1066,10 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         });
     }
 
-    let slot_a: &FileHeader = from_bytes(
+    let slot_a: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &file_bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
-    let slot_b: &FileHeader = from_bytes(
+    let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(
         &file_bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
     );
     let (active_header, _) = resolve_active_header(slot_a, slot_b)?;
@@ -1144,7 +1144,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                         return Err(S3AError::SealedTruncated);
                     }
                     let tile = file_bytes[offset..offset + HYPER_TILE_SIZE].to_vec();
-                    let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                    let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
                     if hdr.tile_index != i as u32 {
                         out_of_order_detected = true;
                     }
@@ -1161,7 +1161,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 
                 // Verify file_uuid
                 for tile in &tiles_raw {
-                    let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                    let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
                     if index_hdr.file_uuid != [0, 0] || hdr.file_uuid != [0, 0] {
                         let is_legacy = hdr.record_layout_version <= 1 && hdr.file_uuid == [0, 0];
                         if !is_legacy && hdr.file_uuid != index_hdr.file_uuid {
@@ -1200,7 +1200,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                     for j in 0..k_g {
                         let t_idx = start_tile + j;
                         let tile = &tiles_raw[t_idx];
-                        let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                        let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
                         let payload_len = hdr.payload_bytes as usize;
                         let expected_header_crc = compute_tile_header_crc32(hdr);
                         let actual_data_crc = if HYPER_TILE_HEADER_SIZE + payload_len <= tile.len() {
@@ -1231,7 +1231,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 
                     if !parity_enabled {
                         let bad_idx = start_tile + corrupted_in_group[0];
-                        let bad_hdr: &HyperTileHeader = from_bytes(&tiles_raw[bad_idx][..HYPER_TILE_HEADER_SIZE]);
+                        let bad_hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tiles_raw[bad_idx][..HYPER_TILE_HEADER_SIZE]);
                         return Err(S3AError::ChecksumMismatch {
                             expected: bad_hdr.data_crc32,
                             actual: 0,
@@ -1281,7 +1281,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 
                     for &missing_col in &corrupted_in_group {
                         let repaired = shards[missing_col].as_ref().ok_or(S3AError::CorruptedHeader)?;
-                        let rep_hdr: &HyperTileHeader = from_bytes(&repaired[..HYPER_TILE_HEADER_SIZE]);
+                        let rep_hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&repaired[..HYPER_TILE_HEADER_SIZE]);
                         let rep_payload_len = rep_hdr.payload_bytes as usize;
                         let rep_data_crc = crc32c::crc32c(
                             &repaired[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + rep_payload_len],
@@ -1418,7 +1418,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                 return Err(S3AError::SealedTruncated);
             }
             let tile = file_bytes[offset..offset + HYPER_TILE_SIZE].to_vec();
-            let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
             if hdr.tile_index != i as u32 {
                 out_of_order_detected = true;
             }
@@ -1436,7 +1436,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 
         while tile_idx < target_tile_count && scan_offset + HYPER_TILE_SIZE <= file_len {
             let tile = file_bytes[scan_offset..scan_offset + HYPER_TILE_SIZE].to_vec();
-            let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
 
             let actual_idx = if hdr.tile_index != 0 || tile_idx == 0 {
                 hdr.tile_index
@@ -1483,7 +1483,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 
     // Verify self-addressing file_uuid on every tile
     for tile in &tiles_raw {
-        let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+        let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
         if file_uuid != [0, 0] || hdr.file_uuid != [0, 0] {
             let is_legacy = hdr.record_layout_version <= 1 && hdr.file_uuid == [0, 0];
             if !is_legacy && hdr.file_uuid != file_uuid {
@@ -1520,7 +1520,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             for j in 0..k_g {
                 let t_idx = start_tile + j;
                 let tile = &tiles_raw[t_idx];
-                let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+                let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
                 let payload_len = hdr.payload_bytes as usize;
                 let expected_header_crc = compute_tile_header_crc32(hdr);
                 let actual_data_crc = if HYPER_TILE_HEADER_SIZE + payload_len <= tile.len() {
@@ -1609,7 +1609,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
                     }
                 }
 
-                let rep_hdr: &HyperTileHeader = from_bytes(&repaired[..HYPER_TILE_HEADER_SIZE]);
+                let rep_hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&repaired[..HYPER_TILE_HEADER_SIZE]);
                 let rep_payload_len = rep_hdr.payload_bytes as usize;
                 let rep_data_crc = crc32c::crc32c(
                     &repaired[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + rep_payload_len],
@@ -1632,7 +1632,7 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
         }
     } else {
         for tile in &tiles_raw {
-            let hdr: &HyperTileHeader = from_bytes(&tile[..HYPER_TILE_HEADER_SIZE]);
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
             let payload_len = hdr.payload_bytes as usize;
             let expected_hdr_crc = compute_tile_header_crc32(hdr);
             if hdr.header_crc32 != 0 && hdr.header_crc32 != expected_hdr_crc {
