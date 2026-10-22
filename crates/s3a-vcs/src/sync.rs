@@ -22,7 +22,31 @@ pub struct VcsSyncInventory {
     pub consent_purpose_filter: Option<u32>,
 }
 
-/// Negotiates and transmits missing tiles from `source_repo` to `target_repo`.
+/// Size limits enforced on a push before anything is written to the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PushLimits {
+    /// Max bytes of tiles (header + payload) transferred in one push.
+    pub max_bundle_bytes: u64,
+    /// Max commits new to the target in one push.
+    pub max_commits: u64,
+}
+
+impl PushLimits {
+    pub const DEFAULT_MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
+    pub const DEFAULT_MAX_COMMITS: u64 = 1000;
+}
+
+impl Default for PushLimits {
+    fn default() -> Self {
+        Self {
+            max_bundle_bytes: Self::DEFAULT_MAX_BUNDLE_BYTES,
+            max_commits: Self::DEFAULT_MAX_COMMITS,
+        }
+    }
+}
+
+/// Negotiates and transmits missing tiles from `source_repo` to `target_repo`
+/// using default [`PushLimits`].
 pub fn sync_push(
     source_repo: &VcsRepo,
     target_repo: &VcsRepo,
@@ -30,6 +54,28 @@ pub fn sync_push(
     allow_non_fast_forward: bool,
     consent_purpose: Option<u32>,
     signing_key: &SigningKey,
+) -> Result<usize, VcsError> {
+    sync_push_with_limits(
+        source_repo,
+        target_repo,
+        branch,
+        allow_non_fast_forward,
+        consent_purpose,
+        signing_key,
+        PushLimits::default(),
+    )
+}
+
+/// Like [`sync_push`] but with explicit limits. Oversized pushes are rejected
+/// with [`VcsError::PushTooLarge`] before the target is touched.
+pub fn sync_push_with_limits(
+    source_repo: &VcsRepo,
+    target_repo: &VcsRepo,
+    branch: &str,
+    allow_non_fast_forward: bool,
+    consent_purpose: Option<u32>,
+    signing_key: &SigningKey,
+    limits: PushLimits,
 ) -> Result<usize, VcsError> {
     let src_ref = source_repo
         .get_ref(branch)?
@@ -101,6 +147,37 @@ pub fn sync_push(
             }
         }
     } // src_reader dropped
+
+    // 2b. Enforce limits before writing anything.
+    let tgt_seals: HashSet<[u8; 32]> = target_repo
+        .list_commits()?
+        .iter()
+        .map(|c| c.seal_hash)
+        .collect();
+    let new_commits = source_repo
+        .list_commits()?
+        .iter()
+        .filter(|c| !tgt_seals.contains(&c.seal_hash))
+        .count() as u64;
+    if new_commits > limits.max_commits {
+        return Err(VcsError::PushTooLarge {
+            what: "commits",
+            actual: new_commits,
+            limit: limits.max_commits,
+        });
+    }
+    let hdr_size = std::mem::size_of::<HyperTileHeader>() as u64;
+    let bundle_bytes: u64 = missing_tiles
+        .iter()
+        .map(|(_, p)| hdr_size + p.len() as u64)
+        .sum();
+    if bundle_bytes > limits.max_bundle_bytes {
+        return Err(VcsError::PushTooLarge {
+            what: "bundle bytes",
+            actual: bundle_bytes,
+            limit: limits.max_bundle_bytes,
+        });
+    }
 
     // 3. Append missing tiles to target using TileWriter
     if !missing_tiles.is_empty() {

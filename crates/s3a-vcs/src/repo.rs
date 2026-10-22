@@ -372,6 +372,14 @@ impl VcsRepo {
         Ok(commit_record)
     }
 
+    /// Resolve a ref name, full hash, or unique short hash (>= 7 hex) to a seal hash.
+    pub fn resolve_rev(&self, rev: &str) -> Result<[u8; 32], VcsError> {
+        if let Some(r) = self.get_ref(rev)? {
+            return Ok(r.target_seal_hash);
+        }
+        crate::frontier::resolve_hash_prefix(&self.list_commits()?, rev)
+    }
+
     /// Traverses commit history from a ref or commit hash backwards along parent chain.
     pub fn log(&self, from_ref_or_hash: Option<&str>) -> Result<Vec<VcsCommitRecord>, VcsError> {
         let all_commits = self.list_commits()?;
@@ -381,16 +389,8 @@ impl VcsRepo {
         let start_seal = if let Some(target) = from_ref_or_hash {
             if let Some(r) = self.get_ref(target)? {
                 r.target_seal_hash
-            } else if let Ok(h) = hex::decode(target) {
-                let mut arr = [0u8; 32];
-                if h.len() == 32 {
-                    arr.copy_from_slice(&h);
-                    arr
-                } else {
-                    return Err(VcsError::CommitNotFound(target.to_string()));
-                }
             } else {
-                return Err(VcsError::CommitNotFound(target.to_string()));
+                crate::frontier::resolve_hash_prefix(&all_commits, target)?
             }
         } else if let Some(main_ref) = self.get_ref("main")? {
             main_ref.target_seal_hash

@@ -26,6 +26,15 @@ pub enum VcsError {
         message: String,
     },
     ConsentRestricted(String),
+    AmbiguousHash {
+        prefix: String,
+        matches: usize,
+    },
+    PushTooLarge {
+        what: &'static str,
+        actual: u64,
+        limit: u64,
+    },
     Generic(String),
 }
 
@@ -55,6 +64,8 @@ impl fmt::Display for VcsError {
                 message, conflicts
             ),
             VcsError::ConsentRestricted(msg) => write!(f, "Action blocked by participant consent policy: {}", msg),
+            VcsError::AmbiguousHash { prefix, matches } => write!(f, "Ambiguous hash prefix '{}' matches {} commits; use more characters", prefix, matches),
+            VcsError::PushTooLarge { what, actual, limit } => write!(f, "Push rejected before writing: {} {} exceeds limit {}", what, actual, limit),
             VcsError::Generic(msg) => write!(f, "{}", msg),
         }
     }

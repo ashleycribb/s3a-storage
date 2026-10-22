@@ -11,7 +11,7 @@ pub mod repo;
 pub mod sync;
 
 pub use errors::VcsError;
-pub use frontier::{Frontier, LineageMode};
+pub use frontier::{resolve_hash_prefix, Frontier, LineageMode, MIN_SHORT_HASH};
 pub use git_export::export_git;
 pub use records::{
     ConflictRecordDetail, VcsCommitRecord, VcsMergeResult, VcsRefRecord, VcsResolutionRecord,
@@ -19,7 +19,7 @@ pub use records::{
     RESOLUTION_CHOICE_TARGET, VCS_COMMIT_MESSAGE_MAX, VCS_RECORD_ID_MAX, VCS_REF_NAME_MAX,
 };
 pub use repo::{TileTypeDiff, VcsDiffReport, VcsRepo};
-pub use sync::{sync_push, VcsSyncInventory};
+pub use sync::{sync_push, sync_push_with_limits, PushLimits, VcsSyncInventory};
 
 pub fn version() -> &'static str {
     "0.1.0"
