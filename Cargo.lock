@@ -1737,6 +1737,7 @@ dependencies = [
  "bytemuck",
  "crc32c",
  "ed25519-dalek",
+ "hex",
  "memmap2",
  "s3a-core",
  "s3a-edge",
