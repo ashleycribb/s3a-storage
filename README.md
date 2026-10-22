@@ -8,6 +8,8 @@
 
 High-dimensional states, spatiotemporal points, robotics kinematics, and continuous learning records are bounded by simplicial convex hulls and SIMD Bloom filters directly within 512-byte sector-aligned headers—enabling single-cycle SIMD tile rejection and zero-copy memory mapping.
 
+**New here?** Start with [docs/NEWCOMERS.md](docs/NEWCOMERS.md) (5-minute quickstart, Python reader, conformance) and the [glossary](docs/GLOSSARY.md).
+
 ---
 
 ## Workspace Crates & Architecture
