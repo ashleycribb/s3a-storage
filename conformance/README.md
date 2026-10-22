@@ -1,4 +1,11 @@
-# S3A Hyper-Tile conformance suite (`vectors-1.0`)
+# S3A Hyper-Tile conformance suite (`vectors-1.0`, `vectors-1.1`)
+
+**`vectors-1.1`** (62 cases) is a superset of `vectors-1.0`. It adds ADR-0013:
+- **Reserved bytes:** `reserved_tile_header_nonzero` and `reserved_file_header_padding_nonzero` must be **ignored** (outcome `ok`).
+- **Layout-affecting header fields:** `header_unknown_flag_bit`, `header_invalid_tile_stride` and `header_unknown_flag_newest_slot_only` must be **rejected**, with no fallback to the older slot.
+- **Unknown tile rewrite:** the writer-level `kind: "rewrite"` case `unknown_tile_rewrite`. Your implementation gets `<impl> rewrite <in> <out>` (your compaction or rewrite path). Expectations such as `tile_payload_sha256.9999` are checked on the **output**; dotted keys address nested report objects. Add `tile_payload_sha256: {"<type>": [sha256 hex of each payload]}` to your report.
+
+Run 1.1 with `--level writer` to include the rewrite case.
 
 A set of test vectors that **any** implementation can run, in any language. Each case is a file in `vectors-1.0/files/` (or pure hash data for Merkle cases) plus an `expect` object in `vectors-1.0/manifest.json`. The Rust reference reader is checked against the same suite in CI (`cargo test -p s3a-spec-vectors`, test `conformance_suite`).
 

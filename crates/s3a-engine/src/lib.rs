@@ -325,7 +325,7 @@ pub fn resolve_active_header(
     let valid_a = verify_header_slot(slot_a);
     let valid_b = verify_header_slot(slot_b);
 
-    match (valid_a, valid_b) {
+    let picked = match (valid_a, valid_b) {
         (true, true) => {
             if slot_b.generation > slot_a.generation {
                 Ok((*slot_b, 1))
@@ -343,7 +343,9 @@ pub fn resolve_active_header(
                 Err(S3AError::CorruptedHeader)
             }
         }
-    }
+    }?;
+    picked.0.check_layout_fields()?;
+    Ok(picked)
 }
 
 /// Returns the current Unix timestamp in seconds across native and WebAssembly platforms without trapping.

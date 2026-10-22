@@ -52,6 +52,7 @@ jobs:
         run: |
           cargo build -p s3a-spec-vectors --bin s3a-conformance
           python3 conformance/run.py --impl target/debug/s3a-conformance conformance/vectors-1.0
+          python3 conformance/run.py --impl target/debug/s3a-conformance --level writer conformance/vectors-1.1
 
   edge-no-std:
     name: "s3a-edge no_std build (thumbv7em-none-eabihf)"

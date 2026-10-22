@@ -13,7 +13,9 @@ use sha2::{Digest, Sha256};
 
 use s3a_engine::MmapReader;
 
-pub const SUITE_VERSION: &str = "vectors-1.0";
+/// Newest suite version. Older versions stay frozen and keep passing.
+pub const SUITE_VERSION: &str = "vectors-1.1";
+pub const SUITE_VERSIONS: [&str; 2] = ["vectors-1.0", "vectors-1.1"];
 
 /// Reader report for an archive, as defined in `conformance/README.md`.
 pub fn read_report(path: &Path) -> Value {
@@ -22,11 +24,18 @@ pub fn read_report(path: &Path) -> Value {
         Err(e) => return json!({"outcome": "error", "stage": "open", "error": e.to_string()}),
     };
     let mut tile_types: BTreeMap<String, u64> = BTreeMap::new();
+    let mut payload_sha: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut layout_bad = false;
     let registry = s3a_core::registry::global_registry();
     for i in 0..reader.tile_count() as usize {
         if let Some((h, _)) = reader.get_tile(i) {
             *tile_types.entry(h.tile_type.to_string()).or_default() += 1;
+            if let Some((_, p)) = reader.get_tile(i) {
+                payload_sha
+                    .entry(h.tile_type.to_string())
+                    .or_default()
+                    .push(sha256_hex(p));
+            }
             use s3a_core::registry::RegistryError as R;
             if matches!(
                 registry.validate_read(h.tile_type, h.record_layout_version),
@@ -50,6 +59,7 @@ pub fn read_report(path: &Path) -> Value {
         "generation": reader.generation(),
         "active_slot": reader.active_slot(),
         "tile_types": tile_types,
+        "tile_payload_sha256": payload_sha,
         "record_roots": record_roots,
     });
     let unsealed_ok = reader.verify_checksums();
@@ -115,15 +125,25 @@ pub fn diff(expect: &Value, report: &Value) -> Vec<String> {
     let mut bad = Vec::new();
     if let Some(m) = expect.as_object() {
         for (k, v) in m {
-            if report.get(k) != Some(v) {
+            // Dotted keys address nested objects: "tile_types.9999".
+            let got = k.split('.').try_fold(report, |cur, part| cur.get(part));
+            if got != Some(v) {
                 bad.push(format!(
                     "{k}: expected {v}, got {}",
-                    report.get(k).unwrap_or(&Value::Null)
+                    got.unwrap_or(&Value::Null)
                 ));
             }
         }
     }
     bad
+}
+
+/// Reference rewrite for `kind: "rewrite"` cases: compaction (`s3a-cli compact`).
+pub fn rewrite(input: &Path, output: &Path) -> Result<(), String> {
+    let _ = std::fs::remove_file(output);
+    s3a_engine::Compactor::compact(&[input.to_path_buf()], output.to_path_buf())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Run the suite in `dir` against this crate's reader. Returns (passed, failures).
@@ -138,14 +158,26 @@ pub fn run_suite(dir: &Path) -> Result<(usize, Vec<String>), String> {
         let id = c["id"].as_str().unwrap_or("?");
         let report = match c["kind"].as_str() {
             Some("merkle-proof") => merkle_report(c),
-            _ => {
+            kind => {
                 let f = dir.join(c["file"].as_str().unwrap_or(""));
                 let bytes = std::fs::read(&f).map_err(|e| format!("{id}: {e}"))?;
                 if c["sha256"].as_str() != Some(sha256_hex(&bytes).as_str()) {
                     fails.push(format!("{id}: file sha256 does not match manifest"));
                     continue;
                 }
-                read_report(&f)
+                if kind == Some("rewrite") {
+                    let out = std::env::temp_dir()
+                        .join(format!("s3a_conf_rw_{}_{id}.s3a", std::process::id()));
+                    if let Err(e) = rewrite(&f, &out) {
+                        fails.push(format!("{id}: rewrite failed: {e}"));
+                        continue;
+                    }
+                    let r = read_report(&out);
+                    let _ = std::fs::remove_file(&out);
+                    r
+                } else {
+                    read_report(&f)
+                }
             }
         };
         let d = diff(&c["expect"], &report);

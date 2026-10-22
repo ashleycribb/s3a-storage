@@ -7,10 +7,22 @@ Usage:
 For each archive case the runner executes  <command> read <file>  and expects one JSON
 object (the reader report) on stdout. For each merkle-proof case it executes
 <command> merkle  with the case JSON on stdin and expects {"valid": bool}.
-A case passes when every key in its "expect" object equals the report's value.
+For each rewrite case (writer level) it executes  <command> rewrite <file> <out>  and then
+<command> read <out>; the expectations apply to the rewritten output.
+A case passes when every key in its "expect" object equals the report's value. Dotted keys
+("tile_types.9999") address nested objects.
 Extra report keys are ignored. Exit status: 0 all passed, 1 failures, 2 usage/setup error.
 """
-import argparse, hashlib, json, os, shlex, subprocess, sys
+import argparse, hashlib, json, os, shlex, subprocess, sys, tempfile
+
+
+def lookup(rep, key):
+    cur = rep
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
 
 
 def main():
@@ -33,12 +45,21 @@ def main():
                 if hashlib.sha256(open(path, "rb").read()).hexdigest() != c["sha256"]:
                     failed.append(f"{c['id']}: vector file sha256 mismatch (corrupted checkout?)")
                     continue
-                out = subprocess.run(cmd + ["read", path], capture_output=True, text=True, timeout=60)
+                if c["kind"] == "rewrite":
+                    with tempfile.TemporaryDirectory() as td:
+                        dst = os.path.join(td, "out.s3a")
+                        rw = subprocess.run(cmd + ["rewrite", path, dst], capture_output=True, text=True, timeout=120)
+                        if rw.returncode != 0:
+                            failed.append(f"{c['id']}: rewrite exited {rw.returncode}: {rw.stderr.strip()}")
+                            continue
+                        out = subprocess.run(cmd + ["read", dst], capture_output=True, text=True, timeout=60)
+                else:
+                    out = subprocess.run(cmd + ["read", path], capture_output=True, text=True, timeout=60)
             rep = json.loads(out.stdout.strip() or "{}")
         except Exception as e:  # noqa: BLE001 - report any implementation failure
             failed.append(f"{c['id']}: runner error: {e}")
             continue
-        bad = [f"{k}: expected {v!r}, got {rep.get(k)!r}" for k, v in c["expect"].items() if rep.get(k) != v]
+        bad = [f"{k}: expected {v!r}, got {lookup(rep, k)!r}" for k, v in c["expect"].items() if lookup(rep, k) != v]
         if bad:
             failed.append(f"{c['id']}: " + "; ".join(bad))
         else:
