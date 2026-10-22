@@ -24,3 +24,16 @@ Scope: it reads and verifies, and never writes. It does not cover sealed footer 
 | 6 | §12 said to reject versions above the reader's `current_layout_version`, but no value was given. | §12.2: the current version is 1 for every type. |
 | 7 | Compact header extent "P (from tile_stride or 256)" was ambiguous. Edge detection by stride was unstated. | EDGE §2.3.2: `P = max(256, tile_stride)`. Edge means flag or stride 4096/8192. |
 | 8 | When a tampered sealed file also has a record-root tile, which check gets reported was not stated. | §10.9 rule 8. |
+
+## Install
+
+`s3a-reader` is not on PyPI yet. It is pure Python with no dependencies. Install it from a checkout:
+
+```
+pip install ./readers/python
+s3a-read read file.s3a            # same as: python3 -m s3a_reader read file.s3a
+python3 conformance/run.py --impl s3a-read --level reader conformance/vectors-1.5
+```
+
+For the Rust-backed package (`import s3a`), see [bindings/python](../../bindings/python/README.md).
+

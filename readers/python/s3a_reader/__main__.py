@@ -11,8 +11,14 @@ def main(argv):
     if argv and argv[0] == "merkle":
         print(json.dumps({"valid": merkle_valid(json.load(sys.stdin))}))
         return 0
-    sys.stderr.write("usage: python3 -m s3a_reader read <file.s3a> | merkle < case.json\n")
+    sys.stderr.write("usage: s3a-read (or python3 -m s3a_reader) read <file.s3a> | merkle < case.json\n")
     return 2
 
 
-sys.exit(main(sys.argv[1:]))
+def entry():
+    """Console script `s3a-read` (same protocol as `python3 -m s3a_reader`)."""
+    sys.exit(main(sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    entry()
