@@ -120,8 +120,33 @@ fn test_cli_query_and_json_output() {
 
 #[test]
 fn test_cli_seal_anchor_upgrade_and_verify() {
+    let out_v_json = anchor_confirm_flow(false);
+    assert_eq!(
+        out_v_json.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out_v_json.stdout)
+    );
+    let str_v_json = String::from_utf8_lossy(&out_v_json.stdout);
+    assert!(str_v_json.contains("\"status\":\"confirmed\""));
+    assert!(str_v_json.contains("\"block_height\":899123"));
+    assert!(!str_v_json.contains("\"match\":\"no\""), "{}", str_v_json);
+    assert!(str_v_json.contains("\"anchors_ok\":true"));
+}
+
+#[test]
+fn test_cli_anchor_wrong_merkle_root_exits_4() {
+    let out = anchor_confirm_flow(true);
+    assert_eq!(out.status.code(), Some(4));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("Bitcoin block Merkle root mismatch"), "{}", s);
+    assert!(s.contains("\"anchors_ok\":false"));
+}
+
+/// Seal, anchor to two mock calendars, confirm anchor #1 in a mock block, upgrade,
+/// and return `verify --anchor --json`. `wrong_root` puts a different Merkle root in the header.
+fn anchor_confirm_flow(wrong_root: bool) -> std::process::Output {
     use s3a_engine::anchor::mock_calendar::MockOtsCalendar;
-    use sha2::{Digest, Sha256};
 
     let bin = env!("CARGO_BIN_EXE_s3a-cli");
     let raw = temp_archive_path("anchor_raw");
@@ -194,11 +219,14 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
         })
         .expect("expected pending attestation");
 
+    // The mock calendar attests the commitment directly (no ops after it), so the
+    // block's Merkle root must equal the commitment, in header (internal) byte order,
+    // as OpenTimestamps' BitcoinBlockHeaderAttestation checks `digest == hashMerkleRoot`.
     let block_height = 899123u64;
-    let mut block_hasher = Sha256::new();
-    block_hasher.update(commitment);
-    block_hasher.update(block_height.to_le_bytes());
-    let block_hash: [u8; 32] = block_hasher.finalize().into();
+    let mut block_hash: [u8; 32] = commitment.try_into().expect("32-byte commitment");
+    if wrong_root {
+        block_hash[0] ^= 0xff;
+    }
     let header = MockOtsCalendar::make_mock_block_header(block_hash);
     cal1.confirm(&hex::encode(commitment), block_height, header);
     cal2.confirm(&hex::encode(commitment), block_height, header);
@@ -222,18 +250,7 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
         ])
         .output()
         .expect("verify json failed");
-    // The mock-confirmed attestation does not verify (Merkle root mismatch: this test's hand-built
-    // block header does not match the upgraded proof path), so verify now reports it: exit 4.
-    assert_eq!(
-        out_v_json.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&out_v_json.stdout)
-    );
-    let str_v_json = String::from_utf8_lossy(&out_v_json.stdout);
-    assert!(str_v_json.contains("\"match\":\"yes\""));
-    assert!(str_v_json.contains("\"status\":\"confirmed\""));
-    assert!(str_v_json.contains("\"block_height\":899123"));
+    out_v_json
 }
 
 #[test]
