@@ -308,11 +308,14 @@ fn gen(dir: &Path, version: &str) -> Result<(), String> {
     if version != "vectors-1.0" && version != "vectors-1.1" {
         v1_2_cases(&mut g, &tmp)?;
     }
-    if version == "vectors-1.3" || version == "vectors-1.4" {
+    if matches!(version, "vectors-1.3" | "vectors-1.4" | "vectors-1.5") {
         v1_3_cases(&mut g, &tmp)?;
     }
-    if version == "vectors-1.4" {
+    if matches!(version, "vectors-1.4" | "vectors-1.5") {
         v1_4_cases(&mut g, &tmp)?;
+    }
+    if version == "vectors-1.5" {
+        v1_5_cases(&mut g, &tmp)?;
     }
 
     let manifest = json!({
@@ -474,6 +477,7 @@ fn v1_2_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         spec_url: s3a_engine::SPEC_URL.into(),
         spec_sha256: "0".repeat(64),
         writer: "s3a-conformance vectors-1.2".into(),
+        ..Default::default()
     };
     let about_json = json!({"spec_version": fixed.spec_version, "spec_url": fixed.spec_url,
         "spec_sha256": fixed.spec_sha256, "writer": fixed.writer});
@@ -547,6 +551,7 @@ fn v1_3_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         spec_url: s3a_engine::SPEC_URL.into(),
         spec_sha256: "1".repeat(64),
         writer: "s3a-conformance vectors-1.3".into(),
+        ..Default::default()
     };
     let input = with_schema_trailer(
         std::fs::read(&compacted).unwrap(),
@@ -571,6 +576,74 @@ fn v1_3_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         "description": "Schema tile with an about entry. Rewrite it (compaction) and report on the OUTPUT: the about entry must be carried through unchanged (TILE-SPEC 14.5.4)",
         "expect": expect,
     }));
+    Ok(())
+}
+
+/// vectors-1.5 additions: algorithm IDs in the about entry (TILE-SPEC §14.5.4, item 9).
+fn v1_5_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
+    let cat = std::fs::read(g.dir.join("files/valid_schema_catalog.s3a")).unwrap();
+    let about = |hash: &str, sig: &str| s3a_core::SchemaAbout {
+        spec_version: "1.5-draft".into(),
+        spec_url: s3a_engine::SPEC_URL.into(),
+        spec_sha256: "0".repeat(64),
+        writer: "s3a-conformance vectors-1.5".into(),
+        seal_hash_alg: hash.into(),
+        sig_alg: sig.into(),
+    };
+    let mut mk = |id: &str, hash: &str, sig: &str, desc: &str, expect: Value| {
+        let b = with_schema_trailer(
+            cat.clone(),
+            &s3a_core::encode_schema_about(&about(hash, sig)),
+        );
+        let p = tmp.join(format!("{id}.s3a"));
+        std::fs::write(&p, &b).unwrap();
+        g.file(id, &p, "reader", desc, expect)
+    };
+    mk("alg_declared_recommended", "sha256", "ed25519",
+        "About entry declares seal_hash_alg=sha256 and sig_alg=ed25519, both recommended in the algorithm registry",
+        json!({"outcome": "ok", "algorithms": {"seal_hash": "sha256", "signature": "ed25519"}, "algorithm_status": "recommended"}))?;
+    mk(
+        "alg_declared_none_signature",
+        "sha256",
+        "none",
+        "sig_alg=none is allowed (unsigned archive)",
+        json!({"outcome": "ok", "algorithms": {"seal_hash": "sha256", "signature": "none"}, "algorithm_status": "allowed"}),
+    )?;
+    mk("alg_undeclared_defaults", "", "",
+        "About entry without algorithm keys (every file before vectors-1.5): seal hash is SHA-256, no signature declared",
+        json!({"outcome": "ok", "algorithms": {"seal_hash": "sha256", "signature": null}, "algorithm_status": "recommended"}))?;
+    mk(
+        "alg_unknown_seal_hash",
+        "sha3-512",
+        "",
+        "seal_hash_alg names an ID not in the registry: readers MUST reject",
+        json!({"outcome": "error", "error_class": "UnknownAlgorithm"}),
+    )?;
+    mk(
+        "alg_unknown_signature",
+        "sha256",
+        "rsa-pss",
+        "sig_alg names an ID not in the registry: readers MUST reject",
+        json!({"outcome": "error", "error_class": "UnknownAlgorithm"}),
+    )?;
+    mk(
+        "alg_wrong_kind",
+        "ed25519",
+        "",
+        "seal_hash_alg names a signature ID: unknown for that kind, readers MUST reject",
+        json!({"outcome": "error", "error_class": "UnknownAlgorithm"}),
+    )?;
+    mk("alg_reserved_ml_dsa", "sha256", "ml-dsa-65",
+        "sig_alg=ml-dsa-65 (FIPS 204) is reserved but its S3A encoding is not specified: readers MUST reject",
+        json!({"outcome": "error", "error_class": "UnsupportedAlgorithm"}))?;
+    let sealed =
+        s3a_engine::seal_buffer_v2(&cat, &s3a_engine::SealOptionsV2::default().with_about())
+            .map_err(|e| e.to_string())?;
+    let p = tmp.join("alg_sealed.s3a");
+    std::fs::write(&p, &sealed).unwrap();
+    g.file("alg_writer_declares_sha256", &p, "reader",
+        "`seal --about` from a vectors-1.5 writer declares seal_hash_alg=sha256",
+        json!({"outcome": "ok", "is_sealed": true, "algorithms.seal_hash": "sha256", "algorithm_status": "recommended"}))?;
     Ok(())
 }
 

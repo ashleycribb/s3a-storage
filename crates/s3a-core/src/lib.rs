@@ -13,6 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use core::fmt;
 use core::str::FromStr;
 
+pub mod algorithms;
 pub mod array;
 pub mod columnar;
 pub mod consent;

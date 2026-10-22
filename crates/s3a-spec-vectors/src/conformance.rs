@@ -14,13 +14,14 @@ use sha2::{Digest, Sha256};
 use s3a_engine::MmapReader;
 
 /// Newest suite version. Older versions stay frozen and keep passing.
-pub const SUITE_VERSION: &str = "vectors-1.4";
-pub const SUITE_VERSIONS: [&str; 5] = [
+pub const SUITE_VERSION: &str = "vectors-1.5";
+pub const SUITE_VERSIONS: [&str; 6] = [
     "vectors-1.0",
     "vectors-1.1",
     "vectors-1.2",
     "vectors-1.3",
     "vectors-1.4",
+    "vectors-1.5",
 ];
 
 /// Reader report for an archive, as defined in `conformance/README.md`.
@@ -103,6 +104,33 @@ pub fn read_report(path: &Path) -> Value {
     if ab.corrupt {
         o.insert("outcome".into(), "error".into());
         o.insert("error_class".into(), "SchemaAboutCorrupt".into());
+    }
+    // TILE-SPEC §14.5.4: declared algorithm IDs. Absent = SHA-256 seal hash, no declared signature.
+    if let Some(a) = &ab.about {
+        let seal = if a.seal_hash_alg.is_empty() {
+            s3a_core::algorithms::DEFAULT_SEAL_HASH_ALG
+        } else {
+            a.seal_hash_alg.as_str()
+        };
+        let sig = if a.sig_alg.is_empty() {
+            Value::Null
+        } else {
+            a.sig_alg.clone().into()
+        };
+        o.insert(
+            "algorithms".into(),
+            json!({"seal_hash": seal, "signature": sig}),
+        );
+        match s3a_engine::check_about_algorithms(a) {
+            Ok(st) => {
+                o.insert("algorithm_status".into(), st.as_str().into());
+            }
+            Err((class, msg)) => {
+                o.insert("outcome".into(), "error".into());
+                o.insert("error_class".into(), class.into());
+                o.insert("error".into(), msg.into());
+            }
+        }
     }
     if (record_roots == "mismatch" || layout_bad) && outcome != "error" {
         o.insert("outcome".into(), "error".into());

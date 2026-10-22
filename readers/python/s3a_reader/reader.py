@@ -300,11 +300,45 @@ def parse_about(payload):
     except UnicodeDecodeError:
         raise ReadError("SchemaAboutCorrupt")
     about = {"spec_version": "", "spec_url": "", "spec_sha256": "", "writer": ""}
+    algs = {}
     for line in text.split("\n"):
         k, sep, v = line.partition("=")
         if sep and k in about:
             about[k] = v
-    return about
+        elif sep and k in ("seal_hash_alg", "sig_alg"):
+            algs[k] = v
+    return about, algs
+
+
+# ---- §14.5.4 algorithm ID registry (docs/spec/registry.md) -------------------
+# (kind, id) -> status. IDs are never reused; only their status changes.
+ALGORITHMS = {
+    ("seal_hash", "sha256"): "recommended",
+    ("signature", "none"): "allowed",
+    ("signature", "ed25519"): "recommended",
+    ("signature", "ml-dsa-44"): "reserved",
+    ("signature", "ml-dsa-65"): "reserved",
+    ("signature", "ml-dsa-87"): "reserved",
+}
+_RANK = ["recommended", "allowed", "deprecated"]
+
+
+def check_algorithms(algs, rep):
+    """Reports declared algorithms; raises ReadError for unknown or reserved IDs."""
+    rep["algorithms"] = {"seal_hash": algs.get("seal_hash_alg") or "sha256",
+                         "signature": algs.get("sig_alg") or None}
+    worst = "recommended"
+    for kind, key in (("seal_hash", "seal_hash_alg"), ("signature", "sig_alg")):
+        ident = algs.get(key)
+        if not ident:
+            continue
+        status = ALGORITHMS.get((kind, ident))
+        if status is None:
+            raise ReadError("UnknownAlgorithm")
+        if status == "reserved":
+            raise ReadError("UnsupportedAlgorithm")
+        worst = max(worst, status, key=_RANK.index)
+    rep["algorithm_status"] = worst
 
 
 def about_fields(parsed, rep):
@@ -312,7 +346,9 @@ def about_fields(parsed, rep):
     for h, p in parsed:
         if h["type"] == SCHEMA and not seen:
             seen = True
-            about = parse_about(p)
+            parsed_about = parse_about(p)
+            if parsed_about is not None:
+                about, algs = parsed_about
         elif h["type"] == SPECIFICATION and spec_sha is None:
             try:
                 spec_sha = _sha(zlib.decompress(p)).hex()
@@ -320,6 +356,8 @@ def about_fields(parsed, rep):
                 spec_sha = ""
     rep["about"] = about
     rep["embedded_spec"] = "absent"
+    if about is not None:
+        check_algorithms(algs, rep)
     if about is not None and spec_sha is not None:
         rep["embedded_spec"] = "match" if spec_sha == about["spec_sha256"] else "mismatch"
 

@@ -8,7 +8,7 @@ PYTHONPATH=readers/python python3 -m s3a_reader merkle < case.json
 PYTHONPATH=readers/python python3 conformance/run.py --impl "python3 -m s3a_reader" --level reader conformance/vectors-1.1
 ```
 
-Status: vectors-1.0 56/56, vectors-1.1 61/61 and vectors-1.2 66/66 reader-level cases pass. It reports the §14.5.4 about entry and checks it against an embedded spec, including Reed-Solomon repair. CI runs both (job `python-reader`).
+Status: vectors-1.0 56/56, vectors-1.1 61/61, vectors-1.2 to 1.4 66/66 and vectors-1.5 74/74 reader-level cases pass. It reports the §14.5.4 about entry and checks it against an embedded spec, including Reed-Solomon repair. It checks declared algorithm IDs against the registry (docs/spec/registry.md §6) and rejects unknown or reserved ones. CI runs both (job `python-reader`).
 
 Scope: it reads and verifies, and never writes. It does not cover sealed footer v1 (§10.7), the 32-byte ultra-compact edge header (EDGE §2.4.2), anchors, or the vault/edge signature chains. The conformance suite only requires vault and edge files to open and pass their CRCs.
 

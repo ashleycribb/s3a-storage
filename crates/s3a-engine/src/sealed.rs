@@ -48,7 +48,32 @@ pub fn build_about() -> s3a_core::SchemaAbout {
         spec_url: SPEC_URL.to_string(),
         spec_sha256: spec_sha256_hex(),
         writer: format!("s3a-engine {}", env!("CARGO_PKG_VERSION")),
+        seal_hash_alg: s3a_core::algorithms::DEFAULT_SEAL_HASH_ALG.to_string(),
+        sig_alg: String::new(),
     }
+}
+
+/// Reader check of the algorithm IDs an about entry declares (TILE-SPEC §14.5.4).
+/// Returns the worst status, or the error class and message for an ID that must be rejected.
+pub fn check_about_algorithms(
+    a: &s3a_core::SchemaAbout,
+) -> Result<s3a_core::algorithms::AlgStatus, (&'static str, String)> {
+    use s3a_core::algorithms::{check_readable, AlgError, AlgKind, AlgStatus};
+    let mut worst = AlgStatus::Recommended;
+    for (kind, id) in [
+        (AlgKind::SealHash, &a.seal_hash_alg),
+        (AlgKind::Signature, &a.sig_alg),
+    ] {
+        if id.is_empty() {
+            continue;
+        }
+        match check_readable(kind, id) {
+            Ok(s) => worst = worst.max(s),
+            Err(e @ AlgError::Reserved(_)) => return Err(("UnsupportedAlgorithm", e.to_string())),
+            Err(e) => return Err(("UnknownAlgorithm", e.to_string())),
+        }
+    }
+    Ok(worst)
 }
 
 /// What a file says about itself (item 6): the about entry from its first Schema tile,
@@ -108,7 +133,17 @@ fn apply_about(
     file_uuid: [u64; 2],
     generation: u64,
 ) -> io::Result<u32> {
-    let about = s3a_core::encode_schema_about(&build_about());
+    let a = build_about();
+    for (kind, id) in [
+        (s3a_core::algorithms::AlgKind::SealHash, &a.seal_hash_alg),
+        (s3a_core::algorithms::AlgKind::Signature, &a.sig_alg),
+    ] {
+        if !id.is_empty() {
+            s3a_core::algorithms::check_writable(kind, id)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+        }
+    }
+    let about = s3a_core::encode_schema_about(&a);
     let bad = |e: S3AError| io::Error::new(io::ErrorKind::InvalidData, format!("schema tile: {e}"));
     let mut present = std::collections::BTreeSet::new();
     for i in 0..tile_count as usize {
