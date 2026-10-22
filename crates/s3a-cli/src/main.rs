@@ -35,6 +35,7 @@ use s3a_pack_wearable::{CompactWearableRecord, WearablePack, WearableTileType};
 mod gate_cli;
 mod mcp;
 mod tour;
+mod tour_html;
 mod vcs_cli;
 
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
@@ -419,6 +420,24 @@ fn main() {
             }
         }
         "tour" => {
+            if let Some(p) = args.iter().position(|a| a == "--html") {
+                let rest: Vec<&String> = args[p + 1..]
+                    .iter()
+                    .filter(|a| !a.starts_with("--"))
+                    .collect();
+                if rest.len() != 2 {
+                    eprintln!("usage: s3a-cli tour --html <archive> <out.html>");
+                    std::process::exit(2);
+                }
+                match tour_html::write_html(rest[0], rest[1]) {
+                    Ok(n) => println!("Wrote {} ({} tiles, self-contained, offline)", rest[1], n),
+                    Err(e) => {
+                        eprintln!("Tour error: {}", e);
+                        std::process::exit(2);
+                    }
+                }
+                return;
+            }
             let json_mode = args.iter().any(|a| a == "--json");
             let history_mode = args.iter().any(|a| a == "--history");
             let mut floor_opt = None;
@@ -1284,6 +1303,7 @@ fn print_usage() {
     println!("STABLE CORE OPS & MAINTENANCE:");
     println!("  s3a-cli inspect [--json] <archive>                Inspect Hyper-Tile layout, headers, and metadata");
     println!("  s3a-cli tour [--json] [--floor N] <archive>        Tour archive: lobby, floors, array slice, cross-section, history");
+    println!("  s3a-cli tour --html <archive> <out.html>         Offline HTML map: tiles by type, search, zoom into records");
     println!(
         "  s3a-cli prove <file> <tile> <record>         Per-record Merkle inclusion proof (JSON)"
     );
