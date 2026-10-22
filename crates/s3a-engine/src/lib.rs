@@ -3814,6 +3814,7 @@ impl Compactor {
         let mut input_marks: Vec<(usize, MarkRecord)> = Vec::new();
         let mut input_consent_records: Vec<(usize, ConsentRecord)> = Vec::new();
         let mut input_erasure_records: Vec<(usize, ErasureRecord)> = Vec::new();
+        let mut about_trailer: Option<Vec<u8>> = None;
         let mut custom_schemas_map: std::collections::HashMap<u32, SchemaTypeDefinition> =
             std::collections::HashMap::new();
 
@@ -3861,6 +3862,11 @@ impl Compactor {
                     } else if header.tile_type == TileType::RECORD_ROOT {
                         // Derived seal data: never carry a stale root; regenerated at seal.
                     } else if header.tile_type == TileType::SCHEMA {
+                        // §14.5.4: the first input's about entry survives the rebuild verbatim.
+                        if about_trailer.is_none() {
+                            about_trailer =
+                                s3a_core::schema_about_bytes(payload).map(<[u8]>::to_vec);
+                        }
                         if let Ok(types) = decode_schema_payload(payload) {
                             for t in types {
                                 custom_schemas_map.insert(t.type_id, t);
@@ -4206,7 +4212,10 @@ impl Compactor {
                     schema_defs.push(standard_schema_for_type(tt));
                 }
             }
-            let schema_payload = encode_schema_payload(&schema_defs);
+            let mut schema_payload = encode_schema_payload(&schema_defs);
+            if let Some(t) = &about_trailer {
+                schema_payload.extend_from_slice(t);
+            }
             let mut schema_hdr = HyperTileHeader::new(writer.tile_count() as u64, TileType::SCHEMA);
             schema_hdr.record_count = 0;
             schema_hdr.record_layout_version = 1;

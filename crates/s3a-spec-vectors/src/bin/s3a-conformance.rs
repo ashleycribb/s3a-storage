@@ -305,8 +305,11 @@ fn gen(dir: &Path, version: &str) -> Result<(), String> {
     if version != "vectors-1.0" {
         v1_1_cases(&mut g, &tmp)?;
     }
-    if version == "vectors-1.2" {
+    if version != "vectors-1.0" && version != "vectors-1.1" {
         v1_2_cases(&mut g, &tmp)?;
+    }
+    if version == "vectors-1.3" {
+        v1_3_cases(&mut g, &tmp)?;
     }
 
     let manifest = json!({
@@ -527,5 +530,43 @@ fn v1_2_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         json!({"outcome": "ok", "is_sealed": true, "embedded_spec": "match",
                "about.spec_url": s3a_engine::SPEC_URL, "record_roots": "ok",
                "tile_types.77": 1, "tile_types.78": 1, "tile_types.79": 1, "tile_types.83": 1}))?;
+    Ok(())
+}
+
+/// vectors-1.3 additions: rewriters carry the about entry through unchanged (TILE-SPEC §14.5.4).
+fn v1_3_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
+    // A current-format file whose Schema tile carries an about entry: compact
+    // valid_multi_tile (adds a Schema tile), then append a fixed about trailer.
+    let compacted = tmp.join("ab_rw_base.s3a");
+    conformance::rewrite(&g.dir.join("files/valid_multi_tile.s3a"), &compacted)?;
+    let fixed = s3a_core::SchemaAbout {
+        spec_version: "1.5-draft".into(),
+        spec_url: s3a_engine::SPEC_URL.into(),
+        spec_sha256: "1".repeat(64),
+        writer: "s3a-conformance vectors-1.3".into(),
+    };
+    let input = with_schema_trailer(
+        std::fs::read(&compacted).unwrap(),
+        &s3a_core::encode_schema_about(&fixed),
+    );
+    let rel = "files/about_rewrite.s3a";
+    std::fs::write(g.dir.join(rel), &input).unwrap();
+    let expect = json!({"outcome": "ok", "about": {"spec_version": fixed.spec_version,
+        "spec_url": fixed.spec_url, "spec_sha256": fixed.spec_sha256, "writer": fixed.writer}});
+    if !conformance::diff(&expect, &read_report(&g.dir.join(rel))).is_empty() {
+        return Err("about_rewrite: input does not carry the about entry".into());
+    }
+    let out = tmp.join("ab_rw_out.s3a");
+    conformance::rewrite(&g.dir.join(rel), &out)?;
+    let d = conformance::diff(&expect, &read_report(&out));
+    if !d.is_empty() {
+        return Err(format!("about_rewrite: {d:?}"));
+    }
+    g.cases.push(json!({
+        "id": "about_rewrite", "kind": "rewrite", "level": "writer", "file": rel,
+        "sha256": sha256_hex(&input), "size": input.len(),
+        "description": "Schema tile with an about entry. Rewrite it (compaction) and report on the OUTPUT: the about entry must be carried through unchanged (TILE-SPEC 14.5.4)",
+        "expect": expect,
+    }));
     Ok(())
 }

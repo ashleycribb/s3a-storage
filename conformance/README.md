@@ -1,4 +1,6 @@
-# S3A Hyper-Tile conformance suite (`vectors-1.0`, `vectors-1.1`, `vectors-1.2`)
+# S3A Hyper-Tile conformance suite (`vectors-1.0` … `vectors-1.3`)
+
+**`vectors-1.3`** (68 cases) is a superset of `vectors-1.2`. It adds the writer-level rewrite case `about_rewrite`: compact a file whose Schema tile has an about entry, and the output must report the same `about`.
 
 **`vectors-1.2`** (67 cases) is a superset of `vectors-1.1`. It adds the self-describing about entry (TILE-SPEC §14.5.4): `about_absent`, `about_unsealed`, `about_crc_corrupt` (must be rejected), `about_embedded_spec_mismatch` and `about_sealed_self_describing`. The report gains two keys:
 - `about`: `{"spec_version", "spec_url", "spec_sha256", "writer"}` from the first Schema tile, or `null`.
