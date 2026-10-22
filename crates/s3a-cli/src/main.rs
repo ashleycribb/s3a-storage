@@ -2220,7 +2220,18 @@ fn seal_file(
     creator: Option<String>,
     record_roots: bool,
 ) {
-    let _ = s3a_engine::append_schema_tile_if_missing(in_path);
+    // Never write the input: add the schema tile (if missing) to a scratch copy
+    // next to the output and seal from that. Output bytes are the same as before.
+    let scratch = format!("{}.seal-input.tmp.s3a", out_path);
+    if let Err(e) = std::fs::copy(in_path, &scratch) {
+        eprintln!(
+            "Error sealing archive: cannot read input '{}': {}",
+            in_path, e
+        );
+        return;
+    }
+    let _ = s3a_engine::append_schema_tile_if_missing(&scratch);
+    let seal_in = scratch.as_str();
     let options = s3a_engine::SealOptionsV2 {
         enable_parity,
         k: s3a_engine::DEFAULT_SEAL_K,
@@ -2233,7 +2244,9 @@ fn seal_file(
         creator,
         record_roots,
     };
-    match s3a_engine::seal_archive_v2(in_path, out_path, &options) {
+    let res = s3a_engine::seal_archive_v2(seal_in, out_path, &options);
+    let _ = std::fs::remove_file(&scratch);
+    match res {
         Ok(_) => {
             let mut features = Vec::new();
             if enable_parity {
