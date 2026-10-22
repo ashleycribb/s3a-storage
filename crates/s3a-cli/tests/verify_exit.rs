@@ -64,3 +64,78 @@ fn verify_exit_codes() {
         Some(2)
     );
 }
+
+fn json(o: &Output) -> serde_json::Value {
+    let s = String::from_utf8_lossy(&o.stdout);
+    serde_json::from_str(s.trim()).unwrap_or_else(|e| panic!("one JSON doc expected: {e}: {s}"))
+}
+
+#[test]
+fn verify_json_record_roots_and_anchor_exit_4() {
+    let (raw, plain, rr, anc, bad) = (
+        tmp("j_raw"),
+        tmp("j_plain"),
+        tmp("j_rr"),
+        tmp("j_anc"),
+        tmp("j_bad"),
+    );
+    let _g = G(vec![
+        raw.clone(),
+        plain.clone(),
+        rr.clone(),
+        anc.clone(),
+        bad.clone(),
+    ]);
+    let p = |x: &PathBuf| x.to_str().unwrap().to_string();
+    assert!(run(&["insert", &p(&raw), "100", "1", "1", "5.0"])
+        .status
+        .success());
+    assert!(run(&["seal", &p(&raw), &p(&plain)]).status.success());
+    assert!(run(&["seal", &p(&raw), &p(&rr), "--record-roots"])
+        .status
+        .success());
+
+    let o = run(&["verify", "--json", &p(&plain)]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(json(&o)["record_roots"]["state"], "absent");
+    let o = run(&["verify", "--json", &p(&rr)]);
+    assert_eq!(o.status.code(), Some(0));
+    let j = json(&o);
+    assert_eq!(j["record_roots"]["state"], "ok");
+    assert_eq!(j["ok"], true);
+
+    // Good anchor: exit 0, anchors_ok true.
+    std::fs::copy(&plain, &anc).unwrap();
+    assert!(run(&["anchor", &p(&anc), "--mock"]).status.success());
+    let o = run(&["verify", "--anchor", "--json", &p(&anc)]);
+    assert_eq!(o.status.code(), Some(0));
+    let j = json(&o);
+    assert_eq!(j["anchors_ok"], true);
+    assert!(j["anchors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["match"] == "yes"));
+    assert_eq!(
+        run(&["verify", "--anchor", &p(&anc)]).status.code(),
+        Some(0)
+    );
+
+    // Tampered anchor fingerprint: exit 4, text and JSON.
+    let fp = j["fingerprint"].as_str().unwrap().as_bytes().to_vec();
+    let mut b = std::fs::read(&anc).unwrap();
+    let i = b
+        .windows(fp.len())
+        .position(|w| w == fp.as_slice())
+        .expect("fingerprint in file");
+    b[i] = if b[i] == b'0' { b'1' } else { b'0' };
+    std::fs::write(&bad, &b).unwrap();
+    let o = run(&["verify", "--anchor", "--json", &p(&bad)]);
+    assert_eq!(o.status.code(), Some(4));
+    let j = json(&o);
+    assert_eq!(j["ok"], false);
+    assert_eq!(j["anchors_ok"], false);
+    let o = run(&["verify", "--anchor", &p(&bad)]);
+    assert_eq!(o.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("Anchors: FAILED"));
+}

@@ -222,7 +222,14 @@ fn test_cli_seal_anchor_upgrade_and_verify() {
         ])
         .output()
         .expect("verify json failed");
-    assert!(out_v_json.status.success());
+    // The mock-confirmed attestation does not verify (Merkle root mismatch: this test's hand-built
+    // block header does not match the upgraded proof path), so verify now reports it: exit 4.
+    assert_eq!(
+        out_v_json.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&out_v_json.stdout)
+    );
     let str_v_json = String::from_utf8_lossy(&out_v_json.stdout);
     assert!(str_v_json.contains("\"match\":\"yes\""));
     assert!(str_v_json.contains("\"status\":\"confirmed\""));
