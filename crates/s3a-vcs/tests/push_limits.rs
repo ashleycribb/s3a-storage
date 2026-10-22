@@ -185,3 +185,74 @@ fn short_hash_resolves_in_repo() {
         Err(VcsError::CommitNotFound(_))
     ));
 }
+
+fn scholar_source() -> (Tmp, VcsRepo) {
+    use s3a_pack_scholar::records::{ScholarNoteClaimRecord, CLAIM_KIND_EMPIRICAL};
+    let t = Tmp::new("ssrc");
+    let mut w = TileWriter::create(&t.0).unwrap();
+    w.enable_addon(s3a_core::ADDON_EDU).unwrap();
+    let c = vec![ScholarNoteClaimRecord::new(
+        1,
+        1700000000,
+        [0, 42],
+        1,
+        0.9,
+        CLAIM_KIND_EMPIRICAL,
+        "claim",
+    )];
+    w.write_hyper_tile(
+        s3a_pack_scholar::ScholarTileType::NOTE_CLAIMS,
+        &c,
+        None,
+        None,
+    )
+    .unwrap();
+    drop(w);
+    let r = VcsRepo::open(&t.0).unwrap();
+    r.commit("claim", "main", &key(), None).unwrap();
+    (t, r)
+}
+
+#[test]
+fn fresh_target_gets_source_packs_enabled() {
+    let (_s, src) = scholar_source();
+    let (t, tgt) = target();
+    assert!(sync_push(&src, &tgt, "main", false, None, &key()).unwrap() > 0);
+    let r = s3a_engine::MmapReader::open(&t.0).unwrap();
+    assert_ne!(r.addon_mask() & s3a_core::ADDON_EDU, 0);
+    assert!(tgt.get_ref("main").unwrap().is_some());
+}
+
+#[test]
+fn existing_target_missing_pack_rejected_unchanged() {
+    let (_s, src) = scholar_source();
+    let t = Tmp::new("etgt");
+    let mut w = TileWriter::create(&t.0).unwrap();
+    w.write_hyper_tile(
+        TileType::TELEMETRY,
+        &[TelemetryRecord::new(5, 5, 5, 5.0)],
+        None,
+        None,
+    )
+    .unwrap();
+    drop(w);
+    let tgt = VcsRepo::open(&t.0).unwrap();
+    let before = std::fs::read(&t.0).unwrap();
+    match sync_push(&src, &tgt, "main", false, None, &key()) {
+        Err(e @ VcsError::MissingPacks { .. }) => assert!(e.to_string().contains("before writing")),
+        r => panic!("unexpected {r:?}"),
+    }
+    assert_eq!(std::fs::read(&t.0).unwrap(), before);
+}
+
+#[test]
+fn pushed_tiles_take_target_file_uuid() {
+    let (_s, src) = scholar_source();
+    let (t, tgt) = target();
+    sync_push(&src, &tgt, "main", false, None, &key()).unwrap();
+    let r = s3a_engine::MmapReader::open(&t.0).unwrap();
+    let want = r.get_tile(0).unwrap().0.file_uuid;
+    for i in 0..r.tile_count() as usize {
+        assert_eq!(r.get_tile(i).unwrap().0.file_uuid, want);
+    }
+}
