@@ -109,6 +109,7 @@ fn with_about_input(name: &str) -> (std::path::PathBuf, s3a_core::SchemaAbout) {
         spec_url: "https://example.invalid/spec".into(),
         spec_sha256: "2".repeat(64),
         writer: "self_describing.rs".into(),
+        ..Default::default()
     };
     let trailer = s3a_core::encode_schema_about(&about);
     let mut b = std::fs::read(&base).unwrap();

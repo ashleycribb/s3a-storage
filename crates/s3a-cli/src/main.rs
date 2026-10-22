@@ -2353,6 +2353,15 @@ fn verify_file(
             };
             let computed_fp_hex = hex::encode(computed_fp);
 
+            // TILE-SPEC §14.5.4: reject archives that declare an unknown or reserved algorithm ID.
+            if let Ok(r) = s3a_engine::MmapReader::open(path) {
+                if let Some(a) = s3a_engine::about_report(&r).about {
+                    if let Err((class, msg)) = s3a_engine::check_about_algorithms(&a) {
+                        eprintln!("Verification FAILED ({class}): {msg}");
+                        std::process::exit(2);
+                    }
+                }
+            }
             let rr = s3a_engine::MmapReader::open(path)
                 .map(|r| s3a_engine::record_roots::check(&r))
                 .ok();

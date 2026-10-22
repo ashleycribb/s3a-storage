@@ -1,4 +1,6 @@
-# S3A Hyper-Tile conformance suite (`vectors-1.0` … `vectors-1.4`)
+# S3A Hyper-Tile conformance suite (`vectors-1.0` … `vectors-1.5`)
+
+**`vectors-1.5`** (78 cases) is a superset of `vectors-1.4`. It adds 8 reader-level `alg_*` cases for the algorithm ID registry (TILE-SPEC §14.5.4, `docs/spec/registry.md` §6). Readers report `algorithms` (`seal_hash`, `signature`) and `algorithm_status`. They reject IDs that are not registered (`UnknownAlgorithm`) or are reserved, such as ML-DSA (`UnsupportedAlgorithm`).
 
 **`vectors-1.4`** (70 cases) is a superset of `vectors-1.3`. It adds two writer-level rewrite cases for compaction conservation (TILE-SPEC §6.1):
 - `compact_same_key_records`: two live records share a key and both must survive.

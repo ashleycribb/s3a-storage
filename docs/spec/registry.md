@@ -111,3 +111,41 @@ When defining a new domain pack or third-party tile type:
    - Compliant compactors and tools MUST preserve unknown tile types intact ("copy-through"), never discarding them or failing.
 6. **Tile 77 Schema (B1, ADR-0008)**: In-file catalog of tile types. Assigned since the §14 catalog; listed here by B1. It is not yet a descriptor in `crates/s3a-core/src/registry.rs` (writes go through the unregistered-type path). `MmapReader::catalog()` returns it when present and falls back to the registry when absent. Note: the edge profile's separate `u16` namespace uses 77 for `TILE_TYPE_CONFIG`; the two namespaces never mix.
 7. **Tile 83 Record Root (ADR-0012)**: Optional, derived. One 64-byte entry per tile whose payload splits into `record_count` equal records: `tile_index u32 | tile_type u32 | tile_id u64 | record_count u64 | seal_generation u64 | root [u8;32]` (little-endian), root = RFC 6962 Merkle Tree Hash of the records. Written last, just before sealing, so the unchanged v2 seal hash covers it. Not `COPY_THROUGH_COMPACT`: compactor/fusion drop it and every seal drops and (if `--record-roots`) regenerates it. Readers that don't know it skip it (§7.2).
+
+## 6. Algorithm IDs
+
+Archives may declare the algorithms they use in the about entry (TILE-SPEC §14.5.4, keys `seal_hash_alg` and `sig_alg`). This table is the only list of valid IDs. It follows RFC 7696 (BCP 201) §2.1: "Once an algorithm identifier is added to the registry, it should not be changed or removed. However, it is desirable to mark a registry entry as deprecated when implementation is no longer advisable." ([RFC 7696](https://www.rfc-editor.org/rfc/rfc7696))
+
+| ID | Key | Status | Definition | Notes |
+|---|---|---|---|---|
+| `sha256` | `seal_hash_alg` | recommended | SHA-256, [FIPS 180-4](https://csrc.nist.gov/pubs/fips/180-4/upd1/final) | Implied when the key is absent. Every S3A file to date uses it. |
+| `none` | `sig_alg` | allowed | No signature | Unsigned archive. |
+| `ed25519` | `sig_alg` | recommended | Ed25519 (PureEdDSA), [RFC 8032 §5.1](https://www.rfc-editor.org/rfc/rfc8032) | 64-byte signature over the 32-byte seal hash (S3A-EDGE-PROFILE §6.2). RFC 8032 §8.5: "if a high 128-bit security level is enough, use of Ed25519 is RECOMMENDED". |
+| `ml-dsa-44` | `sig_alg` | reserved | ML-DSA-44, [FIPS 204](https://csrc.nist.gov/pubs/fips/204/final) | S3A encoding not yet specified. |
+| `ml-dsa-65` | `sig_alg` | reserved | ML-DSA-65, FIPS 204 | As above. |
+| `ml-dsa-87` | `sig_alg` | reserved | ML-DSA-87, FIPS 204 | As above. |
+
+Why ML-DSA is reserved: RFC 8032 §1 says "A sufficiently large quantum computer would be able to break both" Ed25519 and Ed448. FIPS 204 specifies ML-DSA, which "is believed to be secure, even against adversaries in possession of a large-scale quantum computer" (FIPS 204 abstract). Reserving the IDs now means a future file can name them without a format change.
+
+### 6.1 Statuses
+
+- **recommended**: writers SHOULD use it, and every reader MUST implement it.
+- **allowed**: writers MAY use it, and every reader MUST implement it.
+- **deprecated**: writers MUST NOT create new data with it, but readers MUST still verify it on existing files. Archives are stored data: RFC 7696 §4 says "To recover the protected stored data, protocol implementations need to support older algorithms, even when they no longer use the older algorithms for the protection of new stored data."
+- **reserved**: the ID is assigned, but its S3A encoding is not specified yet. Readers MUST reject files that declare it (`UnsupportedAlgorithm`), and writers MUST NOT write it.
+- An ID that is not in this table for that key is **unknown**. Readers MUST reject it (`UnknownAlgorithm`) and name the ID in the error.
+
+### 6.2 Deprecation policy
+
+1. An entry is never removed and an ID is never reused, so old files keep their meaning.
+2. Status moves only forward: reserved → allowed or recommended → deprecated. Each change is a spec changelog entry plus a conformance suite version.
+3. Give notice before deprecating (RFC 7696 §2.2.3: "authors SHOULD provide notice to implementers about expected algorithm transitions"). The notice goes in the changelog one spec version before the status changes.
+4. Deprecating an ID never makes an existing file unreadable. To move an archive to a new algorithm, re-seal it into a new file. The old file stays verifiable.
+5. Promoting a reserved ID needs three things: an S3A encoding in the spec, a reference implementation, and conformance vectors.
+
+### 6.3 Adding an algorithm
+
+Open a spec PR that adds a row with a fetched link to the algorithm's defining standard, the reference code, and a new conformance suite version. Keep the list short. RFC 7696 §3.2: once deployed, "it is quite difficult to remove algorithms"; §4: "Support for too many algorithms can lead to implementation vulnerabilities."
+
+Reference code: `s3a_core::algorithms` (Rust) and `ALGORITHMS` in `readers/python/s3a_reader/reader.py`. A test keeps them in sync.
+

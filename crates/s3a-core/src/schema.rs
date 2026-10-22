@@ -247,6 +247,10 @@ pub struct SchemaAbout {
     /// Lowercase hex SHA-256 of the exact spec text the writer was built with.
     pub spec_sha256: String,
     pub writer: String,
+    /// Declared seal hash algorithm ID (`algorithms::ALGORITHMS`); empty = not declared (SHA-256).
+    pub seal_hash_alg: String,
+    /// Declared signature algorithm ID; empty = not declared.
+    pub sig_alg: String,
 }
 
 impl SchemaAbout {
@@ -257,7 +261,13 @@ impl SchemaAbout {
             ("spec_url", &self.spec_url),
             ("spec_sha256", &self.spec_sha256),
             ("writer", &self.writer),
+            ("seal_hash_alg", &self.seal_hash_alg),
+            ("sig_alg", &self.sig_alg),
         ] {
+            // Optional keys are written only when set, so older entries keep their bytes.
+            if v.is_empty() && (k == "seal_hash_alg" || k == "sig_alg") {
+                continue;
+            }
             s.push_str(k);
             s.push('=');
             s.push_str(&v.replace(['\n', '\r'], " "));
@@ -336,6 +346,8 @@ pub fn decode_schema_about(payload: &[u8]) -> Result<Option<SchemaAbout>, S3AErr
                 "spec_url" => a.spec_url = v,
                 "spec_sha256" => a.spec_sha256 = v,
                 "writer" => a.writer = v,
+                "seal_hash_alg" => a.seal_hash_alg = v,
+                "sig_alg" => a.sig_alg = v,
                 _ => {}
             }
         }
@@ -365,6 +377,7 @@ mod about_tests {
             spec_url: "https://example.org/spec".into(),
             spec_sha256: "ab".repeat(32),
             writer: "s3a-engine 0.1.0".into(),
+            ..Default::default()
         };
         let mut p = base.clone();
         p.extend_from_slice(&encode_schema_about(&a));
