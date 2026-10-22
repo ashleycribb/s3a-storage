@@ -138,7 +138,10 @@ impl AccessCodeSessionManager {
         }
 
         // 3. Target gate match
-        if code.target_gate != target_gate.to_address_string() {
+        if !GateAddress::parse_address(&code.target_gate)
+            .map(|a| a.same_identity(target_gate))
+            .unwrap_or(false)
+        {
             return Err(VaultError::InvalidAddressFormat(
                 "Target gate mismatch".into(),
             ));

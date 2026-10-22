@@ -471,8 +471,9 @@ impl GateDirectoryService {
             .map_err(|_| GateDirectoryError::BadRequest("Invalid public key hex format".into()))?;
 
         // 2. Validate address matches derived address
+        // New registrations must use the full 256-bit (v2) address.
         let expected_addr = GateAddress::from_public_key(&pk_bytes).to_address_string();
-        if req.address != expected_addr {
+        if req.address.trim().to_ascii_lowercase() != expected_addr {
             return Err(GateDirectoryError::BadRequest(
                 "Gate address does not match public key".into(),
             ));
@@ -521,8 +522,26 @@ impl GateDirectoryService {
     /// Resolve a gate by name or address (§11.2).
     pub fn resolve(&self, target: &str) -> Option<DirectoryEntry> {
         let clean = target.trim().to_ascii_lowercase();
-        if clean.starts_with("s3a-") {
+        if clean.starts_with("s3a2-") {
             self.addresses.get(&clean).cloned()
+        } else if clean.starts_with("s3a-") {
+            if let Some(e) = self.addresses.get(&clean) {
+                return Some(e.clone());
+            }
+            // Legacy 64-bit lookup: only a hint, resolved to the full v2 entry.
+            // Ambiguous (more than one match) resolves to nothing.
+            let want = GateAddress::parse_address(&clean).ok()?;
+            let mut hits = self.addresses.iter().filter(|(k, _)| {
+                GateAddress::parse_address(k)
+                    .map(|a| a.same_identity(&want))
+                    .unwrap_or(false)
+            });
+            let first = hits.next().map(|(_, v)| v.clone());
+            if hits.next().is_some() {
+                None
+            } else {
+                first
+            }
         } else {
             self.names.get(&clean).cloned()
         }
@@ -636,8 +655,11 @@ impl GateDirectoryService {
             hex::decode_to_slice(pk_hex, &mut pk).map_err(|_| {
                 GateDirectoryError::BadRequest("Invalid public key hex format".into())
             })?;
-            let derived = GateAddress::from_public_key(&pk).to_address_string();
-            if derived != clean_addr {
+            // Accept v2 or legacy addresses, but always check the full key.
+            let owns = GateAddress::parse_address(&clean_addr)
+                .map(|a| a.matches_key(&pk))
+                .unwrap_or(false);
+            if !owns {
                 return Err(GateDirectoryError::BadRequest(
                     "Provided public key does not match gate address".into(),
                 ));

@@ -63,10 +63,12 @@ fn seal_hash_v2() {
 fn gate_address() {
     let j = v("gate_address");
     let pk: [u8; 32] = hx(&j, "input_hex").try_into().unwrap();
-    assert_eq!(
-        s3a_vault::GateAddress::from_public_key(&pk).to_address_string(),
-        j["expected"].as_str().unwrap()
-    );
+    let a = s3a_vault::GateAddress::from_public_key(&pk);
+    assert_eq!(a.to_address_string(), j["expected"].as_str().unwrap());
+    assert_eq!(a.to_legacy_string(), j["expected_legacy"].as_str().unwrap());
+    let legacy =
+        s3a_vault::GateAddress::parse_address(j["expected_legacy"].as_str().unwrap()).unwrap();
+    assert!(legacy.is_legacy() && legacy.matches_key(&pk));
 }
 
 #[test]

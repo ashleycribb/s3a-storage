@@ -179,7 +179,7 @@ impl ShareToken {
         let t = Self::from_bytes(&bytes)?;
         // The visible host must be the address the key derives; otherwise a
         // link could display one address while carrying another issuer.
-        if host_addr != t.address() {
+        if !host_addr.matches_key(&t.issuer_pubkey) {
             return Err(Reject::AddressMismatch);
         }
         Ok(t)
@@ -220,8 +220,15 @@ pub fn issue(
     check_writable(AlgKind::Signature, &sig_alg)
         .map_err(|e| VaultError::KeyStoreError(e.to_string()))?;
     if let Some(a) = &audience {
-        GateAddress::parse_address(a)
+        let aa = GateAddress::parse_address(a)
             .map_err(|_| VaultError::KeyStoreError("bad audience address".into()))?;
+        // New tokens must name the audience by its full 256-bit address.
+        if aa.is_legacy() {
+            return Err(VaultError::KeyStoreError(
+                "audience must be a full s3a2- address (legacy 64-bit addresses are too weak)"
+                    .into(),
+            ));
+        }
     }
     let mut t = ShareToken {
         sig_alg,
@@ -268,7 +275,7 @@ pub fn verify(
         let ok = my_address
             .and_then(|m| GateAddress::parse_address(m).ok())
             .zip(GateAddress::parse_address(aud).ok())
-            .map(|(a, b)| a == b)
+            .map(|(a, b)| a.same_identity(&b))
             .unwrap_or(false);
         if !ok {
             return Err(Reject::WrongAudience(aud.clone()));
@@ -323,7 +330,7 @@ impl SeenStore {
 }
 
 /// Pinned contacts: full public key hex -> petname. Petnames are shown only on
-/// an exact 32-byte key match, never on an address (64-bit) match.
+/// an exact 32-byte key match, never on an address match (legacy 64-bit addresses are spoofable).
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Contacts {
     pub by_key: BTreeMap<String, String>,

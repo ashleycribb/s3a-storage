@@ -403,7 +403,7 @@ mod tests {
         let addr = vault.gate_address().unwrap();
         let uri = vault.gate_uri().unwrap();
 
-        assert!(uri.starts_with("gate://s3a-"));
+        assert!(uri.starts_with("gate://s3a2-"));
         assert_eq!(vault.events().len(), 1);
 
         // Reopen vault and verify recovered state
