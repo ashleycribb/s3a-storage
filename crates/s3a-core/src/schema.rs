@@ -343,6 +343,15 @@ pub fn decode_schema_about(payload: &[u8]) -> Result<Option<SchemaAbout>, S3AErr
     Ok(Some(a))
 }
 
+/// The raw, CRC-verified about trailer bytes of a Schema payload, for writers that rebuild
+/// the Schema tile and must carry the entry through unchanged (TILE-SPEC §14.5.4).
+pub fn schema_about_bytes(payload: &[u8]) -> Option<&[u8]> {
+    decode_schema_about(payload).ok().flatten()?;
+    let start = schema_records_len(payload).ok()?;
+    let len = u32::from_le_bytes(payload[start + 8..start + 12].try_into().ok()?) as usize;
+    payload.get(start..start + SCHEMA_ABOUT_HEADER_SIZE + len)
+}
+
 #[cfg(test)]
 mod about_tests {
     use super::*;

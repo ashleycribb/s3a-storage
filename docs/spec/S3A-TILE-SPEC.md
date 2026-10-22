@@ -1260,6 +1260,7 @@ The table below maps the historical wire assignments into the Catalog ID scheme 
   - Absent when the bytes after the field records are fewer than 16 or do not start with the magic. Earlier readers ignore it, because the catalog decoder reads only the records (no format change).
   - If the magic is present but `text_crc32` fails, `text_len` runs past `payload_bytes`, or the text is not UTF-8, the Schema tile is invalid (an error, like a bad `schema_crc32`).
   - Only the first Schema tile's entry counts. When the file also carries an Embedded Specification tile (79), a verifier SHOULD inflate it, compare its SHA-256 with `spec_sha256`, and report `match` or `mismatch`. A mismatch is a warning about provenance, not a read failure.
+  - Rewriters that rebuild the Schema tile (compaction) MUST carry the first input's about entry through byte-for-byte; tools that copy tiles (fusion, migration, parity repair, re-sealing without `--about`) keep it as part of the tile. Conformance: `vectors-1.3` writer case `about_rewrite`.
   - Written by `s3a-cli seal --about` (opt-in). The manifest (§14.5.5) also prints the spec version and spec SHA-256. Conformance: `vectors-1.2` cases `about_*`.
 - **Required vs Optional Fields**:
   - Required: `magic`, `version`, `type_count`, `total_fields`, `schema_crc32`.
