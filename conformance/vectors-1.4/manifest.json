@@ -1,0 +1,1087 @@
+{
+  "case_count": 70,
+  "cases": [
+    {
+      "description": "Empty valid S3A file with 0 tiles and generation 1",
+      "expect": {
+        "active_slot": 0,
+        "generation": 1,
+        "outcome": "ok",
+        "tile_count": 0
+      },
+      "file": "files/valid_empty.s3a",
+      "id": "valid_empty",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "c7153d6bb9963cc18cdf6bfdde363f6b9a8201a32805dcc0fdc75779785c19e5",
+      "size": 512
+    },
+    {
+      "description": "Single 128KB Hyper-Tile containing 3 core Telemetry records",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/valid_single_tile_core.s3a",
+      "id": "valid_single_tile_core",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "25de6869b8cfe4c1545573f7be26d4427c767e2538f27fd9930236f525cc294c",
+      "size": 131584
+    },
+    {
+      "description": "Multi-tile archive spanning Telemetry (0), Embedding (1), and Statement Index (22)",
+      "expect": {
+        "active_slot": 1,
+        "generation": 4,
+        "outcome": "ok",
+        "tile_count": 3
+      },
+      "file": "files/valid_multi_tile.s3a",
+      "id": "valid_multi_tile",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "40e47f755421521d5d9d1bd152a497534590b11d6cd766ad06f5a0537fc3fc4d",
+      "size": 393728
+    },
+    {
+      "description": "Archive post-compaction: tombstoned records purged, live records preserved",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "outcome": "ok",
+        "tile_count": 2
+      },
+      "file": "files/valid_after_compaction.s3a",
+      "id": "valid_after_compaction",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "6d7ed53d11023a23f8ccbf35eb57068cc8e1bb3492598b43a313122dc2f0d399",
+      "size": 262656
+    },
+    {
+      "description": "Both Slot A and Slot B valid with different generations; reader must pick Slot B (generation 2)",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/valid_dual_header_slots.s3a",
+      "id": "valid_dual_header_slots",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "b662b55023204763811c7bfc3570f6fe561ded5a46a11a360eac7473021f1a62",
+      "size": 131584
+    },
+    {
+      "description": "Archive with unknown tile type 9999; readers must skip during domain queries and verify CRC cleanly",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/valid_unknown_tile_type.s3a",
+      "id": "valid_unknown_tile_type",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "3785a94b295ef199282eef3bdb6ce2c0a07952674b261e1482efd8ff6716d2a1",
+      "size": 131584
+    },
+    {
+      "description": "Telemetry tile plus Schema tile 77; catalog() must return the embedded catalog naming types 0 and 77",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "outcome": "ok",
+        "tile_count": 2
+      },
+      "file": "files/valid_schema_catalog.s3a",
+      "id": "valid_schema_catalog",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "e263fb57be189a09e9070442f54ac3aaad9384d780952fc8afa0e0451595e701",
+      "size": 262656
+    },
+    {
+      "description": "Scholar Research Snapshot (.snapshot.s3a) container with Tile 15 SRS_MANIFEST and ADDON_EDU",
+      "expect": {
+        "active_slot": 0,
+        "generation": 5,
+        "outcome": "ok",
+        "tile_count": 3
+      },
+      "file": "files/valid_snapshot_container.s3a",
+      "id": "valid_snapshot_container",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "abe27cf66030a7151abc53dcdf3977a2729aa8f90b04e5cd970bc86cf28ffb01",
+      "size": 656304
+    },
+    {
+      "description": "Record masked by active MARK_CONSENT_WITHDRAWN; hidden in default queries, visible with include_hidden",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "outcome": "ok",
+        "tile_count": 2
+      },
+      "file": "files/valid_protected_mark_hidden.s3a",
+      "id": "valid_protected_mark_hidden",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "20911a224dcfcae908e2a5a61c86731653d898a22507845f376be132f1977ff9",
+      "size": 262656
+    },
+    {
+      "description": "Corrupted FileHeader magic bytes (b\"BAD!\" instead of b\"S3A1\")",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/invalid_bad_magic.s3a",
+      "id": "invalid_bad_magic",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "4b8c53595877bd718d2d4705cc0dd3290b9515faee61ff3197e7bba8d7343fa6",
+      "size": 512
+    },
+    {
+      "description": "Both header slots A and B corrupted with invalid CRC32C",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/invalid_both_slots_corrupt.s3a",
+      "id": "invalid_both_slots_corrupt",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "1fe4baf5813d4c82e3ebf57e7a1576d887c65a6cf9054d5e5ae742a7dd98bfca",
+      "size": 131584
+    },
+    {
+      "description": "Newest header slot (Slot B, gen 2) torn with invalid CRC; reader must fall back to Slot A (gen 1)",
+      "expect": {
+        "active_slot": 0,
+        "generation": 1,
+        "outcome": "ok",
+        "tile_count": 0
+      },
+      "file": "files/invalid_torn_write_fallback.s3a",
+      "id": "invalid_torn_write_fallback",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "99961a42f788a1ba178c77258d7549cf5f254f6760f0509234b5ccdd31451eb0",
+      "size": 131584
+    },
+    {
+      "description": "Hyper-Tile payload modified without updating data_crc32; verification fails with ChecksumMismatch",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/invalid_tile_crc_mismatch.s3a",
+      "id": "invalid_tile_crc_mismatch",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "bf307c16cd26561c3f66a910fa597fe45fd04a555239eca0b8bec1eaa430a17d",
+      "size": 131584
+    },
+    {
+      "description": "Archive header commits 1 Hyper-Tile (131,584 bytes expected) but file truncated to 60,000 bytes",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/invalid_truncated_tile.s3a",
+      "id": "invalid_truncated_tile",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "20173c6dea47d0db6bb943a14b4b407dee39fdff0ad0a955e88a849fdc68a403",
+      "size": 60000
+    },
+    {
+      "description": "HyperTileHeader record_layout_version set to 99; reading records must fail with UnsupportedLayoutVersion",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/invalid_unsupported_layout_version.s3a",
+      "id": "invalid_unsupported_layout_version",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "2623bff61ab1bb4b42969ce91a22833c279680d7170df08e04a7a13b02844a65",
+      "size": 131584
+    },
+    {
+      "description": "Sealed S3A archive with directory, K=16/M=2 Reed-Solomon parity, and valid 64-byte end cap",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "is_sealed": true,
+        "outcome": "ok",
+        "repaired_tiles": 0,
+        "tile_count": 2
+      },
+      "file": "files/sealed_ok.s3a",
+      "id": "sealed_ok",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "f937974af016778ddc68d243ba5b5831e7905521ee6468f16d59c2c4e74a18c1",
+      "size": 525152
+    },
+    {
+      "description": "Sealed archive with footer missing; reader rebuilds directory by scanning self-addressed tiles",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/sealed_footer_missing.s3a",
+      "id": "sealed_footer_missing",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "9426d1f67f539b79b206b7cc5d072e676d4e2daf9bc57786e3f2fc7d15c4f33c",
+      "size": 131584
+    },
+    {
+      "description": "Sealed archive with corrupt end cap; reader detects endcap corruption and rebuilds directory by scanning tiles",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/sealed_endcap_corrupt.s3a",
+      "id": "sealed_endcap_corrupt",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "5d4b23ad2f5860f1fd09c9b16107a5a667f636e77210661f89e87075e87e24be",
+      "size": 394000
+    },
+    {
+      "description": "Sealed archive truncated in the middle of a hyper-tile; reader must reject with SealedTruncated error",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/sealed_truncated_mid_tile.s3a",
+      "id": "sealed_truncated_mid_tile",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "dad8366c82a82891ef47121e1bf75d98b9515c0bf0e2d335315cce7450b9f29d",
+      "size": 66048
+    },
+    {
+      "description": "Sealed archive with 1 corrupted data tile in group; Reed-Solomon parity successfully repairs it in memory",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "is_sealed": true,
+        "outcome": "repaired",
+        "repaired_tiles": 1,
+        "tile_count": 2
+      },
+      "file": "files/one_tile_corrupt_repaired.s3a",
+      "id": "one_tile_corrupt_repaired",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "268ace33af0c880595a11b9db390f6ff3ee1b23c4ec7ff24669c3e4d1091e8c1",
+      "size": 525152
+    },
+    {
+      "description": "Sealed archive with 3 corrupted data tiles in a single group with M=2; exceeds RS parity capacity and must fail closed",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/three_tiles_corrupt_in_one_group.s3a",
+      "id": "three_tiles_corrupt_in_one_group",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "0ec819a30ee051c6f8934218201572dd01ebe6badecb6b0488fb29105a551073",
+      "size": 656304
+    },
+    {
+      "description": "Sealed archive whose tiles on disk are out of order; reader reassembles them correctly by tile_index",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "is_sealed": true,
+        "outcome": "ok_with_warning",
+        "repaired_tiles": 0,
+        "tile_count": 2
+      },
+      "file": "files/tiles_out_of_order.s3a",
+      "id": "tiles_out_of_order",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "9be10b3c509b9d3d81910f5ff9b85e09de307a90e4ba1bb5147d8dcd15cee7fb",
+      "size": 525152
+    },
+    {
+      "description": "Tile header carrying foreign file_uuid; reader MUST reject with FileUuidMismatch error",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/foreign_tile.s3a",
+      "id": "foreign_tile",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "d8f11e162fbed060d79d056f6740870af0e778a0e293b5753a29cc91933d3bae",
+      "size": 262656
+    },
+    {
+      "description": "Legacy pre-v1.1 unaddressed tile (record_layout_version=1, file_uuid=[0,0]); reader accepts via legacy path",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/legacy_unaddressed_tiles.s3a",
+      "id": "legacy_unaddressed_tiles",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "35dd0f260c7420866da1d9881fb042e78d1752f3c0daa502e67e3149e157de97",
+      "size": 131584
+    },
+    {
+      "description": "Valid 4,096-byte Micro S3A file with standard DualFileHeader and 2 micro-tiles",
+      "expect": {
+        "active_slot": 0,
+        "generation": 3,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 2
+      },
+      "file": "files/micro_valid_4kb.s3a",
+      "id": "micro_valid_4kb",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "5b53911731c8f8effcef18945b955703368f80c94dce69e60932ac2bc0935c0d",
+      "size": 8704
+    },
+    {
+      "description": "Power-loss torn micro-tile: Tile 0 valid, Tile 1 cut off mid-write; recovery preserves Tile 0",
+      "expect": {
+        "active_slot": 1,
+        "generation": 2,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 1
+      },
+      "file": "files/micro_truncated_file.s3a",
+      "id": "micro_truncated_file",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "e02c50791d5b9196c6d1f97a20722a0cdbc394791d9e4315abd2375b59bfe020",
+      "size": 5184
+    },
+    {
+      "description": "Three 4 KB micro-tiles with continuous SHA-256 seal chain and valid Ed25519 signatures",
+      "expect": {
+        "active_slot": 1,
+        "generation": 4,
+        "is_sealed": false,
+        "outcome": "ok",
+        "tile_count": 3
+      },
+      "file": "files/micro_signed_seal_chain.s3a",
+      "id": "micro_signed_seal_chain",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "beaa775d60da62bf5d8df939f27d2023a429f368650365f726764c9a3b7f5772",
+      "size": 12800
+    },
+    {
+      "description": "Three-link signed transfer chain: Genesis Issuer -> Alice -> Bob (VAULT-VEC-01)",
+      "expect": {
+        "is_sealed": false,
+        "outcome": "ok"
+      },
+      "file": "files/vault_transfer_chain.s3a",
+      "id": "vault_transfer_chain",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "a7441b7ff417df4fc146cd079b4a6e645ed5d508be7feda7a2270cedf806f2c8",
+      "size": 1049088
+    },
+    {
+      "description": "Delegation grant with agent action and non-delegable judgment protection (VAULT-VEC-02)",
+      "expect": {
+        "is_sealed": false,
+        "outcome": "ok"
+      },
+      "file": "files/vault_delegation_governance.s3a",
+      "id": "vault_delegation_governance",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "361d804b64dd69476501b57022bd34f040c98f134982d7e5570b0176c45402e5",
+      "size": 524800
+    },
+    {
+      "description": "Key rotation K1 to K2 invalidating subsequent actions while preserving historical actions (VAULT-VEC-03)",
+      "expect": {
+        "is_sealed": false,
+        "outcome": "ok"
+      },
+      "file": "files/vault_key_revocation.s3a",
+      "id": "vault_key_revocation",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "3405c51c7b24db71dfb448ee7ee013524ddbee8d8410e1a106500ac5f2418beb",
+      "size": 524800
+    },
+    {
+      "description": "W3C VC / Open Badges 3.0 JSON-LD import with Ed25519 signature in Blob tile 68 and indexed VaultItemRecord (VAULT-VEC-04)",
+      "expect": {
+        "is_sealed": false,
+        "outcome": "ok"
+      },
+      "file": "files/vault_vc_import.s3a",
+      "id": "vault_vc_import",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "e626fe5cfe6bb1ea46eebfc9869bd88df3c51e5f9561807a8c387de30f9b8910",
+      "size": 655872
+    },
+    {
+      "description": "Unmodified legacy v1.0 archive (tile header CRC covers bytes 0..36 only). Current readers must reject it with a checksum error and never write it; use `s3a-cli migrate` (see legacy_v1_0_migrated)",
+      "expect": {
+        "outcome": "error",
+        "tile_count": 2,
+        "tile_types": {
+          "0": 2
+        }
+      },
+      "file": "files/legacy_v1_0_telemetry.s3a",
+      "id": "legacy_v1_0_telemetry",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "cd56dccc9dbbd2c2d0ef7c473d8baf0af2bacb7e71d9daa99f472c325b253a27",
+      "size": 262656
+    },
+    {
+      "description": "legacy_v1_0_telemetry after `s3a-cli migrate`; same tile types, current format",
+      "expect": {
+        "outcome": "ok",
+        "tile_count": 2,
+        "tile_types": {
+          "0": 2
+        }
+      },
+      "file": "files/legacy_v1_0_migrated.s3a",
+      "id": "legacy_v1_0_migrated",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "4d8a4f2e6e425c3ad5a25591502a6db234928eff6e4fa1152b2fc3df184e2c8c",
+      "size": 262656
+    },
+    {
+      "description": "Sealed with record-root tile 83 (RFC 6962 roots per tile); all roots match",
+      "expect": {
+        "is_sealed": true,
+        "outcome": "ok",
+        "record_roots": "ok"
+      },
+      "file": "files/record_roots_ok.s3a",
+      "id": "record_roots_ok",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "d28cc0d0ab1b4d2765a7df4b8b59eff3778451e9845877ec9937e9ffa095a8b2",
+      "size": 394160
+    },
+    {
+      "description": "record_roots_ok with one record byte changed and tile CRCs recomputed; record-root check must fail and the archive must not verify",
+      "expect": {
+        "outcome": "error",
+        "record_roots": "mismatch"
+      },
+      "file": "files/record_roots_mismatch.s3a",
+      "id": "record_roots_mismatch",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "da6c09e2f7256a9dba50307127b811273d395e0ae36698d3ec1bfc0d33f2b8c6",
+      "size": 394160
+    },
+    {
+      "description": "Sealed archive without tile 83",
+      "expect": {
+        "record_roots": "absent"
+      },
+      "file": "files/record_roots_absent.s3a",
+      "id": "record_roots_absent",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "f937974af016778ddc68d243ba5b5831e7905521ee6468f16d59c2c4e74a18c1",
+      "size": 525152
+    },
+    {
+      "description": "Valid RFC 6962 audit path",
+      "expect": {
+        "valid": true
+      },
+      "id": "merkle_n1_i0_valid",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "00070e151c232a31",
+      "level": "reader",
+      "proof_hex": [],
+      "root_hex": "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179",
+      "tree_size": 1
+    },
+    {
+      "description": "Leaf byte flipped",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n1_i0_tampered_leaf",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "01070e151c232a31",
+      "level": "reader",
+      "proof_hex": [],
+      "root_hex": "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179",
+      "tree_size": 1
+    },
+    {
+      "description": "index >= tree_size",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n1_i0_index_out_of_range",
+      "index": 1,
+      "kind": "merkle-proof",
+      "leaf_hex": "00070e151c232a31",
+      "level": "reader",
+      "proof_hex": [],
+      "root_hex": "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179",
+      "tree_size": 1
+    },
+    {
+      "description": "Valid RFC 6962 audit path",
+      "expect": {
+        "valid": true
+      },
+      "id": "merkle_n2_i1_valid",
+      "index": 1,
+      "kind": "merkle-proof",
+      "leaf_hex": "383f464d545b6269",
+      "level": "reader",
+      "proof_hex": [
+        "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179"
+      ],
+      "root_hex": "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+      "tree_size": 2
+    },
+    {
+      "description": "Leaf byte flipped",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n2_i1_tampered_leaf",
+      "index": 1,
+      "kind": "merkle-proof",
+      "leaf_hex": "393f464d545b6269",
+      "level": "reader",
+      "proof_hex": [
+        "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179"
+      ],
+      "root_hex": "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+      "tree_size": 2
+    },
+    {
+      "description": "Correct path, wrong index",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n2_i1_wrong_index",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "383f464d545b6269",
+      "level": "reader",
+      "proof_hex": [
+        "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179"
+      ],
+      "root_hex": "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+      "tree_size": 2
+    },
+    {
+      "description": "index >= tree_size",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n2_i1_index_out_of_range",
+      "index": 2,
+      "kind": "merkle-proof",
+      "leaf_hex": "383f464d545b6269",
+      "level": "reader",
+      "proof_hex": [
+        "c4d8c50dc0dc8e09cf527b2784b4d0d8b61fafec400565bbd348cd5323b12179"
+      ],
+      "root_hex": "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+      "tree_size": 2
+    },
+    {
+      "description": "Valid RFC 6962 audit path",
+      "expect": {
+        "valid": true
+      },
+      "id": "merkle_n5_i4_valid",
+      "index": 4,
+      "kind": "merkle-proof",
+      "leaf_hex": "e0e7eef501080f16",
+      "level": "reader",
+      "proof_hex": [
+        "4a97ea58a1ba0dc146a45494e3f40ced9cef34d058e1c8304cb93dc509c1edab"
+      ],
+      "root_hex": "fc099757390037c5fb4697c884d53eddd4853125ce41634c6d9f3ec9da0a8aff",
+      "tree_size": 5
+    },
+    {
+      "description": "Leaf byte flipped",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n5_i4_tampered_leaf",
+      "index": 4,
+      "kind": "merkle-proof",
+      "leaf_hex": "e1e7eef501080f16",
+      "level": "reader",
+      "proof_hex": [
+        "4a97ea58a1ba0dc146a45494e3f40ced9cef34d058e1c8304cb93dc509c1edab"
+      ],
+      "root_hex": "fc099757390037c5fb4697c884d53eddd4853125ce41634c6d9f3ec9da0a8aff",
+      "tree_size": 5
+    },
+    {
+      "description": "Correct path, wrong index",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n5_i4_wrong_index",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "e0e7eef501080f16",
+      "level": "reader",
+      "proof_hex": [
+        "4a97ea58a1ba0dc146a45494e3f40ced9cef34d058e1c8304cb93dc509c1edab"
+      ],
+      "root_hex": "fc099757390037c5fb4697c884d53eddd4853125ce41634c6d9f3ec9da0a8aff",
+      "tree_size": 5
+    },
+    {
+      "description": "index >= tree_size",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n5_i4_index_out_of_range",
+      "index": 5,
+      "kind": "merkle-proof",
+      "leaf_hex": "e0e7eef501080f16",
+      "level": "reader",
+      "proof_hex": [
+        "4a97ea58a1ba0dc146a45494e3f40ced9cef34d058e1c8304cb93dc509c1edab"
+      ],
+      "root_hex": "fc099757390037c5fb4697c884d53eddd4853125ce41634c6d9f3ec9da0a8aff",
+      "tree_size": 5
+    },
+    {
+      "description": "Valid RFC 6962 audit path",
+      "expect": {
+        "valid": true
+      },
+      "id": "merkle_n7_i3_valid",
+      "index": 3,
+      "kind": "merkle-proof",
+      "leaf_hex": "a8afb6bdc4cbd2d9",
+      "level": "reader",
+      "proof_hex": [
+        "def19131a6ee0d9115a579cc7af3ec8b21f3e8a2b446b000233a4a480ebbb36a",
+        "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+        "a00f297fc004ba38f0294169e0b108f0e6c35f9589ad6551d71868b19148915b"
+      ],
+      "root_hex": "b41be8389db8d5b01e6df8349e7b6719b9ba15e63f68d99db4154aa26b06aa5b",
+      "tree_size": 7
+    },
+    {
+      "description": "Leaf byte flipped",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n7_i3_tampered_leaf",
+      "index": 3,
+      "kind": "merkle-proof",
+      "leaf_hex": "a9afb6bdc4cbd2d9",
+      "level": "reader",
+      "proof_hex": [
+        "def19131a6ee0d9115a579cc7af3ec8b21f3e8a2b446b000233a4a480ebbb36a",
+        "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+        "a00f297fc004ba38f0294169e0b108f0e6c35f9589ad6551d71868b19148915b"
+      ],
+      "root_hex": "b41be8389db8d5b01e6df8349e7b6719b9ba15e63f68d99db4154aa26b06aa5b",
+      "tree_size": 7
+    },
+    {
+      "description": "Correct path, wrong index",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n7_i3_wrong_index",
+      "index": 4,
+      "kind": "merkle-proof",
+      "leaf_hex": "a8afb6bdc4cbd2d9",
+      "level": "reader",
+      "proof_hex": [
+        "def19131a6ee0d9115a579cc7af3ec8b21f3e8a2b446b000233a4a480ebbb36a",
+        "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+        "a00f297fc004ba38f0294169e0b108f0e6c35f9589ad6551d71868b19148915b"
+      ],
+      "root_hex": "b41be8389db8d5b01e6df8349e7b6719b9ba15e63f68d99db4154aa26b06aa5b",
+      "tree_size": 7
+    },
+    {
+      "description": "index >= tree_size",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n7_i3_index_out_of_range",
+      "index": 7,
+      "kind": "merkle-proof",
+      "leaf_hex": "a8afb6bdc4cbd2d9",
+      "level": "reader",
+      "proof_hex": [
+        "def19131a6ee0d9115a579cc7af3ec8b21f3e8a2b446b000233a4a480ebbb36a",
+        "5b8a5cc0211caa8e51128ca5e2f55034a270487d633e582905ca301ca1ebb8c1",
+        "a00f297fc004ba38f0294169e0b108f0e6c35f9589ad6551d71868b19148915b"
+      ],
+      "root_hex": "b41be8389db8d5b01e6df8349e7b6719b9ba15e63f68d99db4154aa26b06aa5b",
+      "tree_size": 7
+    },
+    {
+      "description": "Valid RFC 6962 audit path",
+      "expect": {
+        "valid": true
+      },
+      "id": "merkle_n8_i0_valid",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "00070e151c232a31",
+      "level": "reader",
+      "proof_hex": [
+        "fea9f99f1f41b2244bbade90f8e09098913604e61cc938756c47172dfcc4725d",
+        "4ebbbd69a2eef9aac3a598047bfea33d5c4c28993c0822897c1d7069bc3d3e8f",
+        "e0e7b2281707fe09535dfa24ecaf8bc472a20c61ef36ea35565ef88801f796ee"
+      ],
+      "root_hex": "17844d430dc028117a05c2cdf4d045a7b933a8175c5a7452e5cc6857ad652f02",
+      "tree_size": 8
+    },
+    {
+      "description": "Leaf byte flipped",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n8_i0_tampered_leaf",
+      "index": 0,
+      "kind": "merkle-proof",
+      "leaf_hex": "01070e151c232a31",
+      "level": "reader",
+      "proof_hex": [
+        "fea9f99f1f41b2244bbade90f8e09098913604e61cc938756c47172dfcc4725d",
+        "4ebbbd69a2eef9aac3a598047bfea33d5c4c28993c0822897c1d7069bc3d3e8f",
+        "e0e7b2281707fe09535dfa24ecaf8bc472a20c61ef36ea35565ef88801f796ee"
+      ],
+      "root_hex": "17844d430dc028117a05c2cdf4d045a7b933a8175c5a7452e5cc6857ad652f02",
+      "tree_size": 8
+    },
+    {
+      "description": "Correct path, wrong index",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n8_i0_wrong_index",
+      "index": 1,
+      "kind": "merkle-proof",
+      "leaf_hex": "00070e151c232a31",
+      "level": "reader",
+      "proof_hex": [
+        "fea9f99f1f41b2244bbade90f8e09098913604e61cc938756c47172dfcc4725d",
+        "4ebbbd69a2eef9aac3a598047bfea33d5c4c28993c0822897c1d7069bc3d3e8f",
+        "e0e7b2281707fe09535dfa24ecaf8bc472a20c61ef36ea35565ef88801f796ee"
+      ],
+      "root_hex": "17844d430dc028117a05c2cdf4d045a7b933a8175c5a7452e5cc6857ad652f02",
+      "tree_size": 8
+    },
+    {
+      "description": "index >= tree_size",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_n8_i0_index_out_of_range",
+      "index": 8,
+      "kind": "merkle-proof",
+      "leaf_hex": "00070e151c232a31",
+      "level": "reader",
+      "proof_hex": [
+        "fea9f99f1f41b2244bbade90f8e09098913604e61cc938756c47172dfcc4725d",
+        "4ebbbd69a2eef9aac3a598047bfea33d5c4c28993c0822897c1d7069bc3d3e8f",
+        "e0e7b2281707fe09535dfa24ecaf8bc472a20c61ef36ea35565ef88801f796ee"
+      ],
+      "root_hex": "17844d430dc028117a05c2cdf4d045a7b933a8175c5a7452e5cc6857ad652f02",
+      "tree_size": 8
+    },
+    {
+      "description": "Proof for a duplicated 4th leaf checked against the 3-leaf root must fail (Bitcoin CVE-2012-2459)",
+      "expect": {
+        "valid": false
+      },
+      "id": "merkle_cve_2012_2459_duplicate_leaf",
+      "index": 3,
+      "kind": "merkle-proof",
+      "leaf_hex": "1011121314151617",
+      "level": "reader",
+      "proof_hex": [
+        "43f8fbb97a739fb6a6ac7d43602980e8e97ffeaefea8a32798c61bfc80c41e30",
+        "da755e2df013ea7fb7f25d69fdbaa23944aee2693ef562df59196dcb4a1159ea"
+      ],
+      "root_hex": "0f27b64951aff69651cec05c6b5488b8a709601ded14a0caf078e6c0854a7507",
+      "tree_size": 4
+    },
+    {
+      "description": "valid_single_tile_core with tile header _reserved_addr (bytes 492..496) = 0xDEADBEEF and header CRC recomputed; readers MUST ignore reserved bytes (TILE-SPEC 3.3)",
+      "expect": {
+        "generation": 2,
+        "outcome": "ok",
+        "tile_count": 1,
+        "tile_types": {
+          "0": 1
+        }
+      },
+      "file": "files/reserved_tile_header_nonzero.s3a",
+      "id": "reserved_tile_header_nonzero",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "6c37e52eebcf4df3212b138747314200951047c397f3e644e1661154bc94cba7",
+      "size": 131584
+    },
+    {
+      "description": "valid_single_tile_core with the file header block padding (bytes 128..512) set to 0xA5; readers MUST ignore it",
+      "expect": {
+        "generation": 2,
+        "outcome": "ok",
+        "tile_count": 1,
+        "tile_types": {
+          "0": 1
+        }
+      },
+      "file": "files/reserved_file_header_padding_nonzero.s3a",
+      "id": "reserved_file_header_padding_nonzero",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "0302db3e06d4858caaf05f0053592fdf4e1603787455927e55bff579fa9a09a8",
+      "size": 131584
+    },
+    {
+      "description": "valid_single_tile_core with undefined FileHeader.flags bit 0x0100 set in both slots (CRCs valid); flags change parsing, so readers MUST reject (TILE-SPEC 2.1)",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/header_unknown_flag_bit.s3a",
+      "id": "header_unknown_flag_bit",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "90f7ff40907003ce17e71d83ba5d31aba6f5c64561c55690e2958c07e3ba01ec",
+      "size": 131584
+    },
+    {
+      "description": "valid_single_tile_core with FileHeader tile_stride (bytes 20..24) = 12345 in both slots; readers MUST reject strides other than 0, 4096, 8192",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/header_invalid_tile_stride.s3a",
+      "id": "header_invalid_tile_stride",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "be998649ae0bd24a54daa8d53c0297eb8807838d8b6ceb84e2ea572da03fa484",
+      "size": 131584
+    },
+    {
+      "description": "Unknown flag bit only in the newest (CRC-valid) slot; readers MUST reject rather than fall back to the older slot",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/header_unknown_flag_newest_slot_only.s3a",
+      "id": "header_unknown_flag_newest_slot_only",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "3198d85db9dce905271134ea94a28681b946df9b48cb5e9c6149aaf51a6686f9",
+      "size": 131584
+    },
+    {
+      "description": "Unregistered tile type 9999 (no COPY_THROUGH_COMPACT flag). Rewrite it (compaction) and report on the OUTPUT: the tile must still be there with a byte-identical payload (TILE-SPEC 7.2, ADR-0011/0013)",
+      "expect": {
+        "outcome": "ok",
+        "tile_payload_sha256.9999": [
+          "80012139b85674f4d4eb5f0efc2ba0c228be1df6e9aa503ecde51aa593bda63f"
+        ],
+        "tile_types.9999": 1
+      },
+      "file": "files/unknown_tile_rewrite.s3a",
+      "id": "unknown_tile_rewrite",
+      "kind": "rewrite",
+      "level": "writer",
+      "sha256": "3785a94b295ef199282eef3bdb6ce2c0a07952674b261e1482efd8ff6716d2a1",
+      "size": 131584
+    },
+    {
+      "description": "Schema tile without an about entry: report about=null",
+      "expect": {
+        "about": null,
+        "embedded_spec": "absent",
+        "outcome": "ok"
+      },
+      "file": "files/about_absent.s3a",
+      "id": "about_absent",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "e263fb57be189a09e9070442f54ac3aaad9384d780952fc8afa0e0451595e701",
+      "size": 262656
+    },
+    {
+      "description": "valid_schema_catalog with an about entry appended to the Schema tile payload (TILE-SPEC 14.5.4); readers report its four fields",
+      "expect": {
+        "about": {
+          "spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "spec_url": "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md",
+          "spec_version": "1.5-draft",
+          "writer": "s3a-conformance vectors-1.2"
+        },
+        "embedded_spec": "absent",
+        "outcome": "ok"
+      },
+      "file": "files/about_unsealed.s3a",
+      "id": "about_unsealed",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "375d6618b7a39e8da60fb80a95b3dec3d54be4526a925bad02ac599b715be5f7",
+      "size": 262656
+    },
+    {
+      "description": "about entry whose text_crc32 does not match (tile CRCs recomputed); readers MUST reject",
+      "expect": {
+        "outcome": "error"
+      },
+      "file": "files/about_crc_corrupt.s3a",
+      "id": "about_crc_corrupt",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "50de675682b5a01306ba38ab2e9a02ae9679576f878ccec759ea0a61cd138e5f",
+      "size": 262656
+    },
+    {
+      "description": "Sealed with an embedded spec (tile 79) whose SHA-256 differs from the about entry's spec_sha256; readers report embedded_spec=mismatch (advisory, outcome stays ok)",
+      "expect": {
+        "about.spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "embedded_spec": "mismatch",
+        "is_sealed": true,
+        "outcome": "ok"
+      },
+      "file": "files/about_embedded_spec_mismatch.s3a",
+      "id": "about_embedded_spec_mismatch",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "511cf1de931db00b84b309f18630a97a1af332dfc76bdd8fe327471260135b58",
+      "size": 525312
+    },
+    {
+      "description": "`seal --about --embed-spec --record-roots`: about entry, embedded spec that matches it, manifest, record roots",
+      "expect": {
+        "about.spec_url": "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md",
+        "embedded_spec": "match",
+        "is_sealed": true,
+        "outcome": "ok",
+        "record_roots": "ok",
+        "tile_types.77": 1,
+        "tile_types.78": 1,
+        "tile_types.79": 1,
+        "tile_types.83": 1
+      },
+      "file": "files/about_sealed_self_describing.s3a",
+      "id": "about_sealed_self_describing",
+      "kind": "archive",
+      "level": "reader",
+      "sha256": "41d141d2c5465c8b13937c96d17ff3d5a652a62812a254938eb2e445cee82f4b",
+      "size": 656464
+    },
+    {
+      "description": "Schema tile with an about entry. Rewrite it (compaction) and report on the OUTPUT: the about entry must be carried through unchanged (TILE-SPEC 14.5.4)",
+      "expect": {
+        "about": {
+          "spec_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "spec_url": "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md",
+          "spec_version": "1.5-draft",
+          "writer": "s3a-conformance vectors-1.3"
+        },
+        "outcome": "ok"
+      },
+      "file": "files/about_rewrite.s3a",
+      "id": "about_rewrite",
+      "kind": "rewrite",
+      "level": "writer",
+      "sha256": "134ea27b3dd15781bf2bc462dc6fab482f2bebcb570c77c94348d759b51ed96a",
+      "size": 524800
+    },
+    {
+      "description": "Two live telemetry records share sensor/metric/timestamp but differ in value. Compaction MUST keep both (TILE-SPEC 6.1.7): the output telemetry payload is byte-identical to the input's",
+      "expect": {
+        "outcome": "ok",
+        "tile_payload_sha256.0": [
+          "e28549da841ecf7f9473a9d9b0317349e5540626641ebb3d26b479a4a3b8c724"
+        ],
+        "tile_types.0": 1
+      },
+      "file": "files/compact_same_key_records.s3a",
+      "id": "compact_same_key_records",
+      "kind": "rewrite",
+      "level": "writer",
+      "sha256": "9c8b68714ca51b1481ade656c537c674f166dba6028a8ef0ff9254ea333d2756",
+      "size": 131584
+    },
+    {
+      "description": "Sealed archive with a plain-text manifest (tile 78). Compaction MUST accept it, and keep every live record. (The reference compactor also drops the stale manifest, which only describes the sealed file; not checked here)",
+      "expect": {
+        "outcome": "ok",
+        "tile_payload_sha256.0": [
+          "e28549da841ecf7f9473a9d9b0317349e5540626641ebb3d26b479a4a3b8c724"
+        ],
+        "tile_types.0": 1
+      },
+      "file": "files/compact_sealed_with_manifest.s3a",
+      "id": "compact_sealed_with_manifest",
+      "kind": "rewrite",
+      "level": "writer",
+      "sha256": "7de4ce3cdec36be62ce0224281918eb6ada3a1dce001f56f30e56fb40d4db595",
+      "size": 263008
+    }
+  ],
+  "levels": {
+    "reader": "Must produce a report matching `expect` for every case with level=reader.",
+    "writer": "Reader level, plus files it writes must yield outcome=ok under the reference reader (see README)."
+  },
+  "report_keys": [
+    "tile_payload_sha256",
+    "outcome",
+    "tile_count",
+    "generation",
+    "active_slot",
+    "is_sealed",
+    "repaired_tiles",
+    "tile_types",
+    "record_roots",
+    "valid"
+  ],
+  "spec": "specifications/ (S3A Hyper-Tile v1.1-draft)",
+  "suite": "s3a-hypertile-conformance",
+  "version": "vectors-1.4"
+}

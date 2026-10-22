@@ -9,6 +9,7 @@
 ### Specification Changelog
 
 - **v1.5-draft (October 2026)**:
+  - **Compaction conservation (§6.1)**: same-key records are no longer collapsed (that was data loss), there is a hard from-disk live-record gate, and manifests are dropped on rewrite. Sealer-generated tiles now get unique tile IDs, so sealed files with a manifest compact instead of being quarantined. New suite `vectors-1.4`.
   - **Self-describing archives (§14.5.4, item 6)**: optional, opt-in about entry after the Schema tile records (spec version, URL, spec SHA-256, writer). The manifest now lists record-root tiles (83), never substitutes the seal time for an unknown creation time, and sealing restamps `tile_index` of tiles moved behind the manifest (they used to verify with an out-of-order warning). Additive; new suite `vectors-1.2`.
   - **Schema tile catalog (§14.5.4, B1, ADR-0008)**: payload layout corrected to match the reference code (it was mis-documented; no on-disk bytes change). Added the catalog reader contract: embedded catalog when present, registry fallback when absent, hard error on a bad Schema tile, unaligned-safe decoding, `field_count` sum MUST equal `total_fields`. Additive and optional; new vector `valid_schema_catalog`.
 - **v1.4-draft (October 2026)**:
@@ -444,11 +445,13 @@ Compaction merges fragmented tiles, reclaims space occupied by soft-deleted reco
 
 1. **Out-of-Place Compaction**: Compaction MUST write to an independent temporary file (e.g., `{stem}.compact.{uuid}.tmp`).
 2. **Preflight Verification**: Every input tile MUST pass CRC32C validation before processing. Corrupt tiles MUST NOT be compacted.
-3. **Tombstone Purging**: Active records are retained; records with `FLAG_TOMBSTONE` are dropped, unless under `MARK_LEGAL_HOLD`.
+3. **Tombstone Purging**: Active records are retained; records with `FLAG_TOMBSTONE` are dropped, unless under `MARK_LEGAL_HOLD`. A tombstone (or an erasure) deletes the records with the same key (`sensor_id`, `metric_id`, `timestamp` for telemetry) that precede it. It never deletes other live records: two live records that share a key but differ in content are both kept.
 4. **Addon Capability Union**: The compacted archive's `addon_mask` MUST equal the bitwise OR of all input archives' `addon_mask` fields.
 5. **Tile ID Remapping**: Compacted tiles receive new sequential tile IDs ($1..\text{new\_count}$). A remap table `(input_idx, old_tile_id) -> new_tile_id` MUST be maintained.
 6. **Mark Preservation**: Active marks (`MARK_SET`) MUST be carried forward to the compacted archive. Their `target_tile_id` fields MUST be remapped to the corresponding new tile IDs.
-7. **Conservation Invariant**: The total count of live, non-tombstoned records in MUST equal the count of live records out.
+7. **Conservation Invariant**: The total count of live, non-tombstoned records in MUST equal the count of live records out. Compactors MUST enforce this as a hard gate: count the live records in the written output *from disk*, and if there are fewer than the live input records (less those deleted under rule 3), remove the output, leave the target untouched, and fail (`s3a-cli compact` exits 2). Conformance: `vectors-1.4` rewrite cases `compact_same_key_records` and `compact_sealed_with_manifest`.
+9. **Derived Tiles**: The manifest (78) and record-root tiles (83) describe the sealed file they were written into. Compaction drops them, and `seal` regenerates them. Content tiles such as the embedded spec (79) are copied through. Sealed inputs are accepted like live ones.
+10. **Tile ID Uniqueness**: Tile IDs MUST be unique within a file. `seal` assigns the tiles it generates (78, 79, 83) IDs above every other tile's. Files from earlier sealers can repeat IDs, so the duplicate-input gate keys on a tile's position in its file, not on its ID.
 8. **Atomic Replacement**: Once the output file is fully synced and verified, it replaces the target archive via an atomic rename operation (`atomic_replace`).
 
 ---

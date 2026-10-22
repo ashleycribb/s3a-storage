@@ -192,7 +192,7 @@ impl LiveRecordAccumulator {
 /// Enforces the Before-Gate: verifies CRC of every input tile, checks quarantine,
 /// and ensures each input tile is consumed only once per compaction generation.
 pub struct CompactionPreflight {
-    seen_tiles: HashSet<(PathBuf, u64, u64)>, // (canonical_path, tile_id, generation)
+    seen_tiles: HashSet<(PathBuf, usize, u64)>, // (canonical_path, tile position, generation)
 }
 
 impl CompactionPreflight {
@@ -206,6 +206,7 @@ impl CompactionPreflight {
         &mut self,
         archive_path: P,
         generation: u64,
+        position: usize,
         header: &HyperTileHeader,
         payload: &[u8],
     ) -> io::Result<()> {
@@ -226,7 +227,10 @@ impl CompactionPreflight {
         }
 
         // 2. Allow each input tile to be used only once per compaction generation
-        let key = (canonical, header.tile_id, generation);
+        // Keyed by the tile's position in the file, not its tile_id: tile_ids are not
+        // guaranteed unique (sealers before this fix wrote several tiles with id 0 or 1),
+        // and the gate exists to catch the same tile being consumed twice.
+        let key = (canonical, position, generation);
         if !self.seen_tiles.insert(key) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

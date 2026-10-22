@@ -308,8 +308,11 @@ fn gen(dir: &Path, version: &str) -> Result<(), String> {
     if version != "vectors-1.0" && version != "vectors-1.1" {
         v1_2_cases(&mut g, &tmp)?;
     }
-    if version == "vectors-1.3" {
+    if version == "vectors-1.3" || version == "vectors-1.4" {
         v1_3_cases(&mut g, &tmp)?;
+    }
+    if version == "vectors-1.4" {
+        v1_4_cases(&mut g, &tmp)?;
     }
 
     let manifest = json!({
@@ -568,5 +571,64 @@ fn v1_3_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         "description": "Schema tile with an about entry. Rewrite it (compaction) and report on the OUTPUT: the about entry must be carried through unchanged (TILE-SPEC 14.5.4)",
         "expect": expect,
     }));
+    Ok(())
+}
+
+/// Adds a writer-level rewrite case: `expect` is checked on the rewritten OUTPUT.
+fn rewrite_case(
+    g: &mut Gen,
+    tmp: &Path,
+    id: &str,
+    input: &[u8],
+    desc: &str,
+    expect: Value,
+) -> Result<(), String> {
+    let rel = format!("files/{id}.s3a");
+    std::fs::write(g.dir.join(&rel), input).unwrap();
+    let out = tmp.join(format!("{id}_out.s3a"));
+    conformance::rewrite(&g.dir.join(&rel), &out)?;
+    let d = conformance::diff(&expect, &read_report(&out));
+    if !d.is_empty() {
+        return Err(format!("{id}: {d:?}"));
+    }
+    g.cases.push(json!({
+        "id": id, "kind": "rewrite", "level": "writer", "file": rel,
+        "sha256": sha256_hex(input), "size": input.len(), "description": desc, "expect": expect,
+    }));
+    Ok(())
+}
+
+/// vectors-1.4 additions: compaction conservation (TILE-SPEC §6.1.7).
+fn v1_4_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
+    use s3a_core::{TelemetryRecord, TileType};
+    // Two live telemetry records with the same (sensor, metric, timestamp) and different
+    // values. Both are live, so both must survive; the payload is already in output order.
+    let p = tmp.join("same_key_in.s3a");
+    let _ = std::fs::remove_file(&p);
+    {
+        let mut w = s3a_engine::TileWriter::create(&p).map_err(|e| e.to_string())?;
+        let recs = [
+            TelemetryRecord::new(100, 1, 1, 1.5),
+            TelemetryRecord::new(100, 1, 1, 2.5),
+        ];
+        w.write_hyper_tile(TileType::TELEMETRY, &recs, None, None)
+            .map_err(|e| e.to_string())?;
+    }
+    let input = std::fs::read(&p).unwrap();
+    let sha = read_report(&p)["tile_payload_sha256"]["0"].clone();
+    rewrite_case(g, tmp, "compact_same_key_records", &input,
+        "Two live telemetry records share sensor/metric/timestamp but differ in value. Compaction MUST keep both (TILE-SPEC 6.1.7): the output telemetry payload is byte-identical to the input's",
+        json!({"outcome": "ok", "tile_types.0": 1, "tile_payload_sha256.0": sha}))?;
+
+    // A sealed file with a manifest: rewriting it must work (no quarantine), keep the data,
+    // and drop the stale manifest (TILE-SPEC 14.5.5).
+    let sealed = s3a_engine::seal_buffer_v2(
+        &input,
+        &s3a_engine::SealOptionsV2::default().with_manifest(),
+    )
+    .map_err(|e| e.to_string())?;
+    rewrite_case(g, tmp, "compact_sealed_with_manifest", &sealed,
+        "Sealed archive with a plain-text manifest (tile 78). Compaction MUST accept it, and keep every live record. (The reference compactor also drops the stale manifest, which only describes the sealed file; not checked here)",
+        json!({"outcome": "ok", "tile_types.0": 1, "tile_payload_sha256.0": sha}))?;
     Ok(())
 }
