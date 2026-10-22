@@ -1,3 +1,4 @@
+pub mod conformance;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;

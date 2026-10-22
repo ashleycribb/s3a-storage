@@ -48,6 +48,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - run: cargo test -p s3a-spec-vectors
+      - name: language-neutral runner (conformance/vectors-1.0)
+        run: |
+          cargo build -p s3a-spec-vectors --bin s3a-conformance
+          python3 conformance/run.py --impl target/debug/s3a-conformance conformance/vectors-1.0
 
   edge-no-std:
     name: "s3a-edge no_std build (thumbv7em-none-eabihf)"

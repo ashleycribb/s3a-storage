@@ -20,3 +20,4 @@ bytemuck = { workspace = true }
 crc32c = { workspace = true }
 memmap2 = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
