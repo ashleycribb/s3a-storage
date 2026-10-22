@@ -98,6 +98,13 @@ Floor  5: RECORD_ROOT      (type 83, v1) | 3    recs | 131072 B | keys: none | h
 [exit 0]
 ```
 
+**4b. See it as a map.** `tour --html` writes one offline HTML file with no network access. It shows the header slots, the tiles grouped by type, and the seal, record-root and manifest status. Search by type, key or text, then click a tile to zoom into its decoded records:
+
+```
+$ ./target/debug/s3a-cli tour --html /tmp/s3a-quickstart/hello.sealed.s3a /tmp/s3a-quickstart/hello.html
+Wrote /tmp/s3a-quickstart/hello.html (6 tiles, self-contained, offline)
+```
+
 **5. Read the manifest without any S3A tool.** Tile 0's payload starts at byte 1024 and is plain UTF-8 text:
 
 ```

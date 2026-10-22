@@ -663,7 +663,14 @@ fn inspect_archive_context<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let mut file_hdr_buf = [0u8; FILE_HEADER_SIZE];
     reader.read_exact(&mut file_hdr_buf)?;
-    let active_hdr: FileHeader = pod_read_unaligned(&file_hdr_buf[..64]);
+    // Use the arbitrated active slot (§2), not always slot A: slot B is newer after an
+    // odd number of commits, and slot A then still lists the older tile count.
+    let slot_a: FileHeader = pod_read_unaligned(&file_hdr_buf[..64]);
+    let slot_b: FileHeader = pod_read_unaligned(&file_hdr_buf[64..128]);
+    let active_hdr: FileHeader = match s3a_engine::resolve_active_header(&slot_a, &slot_b) {
+        Ok((h, _)) => h,
+        Err(_) => slot_a,
+    };
 
     let tile_count = active_hdr.tile_count;
     let mut floors = Vec::with_capacity(tile_count as usize);
