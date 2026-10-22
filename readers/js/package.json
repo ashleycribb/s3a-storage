@@ -1,0 +1,21 @@
+{
+  "name": "s3a-reader",
+  "version": "0.1.0",
+  "description": "Independent pure-TypeScript reader for S3A Hyper-Tile archives, written from the spec (Node and Bun, no native deps)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": { "s3a-read-js": "dist/cli.js" },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=18" },
+  "repository": { "type": "git", "url": "git+https://github.com/ashleycribb/s3a-storage.git", "directory": "readers/js" },
+  "scripts": {
+    "build": "tsc -p .",
+    "prepack": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "20.19.0",
+    "typescript": "5.6.3"
+  }
+}

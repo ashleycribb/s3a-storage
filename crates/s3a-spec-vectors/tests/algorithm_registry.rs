@@ -1,4 +1,5 @@
-//! The algorithm registry has three copies: Rust, the Python reader, and docs/spec/registry.md §6.
+//! The algorithm registry has four copies: Rust, the Python and TypeScript readers, and
+//! docs/spec/registry.md §6.
 //! They must agree.
 use s3a_core::algorithms::{AlgKind, ALGORITHMS};
 
@@ -10,6 +11,7 @@ fn root(p: &str) -> String {
 fn python_reader_and_docs_match_rust_registry() {
     let py = root("readers/python/s3a_reader/reader.py");
     let md = root("docs/spec/registry.md");
+    let js = root("readers/js/src/reader.ts");
     let py_rows = py.matches("): \"").count();
     assert_eq!(py_rows, ALGORITHMS.len(), "python registry size");
     for e in ALGORITHMS {
@@ -19,6 +21,8 @@ fn python_reader_and_docs_match_rust_registry() {
         };
         let row = format!("(\"{kind}\", \"{}\"): \"{}\"", e.id, e.status.as_str());
         assert!(py.contains(&row), "python reader lacks {row}");
+        let js_row = format!("\"{kind}/{}\": \"{}\"", e.id, e.status.as_str());
+        assert!(js.contains(&js_row), "TypeScript reader lacks {js_row}");
         let md_row = format!("| `{}` | `{key}` | {} |", e.id, e.status.as_str());
         assert!(md.contains(&md_row), "registry.md lacks {md_row}");
     }

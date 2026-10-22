@@ -72,6 +72,8 @@ Give your implementation a command line with two subcommands:
 <impl> merkle               # reads one case JSON on stdin, prints {"valid": bool}
 ```
 
+Independent readers that pass at reader level: `readers/python` (stdlib Python) and `readers/js` (TypeScript, Node and Bun).
+
 Then run the stdlib-only runner (Python ≥ 3.8):
 
 ```
