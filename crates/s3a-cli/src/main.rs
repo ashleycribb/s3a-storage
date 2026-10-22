@@ -1268,6 +1268,9 @@ fn main() {
         "gate" => {
             gate_cli::handle_gate_command(&args);
         }
+        "vault" => {
+            std::process::exit(s3a_vault::share_cli::run(&args[2..]));
+        }
         _ => {
             print_usage();
         }
@@ -1280,6 +1283,11 @@ fn print_usage() {
     println!("GATE DIRECTORY & SOVEREIGN IDENTITIES:");
     println!("  s3a-cli gate register <name> --directory <url>   Register sovereign gate name with challenge-response signature");
     println!("  s3a-cli gate resolve <name> --directory <url>    Resolve sovereign gate name to permanent gate:// address");
+    println!("  s3a-cli vault share <vault> <item> [--ttl s] [--aud addr]  Signed gate:// share link + QR (SVG/PNG)");
+    println!("  s3a-cli vault open <link|qr.png> [--item f] [--as vault]  Verify share code: VERIFIED or REJECTED");
+    println!(
+        "  s3a-cli vault contact add <petname> <pubkey|link>      Pin an issuer key to a petname"
+    );
     println!();
     println!("GIT-STYLE VERSION CONTROL (S3A-VCS):");
     println!("  s3a-cli vcs init <archive>                        Initialize Git-style VCS on S3A archive");

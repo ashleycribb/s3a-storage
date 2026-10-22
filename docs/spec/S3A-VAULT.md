@@ -832,3 +832,77 @@ s3a-vault backup alice.vault.s3a alice.backup.enc --passphrase "recovery-passphr
 s3a-vault restore alice.backup.enc restored.vault.s3a --passphrase "recovery-passphrase"
 ```
 
+
+---
+
+## 17. Signed Share Links & QR Codes (`vault share` / `vault open`)
+
+Additive and opt-in. Share tokens live outside archives; no S3A on-disk format, tile, or seal-hash rule changes.
+
+### 17.1 Token
+
+The link text and the QR payload are byte-identical:
+
+```
+gate://<issuer address>/share/<base64url(canonical || signature)>
+```
+
+base64url is RFC 4648 §5 without padding; decoders MUST reject non-alphabet characters and non-zero trailing bits (RFC 4648 §3.3, §3.5). Canonical bytes, fixed order, integers big-endian, strings `u16 length || UTF-8`:
+
+| Field | Size | Notes |
+|---|---|---|
+| domain | 16 | `"S3A-VAULT-SHARE\0"` — separates these signatures from seals, grants and access codes |
+| version | 1 | `1` |
+| sig_alg | str | ID from the algorithm registry (registry.md §6); only `ed25519` is accepted for share tokens |
+| issuer_pubkey | 32 | Ed25519 public key |
+| address | 9 | `SHA-256(pubkey)[0..8] || checksum` (§11); MUST equal the value derived from `issuer_pubkey` |
+| item_hash | 32 | SHA-256 of the shared item content |
+| issued_at, expires_at | 8 + 8 | unix seconds; lifetime ≤ 30 days |
+| nonce | 16 | random |
+| audience | 1 (+str) | `0` none, or `1` + recipient gate address |
+
+The signature is Ed25519 (RFC 8032 §5.1.6) over the canonical bytes, verified with `verify_strict` (RFC 8032 §5.1.7 checks). The QR symbol is ISO/IEC 18004 byte mode, error-correction level M.
+
+### 17.2 `vault open` order of checks
+
+Every failure prints `REJECTED: <reason>` and exits 3; nothing is acted on.
+
+1. Parse: link host, embedded address and `issuer_pubkey` must all agree (self-certifying address).
+2. `sig_alg` passes `check_readable` and is `ed25519` (`none`, reserved and unknown IDs reject).
+3. Ed25519 signature over the canonical bytes.
+4. Lifetime ≤ 30 days; `issued_at ≤ now + 300 s`; `now < expires_at`.
+5. Audience, if present, equals the opener's own gate address (`--as <vault>`); otherwise reject.
+6. Item hash equals the supplied item (`--item`/`--item-hash`), when supplied.
+7. Replay: `(issuer_pubkey, nonce)` must not be in the local seen-store (`~/.s3a/vault/share-seen.json`); it is recorded only after steps 1–6 pass, and pruned after expiry.
+
+On success it prints `VERIFIED`, the issuer petname **only if the full 32-byte key is pinned** in `contacts.json` (`vault contact add`), otherwise `UNKNOWN ISSUER`, and the gate address and SHA-256 key fingerprint.
+
+### 17.3 Threat model
+
+| Threat | Result |
+|---|---|
+| Forged code (attacker signs with their own key but claims the victim's key/address) | Signature check fails → REJECTED |
+| Swapped sticker (attacker's own valid code pasted over the real one) | Verifies, but shows the attacker's address and `UNKNOWN ISSUER`, never the victim's petname |
+| Link host edited to the victim's address | Host ≠ derived address → REJECTED |
+| Tampered payload (item, expiry, audience, alg, nonce) | Signature fails → REJECTED |
+| Replay of a used code | Seen-store → REJECTED |
+| Expired / future-dated code | REJECTED |
+| Code for another recipient | Audience mismatch → REJECTED |
+| Image with several QR symbols (partial overlay) | REJECTED; the decoder will not guess |
+
+### 17.4 Honest limits
+
+- A swapped sticker cannot be detected cryptographically: it is a valid code from someone else. Protection depends on the user reading the issuer line; unpinned issuers are shown as `UNKNOWN ISSUER`.
+- The gate address is a 64-bit hash. A targeted second-preimage search (~2^64 work) could produce a key with the same address. Petnames are therefore bound to the full key, not the address.
+- The replay store is local to one device. A code can be opened once on each device unless `audience` is set and the item is single-use at a higher layer.
+- Time checks trust the local clock.
+- A token proves who signed it and what item hash it names. It does not prove the issuer owns or still holds the item, and it is not a revocation check.
+- Tokens are not encrypted; anyone who sees the code learns the issuer key, item hash and audience.
+- Item hash is only compared when the item is supplied to `vault open`.
+- The tests cover synthetic phone-screenshot images (scaled, blurred, low contrast). They do not cover real camera photos with perspective distortion.
+
+### 17.5 References
+
+- RFC 8032, Edwards-Curve Digital Signature Algorithm (EdDSA): https://www.rfc-editor.org/rfc/rfc8032
+- RFC 4648, The Base16, Base32, and Base64 Data Encodings (§5 base64url): https://www.rfc-editor.org/rfc/rfc4648
+- ISO/IEC 18004:2015 (since withdrawn and revised by ISO/IEC 18004:2024), QR Code bar code symbology specification: https://www.iso.org/standard/62021.html

@@ -30,7 +30,13 @@ USAGE:
     s3a-vault backup <vault_file> <out_backup> --passphrase <pass>
     s3a-vault restore <backup_file> <out_vault> --passphrase <pass>
     s3a-vault dial gate://<name|address> [--server <url>]
-"#
+  signed share links / QR codes (spec §17):
+{}
+"#,
+        s3a_vault::share_cli::USAGE
+            .replace("    share", "    s3a-vault share")
+            .replace("    open", "    s3a-vault open")
+            .replace("    contact", "    s3a-vault contact")
     );
 }
 
@@ -42,6 +48,7 @@ fn main() {
     }
 
     match args[1].as_str() {
+        "share" | "open" | "contact" => std::process::exit(s3a_vault::share_cli::run(&args[1..])),
         "new" => cmd_new(&args[2..]),
         "show" => cmd_show(&args[2..]),
         "address" => cmd_address(&args[2..]),
