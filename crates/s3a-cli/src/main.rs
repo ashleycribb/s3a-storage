@@ -664,32 +664,14 @@ fn main() {
             }
             match file_opt {
                 Some(f) => {
-                    // Exit codes: 0 = ok (warnings allowed), 2 = verification failed
-                    // (missing/corrupt archive), 3 = record-root mismatch.
-                    if !verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url) {
-                        std::process::exit(2);
-                    }
-                    if let Ok(r) = s3a_engine::MmapReader::open(f) {
-                        let rep = s3a_engine::record_roots::check(&r);
-                        if rep.present && !json_mode {
-                            if rep.ok() {
-                                println!("Record roots: OK ({} tiles)", rep.checked);
-                            } else {
-                                println!("Record roots: MISMATCH");
-                                for m in &rep.mismatches {
-                                    println!("  - {}", m);
-                                }
-                            }
-                        }
-                        if !rep.ok() {
-                            if json_mode {
-                                eprintln!("Record roots: MISMATCH ({})", rep.mismatches.len());
-                            }
-                            std::process::exit(3);
-                        }
+                    // Exit codes: 0 ok (warnings allowed), 2 verification failed,
+                    // 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor).
+                    let code = verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url);
+                    if code != 0 {
+                        std::process::exit(code);
                     }
                 }
-                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch"),
+                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor)"),
             }
         }
         "status" => {
@@ -2305,7 +2287,7 @@ fn verify_file(
     anchor_mode: bool,
     trust_store: Option<&str>,
     esplora_url: Option<&str>,
-) -> bool {
+) -> i32 {
     let p = Path::new(path);
     if !p.exists() {
         if json_mode {
@@ -2316,7 +2298,7 @@ fn verify_file(
         } else {
             eprintln!("Error: file '{}' not found", path);
         }
-        return false;
+        return 2;
     }
 
     let repair_path = repair_out.map(Path::new);
@@ -2341,6 +2323,27 @@ fn verify_file(
             };
             let computed_fp_hex = hex::encode(computed_fp);
 
+            let rr = s3a_engine::MmapReader::open(path)
+                .map(|r| s3a_engine::record_roots::check(&r))
+                .ok();
+            let rr_ok = rr.as_ref().map(|r| r.ok()).unwrap_or(true);
+            let record_roots_json = record_roots_json(rr.as_ref());
+            let print_rr = || {
+                if let Some(r) = &rr {
+                    if r.present {
+                        if r.ok() {
+                            println!("Record roots: OK ({} tiles)", r.checked);
+                        } else {
+                            println!("Record roots: MISMATCH");
+                            for m in &r.mismatches {
+                                println!("  - {}", m);
+                            }
+                        }
+                    }
+                }
+            };
+            let mut anchors_failed = false;
+
             if anchor_mode {
                 let trust_certs =
                     trust_store.and_then(|tp| s3a_engine::load_pem_certificates(tp).ok());
@@ -2349,8 +2352,15 @@ fn verify_file(
                 let mut anchor_results = Vec::new();
                 for a in &report.anchors {
                     let fp_match = a.fingerprint.to_lowercase() == computed_fp_hex.to_lowercase();
+                    let mut proof_error: Option<String> = None;
                     let proof_valid = if a.method == "opentimestamps" {
-                        s3a_engine::verify_ots(a, &computed_fp, esplora_src.as_ref()).is_ok()
+                        match s3a_engine::verify_ots(a, &computed_fp, esplora_src.as_ref()) {
+                            Ok(_) => true,
+                            Err(e) => {
+                                proof_error = Some(e.to_string());
+                                false
+                            }
+                        }
                     } else if a.method == "rfc3161" {
                         s3a_engine::verify_rfc3161(a, &computed_fp, trust_certs.as_deref())
                             .unwrap_or(false)
@@ -2358,6 +2368,12 @@ fn verify_file(
                         false
                     };
                     let is_match = fp_match && proof_valid;
+                    // Failure: fingerprint mismatch, or a proof that could be checked and failed.
+                    // RFC 3161 without a trust store is "unverified", not a failure.
+                    let unverifiable = a.method == "rfc3161" && trust_certs.is_none();
+                    if anchor_failed(fp_match, proof_valid, unverifiable) {
+                        anchors_failed = true;
+                    }
                     let display_status = if a.method == "rfc3161" {
                         if is_match {
                             "confirmed"
@@ -2378,6 +2394,7 @@ fn verify_file(
                         "match": if is_match { "yes" } else { "no" },
                         "block_height": a.block_height,
                         "block_hash": a.block_hash,
+                        "error": proof_error,
                     }));
                 }
 
@@ -2385,11 +2402,15 @@ fn verify_file(
                     println!(
                         "{}",
                         serde_json::json!({
-                            "ok": true,
+                            "ok": rr_ok && !anchors_failed,
                             "file": path,
+                            "status": status,
                             "is_sealed": report.is_sealed,
+                            "tile_count": report.tile_count,
                             "fingerprint": computed_fp_hex,
                             "anchors": anchor_results,
+                            "anchors_ok": !anchors_failed,
+                            "record_roots": record_roots_json,
                         })
                     );
                 } else {
@@ -2424,22 +2445,33 @@ fn verify_file(
                             );
                         }
                     }
+                    print_rr();
+                    if anchors_failed {
+                        println!("Anchors: FAILED (mismatched or invalid anchor)");
+                    }
                 }
-                return true;
+                return if !rr_ok {
+                    3
+                } else if anchors_failed {
+                    4
+                } else {
+                    0
+                };
             }
 
             if json_mode {
-                let warnings_json = serde_json::to_string(&report.warnings).unwrap_or("[]".into());
-                let repaired_json =
-                    serde_json::to_string(&report.repaired_tiles).unwrap_or("[]".into());
                 println!(
-                    r#"{{"ok":true,"file":"{}","status":"{}","is_sealed":{},"tile_count":{},"repaired_tiles":{},"warnings":{}}}"#,
-                    escape_cli_json(path),
-                    status,
-                    report.is_sealed,
-                    report.tile_count,
-                    repaired_json,
-                    warnings_json
+                    "{}",
+                    serde_json::json!({
+                        "ok": rr_ok,
+                        "file": path,
+                        "status": status,
+                        "is_sealed": report.is_sealed,
+                        "tile_count": report.tile_count,
+                        "repaired_tiles": report.repaired_tiles,
+                        "warnings": report.warnings,
+                        "record_roots": record_roots_json,
+                    })
                 );
             } else {
                 if report.is_sealed {
@@ -2462,8 +2494,13 @@ fn verify_file(
                 for w in &report.warnings {
                     println!("Warning: {}", w);
                 }
+                print_rr();
             }
-            true
+            if rr_ok {
+                0
+            } else {
+                3
+            }
         }
         Err(e) => {
             if json_mode {
@@ -2475,8 +2512,65 @@ fn verify_file(
             } else {
                 eprintln!("Verification FAILED in {}: {}", path, e);
             }
-            false
+            2
         }
+    }
+}
+
+/// `verify --json` record-root field: state is "ok", "mismatch" or "absent".
+fn record_roots_json(rr: Option<&s3a_engine::record_roots::RecordRootReport>) -> serde_json::Value {
+    match rr {
+        Some(r) if r.present || !r.ok() => serde_json::json!({
+            "state": if r.ok() { "ok" } else { "mismatch" },
+            "checked": r.checked,
+            "mismatches": r.mismatches,
+        }),
+        _ => serde_json::json!({ "state": "absent" }),
+    }
+}
+
+/// An anchor fails verify (exit 4) on fingerprint mismatch, or when its proof could be
+/// checked and was invalid. RFC 3161 with no trust store is "unverified", not failed.
+fn anchor_failed(fp_match: bool, proof_valid: bool, unverifiable: bool) -> bool {
+    !fp_match || (!proof_valid && !unverifiable)
+}
+
+#[cfg(test)]
+mod verify_json_tests {
+    use super::*;
+    use s3a_engine::record_roots::RecordRootReport;
+
+    #[test]
+    fn record_roots_states() {
+        assert_eq!(record_roots_json(None)["state"], "absent");
+        assert_eq!(
+            record_roots_json(Some(&RecordRootReport::default()))["state"],
+            "absent"
+        );
+        let ok = RecordRootReport {
+            present: true,
+            checked: 2,
+            mismatches: vec![],
+        };
+        assert_eq!(record_roots_json(Some(&ok))["state"], "ok");
+        assert_eq!(record_roots_json(Some(&ok))["checked"], 2);
+        let bad = RecordRootReport {
+            present: true,
+            checked: 2,
+            mismatches: vec!["tile 0".into()],
+        };
+        let j = record_roots_json(Some(&bad));
+        assert_eq!(j["state"], "mismatch");
+        assert_eq!(j["mismatches"][0], "tile 0");
+    }
+
+    #[test]
+    fn anchor_failure_rule() {
+        assert!(!anchor_failed(true, true, false));
+        assert!(anchor_failed(false, true, false));
+        assert!(anchor_failed(false, false, true));
+        assert!(anchor_failed(true, false, false));
+        assert!(!anchor_failed(true, false, true));
     }
 }
 
