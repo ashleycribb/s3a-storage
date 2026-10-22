@@ -90,6 +90,15 @@ pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1; // 0x0002
 pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2; // 0x0004
 pub const FLAG_COMPACT_HEADER: u16 = 1 << 3; // 0x0008
 pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4; // 0x0010
+/// All file-header flag bits defined by this version. Any other set bit is a
+/// "critical" unknown: readers MUST reject the file (TILE-SPEC §2.1, ADR-0013).
+pub const KNOWN_HEADER_FLAGS: u16 = FLAG_PROFILE_EDGE
+    | FLAG_TILE_SIZE_4KB
+    | FLAG_TILE_SIZE_8KB
+    | FLAG_COMPACT_HEADER
+    | FLAG_SEAL_CHAIN_ACTIVE;
+/// Tile strides a reader accepts in `FileHeader._reserved1` (0 means 128 KiB).
+pub const VALID_TILE_STRIDES: [u32; 3] = [0, 4096, 8192];
 pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020
 
 /// Error types returned by S3A core functions.
@@ -128,6 +137,8 @@ pub enum S3AError {
     SealedIndexHashMismatch,
     SealedChainBreak,
     SealedSwappedGeneration,
+    /// File header `flags` has bits this reader does not define (ADR-0013).
+    UnsupportedHeaderFlags(u16),
 }
 
 impl fmt::Display for S3AError {
@@ -135,6 +146,11 @@ impl fmt::Display for S3AError {
         match self {
             S3AError::InvalidMagic => write!(f, "Invalid S3A file magic"),
             S3AError::UnsupportedVersion(v) => write!(f, "Unsupported file version: {}", v),
+            S3AError::UnsupportedHeaderFlags(v) => write!(
+                f,
+                "Unsupported file header flags 0x{:04x} (known: 0x{:04x})",
+                v, KNOWN_HEADER_FLAGS
+            ),
             S3AError::UnsupportedLayoutVersion(v) => {
                 write!(f, "Unsupported record layout version: {}", v)
             }
@@ -389,6 +405,20 @@ impl FileHeader {
         }
         if self.version != 1 {
             return Err(S3AError::UnsupportedVersion(self.version));
+        }
+        Ok(())
+    }
+
+    /// Layout-affecting fields (ADR-0013): unknown `flags` bits or a tile stride other
+    /// than 0/4096/8192 change how the file must be parsed, so readers fail closed.
+    /// Checked on the arbitrated active slot, never used to pick a slot.
+    pub fn check_layout_fields(&self) -> Result<(), S3AError> {
+        let unknown = self.flags & !KNOWN_HEADER_FLAGS;
+        if unknown != 0 {
+            return Err(S3AError::UnsupportedHeaderFlags(self.flags));
+        }
+        if !VALID_TILE_STRIDES.contains(&self._reserved1) {
+            return Err(S3AError::InvalidTileSize(self._reserved1 as usize));
         }
         Ok(())
     }
@@ -1361,5 +1391,32 @@ mod tests {
 
         assert!(hull.contains_point(&[5.0, 5.0, 5.0]));
         assert!(!hull.contains_point(&[15.0, 5.0, 5.0]));
+    }
+}
+
+#[cfg(test)]
+mod layout_field_tests {
+    use super::*;
+
+    #[test]
+    fn header_flags_and_stride_rules() {
+        let mut h = FileHeader::new(0, 0);
+        assert!(h.check_layout_fields().is_ok());
+        h.flags = KNOWN_HEADER_FLAGS;
+        h._reserved1 = 4096;
+        assert!(h.check_layout_fields().is_ok());
+        h._reserved1 = 8192;
+        assert!(h.check_layout_fields().is_ok());
+        h._reserved1 = 12345;
+        assert_eq!(
+            h.check_layout_fields(),
+            Err(S3AError::InvalidTileSize(12345))
+        );
+        h._reserved1 = 0;
+        h.flags = 0x0100;
+        assert_eq!(
+            h.check_layout_fields(),
+            Err(S3AError::UnsupportedHeaderFlags(0x0100))
+        );
     }
 }
