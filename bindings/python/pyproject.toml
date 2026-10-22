@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "s3a"
+version = "0.1.0"
+description = "Read and query S3A Hyper-Tile archives (Python bindings over the Rust reference engine)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Rust"]
+
+[project.urls]
+Source = "https://github.com/ashleycribb/s3a-storage"
+Specification = "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md"
+
+[project.scripts]
+s3a = "s3a.cli:main"
+
+[tool.maturin]
+python-source = "python"
+module-name = "s3a._native"
+features = ["pyo3/extension-module"]

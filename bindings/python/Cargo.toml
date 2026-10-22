@@ -1,0 +1,21 @@
+[package]
+name = "s3a-py"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Python bindings (PyO3) for the S3A reference engine"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py38"] }
+s3a-engine = { path = "../../crates/s3a-engine" }
+s3a-spec-vectors = { path = "../../crates/s3a-spec-vectors" }
+serde_json = "1.0"
+
+# Built by maturin on its own; not a workspace member, so `cargo test --workspace`
+# does not need a Python interpreter.
+[workspace]

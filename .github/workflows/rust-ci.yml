@@ -74,6 +74,22 @@ jobs:
           python3 conformance/run.py --impl "python3 -m s3a_reader" --level reader conformance/vectors-1.4
           python3 conformance/run.py --impl "python3 -m s3a_reader" --level reader conformance/vectors-1.5
 
+  python-packages:
+    name: "pip-installable packages (s3a-reader, s3a)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build and install in a fresh venv, then run the conformance runner against the installed commands
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install build==1.6.1 maturin==1.15.0
+          /tmp/venv/bin/python -m build -o dist readers/python
+          /tmp/venv/bin/maturin build --release -m bindings/python/Cargo.toml -o dist
+          /tmp/venv/bin/pip install dist/s3a_reader-*.whl dist/s3a-*.whl
+          cd /tmp
+          /tmp/venv/bin/python $GITHUB_WORKSPACE/conformance/run.py --impl /tmp/venv/bin/s3a-read --level reader $GITHUB_WORKSPACE/conformance/vectors-1.5
+          /tmp/venv/bin/python $GITHUB_WORKSPACE/conformance/run.py --impl /tmp/venv/bin/s3a --level reader $GITHUB_WORKSPACE/conformance/vectors-1.5
+
   edge-no-std:
     name: "s3a-edge no_std build (thumbv7em-none-eabihf)"
     runs-on: ubuntu-latest

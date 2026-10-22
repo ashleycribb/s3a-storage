@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["bindings/python"]
 members = [
     "crates/s3a-core",
     "crates/s3a-simd",
