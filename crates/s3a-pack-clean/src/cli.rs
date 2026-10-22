@@ -1,0 +1,199 @@
+//! `s3a-cli clean ...` subcommands. Returns a process exit code.
+use crate::{clean, raw, rulebook::Rulebook, rulebook::RulebookUpdate};
+use ed25519_dalek::SigningKey;
+use std::path::{Path, PathBuf};
+
+pub const USAGE: &str = "\
+s3a-cli clean ingest <file>... --rulebook <rb.yaml> --raw-out <raw.s3a> --clean-out <clean.s3a> --key <key.hex>
+                     [--connector <name>] [--org <o>] [--user <u>] [--device <d>] [--location <l>] [--captured-at <unix>]
+s3a-cli clean verify <raw.s3a> <clean.s3a> [--rulebook <rb.yaml>]   (exit 0 ok, 2 failed)
+s3a-cli clean queue <clean.s3a>                                      (review queue)
+s3a-cli clean rulebook-sign <old.yaml> <new.yaml> --key <human.hex> --reason <text> --out <update.json>
+s3a-cli clean rulebook-verify <old.yaml> <new.yaml> <update.json>";
+
+fn opt(a: &[String], k: &str) -> Option<String> {
+    a.iter()
+        .position(|x| x == k)
+        .and_then(|i| a.get(i + 1))
+        .cloned()
+}
+fn positional(a: &[String]) -> Vec<String> {
+    let mut out = vec![];
+    let mut i = 0;
+    while i < a.len() {
+        if a[i].starts_with("--") {
+            i += 2;
+        } else {
+            out.push(a[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Load a 32-byte hex Ed25519 seed. Never printed.
+pub fn load_key(p: &Path) -> Result<SigningKey, String> {
+    let s = std::fs::read_to_string(p).map_err(|e| format!("key {}: {e}", p.display()))?;
+    let b: [u8; 32] = hex::decode(s.trim())
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or("key must be 64 hex chars")?;
+    Ok(SigningKey::from_bytes(&b))
+}
+
+pub fn run(args: &[String]) -> i32 {
+    match go(args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {e}");
+            2
+        }
+    }
+}
+
+fn go(args: &[String]) -> Result<i32, String> {
+    let Some(cmd) = args.first() else {
+        println!("{USAGE}");
+        return Ok(1);
+    };
+    let rest = &args[1..];
+    let need = |k: &str| opt(rest, k).ok_or(format!("missing {k}"));
+    match cmd.as_str() {
+        "ingest" => {
+            let files: Vec<PathBuf> = positional(rest).into_iter().map(PathBuf::from).collect();
+            if files.is_empty() {
+                return Err("no input files".into());
+            }
+            let rb_bytes = std::fs::read(need("--rulebook")?).map_err(|e| e.to_string())?;
+            let rb = Rulebook::parse(&rb_bytes)?;
+            let key = load_key(Path::new(&need("--key")?))?;
+            let meta = raw::SourceMeta {
+                connector: opt(rest, "--connector").unwrap_or_else(|| "file".into()),
+                org: opt(rest, "--org"),
+                user: opt(rest, "--user"),
+                device: opt(rest, "--device"),
+                location: opt(rest, "--location"),
+            };
+            let at = match opt(rest, "--captured-at") {
+                Some(s) => s.parse().map_err(|_| "bad --captured-at")?,
+                None => std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            };
+            let raw_out = PathBuf::from(need("--raw-out")?);
+            let clean_out = PathBuf::from(need("--clean-out")?);
+            if clean_out.exists() {
+                return Err(format!(
+                    "{} exists; sealed archives are never overwritten",
+                    clean_out.display()
+                ));
+            }
+            let refs: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+            raw::intake(&refs, &meta, at, &raw_out).map_err(|e| e.to_string())?;
+            // Re-read from the sealed archive so cleaning only ever sees what was sealed.
+            let (snap, blobs) = raw::load(&raw_out).map_err(|e| e.to_string())?;
+            let cv = clean::clean(&snap, &blobs, &rb, &rb_bytes, &key);
+            clean::write(&clean_out, &cv).map_err(|e| e.to_string())?;
+            println!(
+                "raw snapshot:   {} ({} items) -> {}",
+                snap.snapshot_hash,
+                snap.items.len(),
+                raw_out.display()
+            );
+            println!(
+                "cleaned hash:   {} -> {}",
+                cv.cleaned_hash,
+                clean_out.display()
+            );
+            println!(
+                "rulebook:       {} (sha256 {})",
+                cv.body.rulebook_version, cv.body.rulebook_sha256
+            );
+            println!(
+                "records: {}  changes: {}  review queue: {}",
+                cv.body.records.len(),
+                cv.body.changes.len(),
+                cv.body.review_queue.len()
+            );
+            Ok(0)
+        }
+        "verify" => {
+            let p = positional(rest);
+            if p.len() != 2 {
+                return Err("usage: clean verify <raw.s3a> <clean.s3a>".into());
+            }
+            let (snap, blobs) = raw::load(Path::new(&p[0])).map_err(|e| format!("raw: {e}"))?;
+            let cv = clean::read(Path::new(&p[1])).map_err(|e| format!("clean: {e}"))?;
+            clean::verify(&cv, &snap)?;
+            if let Some(rbp) = opt(rest, "--rulebook") {
+                let b = std::fs::read(rbp).map_err(|e| e.to_string())?;
+                let rb = Rulebook::parse(&b)?;
+                let h = clean::body_hash(&clean::clean_body(&snap, &blobs, &rb, &b));
+                if h != cv.cleaned_hash {
+                    return Err(format!(
+                        "replay mismatch: got {h}, archive says {}",
+                        cv.cleaned_hash
+                    ));
+                }
+                println!("replay: OK");
+            }
+            println!(
+                "OK: {} records cite raw snapshot {}",
+                cv.body.records.len(),
+                snap.snapshot_hash
+            );
+            Ok(0)
+        }
+        "queue" => {
+            let p = positional(rest);
+            let cv = clean::read(Path::new(p.first().ok_or("missing <clean.s3a>")?))
+                .map_err(|e| e.to_string())?;
+            for q in &cv.body.review_queue {
+                println!(
+                    "{:?}\t{}\trow={}\tfield={}\t{}",
+                    q.tag,
+                    q.source_path,
+                    q.row.map(|r| r.to_string()).unwrap_or("-".into()),
+                    q.field.as_deref().unwrap_or("-"),
+                    q.reason
+                );
+            }
+            Ok(0)
+        }
+        "rulebook-sign" => {
+            let p = positional(rest);
+            if p.len() != 2 {
+                return Err("usage: clean rulebook-sign <old> <new> ...".into());
+            }
+            let old = std::fs::read(&p[0]).map_err(|e| e.to_string())?;
+            let new = std::fs::read(&p[1]).map_err(|e| e.to_string())?;
+            let key = load_key(Path::new(&need("--key")?))?;
+            let u = RulebookUpdate::sign(&old, &new, &need("--reason")?, &key)?;
+            u.verify(&old, &new)?;
+            let out = need("--out")?;
+            std::fs::write(&out, serde_json::to_vec_pretty(&u).unwrap())
+                .map_err(|e| e.to_string())?;
+            println!("signed rulebook update -> {out}");
+            Ok(0)
+        }
+        "rulebook-verify" => {
+            let p = positional(rest);
+            if p.len() != 3 {
+                return Err("usage: clean rulebook-verify <old> <new> <update.json>".into());
+            }
+            let r = |i: usize| std::fs::read(&p[i]).map_err(|e| e.to_string());
+            let u: RulebookUpdate = serde_json::from_slice(&r(2)?).map_err(|e| e.to_string())?;
+            u.verify(&r(0)?, &r(1)?)?;
+            println!(
+                "OK: rulebook update to {} signed by approver {}",
+                u.to_version, u.signer_pubkey
+            );
+            Ok(0)
+        }
+        _ => {
+            println!("{USAGE}");
+            Ok(1)
+        }
+    }
+}

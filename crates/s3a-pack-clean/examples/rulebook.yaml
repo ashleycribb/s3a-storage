@@ -1,0 +1,21 @@
+# Example company rulebook (s3a-pack-clean). Human-maintained; changes are signed
+# with `s3a-cli clean rulebook-sign` by a key listed under `approvers`.
+rulebook_version: "2026.10.1"
+company: "Example Bakery LLC"
+approvers: []   # hex Ed25519 public keys of humans who may approve rulebook updates
+agents: []      # hex public keys of AI agents; these can never sign updates
+categories:
+  - name: invoices
+    match:
+      extensions: [csv]
+      name_prefix: "invoice"
+    fields:
+      - { name: invoice_id, type: string, required: true }
+      - { name: date, type: date, required: true }
+      - { name: amount, type: decimal, required: true }
+      - { name: currency, type: string, required: true, allowed: [USD, EUR] }
+    rules:
+      - { id: trim-all, version: 1, op: trim }
+      - { id: currency-upper, version: 1, op: uppercase, field: currency }
+      - { id: currency-symbol, version: 1, op: map, field: currency, map: { "$": USD, "€": EUR } }
+      - { id: date-us, version: 1, op: date_iso, field: date, formats: ["MM/DD/YYYY", "YYYY-MM-DD"] }
