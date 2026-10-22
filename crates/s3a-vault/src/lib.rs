@@ -11,6 +11,8 @@ pub mod errors;
 pub mod keystore;
 pub mod records;
 pub mod rotation;
+pub mod share;
+pub mod share_cli;
 pub mod transfer;
 pub mod vault;
 
