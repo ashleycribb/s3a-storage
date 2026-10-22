@@ -4,12 +4,14 @@
 //! for S3A archives.
 
 pub mod errors;
+pub mod frontier;
 pub mod git_export;
 pub mod records;
 pub mod repo;
 pub mod sync;
 
 pub use errors::VcsError;
+pub use frontier::{Frontier, LineageMode};
 pub use git_export::export_git;
 pub use records::{
     ConflictRecordDetail, VcsCommitRecord, VcsMergeResult, VcsRefRecord, VcsResolutionRecord,

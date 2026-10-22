@@ -122,6 +122,13 @@ pub struct VcsRefRecord {
 - Traverses the DAG backwards starting from `HEAD` (or specified ref/commit) via `parent_seal_hashes`.
 - Displays commit ID, seal hash, author Gate Address, timestamp, branch/tag pointers, and commit message.
 
+### 3.3a Frontier Queries (`vcs leaves`, `vcs children`, `vcs lineage`)
+Read-only DAG views (inspired by agenthub). One O(N) pass builds a child index from `parent_seal_hashes[..parent_count]`; nothing is written.
+- `vcs leaves <archive>`: commits with no children (unbuilt-on work).
+- `vcs children <archive> <hash|ref>`: direct children, stored order.
+- `vcs lineage <archive> <hash|ref> [--all]`: ancestry including the start. Default follows the first parent only (one deterministic path); `--all` returns every ancestor via any parent, BFS order, deduplicated.
+- `--agent <hex>` filters results by author gate-address prefix or pubkey prefix; `--json` for machine output. Unknown hashes return `CommitNotFound`.
+
 ### 3.4 Branching & Tagging (`vcs branch`, `vcs tag`)
 - **Branches (`vcs branch <name>`)**: Creates a mutable reference pointing to the current commit's `seal_hash`.
 - **Tags (`vcs tag <name>`)**: Creates an immutable snapshot reference. If a tag with the same name already exists pointing to a different commit, the update is rejected.

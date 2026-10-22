@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use rand_core::{OsRng, RngCore};
 use std::path::PathBuf;
 
-use s3a_vcs::{export_git, sync_push, VcsRepo};
+use s3a_vcs::{export_git, sync_push, LineageMode, VcsRepo};
 
 pub fn handle_vcs_command(args: &[String]) {
     if args.len() < 3 {
@@ -65,6 +65,77 @@ pub fn handle_vcs_command(args: &[String]) {
                     Err(e) => eprintln!("Commit failed: {}", e),
                 },
                 Err(e) => eprintln!("Failed to open repository: {}", e),
+            }
+        }
+        "leaves" | "children" | "lineage" => {
+            let sub = args[2].as_str();
+            let json_mode = args.iter().any(|a| a == "--json");
+            let all_mode = args.iter().any(|a| a == "--all");
+            let agent = args
+                .iter()
+                .position(|a| a == "--agent")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.as_str());
+            let pos: Vec<&String> = args
+                .iter()
+                .enumerate()
+                .skip(3)
+                .filter(|(i, a)| {
+                    !a.starts_with('-') && args.get(i - 1).map(|p| p != "--agent").unwrap_or(true)
+                })
+                .map(|(_, a)| a)
+                .collect();
+            let need_hash = sub != "leaves";
+            if pos.is_empty() || (need_hash && pos.len() < 2) {
+                println!(
+                    "Usage: s3a-cli vcs leaves <archive> [--agent <addr>] [--json]\n       s3a-cli vcs children <archive> <hash|ref> [--agent <addr>] [--json]\n       s3a-cli vcs lineage <archive> <hash|ref> [--all] [--agent <addr>] [--json]"
+                );
+                return;
+            }
+            let file = pos[0];
+            let result = VcsRepo::open(file).and_then(|repo| match sub {
+                "leaves" => repo.leaves(agent),
+                "children" => repo.children(pos[1], agent),
+                _ => repo.lineage(
+                    pos[1],
+                    if all_mode {
+                        LineageMode::All
+                    } else {
+                        LineageMode::FirstParent
+                    },
+                    agent,
+                ),
+            });
+            match result {
+                Ok(commits) => {
+                    if json_mode {
+                        let v: Vec<serde_json::Value> = commits
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "commit_id": hex::encode(c.commit_id),
+                                    "seal_hash": hex::encode(c.seal_hash),
+                                    "author_address": hex::encode(c.author_address_prefix),
+                                    "timestamp": c.committed_timestamp,
+                                    "parent_count": c.parent_count,
+                                    "message": c.message(),
+                                })
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap());
+                    } else {
+                        println!("=== S3A VCS {} ({}) ===", sub.to_uppercase(), file);
+                        for c in commits {
+                            println!(
+                                "{}  parents:{}  {}",
+                                hex::encode(c.seal_hash),
+                                c.parent_count,
+                                c.message()
+                            );
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
             }
         }
         "log" => {

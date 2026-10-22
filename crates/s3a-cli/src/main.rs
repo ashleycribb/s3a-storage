@@ -1275,6 +1275,7 @@ fn print_usage() {
     println!("  s3a-cli vcs init <archive>                        Initialize Git-style VCS on S3A archive");
     println!("  s3a-cli vcs commit <archive> -m \"<msg>\"           Seal archive with signed commit record");
     println!("  s3a-cli vcs log <archive> [--json] [ref]          Display commit DAG log history");
+    println!("  s3a-cli vcs leaves|children <hash>|lineage <hash> <archive> [--all] [--agent <addr>]  Read-only DAG frontier");
     println!("  s3a-cli vcs branch <archive> [branch]             List or create branch pointer");
     println!(
         "  s3a-cli vcs tag <archive> [tag] [seal]            List or create immutable snapshot tag"
