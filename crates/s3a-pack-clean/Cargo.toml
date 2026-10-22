@@ -1,0 +1,22 @@
+[package]
+name = "s3a-pack-clean"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Clean Pack for S3A: raw-sealed intake, company rulebook, signed cleaned versions with provenance"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+crc32c = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_yaml = "0.9"
+ed25519-dalek = { version = "2.1" }
+
+[dev-dependencies]
+tempfile = "3"

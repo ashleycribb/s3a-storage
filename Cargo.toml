@@ -22,7 +22,7 @@ members = [
     "crates/s3a-vcs",
     "crates/s3a-swarm",
     "crates/s3a-ledger",
-    "crates/s3a-trace",
+    "crates/s3a-trace", "crates/s3a-pack-clean",
 ]
 
 [workspace.package]

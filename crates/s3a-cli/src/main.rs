@@ -1271,6 +1271,9 @@ fn main() {
         "vault" => {
             std::process::exit(s3a_vault::share_cli::run(&args[2..]));
         }
+        "clean" => {
+            std::process::exit(s3a_pack_clean::cli::run(&args[2..]));
+        }
         _ => {
             print_usage();
         }
@@ -1283,6 +1286,7 @@ fn print_usage() {
     println!("GATE DIRECTORY & SOVEREIGN IDENTITIES:");
     println!("  s3a-cli gate register <name> --directory <url>   Register sovereign gate name with challenge-response signature");
     println!("  s3a-cli gate resolve <name> --directory <url>    Resolve sovereign gate name to permanent gate:// address");
+    println!("  s3a-cli clean ingest|verify|queue|rulebook-sign|rulebook-verify  Raw-sealed intake + rulebook cleaning (see docs/clean-pack.md)");
     println!("  s3a-cli vault share <vault> <item> [--ttl s] [--aud addr]  Signed gate:// share link + QR (SVG/PNG)");
     println!("  s3a-cli vault open <link|qr.png> [--item f] [--as vault]  Verify share code: VERIFIED or REJECTED");
     println!(
