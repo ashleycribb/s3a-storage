@@ -443,13 +443,15 @@ Every S3A Vault possesses an immutable network address designated as a **Gate Ad
 
 In the S3A Vault architecture, a **Gate** is the sovereign network endpoint of a vault instance:
 - **Permanent Address**: Every vault has a permanent gate address derived as a cryptographic digest of its master Ed25519 public key.
-- **Checksummed & Segmented Representation**: Encoded as a checksummed, human-readable word/segment format (e.g., `s3a-7f9a-c21d-e4b8-93`).
+- **Versioned, checksummed representation**: two formats, told apart by prefix.
+  - **v2 (default, required for new addresses)**: `s3a2-<64 hex>-CCCC`. The 64 hex digits are the full `SHA-256(pubkey)` (256 bits); `CCCC` is `CRC32C(digest) & 0xFFFF` as 4 hex digits (typo check only, not security).
+  - **Legacy v1**: `s3a-XXXX-XXXX-XXXX-XXXX-CC`, the first 64 bits of the digest plus `CRC32C(prefix) & 0xFF`. Parsers MUST still accept it so old links stay readable, MUST flag it as legacy/weaker, and MUST NOT treat a legacy match as proof of identity: ~2^64 work can grind a different key with the same prefix. Identity is established only by checking the full public key.
 - **Standardized URI Form**: Formatted canonically as:
   ```
   gate://<address>
   ```
-  Example: `gate://s3a-7f9a-c21d-e4b8-93`.
-- **Mathematical Immutability**: Because the address is bound mathematically to the vault's root public key, it cannot be forged, spoofed, or arbitrarily reassigned.
+  Example: `gate://s3a2-630dcd2966c43366…(64 hex)-CCCC` (see `spec-vectors/hashes/gate_address.json`).
+- **Binding rules**: a v2 address matches a key only if all 256 bits match. Share-link hosts are checked against the embedded issuer key; new share tokens MUST name an `audience` by v2 address; directory registration requires the v2 form; directory lookup by a legacy address resolves only when exactly one registered v2 entry shares the prefix. VCS commit records still store only the 64-bit prefix and are displayed in legacy form.
 
 ### 11.2 Gate Names & Signed Directory Records
 
@@ -702,7 +704,7 @@ Phase 1 (Core Identity, Encrypted Key Storage, Gate Addressing, Bounded Delegati
 |:---|:---|:---:|:---:|:---|
 | **Binary Records** | `crates/s3a-vault/src/records.rs` | 560 | §2.1, §3.1, §4.1, §5.1, §6.1, §7.1, §8.1, §10.2, §11.2, §12.2 | Zero-copy Pod records without compiler padding: `VaultIdentityRecord` (96 B), `DelegationGrantRecord` (192 B), `VaultItemRecord` (160 B), `ItemTransferRecord` (240 B), `KeyRotationRecord` (220 B), `RevokedKeyRecord` (64 B), `ThingIdentityRecord` (128 B), `GateDirectoryRecord` (160 B), `ApprovalCheckpointRecord` (192 B), `VaultEventRecord` (80 B). |
 | **Key Custody & Storage** | `crates/s3a-vault/src/keystore.rs` | 276 | §2.2, §2.3 | `KeyStore` trait, `MemoryKeyStore`, and `FileKeyStore` encrypted at rest with Argon2id + ChaCha20Poly1305. Private keys are never committed to `.vault.s3a` archives. Zeroize-on-drop for sensitive key material. |
-| **Gate Addressing** | `crates/s3a-vault/src/address.rs` | 195 | §11.1 | `GateAddress` derivation (`SHA-256(pubkey)` prefix + CRC32C checksum byte), segmented format `s3a-XXXX-XXXX-XXXX-XXXX-CC`, `gate://` URI parser/validator with single-character typo rejection. |
+| **Gate Addressing** | `crates/s3a-vault/src/address.rs` | 195 | §11.1 | `GateAddress` derivation (full `SHA-256(pubkey)`, v2 `s3a2-<64 hex>-CCCC`; legacy 64-bit `s3a-XXXX-XXXX-XXXX-XXXX-CC` parsed and flagged), `gate://` URI parser/validator with single-character typo rejection. |
 | **Delegation & Governance** | `crates/s3a-vault/src/delegation.rs` | 241 | §3.2, §12.5 | `create_delegation_grant`, `verify_delegation_grant`, `evaluate_agent_action`. Anti-escalation rules: no self-grant, no widening, limit tracking, expiration. Non-delegable Judgment Invariant: judgment actions route to human approval. |
 | **Access Codes** | `crates/s3a-vault/src/access_code.rs` | 236 | §11.3 | Short-lived signed authorization tokens (`s3a-ac.<hex>`), Ed25519 signatures, `AccessCodeSessionManager` (expiry, max uses, revocation). |
 | **Transfers & Ownership** | `crates/s3a-vault/src/transfer.rs` | 233 | §5.1–§5.4 | `compute_transfer_hash`, `create_transfer_record`, `verify_transfer_record`, `resolve_chain_ownership`, double-send detection via lineage verification. |
@@ -893,7 +895,7 @@ On success it prints `VERIFIED`, the issuer petname **only if the full 32-byte k
 ### 17.4 Honest limits
 
 - A swapped sticker cannot be detected cryptographically: it is a valid code from someone else. Protection depends on the user reading the issuer line; unpinned issuers are shown as `UNKNOWN ISSUER`.
-- The gate address is a 64-bit hash. A targeted second-preimage search (~2^64 work) could produce a key with the same address. Petnames are therefore bound to the full key, not the address.
+- Gate addresses are now the full 256-bit key hash (v2, §11.1). Legacy 64-bit addresses are still readable but a targeted search (~2^64 work) could produce a key with the same short address, so they are flagged and never trusted alone. Petnames are bound to the full key, not the address.
 - The replay store is local to one device. A code can be opened once on each device unless `audience` is set and the item is single-use at a higher layer.
 - Time checks trust the local clock.
 - A token proves who signed it and what item hash it names. It does not prove the issuer owns or still holds the item, and it is not a revocation check.

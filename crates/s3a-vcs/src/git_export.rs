@@ -61,6 +61,7 @@ pub fn export_git<P: AsRef<Path>>(repo: &VcsRepo, out_dir: P) -> Result<(), VcsE
         let author_addr = s3a_vault::address::GateAddress {
             prefix: commit.author_address_prefix,
             checksum: commit.author_checksum,
+            full: None, // commit records store only the 64-bit prefix (legacy form)
         };
 
         // Write archive metadata file
