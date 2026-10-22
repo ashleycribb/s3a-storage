@@ -54,6 +54,18 @@ jobs:
           python3 conformance/run.py --impl target/debug/s3a-conformance conformance/vectors-1.0
           python3 conformance/run.py --impl target/debug/s3a-conformance --level writer conformance/vectors-1.1
 
+  python-reader:
+    name: "independent Python reader (conformance)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: reader level, vectors-1.0 and vectors-1.1 (stdlib only, no Rust)
+        env:
+          PYTHONPATH: readers/python
+        run: |
+          python3 conformance/run.py --impl "python3 -m s3a_reader" conformance/vectors-1.0
+          python3 conformance/run.py --impl "python3 -m s3a_reader" --level reader conformance/vectors-1.1
+
   edge-no-std:
     name: "s3a-edge no_std build (thumbv7em-none-eabihf)"
     runs-on: ubuntu-latest
