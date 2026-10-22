@@ -23,6 +23,140 @@ use crate::{
 
 /// Canonical Markdown specification embedded in sealed archives on request (`--embed-spec`).
 pub const SPEC_MARKDOWN: &str = include_str!("../../../docs/spec/S3A-TILE-SPEC.md");
+/// Canonical location of the spec named by the manifest and the about entry.
+pub const SPEC_URL: &str =
+    "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md";
+
+/// Version string from the spec's `**Document Version:**` line.
+pub fn spec_version() -> &'static str {
+    SPEC_MARKDOWN
+        .lines()
+        .find_map(|l| l.strip_prefix("**Document Version:**"))
+        .map(str::trim)
+        .unwrap_or("unknown")
+}
+
+/// Lowercase hex SHA-256 of the exact spec text this build embeds.
+pub fn spec_sha256_hex() -> String {
+    hex::encode(Sha256::digest(SPEC_MARKDOWN.as_bytes()))
+}
+
+/// The self-describing entry this build writes (item 6, TILE-SPEC §14.5.4).
+pub fn build_about() -> s3a_core::SchemaAbout {
+    s3a_core::SchemaAbout {
+        spec_version: spec_version().to_string(),
+        spec_url: SPEC_URL.to_string(),
+        spec_sha256: spec_sha256_hex(),
+        writer: format!("s3a-engine {}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+/// What a file says about itself (item 6): the about entry from its first Schema tile,
+/// and whether an embedded spec tile (79) matches the about entry's `spec_sha256`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AboutReport {
+    pub about: Option<s3a_core::SchemaAbout>,
+    /// The about entry is present but malformed or fails its CRC.
+    pub corrupt: bool,
+    /// `"match"`, `"mismatch"`, or `"absent"` (no spec tile, or no about entry to check against).
+    pub embedded_spec: &'static str,
+}
+
+/// Reads the about entry and checks any embedded spec against it.
+pub fn about_report(reader: &crate::MmapReader) -> AboutReport {
+    let mut rep = AboutReport {
+        about: None,
+        corrupt: false,
+        embedded_spec: "absent",
+    };
+    let mut spec_sha = None;
+    let mut seen_schema = false;
+    for i in 0..reader.tile_count() as usize {
+        let Some((h, p)) = reader.get_tile(i) else {
+            continue;
+        };
+        let len = (h.payload_bytes as usize).min(p.len());
+        if h.tile_type == TileType::SCHEMA && !seen_schema {
+            seen_schema = true;
+            match s3a_core::decode_schema_about(&p[..len]) {
+                Ok(a) => rep.about = a,
+                Err(_) => rep.corrupt = true,
+            }
+        } else if h.tile_type == TileType::SPECIFICATION && spec_sha.is_none() {
+            spec_sha = Some(
+                miniz_oxide::inflate::decompress_to_vec_zlib(&p[..len])
+                    .map(|t| hex::encode(Sha256::digest(&t)))
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    if let (Some(a), Some(sha)) = (&rep.about, spec_sha) {
+        rep.embedded_spec = if a.spec_sha256 == sha {
+            "match"
+        } else {
+            "mismatch"
+        };
+    }
+    rep
+}
+
+/// Sets the about trailer on the first Schema tile in `out_data` (replacing any prior
+/// one), or appends a registry-derived Schema tile. Returns the new tile count.
+fn apply_about(
+    out_data: &mut Vec<u8>,
+    tile_count: u32,
+    file_uuid: [u64; 2],
+    generation: u64,
+) -> io::Result<u32> {
+    let about = s3a_core::encode_schema_about(&build_about());
+    let bad = |e: S3AError| io::Error::new(io::ErrorKind::InvalidData, format!("schema tile: {e}"));
+    let mut present = std::collections::BTreeSet::new();
+    for i in 0..tile_count as usize {
+        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        let mut h: HyperTileHeader =
+            bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+        present.insert(h.tile_type);
+        if h.tile_type != TileType::SCHEMA {
+            continue;
+        }
+        let p0 = off + HYPER_TILE_HEADER_SIZE;
+        let plen = (h.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
+        let rec = s3a_core::schema_records_len(&out_data[p0..p0 + plen]).map_err(bad)?;
+        let mut payload = out_data[p0..p0 + rec].to_vec();
+        payload.extend_from_slice(&about);
+        if payload.len() > HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE {
+            return Err(io::Error::other("schema tile too full for about entry"));
+        }
+        out_data[p0..off + HYPER_TILE_SIZE].fill(0);
+        out_data[p0..p0 + payload.len()].copy_from_slice(&payload);
+        h.payload_bytes = payload.len() as u32;
+        h.data_crc32 = crc32c::crc32c(&payload);
+        h.header_crc32 = compute_tile_header_crc32(&h);
+        out_data[off..off + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+        return Ok(tile_count);
+    }
+    present.insert(TileType::SCHEMA);
+    let defs: Vec<_> = present
+        .iter()
+        .map(|&t| crate::standard_schema_for_type(t))
+        .collect();
+    let mut payload = s3a_core::encode_schema_payload(&defs);
+    payload.extend_from_slice(&about);
+    let mut h = HyperTileHeader::new(tile_count as u64, TileType::SCHEMA);
+    h.record_layout_version = 1;
+    h.payload_bytes = payload.len() as u32;
+    h.data_crc32 = crc32c::crc32c(&payload);
+    h.generation = generation;
+    h.tile_index = tile_count;
+    h.file_uuid = file_uuid;
+    h.header_crc32 = compute_tile_header_crc32(&h);
+    let mut tile = vec![0u8; HYPER_TILE_SIZE];
+    tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+    tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload.len()].copy_from_slice(&payload);
+    out_data.extend_from_slice(&tile);
+    set_tile_count(out_data, tile_count + 1, file_uuid);
+    Ok(tile_count + 1)
+}
 
 pub const DEFAULT_SEAL_K: u16 = 16;
 pub const DEFAULT_SEAL_M: u16 = 2;
@@ -63,6 +197,9 @@ pub struct SealOptionsV2 {
     pub creator: Option<String>,
     /// Append a record-root tile (type 83, ADR-0012) covered by the seal. Opt-in.
     pub record_roots: bool,
+    /// Write the self-describing "about" entry (spec version, URL, spec SHA-256, writer)
+    /// into the Schema tile, adding a Schema tile if there is none. Opt-in (item 6).
+    pub about: bool,
 }
 
 impl Default for SealOptionsV2 {
@@ -78,6 +215,7 @@ impl Default for SealOptionsV2 {
             title: None,
             creator: None,
             record_roots: false,
+            about: false,
         }
     }
 }
@@ -90,6 +228,11 @@ impl SealOptionsV2 {
 
     pub fn with_record_roots(mut self) -> Self {
         self.record_roots = true;
+        self
+    }
+
+    pub fn with_about(mut self) -> Self {
+        self.about = true;
         self
     }
 
@@ -185,6 +328,11 @@ pub fn generate_plain_text_manifest(
     out.push_str("                           THIS IS AN S3A FILE\n");
     out.push_str("      S3A Hyper-Tile Storage Archive (Immutable Cryptographic Container)\n");
     out.push_str(" Specification: https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md\n");
+    out.push_str(&format!(
+        " Spec version {}, SHA-256 of spec text: {}\n",
+        spec_version(),
+        spec_sha256_hex()
+    ));
     out.push_str(
         "================================================================================\n\n",
     );
@@ -208,7 +356,7 @@ pub fn generate_plain_text_manifest(
         )
         .to_string()
     } else {
-        "Genesis (Unset)".to_string()
+        "Not recorded (source archive has no creation time)".to_string()
     };
     out.push_str(&format!("  Created:          {}\n", created_str));
     let sealed_str = humantime::format_rfc3339_seconds(
@@ -704,6 +852,15 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
     }
 
+    if options.about {
+        tile_count = apply_about(
+            &mut out_data,
+            tile_count,
+            file_uuid,
+            active_header.generation,
+        )?;
+    }
+
     if options.write_manifest {
         // 1. Gather consent counts and existing tile summaries
         let mut created_ts = u64::MAX;
@@ -778,11 +935,8 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
 
         if created_ts == u64::MAX {
-            if active_header.created_timestamp > 0 {
-                created_ts = active_header.created_timestamp;
-            } else {
-                created_ts = current_time_secs();
-            }
+            // Never substitute the seal time: an unknown creation time is reported as such.
+            created_ts = active_header.created_timestamp;
         } else if active_header.created_timestamp > 0
             && active_header.created_timestamp < created_ts
         {
@@ -821,6 +975,30 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 hdr.record_count,
                 HYPER_TILE_SIZE,
             ));
+        }
+
+        // The record-root tile(s) are appended after this manifest is built (they cover
+        // it), so list them here from the same entries the seal will write.
+        if options.record_roots {
+            let covered = existing_data_tiles
+                .iter()
+                .filter(|t| {
+                    let h: HyperTileHeader =
+                        bytemuck::pod_read_unaligned(&t[..HYPER_TILE_HEADER_SIZE]);
+                    crate::record_roots::tile_root(&h, &t[HYPER_TILE_HEADER_SIZE..]).is_some()
+                })
+                .count();
+            let floor0 = next_floor + existing_data_tiles.len() as u32;
+            let per = crate::record_roots::ENTRIES_PER_TILE;
+            for (k, start) in (0..covered).step_by(per).enumerate() {
+                tile_summaries.push((
+                    floor0 + k as u32,
+                    TileType::RECORD_ROOT,
+                    "record_root",
+                    (covered - start).min(per) as u32,
+                    HYPER_TILE_SIZE,
+                ));
+            }
         }
 
         let manifest_text = generate_plain_text_manifest(
@@ -878,6 +1056,16 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             new_tiles.push(spec);
         }
         new_tiles.extend(existing_data_tiles);
+        // Tiles moved behind the manifest/spec tiles: restamp their position so the
+        // sealed directory is in order (tile_index is a writer-owned relocation field, §7.2).
+        for (i, t) in new_tiles.iter_mut().enumerate() {
+            let mut h: HyperTileHeader = bytemuck::pod_read_unaligned(&t[..HYPER_TILE_HEADER_SIZE]);
+            if h.tile_index != i as u32 {
+                h.tile_index = i as u32;
+                h.header_crc32 = compute_tile_header_crc32(&h);
+                t[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+            }
+        }
 
         tile_count = new_tiles.len() as u32;
         out_data.truncate(FILE_HEADER_SIZE);
@@ -1118,6 +1306,7 @@ pub fn seal_buffer(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
         title: None,
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -1140,6 +1329,7 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         title: None,
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
@@ -1157,6 +1347,7 @@ pub fn seal_buffer_with_manifest(in_bytes: &[u8], k: u16, m: u16) -> io::Result<
         title: None,
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -1180,6 +1371,7 @@ pub fn seal_archive_with_manifest<P: AsRef<Path>, Q: AsRef<Path>>(
         title: None,
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(in_path, out_path, &options)
 }

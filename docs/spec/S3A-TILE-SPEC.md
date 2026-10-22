@@ -9,6 +9,7 @@
 ### Specification Changelog
 
 - **v1.5-draft (October 2026)**:
+  - **Self-describing archives (§14.5.4, item 6)**: optional, opt-in about entry after the Schema tile records (spec version, URL, spec SHA-256, writer). The manifest now lists record-root tiles (83), never substitutes the seal time for an unknown creation time, and sealing restamps `tile_index` of tiles moved behind the manifest (they used to verify with an out-of-order warning). Additive; new suite `vectors-1.2`.
   - **Schema tile catalog (§14.5.4, B1, ADR-0008)**: payload layout corrected to match the reference code (it was mis-documented; no on-disk bytes change). Added the catalog reader contract: embedded catalog when present, registry fallback when absent, hard error on a bad Schema tile, unaligned-safe decoding, `field_count` sum MUST equal `total_fields`. Additive and optional; new vector `valid_schema_catalog`.
 - **v1.4-draft (October 2026)**:
   - **Common Tile Header (§14.1, ADR-0003)**: bytes 12..16, 56..60, 60..64 documented as `data_crc32`, `header_crc32`, `generation` to match the reference code; they were wrongly listed as reserved. No on-disk bytes change.
@@ -1253,6 +1254,13 @@ The table below maps the historical wire assignments into the Catalog ID scheme 
   - If the file has no Schema tile, readers MUST fall back to the compiled-in tile-type registry. Files without a Schema tile remain fully valid in v1.x.
   - A catalog entry for a registered type SHOULD agree with the registry on `record_size` and fall within its supported layout-version window (`schema::catalog_mismatches`). Disagreement is reported, not auto-corrected.
   - Edge-profile archives use a separate `u16` type namespace (77 = `TILE_TYPE_CONFIG` there) and never carry this tile.
+- **Self-describing "about" entry (optional, v1.5)**: a file found decades from now should name the rules it was written under. A Schema tile MAY carry one about entry immediately after its last `CompactSchemaFieldRecord` (at byte `32 + 80*type_count + 48*total_fields` of the payload, inside `payload_bytes` and so covered by `data_crc32` and any seal):
+  - Layout (LE): `magic [u8; 8] = b"S3AABOUT"`, `text_len: u32`, `text_crc32: u32` (CRC32C over the text), then `text_len` bytes of UTF-8 text.
+  - The text is `key=value` lines separated by `\n`. Defined keys: `spec_version` (the spec's Document Version), `spec_url`, `spec_sha256` (lowercase hex SHA-256 of the exact UTF-8 spec text the writer was built against) and `writer` (tool name and version). Readers MUST ignore unknown keys; values contain no newline.
+  - Absent when the bytes after the field records are fewer than 16 or do not start with the magic. Earlier readers ignore it, because the catalog decoder reads only the records (no format change).
+  - If the magic is present but `text_crc32` fails, `text_len` runs past `payload_bytes`, or the text is not UTF-8, the Schema tile is invalid (an error, like a bad `schema_crc32`).
+  - Only the first Schema tile's entry counts. When the file also carries an Embedded Specification tile (79), a verifier SHOULD inflate it, compare its SHA-256 with `spec_sha256`, and report `match` or `mismatch`. A mismatch is a warning about provenance, not a read failure.
+  - Written by `s3a-cli seal --about` (opt-in). The manifest (§14.5.5) also prints the spec version and spec SHA-256. Conformance: `vectors-1.2` cases `about_*`.
 - **Required vs Optional Fields**:
   - Required: `magic`, `version`, `type_count`, `total_fields`, `schema_crc32`.
   - Optional: Field definitions can be empty for opaque binary tiles.
@@ -1276,8 +1284,8 @@ The table below maps the historical wire assignments into the Catalog ID scheme 
   - CRC32C covers the UTF-8 payload bytes in `data_crc32`.
 - **Contents**:
   - `"THIS IS AN S3A FILE"` banner with official specification URL.
-  - Archive metadata: File title/purpose, creator (vault gate address/name if present), file UUID, created and sealed timestamps.
-  - Tile directory table listing floor index, type ID, type name, record count, and tile size.
+  - Archive metadata: File title/purpose, creator (vault gate address/name if present), file UUID, created and sealed timestamps. `Created` is the earliest tile `min_timestamp` or the header `created_timestamp`; when neither is recorded the manifest says so (`Not recorded ...`) and never substitutes the seal time.
+  - Tile directory table listing floor index, type ID, type name, record count, and tile size. It lists every tile of the sealed file, including record-root tiles (83) appended after the manifest is written. Banner also gives the spec version and the SHA-256 of the spec text.
   - Consent governance summary: aggregate participant consent counts (total, active research, withdrawn), privacy status notice, with zero payload or personal identifier leaks.
   - Seal integrity status, generation, previous seal hash, and parity configuration.
   - Plain-text instruction banner: `"how to read: s3a-cli tour <file> or the S3A reader app"`.

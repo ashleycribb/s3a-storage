@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use s3a_engine::MmapReader;
 
 /// Newest suite version. Older versions stay frozen and keep passing.
-pub const SUITE_VERSION: &str = "vectors-1.1";
-pub const SUITE_VERSIONS: [&str; 2] = ["vectors-1.0", "vectors-1.1"];
+pub const SUITE_VERSION: &str = "vectors-1.2";
+pub const SUITE_VERSIONS: [&str; 3] = ["vectors-1.0", "vectors-1.1", "vectors-1.2"];
 
 /// Reader report for an archive, as defined in `conformance/README.md`.
 pub fn read_report(path: &Path) -> Value {
@@ -54,7 +54,14 @@ pub fn read_report(path: &Path) -> Value {
     } else {
         "absent"
     };
+    let ab = s3a_engine::about_report(&reader);
+    let about = ab.about.as_ref().map(|a| {
+        json!({"spec_version": a.spec_version, "spec_url": a.spec_url,
+               "spec_sha256": a.spec_sha256, "writer": a.writer})
+    });
     let mut rep = json!({
+        "about": about,
+        "embedded_spec": ab.embedded_spec,
         "tile_count": reader.tile_count(),
         "generation": reader.generation(),
         "active_slot": reader.active_slot(),
@@ -86,6 +93,10 @@ pub fn read_report(path: &Path) -> Value {
     o.insert("outcome".into(), outcome.into());
     for (k, v) in extra.as_object().unwrap() {
         o.insert(k.clone(), v.clone());
+    }
+    if ab.corrupt {
+        o.insert("outcome".into(), "error".into());
+        o.insert("error_class".into(), "SchemaAboutCorrupt".into());
     }
     if (record_roots == "mismatch" || layout_bad) && outcome != "error" {
         o.insert("outcome".into(), "error".into());

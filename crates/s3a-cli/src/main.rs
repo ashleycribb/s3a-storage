@@ -489,6 +489,7 @@ fn main() {
             let parity = args.iter().any(|a| a == "--parity");
             let embed_spec = args.iter().any(|a| a == "--embed-spec");
             let record_roots = args.iter().any(|a| a == "--record-roots");
+            let about = args.iter().any(|a| a == "--about");
             let mut title = None;
             let mut creator = None;
             let mut positional: Vec<&str> = Vec::new();
@@ -516,7 +517,7 @@ fn main() {
                 }
             }
             if positional.len() < 2 {
-                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--title <title>] [--creator <creator>]");
+                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--about] [--title <title>] [--creator <creator>]");
                 return;
             }
             seal_file(
@@ -527,6 +528,7 @@ fn main() {
                 title,
                 creator,
                 record_roots,
+                about,
             );
         }
         "repair" => {
@@ -2219,6 +2221,7 @@ fn seal_file(
     title: Option<String>,
     creator: Option<String>,
     record_roots: bool,
+    about: bool,
 ) {
     // Never write the input: add the schema tile (if missing) to a scratch copy
     // next to the output and seal from that. Output bytes are the same as before.
@@ -2243,6 +2246,7 @@ fn seal_file(
         title,
         creator,
         record_roots,
+        about,
     };
     let res = s3a_engine::seal_archive_v2(seal_in, out_path, &options);
     let _ = std::fs::remove_file(&scratch);
@@ -2253,6 +2257,9 @@ fn seal_file(
                 features.push("Reed-Solomon 16+2 parity");
             }
             features.push("UTF-8 Plain-Text Manifest");
+            if about {
+                features.push("self-describing about entry");
+            }
             if embed_spec {
                 features.push("Embedded S3A Specification");
             }

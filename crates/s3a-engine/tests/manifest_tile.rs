@@ -82,6 +82,7 @@ fn test_manifest_present_and_plain_text_readable_after_seal() {
         title: Some("Biomedical Telemetry Trial".to_string()),
         creator: Some("gate://vault-alpha-1234".to_string()),
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(raw.path(), sealed.path(), &opts).unwrap();
 
@@ -247,6 +248,7 @@ fn test_old_files_without_manifest_open_and_verify() {
         title: None,
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(raw.path(), sealed.path(), &opts).unwrap();
 
@@ -283,6 +285,7 @@ fn test_embedded_spec_tile_roundtrip() {
         title: Some("Specification Container".to_string()),
         creator: None,
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(raw.path(), sealed.path(), &opts).unwrap();
 

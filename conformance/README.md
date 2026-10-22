@@ -1,4 +1,8 @@
-# S3A Hyper-Tile conformance suite (`vectors-1.0`, `vectors-1.1`)
+# S3A Hyper-Tile conformance suite (`vectors-1.0`, `vectors-1.1`, `vectors-1.2`)
+
+**`vectors-1.2`** (67 cases) is a superset of `vectors-1.1`. It adds the self-describing about entry (TILE-SPEC §14.5.4): `about_absent`, `about_unsealed`, `about_crc_corrupt` (must be rejected), `about_embedded_spec_mismatch` and `about_sealed_self_describing`. The report gains two keys:
+- `about`: `{"spec_version", "spec_url", "spec_sha256", "writer"}` from the first Schema tile, or `null`.
+- `embedded_spec`: `match`, `mismatch` or `absent`. This compares the inflated tile 79 against `about.spec_sha256`. It is advisory and does not change `outcome`.
 
 **`vectors-1.1`** (62 cases) is a superset of `vectors-1.0`. It adds ADR-0013:
 - **Reserved bytes:** `reserved_tile_header_nonzero` and `reserved_file_header_padding_nonzero` must be **ignored** (outcome `ok`).
@@ -39,6 +43,8 @@ For an archive case, your implementation reads the file and prints **one JSON ob
 | `tile_types` | object | `{"<tile_type decimal>": <number of tiles>}` |
 | `record_roots` | string | `ok`, `mismatch` or `absent` (tile 83) |
 | `error_class` | string | optional; e.g. `UnsupportedLayoutVersion` |
+| `about` | object or null | 1.2: self-describing about entry (spec version, URL, spec SHA-256, writer) |
+| `embedded_spec` | string | 1.2: `match`, `mismatch` or `absent` |
 
 For a `merkle-proof` case (fields `leaf_hex`, `index`, `tree_size`, `proof_hex`, `root_hex`), print `{"valid": true|false}` per RFC 6962 §2.1.1 (leaf hash = SHA-256(0x00‖leaf), node = SHA-256(0x01‖l‖r)).
 

@@ -575,6 +575,7 @@ fn test_tour_displays_manifest_in_lobby_and_floor() {
         title: Some("Tour Manifest Test Suite".to_string()),
         creator: Some("gate://vault-test-manifest".to_string()),
         record_roots: false,
+        about: false,
     };
     seal_archive_v2(raw.path(), sealed.path(), &opts).unwrap();
 
