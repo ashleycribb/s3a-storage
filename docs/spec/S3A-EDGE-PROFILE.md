@@ -109,7 +109,8 @@ Edge devices MAY format the start of the archive file using either of two framin
   - Single Slot: Slot A (64 bytes) at offset 0, followed by $(P - 64)$ zero bytes where $P$ is the minimum hardware programming page size (typically 256 bytes or 4,096 bytes).
   - Dual Slot Compact: Slot A (64 B) at 0..64, Slot B (64 B) at 64..128, padded to page size $P$.
 - **Flags**: `FileHeader.flags` MUST have `FLAG_COMPACT_HEADER` (`0x0008`) set.
-- **Engine Compatibility Bridge**: Full engine readers inspecting an archive check `FLAG_COMPACT_HEADER`. If set, the reader computes the header extent as $P$ (from `tile_stride` or standard 256-byte page boundary) and reads tiles from $\text{Offset}(i) = P + (i \times \text{tile\_stride})$.
+- **Engine Compatibility Bridge**: Full engine readers inspecting an archive check `FLAG_COMPACT_HEADER`. If set, the header extent is $P = \max(256, \text{tile\_stride})$ and tiles are read from $\text{Offset}(i) = P + (i \times \text{tile\_stride})$.
+- **Edge detection**: an archive is an Edge archive, with 64-byte Common Tile Headers (§2.4.1) at each stride, when `FLAG_PROFILE_EDGE` is set **or** `tile_stride` is 4096 or 8192. The `FLAG_TILE_SIZE_*` bits are informational; `tile_stride` decides the stride. Bytes after the last committed tile (for example a torn partial tile) are ignored.
 
 ### 2.4 Tile Header Encodings
 

@@ -96,7 +96,8 @@ pub const KNOWN_HEADER_FLAGS: u16 = FLAG_PROFILE_EDGE
     | FLAG_TILE_SIZE_4KB
     | FLAG_TILE_SIZE_8KB
     | FLAG_COMPACT_HEADER
-    | FLAG_SEAL_CHAIN_ACTIVE;
+    | FLAG_SEAL_CHAIN_ACTIVE
+    | FLAG_ED25519_SIGNED;
 /// Tile strides a reader accepts in `FileHeader._reserved1` (0 means 128 KiB).
 pub const VALID_TILE_STRIDES: [u32; 3] = [0, 4096, 8192];
 pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020

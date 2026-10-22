@@ -99,7 +99,7 @@ Each slot is an instance of `FileHeader`:
 |:---:|:---:|:---|:---|
 | `0 .. 4` | `[u8; 4]` | `magic` | Magic identifier. MUST be ASCII bytes `b"S3A1"` (`0x53, 0x33, 0x41, 0x31`). |
 | `4 .. 6` | `u16` | `version` | Specification version. MUST be `1`. |
-| `6 .. 8` | `u16` | `flags` | Archive feature flags. Defined bits: `0x0001` PROFILE_EDGE, `0x0002` TILE_SIZE_4KB, `0x0004` TILE_SIZE_8KB, `0x0008` COMPACT_HEADER, `0x0010` SEAL_CHAIN_ACTIVE (S3A-EDGE-PROFILE §2.2). Writers MUST NOT set any other bit. These bits change how the file is parsed, so readers MUST reject an archive whose active slot sets an undefined bit (§3.3, ADR-0013). |
+| `6 .. 8` | `u16` | `flags` | Archive feature flags. Defined bits: `0x0001` PROFILE_EDGE, `0x0002` TILE_SIZE_4KB, `0x0004` TILE_SIZE_8KB, `0x0008` COMPACT_HEADER, `0x0010` SEAL_CHAIN_ACTIVE, `0x0020` ED25519_SIGNED (S3A-EDGE-PROFILE §2.2). Writers MUST NOT set any other bit. These bits change how the file is parsed, so readers MUST reject an archive whose active slot sets an undefined bit (§3.3, ADR-0013). |
 | `8 .. 16` | `u64` | `generation` | Monotonically increasing commit counter. |
 | `16 .. 20` | `u32` | `tile_count` | Number of committed Hyper-Tiles in the archive. |
 | `20 .. 24` | `u32` | `_reserved1` (`tile_stride`) | Physical tile stride: `0` (= 131,072 bytes, standard profile), `4096` or `8192` (Edge profile, S3A-EDGE-PROFILE §2.2). Readers MUST reject any other value (§3.3, ADR-0013). The field name is historical; it is **not** a reserved byte. |
@@ -640,6 +640,19 @@ A compliant reader opening a sealed S3A container MUST follow these rules:
 4. **Out-of-Order Recovery**: If tiles are out of logical order, sort by `tile_index`.
 5. **Parity Repair Execution**: If tiles are damaged and valid parity shards are present, reconstruct damaged tiles in memory. If written to disk, write only to an explicit repair destination (`--repair <out>` or `s3a-cli repair`).
 
+### 10.9 Byte-Level Rules for Independent Readers
+
+These rules were implicit in the reference implementation and were made explicit while writing the independent Python reader (`readers/python`). They do not change the format.
+
+1. **Seal hash encoding** (§10.5): every field is encoded at its `SealedIndexHeaderV2` width, little-endian: `seal_generation` as `u64`, `tile_count` as `u32`, `file_uuid` as two `u64`. `entries_bytes` is the raw `N * 80` entry bytes.
+2. **`payload_hash`** (§10.2) is SHA-256 over the tile's active payload, bytes `512 .. 512 + payload_bytes` of the tile (not the whole 128 KB tile).
+3. **Parity groups**: data tiles are split in index order into groups of `k`; group `g` holds tiles `g*k .. min((g+1)*k, N)`. The last group may be short (`k_g < k`); it is coded as a `k_g + m` code, with no zero-padding shards. Each shard is one whole 131,072-byte tile, header included.
+4. **Parity placement**: the `m` parity shards of group `g` start at byte `512 + N*131072 + g*m*131072`, immediately after the data tiles and before any ANCHORS slice and the index.
+5. **Code construction** (identical to `reed-solomon-erasure` 6.x `galois_8`): GF(2^8) with reducing polynomial `0x11D` and generator `2`. Build the `(k_g+m) x k_g` Vandermonde matrix `V[r][c] = r^c` (with `0^0 = 1`), then the encoding matrix `E = V * inverse(V[0..k_g])`. Its top `k_g` rows are the identity (systematic code), and parity shard `p` is `sum_c E[k_g+p][c] * tile_c`, computed byte by byte. To reconstruct, take any `k_g` surviving shards, invert the matching rows of `E` and multiply.
+6. **What counts as a damaged tile** (rule 5 of §10.8): `header_crc32` is non-zero and wrong, or `data_crc32` is wrong, or `payload_hash` differs from the index entry. A repaired tile MUST pass all three checks again. More than `m` damaged tiles in one group is `UnrepairableCorruption`. With parity disabled, any damaged tile is an error.
+7. **Outcomes**: a repaired archive reports `repaired`. Tiles found out of order (entry `i` points to a tile whose `tile_index != i`) are sorted by `tile_index` and the archive reports `ok_with_warning`. An end cap that is absent, has a bad `endcap_crc32` or points past EOF is treated as "not sealed": the file is read as a live archive (§2.2), and bytes after the last committed tile are ignored. A *valid* end cap with a wrong `index_hash` or `seal_hash` is an error, not a fallback.
+8. **Record roots on a failed archive**: a verifier computes the record-root check (Appendix) even when a tile already failed its seal or CRC check, so the report can say `record_roots: "mismatch"`. The archive is still an error.
+
 ---
 
 ## 11. Snapshot Anchoring & Trust Proofs (§Anchoring)
@@ -772,7 +785,7 @@ The `s3a-cli tour <file>` command provides a high-level, interactive, read-only 
    - Each tile declares its layout version in `HyperTileHeader.record_layout_version`.
    - **Version 0 Compatibility Alias**: Readers MUST treat `record_layout_version == 0` as a legacy compatibility alias for version `1`.
    - Writers MUST write `record_layout_version >= 1`.
-2. **Fail-Closed Boundary Rules**:
+2. **Fail-Closed Boundary Rules** (in this specification version every tile type has `current_layout_version = 1` and `min_supported_layout_version = 1`, so after the version-0 alias any `record_layout_version > 1` MUST be rejected with `UnsupportedLayoutVersion`):
    - If a tile's layout version is strictly less than the reader's `min_supported_layout_version`, the reader MUST reject the tile.
    - If a tile's layout version is strictly greater than the reader's `current_layout_version`, the reader MUST reject the tile.
 3. **Non-Breaking Evolution**:

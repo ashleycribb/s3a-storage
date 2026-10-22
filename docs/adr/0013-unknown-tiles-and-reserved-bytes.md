@@ -25,7 +25,7 @@ Status: Accepted — 2026-10-21. Builds on ADR-0011. No on-disk format or seal-h
    - S3A has no on-disk critical or unsafe-to-copy bit and doesn't add one. Instead, any type whose content is derived from other tiles must be a registered (known) type, so tools can drop and regenerate it (tile 83 is the existing example). This is PNG's model with "unsafe" limited to known types.
 2. **Reserved bytes (no meaning in this version): writers zero them, readers ignore them** (RFC 9293 §3.1). This applies to tile-header `_reserved*`, padding, and file-header block bytes 128..512. Validators MAY warn, but MUST NOT fail.
 3. **Layout-affecting header fields fail closed** (PNG's critical case; RFC 9413 §5.1).
-   - `FileHeader.flags` may only use the defined bits `0x001F`.
+   - `FileHeader.flags` may only use the defined bits `0x003F` (`0x0020` ED25519_SIGNED was omitted in the first draft; found by the independent Python reader).
    - `FileHeader._reserved1` (`tile_stride`) must be 0, 4096 or 8192.
    - Anything else is rejected after slot arbitration, so an unknown flag in the newest slot can't cause a silent fallback to an older generation.
 
