@@ -1698,6 +1698,13 @@ pub mod mock_calendar {
             header
         }
 
+        /// Mark `commitment_hex` as confirmed in block `height` with raw 80-byte `header`.
+        ///
+        /// The upgraded proof this mock serves attaches the Bitcoin attestation directly to
+        /// the commitment (no further ops). Clients recompute step outputs on deserialize, so
+        /// the proof only verifies when the header's Merkle root (bytes 36..68, internal byte
+        /// order) equals the commitment. Use `make_mock_block_header(commitment)` for a valid
+        /// confirmation, or any other root to simulate a mismatch.
         pub fn confirm(&self, commitment_hex: &str, height: u64, header: [u8; 80]) {
             let mut lock = self.confirmations.lock().unwrap();
             lock.insert(commitment_hex.to_string(), (height, header));
