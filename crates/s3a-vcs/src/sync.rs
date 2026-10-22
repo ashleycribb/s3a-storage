@@ -102,8 +102,11 @@ pub fn sync_push_with_limits(
 
     // 1. Build target inventory (hash of each tile payload in target)
     let mut known_hashes = HashSet::new();
+    let (tgt_mask, tgt_fresh);
     {
         let tgt_reader = MmapReader::open(target_repo.path())?;
+        tgt_mask = tgt_reader.addon_mask();
+        tgt_fresh = tgt_reader.tile_count() == 0;
         for i in 0..tgt_reader.tile_count() as usize {
             if let Some((_, payload)) = tgt_reader.get_tile(i) {
                 let h: [u8; 32] = Sha256::digest(payload).into();
@@ -179,11 +182,38 @@ pub fn sync_push_with_limits(
         });
     }
 
+    // 2c. Packs: the target must have every addon bit the pushed tiles need.
+    // A fresh (empty) target gets them enabled; an existing archive is never altered.
+    let mut need_mask = 0u32;
+    let mut need_names: Vec<&'static str> = Vec::new();
+    for (hdr, _) in &missing_tiles {
+        if let Some((name, bit)) = s3a_core::required_addon_for_tile(hdr.tile_type) {
+            if tgt_mask & bit == 0 && need_mask & bit == 0 {
+                need_mask |= bit;
+                need_names.push(name);
+            }
+        }
+    }
+    if need_mask != 0 && !tgt_fresh {
+        return Err(VcsError::MissingPacks {
+            packs: need_names.join(", "),
+            missing_mask: need_mask,
+            target_mask: tgt_mask,
+        });
+    }
+
     // 3. Append missing tiles to target using TileWriter
     if !missing_tiles.is_empty() {
         let mut writer = TileWriter::open_append(target_repo.path())?;
+        if need_mask != 0 {
+            writer.enable_addon(need_mask)?;
+        }
         for (hdr, payload) in &missing_tiles {
-            writer.write_raw_hyper_tile(hdr, payload)?;
+            // Re-stamp tiles with the target's file_uuid (writer fills [0,0]) so
+            // the target passes `verify`; payload bytes are unchanged.
+            let mut h = *hdr;
+            h.file_uuid = [0, 0];
+            writer.write_raw_hyper_tile(&h, payload)?;
         }
         drop(writer);
     }

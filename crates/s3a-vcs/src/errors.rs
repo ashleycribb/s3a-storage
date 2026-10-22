@@ -35,6 +35,11 @@ pub enum VcsError {
         actual: u64,
         limit: u64,
     },
+    MissingPacks {
+        packs: String,
+        missing_mask: u32,
+        target_mask: u32,
+    },
     Generic(String),
 }
 
@@ -66,6 +71,7 @@ impl fmt::Display for VcsError {
             VcsError::ConsentRestricted(msg) => write!(f, "Action blocked by participant consent policy: {}", msg),
             VcsError::AmbiguousHash { prefix, matches } => write!(f, "Ambiguous hash prefix '{}' matches {} commits; use more characters", prefix, matches),
             VcsError::PushTooLarge { what, actual, limit } => write!(f, "Push rejected before writing: {} {} exceeds limit {}", what, actual, limit),
+            VcsError::MissingPacks { packs, missing_mask, target_mask } => write!(f, "Push rejected before writing: target archive lacks required pack(s) {} (missing addon bits 0x{:04x}, target addon_mask 0x{:04x}); enable them on the target first", packs, missing_mask, target_mask),
             VcsError::Generic(msg) => write!(f, "{}", msg),
         }
     }
