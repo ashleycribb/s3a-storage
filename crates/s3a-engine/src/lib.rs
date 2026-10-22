@@ -1575,10 +1575,11 @@ impl TileFusionEngine {
         for path in input_paths {
             let reader = MmapReader::open(path)?;
             let gen = reader.generation();
+            refuse_unreadable_input(&reader, path.as_ref())?;
             for i in 0..reader.tile_count() as usize {
                 if let Some((header, payload)) = reader.get_tile(i) {
                     // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
-                    preflight.verify_and_register_tile(path, gen, header, payload)?;
+                    preflight.verify_and_register_tile(path, gen, i, header, payload)?;
 
                     if header.tile_type == TileType::TELEMETRY {
                         let records: &[TelemetryRecord] = bytemuck::cast_slice(payload);
@@ -2285,6 +2286,81 @@ pub fn append_schema_tile_if_missing<P: AsRef<Path>>(path: P) -> io::Result<bool
 
     writer.write_raw_hyper_tile(&schema_hdr, &payload)?;
     Ok(true)
+}
+
+/// Before-gate for rewriters (TILE-SPEC §6.1.2): every committed tile must be readable as a
+/// Hyper-Tile. Edge (micro-tile) archives and truncated files used to be skipped tile by tile,
+/// so the rewrite "succeeded" with their data silently missing.
+pub fn refuse_unreadable_input(reader: &MmapReader, path: &Path) -> io::Result<()> {
+    if reader.is_edge_archive() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "Compaction refused: '{}' is an Edge (micro-tile) archive; the Hyper-Tile compactor cannot rewrite it without losing its records",
+                path.display()
+            ),
+        ));
+    }
+    for i in 0..reader.tile_count() as usize {
+        if let Err(e) = reader.try_get_tile(i) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Compaction refused: committed tile {i} of '{}' is unreadable ({e:?}); the file is truncated or corrupt",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// TILE-SPEC §6.1.7 gate: `written` live records on disk must be at least the live
+/// records read, less those deleted by tombstones/erasures.
+pub fn conservation_check(written: usize, read: usize, deleted: usize) -> io::Result<()> {
+    let expected = read.saturating_sub(deleted);
+    if written < expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Compaction refused: output has {written} live records but {expected} live input records must be kept (read {read}, {deleted} deleted by tombstone/erasure); output removed"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Live data records in a file, classified the way compaction does: non-tombstoned
+/// telemetry (incl. decodable columnar), all embeddings, and `record_count` of every other
+/// data tile. System tiles (marks, consent, erasure, schema, record roots) are not data.
+pub fn count_live_records(reader: &MmapReader) -> usize {
+    let mut n = 0usize;
+    for i in 0..reader.tile_count() as usize {
+        let Some((h, p)) = reader.get_tile(i) else {
+            continue;
+        };
+        match h.tile_type {
+            TileType::TELEMETRY => {
+                n += p
+                    .chunks_exact(std::mem::size_of::<TelemetryRecord>())
+                    .map(bytemuck::pod_read_unaligned::<TelemetryRecord>)
+                    .filter(|r| !r.is_tombstone())
+                    .count()
+            }
+            TileType::EMBEDDING => n += p.len() / std::mem::size_of::<EmbeddingRecord128>(),
+            TileType::COLUMNAR => match decode_columnar_telemetry(p) {
+                Ok(recs) => n += recs.iter().filter(|r| !r.is_tombstone()).count(),
+                Err(_) => n += h.record_count as usize,
+            },
+            TileType::MARKS
+            | TileType::CONSENT
+            | TileType::ERASURE
+            | TileType::SCHEMA
+            | TileType::RECORD_ROOT => {}
+            _ => n += h.record_count as usize,
+        }
+    }
+    n
 }
 
 /// Query Sieve for high-performance single-cycle SIMD tile rejection and fast scanning.
@@ -3711,8 +3787,10 @@ impl Compactor {
                     let _ = std::fs::remove_file(out_ref);
                 }
 
-                // If already quarantined, do not retry
-                if first_err.to_string().contains("quarantined") {
+                // If already quarantined, or refused by a deterministic gate (unreadable
+                // input, conservation), do not retry and do not quarantine a tile.
+                let msg = first_err.to_string();
+                if msg.contains("quarantined") || msg.starts_with("Compaction refused") {
                     return Err(first_err);
                 }
 
@@ -3824,10 +3902,11 @@ impl Compactor {
             let gen = reader.generation();
             let tile_count = reader.tile_count() as usize;
 
+            refuse_unreadable_input(&reader, input_path.as_ref())?;
             for i in 0..tile_count {
                 if let Some((header, payload)) = reader.get_tile(i) {
                     // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
-                    preflight.verify_and_register_tile(input_path, gen, header, payload)?;
+                    preflight.verify_and_register_tile(input_path, gen, i, header, payload)?;
 
                     if header.tile_type == TileType::TELEMETRY {
                         telemetry_input_tile_ids.push((input_idx, header.tile_id));
@@ -3859,8 +3938,12 @@ impl Compactor {
                         } else {
                             unspecialized_tiles.push((*header, payload.to_vec(), input_idx));
                         }
-                    } else if header.tile_type == TileType::RECORD_ROOT {
-                        // Derived seal data: never carry a stale root; regenerated at seal.
+                    } else if header.tile_type == TileType::RECORD_ROOT
+                        || header.tile_type == TileType::MANIFEST
+                    {
+                        // Derived seal data: a record root or a manifest describes the sealed
+                        // file it was written into, so it is stale in a rewritten (unsealed)
+                        // output; `seal` regenerates both (TILE-SPEC §14.5.5, Appendix).
                     } else if header.tile_type == TileType::SCHEMA {
                         // §14.5.4: the first input's about entry survives the rebuild verbatim.
                         if about_trailer.is_none() {
@@ -3913,8 +3996,23 @@ impl Compactor {
         }
 
         // Deduplicate telemetry records: keep latest active record, filtering out tombstones and erasures unless protected by legal hold
-        let mut telemetry_map: std::collections::HashMap<(u32, u32, u64), TelemetryRecord> =
+        // TILE-SPEC §6.1.3/§6.1.7: every live record survives. A key may hold several
+        // distinct records (same sensor/metric/timestamp, different values); a tombstone
+        // deletes the records with its key that were read before it.
+        let mut telemetry_map: std::collections::HashMap<(u32, u32, u64), Vec<TelemetryRecord>> =
             std::collections::HashMap::with_capacity(telemetry_buffer.len());
+        // Safety check inputs, counted before any filtering (checked against the
+        // output read back from disk at the end).
+        let raw_live_in = telemetry_buffer
+            .iter()
+            .filter(|r| !r.is_tombstone())
+            .count()
+            + embedding_buffer.len()
+            + unspecialized_tiles
+                .iter()
+                .map(|(h, _, _)| h.record_count as usize)
+                .sum::<usize>();
+        let mut removed_by_policy = 0usize;
         for rec in telemetry_buffer {
             let key = (rec.sensor_id, rec.metric_id, rec.timestamp);
             let sub = actor_id_to_subject_id(rec.sensor_id as u64);
@@ -3940,17 +4038,32 @@ impl Compactor {
 
             if rec.is_tombstone() || is_erased {
                 if under_hold {
-                    telemetry_map.insert(key, rec); // Retain under legal hold!
+                    telemetry_map.entry(key).or_default().push(rec); // Retain under legal hold!
                 } else {
-                    telemetry_map.remove(&key);
+                    // Deleted by a tombstone or erasure: the only legitimate way a live record leaves.
+                    let gone = telemetry_map
+                        .remove(&key)
+                        .map(|v| v.iter().filter(|r| !r.is_tombstone()).count())
+                        .unwrap_or(0);
+                    removed_by_policy += gone + usize::from(!rec.is_tombstone());
                 }
             } else {
-                telemetry_map.insert(key, rec);
+                telemetry_map.entry(key).or_default().push(rec);
             }
         }
 
-        let mut deduped_telemetry: Vec<TelemetryRecord> = telemetry_map.into_values().collect();
-        deduped_telemetry.sort_by_key(|r| r.timestamp);
+        let mut deduped_telemetry: Vec<TelemetryRecord> =
+            telemetry_map.into_values().flatten().collect();
+        // Total order so the output does not depend on HashMap iteration order.
+        deduped_telemetry.sort_by_key(|r| {
+            (
+                r.timestamp,
+                r.sensor_id,
+                r.metric_id,
+                r.value.to_bits(),
+                r.flags,
+            )
+        });
 
         // Zero out erased records in unspecialized tiles
         for (header, payload, _input_idx) in &mut unspecialized_tiles {
@@ -4240,6 +4353,16 @@ impl Compactor {
                 format!("Compaction After-Gate checksum failure: {}", e),
             )
         })?;
+
+        // HARD SAFETY CHECK (TILE-SPEC §6.1.7): never emit fewer live records than were read,
+        // less those deleted by tombstones/erasures. Counted from the file on disk, independent
+        // of the in-memory accumulators above. On failure the output is removed.
+        let written = count_live_records(&output_reader);
+        if let Err(e) = conservation_check(written, raw_live_in, removed_by_policy) {
+            drop(output_reader);
+            let _ = std::fs::remove_file(output_path);
+            return Err(e);
+        }
 
         Ok(output_reader.tile_count())
     }

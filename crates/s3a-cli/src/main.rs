@@ -2053,8 +2053,18 @@ fn inspect_file(path: &str, json_mode: bool) {
                         format!("layout_v{}", header.record_layout_version)
                     };
                     println!(
-                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange=[{}, {}], Bytes={}",
-                        i, header.tile_id, tile_type_str, layout_str, header.record_count, header.min_timestamp, header.max_timestamp, header.payload_bytes
+                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange={}, Bytes={}",
+                        i,
+                        header.tile_id,
+                        tile_type_str,
+                        layout_str,
+                        header.record_count,
+                        if header.min_timestamp > header.max_timestamp {
+                            "none".to_string()
+                        } else {
+                            format!("[{}, {}]", header.min_timestamp, header.max_timestamp)
+                        },
+                        header.payload_bytes
                     );
                     if header.tile_type == 9 {
                         println!("  ⚠️  WARNING: Tile type 9 is DEPRECATED/RESERVED_BOUNDARY. Greenfield LRS records should use Scholar Pack Tile 10.");
@@ -3158,7 +3168,10 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
             "Compaction SUCCESS: Wrote {} Hyper-Tiles to {}",
             count, output_path
         ),
-        Err(e) => eprintln!("Compaction FAILED: {}", e),
+        Err(e) => {
+            eprintln!("Compaction FAILED: {}", e);
+            std::process::exit(2);
+        }
     }
 }
 

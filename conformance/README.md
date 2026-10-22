@@ -1,4 +1,8 @@
-# S3A Hyper-Tile conformance suite (`vectors-1.0` … `vectors-1.3`)
+# S3A Hyper-Tile conformance suite (`vectors-1.0` … `vectors-1.4`)
+
+**`vectors-1.4`** (70 cases) is a superset of `vectors-1.3`. It adds two writer-level rewrite cases for compaction conservation (TILE-SPEC §6.1):
+- `compact_same_key_records`: two live records share a key and both must survive.
+- `compact_sealed_with_manifest`: a sealed input with a manifest must be accepted without losing data.
 
 **`vectors-1.3`** (68 cases) is a superset of `vectors-1.2`. It adds the writer-level rewrite case `about_rewrite`: compact a file whose Schema tile has an about entry, and the output must report the same `about`.
 

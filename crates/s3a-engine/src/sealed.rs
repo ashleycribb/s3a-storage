@@ -136,13 +136,23 @@ fn apply_about(
         return Ok(tile_count);
     }
     present.insert(TileType::SCHEMA);
+    let max_id = (0..tile_count as usize)
+        .map(|i| {
+            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            bytemuck::pod_read_unaligned::<HyperTileHeader>(
+                &out_data[off..off + HYPER_TILE_HEADER_SIZE],
+            )
+            .tile_id
+        })
+        .max()
+        .unwrap_or(0);
     let defs: Vec<_> = present
         .iter()
         .map(|&t| crate::standard_schema_for_type(t))
         .collect();
     let mut payload = s3a_core::encode_schema_payload(&defs);
     payload.extend_from_slice(&about);
-    let mut h = HyperTileHeader::new(tile_count as u64, TileType::SCHEMA);
+    let mut h = HyperTileHeader::new(max_id + 1, TileType::SCHEMA);
     h.record_layout_version = 1;
     h.payload_bytes = payload.len() as u32;
     h.data_crc32 = crc32c::crc32c(&payload);
@@ -1123,6 +1133,39 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
         tile_count += rr.len() as u32;
         set_tile_count(&mut out_data, tile_count, file_uuid);
+    }
+
+    // Tiles the sealer generates (manifest 78, spec 79, record roots 83) get tile_ids after
+    // every other tile's, so tile_ids stay unique in the sealed file (compaction remaps
+    // by tile_id, §6.1.5). Earlier sealers wrote them with ids 0/1, colliding with data.
+    {
+        let hdr_at = |d: &[u8], i: usize| -> HyperTileHeader {
+            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            bytemuck::pod_read_unaligned(&d[off..off + HYPER_TILE_HEADER_SIZE])
+        };
+        let generated = |t: u32| {
+            matches!(
+                t,
+                TileType::MANIFEST | TileType::SPECIFICATION | TileType::RECORD_ROOT
+            )
+        };
+        let mut next = (0..tile_count as usize)
+            .map(|i| hdr_at(&out_data, i))
+            .filter(|h| !generated(h.tile_type))
+            .map(|h| h.tile_id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        for i in 0..tile_count as usize {
+            let mut h = hdr_at(&out_data, i);
+            if generated(h.tile_type) {
+                h.tile_id = next;
+                next += 1;
+                h.header_crc32 = compute_tile_header_crc32(&h);
+                let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                out_data[off..off + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+            }
+        }
     }
 
     // Stamp self-addressing metadata (file_uuid, tile_index, generation) into all tiles

@@ -1896,11 +1896,31 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
                 );
             } else {
                 println!(
-                    "Floor {:>2}: {:<16} (type {:<2}, v{}) | {:<4} recs | {:<6} B | keys: {}..{} | hash: {}",
+                    "Floor {:>2}: {:<16} (type {:<2}, v{}) | {:<4} recs | {:<6} B | keys: {} | hash: {}",
                     f.index, type_upper, f.type_id, f.version, f.record_count, f.size_bytes,
-                    f.min_key, f.max_key, f.payload_hash_short
+                    key_range(f.min_key, f.max_key), f.payload_hash_short
                 );
             }
         }
+    }
+}
+
+/// Text form of a tile's key range. Tiles without timestamps carry the empty-range
+/// sentinel `min = u64::MAX, max = 0`, printed as `none`.
+pub fn key_range(min: u64, max: u64) -> String {
+    if min > max {
+        "none".to_string()
+    } else {
+        format!("{min}..{max}")
+    }
+}
+
+#[cfg(test)]
+mod key_range_tests {
+    #[test]
+    fn empty_sentinel_prints_none() {
+        assert_eq!(super::key_range(u64::MAX, 0), "none");
+        assert_eq!(super::key_range(5, 9), "5..9");
+        assert_eq!(super::key_range(7, 7), "7..7");
     }
 }
