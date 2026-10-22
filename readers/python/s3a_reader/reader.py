@@ -4,6 +4,7 @@ Section references are to S3A-TILE-SPEC.md unless marked EDGE.
 """
 import hashlib
 import struct
+import zlib
 
 from . import gf256
 
@@ -19,6 +20,8 @@ EDGE_TILE_HEADER = 64              # EDGE §2.4.1
 TILE_FLAG_CRC_CHAIN = 2
 CURRENT_LAYOUT = 1                 # §12: v0 aliases v1; nothing newer is defined
 RECORD_ROOT = 83                   # Appendix: Record-Root Tile
+SCHEMA, SPECIFICATION = 77, 79     # §14.5.4, §14.5.6
+ABOUT_MAGIC = b"S3AABOUT"          # §14.5.4 about entry
 ENDCAP_V2 = b"S3AEND\x00\x02"      # §10.4
 INDEX_V2 = b"S3AIDX02"             # §10.3
 PARITY = 0x0001
@@ -275,6 +278,52 @@ def record_roots(tiles):
     return "ok"
 
 
+# ---- §14.5.4 self-describing about entry ---------------------------------
+
+def parse_about(payload):
+    """Returns the about dict, None if absent; raises ReadError if malformed."""
+    if len(payload) < 32:
+        raise ReadError("SchemaTileInvalid")
+    type_count, total_fields = struct.unpack_from("<HI", payload, 6)
+    start = 32 + 80 * type_count + 48 * total_fields
+    if len(payload) < start:
+        raise ReadError("SchemaTileInvalid")
+    rest = payload[start:]
+    if len(rest) < 16 or rest[:8] != ABOUT_MAGIC:
+        return None
+    n, crc = struct.unpack_from("<II", rest, 8)
+    text = rest[16:16 + n]
+    if len(text) != n or crc32c(text) != crc:
+        raise ReadError("SchemaAboutCorrupt")
+    try:
+        text = text.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ReadError("SchemaAboutCorrupt")
+    about = {"spec_version": "", "spec_url": "", "spec_sha256": "", "writer": ""}
+    for line in text.split("\n"):
+        k, sep, v = line.partition("=")
+        if sep and k in about:
+            about[k] = v
+    return about
+
+
+def about_fields(parsed, rep):
+    about, spec_sha, seen = None, None, False
+    for h, p in parsed:
+        if h["type"] == SCHEMA and not seen:
+            seen = True
+            about = parse_about(p)
+        elif h["type"] == SPECIFICATION and spec_sha is None:
+            try:
+                spec_sha = _sha(zlib.decompress(p)).hex()
+            except zlib.error:
+                spec_sha = ""
+    rep["about"] = about
+    rep["embedded_spec"] = "absent"
+    if about is not None and spec_sha is not None:
+        rep["embedded_spec"] = "match" if spec_sha == about["spec_sha256"] else "mismatch"
+
+
 # ---- report -------------------------------------------------------------
 
 def read_report(path):
@@ -317,6 +366,7 @@ def _read(data, rep):
             ttype, _rc, payload = parse_edge_tile(t, stride)
             _count(rep, ttype, payload)
         rep["record_roots"] = "absent"
+        rep.update(about=None, embedded_spec="absent")   # §14.5.4: edge archives carry no Schema tile
         rep["outcome"] = "ok"
         return
 
@@ -346,6 +396,8 @@ def _read(data, rep):
                 first_err = e
     # Record roots are computed even when a tile already failed, so the report
     # says *why* (Appendix: verifiers report differing entries).
+    if first_err is None:
+        about_fields(parsed, rep)
     rr = record_roots(parsed)
     rep["record_roots"] = rr
     if rr == "mismatch":

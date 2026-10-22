@@ -233,3 +233,137 @@ pub fn decode_schema_payload(payload: &[u8]) -> Result<Vec<SchemaTypeDefinition>
 
     Ok(result)
 }
+
+/// Magic of the optional "about" trailer in a Schema tile payload (TILE-SPEC §14.5.4, item 6).
+pub const SCHEMA_ABOUT_MAGIC: [u8; 8] = *b"S3AABOUT";
+/// Trailer header size: magic (8) + text_len u32 + text_crc32 u32.
+pub const SCHEMA_ABOUT_HEADER_SIZE: usize = 16;
+
+/// Self-description of an archive: which spec it was written against, and by what.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SchemaAbout {
+    pub spec_version: String,
+    pub spec_url: String,
+    /// Lowercase hex SHA-256 of the exact spec text the writer was built with.
+    pub spec_sha256: String,
+    pub writer: String,
+}
+
+impl SchemaAbout {
+    fn text(&self) -> String {
+        let mut s = String::new();
+        for (k, v) in [
+            ("spec_version", &self.spec_version),
+            ("spec_url", &self.spec_url),
+            ("spec_sha256", &self.spec_sha256),
+            ("writer", &self.writer),
+        ] {
+            s.push_str(k);
+            s.push('=');
+            s.push_str(&v.replace(['\n', '\r'], " "));
+            s.push('\n');
+        }
+        s
+    }
+}
+
+/// Encodes the about trailer: `S3AABOUT | text_len u32 | crc32c(text) u32 | text` (LE).
+pub fn encode_schema_about(about: &SchemaAbout) -> Vec<u8> {
+    let text = about.text();
+    let mut out = Vec::with_capacity(SCHEMA_ABOUT_HEADER_SIZE + text.len());
+    out.extend_from_slice(&SCHEMA_ABOUT_MAGIC);
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(&crc32c(text.as_bytes()).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+    out
+}
+
+/// Byte length of the schema records (header + types + fields) at the start of `payload`.
+pub fn schema_records_len(payload: &[u8]) -> Result<usize, S3AError> {
+    let hs = core::mem::size_of::<CompactSchemaHeader>();
+    if payload.len() < hs {
+        return Err(S3AError::BufferTooSmall {
+            required: hs,
+            provided: payload.len(),
+        });
+    }
+    let h: CompactSchemaHeader = bytemuck::pod_read_unaligned(&payload[..hs]);
+    let total = (h.type_count as usize)
+        .checked_mul(core::mem::size_of::<CompactSchemaTypeRecord>())
+        .and_then(|t| {
+            (h.total_fields as usize)
+                .checked_mul(core::mem::size_of::<CompactSchemaFieldRecord>())
+                .and_then(|f| t.checked_add(f))
+        })
+        .and_then(|b| b.checked_add(hs))
+        .ok_or(S3AError::OutOfBounds)?;
+    if payload.len() < total {
+        return Err(S3AError::BufferTooSmall {
+            required: total,
+            provided: payload.len(),
+        });
+    }
+    Ok(total)
+}
+
+/// Reads the optional about trailer that follows the schema records.
+/// `Ok(None)` when absent; an error when present but malformed or its CRC fails.
+pub fn decode_schema_about(payload: &[u8]) -> Result<Option<SchemaAbout>, S3AError> {
+    let start = schema_records_len(payload)?;
+    let rest = &payload[start..];
+    if rest.len() < SCHEMA_ABOUT_HEADER_SIZE || rest[..8] != SCHEMA_ABOUT_MAGIC {
+        return Ok(None);
+    }
+    let len = u32::from_le_bytes(rest[8..12].try_into().unwrap()) as usize;
+    let crc = u32::from_le_bytes(rest[12..16].try_into().unwrap());
+    let text = rest
+        .get(SCHEMA_ABOUT_HEADER_SIZE..SCHEMA_ABOUT_HEADER_SIZE + len)
+        .ok_or(S3AError::OutOfBounds)?;
+    if crc32c(text) != crc {
+        return Err(S3AError::ChecksumMismatch {
+            expected: crc,
+            actual: crc32c(text),
+        });
+    }
+    let text = core::str::from_utf8(text).map_err(|_| S3AError::InvalidFormat)?;
+    let mut a = SchemaAbout::default();
+    for line in text.lines() {
+        // Unknown keys are ignored so the entry can grow.
+        if let Some((k, v)) = line.split_once('=') {
+            let v = v.to_string();
+            match k {
+                "spec_version" => a.spec_version = v,
+                "spec_url" => a.spec_url = v,
+                "spec_sha256" => a.spec_sha256 = v,
+                "writer" => a.writer = v,
+                _ => {}
+            }
+        }
+    }
+    Ok(Some(a))
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::*;
+
+    #[test]
+    fn about_round_trip_and_absent() {
+        let base = encode_schema_payload(&[]);
+        assert_eq!(decode_schema_about(&base).unwrap(), None);
+        let a = SchemaAbout {
+            spec_version: "1.5-draft".into(),
+            spec_url: "https://example.org/spec".into(),
+            spec_sha256: "ab".repeat(32),
+            writer: "s3a-engine 0.1.0".into(),
+        };
+        let mut p = base.clone();
+        p.extend_from_slice(&encode_schema_about(&a));
+        assert_eq!(decode_schema_about(&p).unwrap(), Some(a));
+        // Existing decoder still reads the records (trailer is ignored).
+        assert!(decode_schema_payload(&p).unwrap().is_empty());
+        let n = p.len();
+        p[n - 1] ^= 1;
+        assert!(decode_schema_about(&p).is_err());
+    }
+}

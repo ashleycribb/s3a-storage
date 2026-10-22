@@ -50,14 +50,17 @@ fn newer_suite_is_superset_of_older() {
             })
             .collect()
     };
-    let old = ids("vectors-1.0");
-    let new = ids("vectors-1.1");
-    for c in &old {
-        assert!(
-            new.contains(c),
-            "vectors-1.1 changed or dropped 1.0 case {}",
-            c.0
-        );
+    for w in SUITE_VERSIONS.windows(2) {
+        let (old, new) = (ids(w[0]), ids(w[1]));
+        for c in &old {
+            assert!(
+                new.contains(c),
+                "{} changed or dropped {} case {}",
+                w[1],
+                w[0],
+                c.0
+            );
+        }
     }
 }
 

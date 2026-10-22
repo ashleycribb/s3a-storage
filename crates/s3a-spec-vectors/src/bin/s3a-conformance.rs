@@ -305,6 +305,9 @@ fn gen(dir: &Path, version: &str) -> Result<(), String> {
     if version != "vectors-1.0" {
         v1_1_cases(&mut g, &tmp)?;
     }
+    if version == "vectors-1.2" {
+        v1_2_cases(&mut g, &tmp)?;
+    }
 
     let manifest = json!({
         "suite": "s3a-hypertile-conformance",
@@ -432,5 +435,97 @@ fn v1_1_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
         "description": "Unregistered tile type 9999 (no COPY_THROUGH_COMPACT flag). Rewrite it (compaction) and report on the OUTPUT: the tile must still be there with a byte-identical payload (TILE-SPEC 7.2, ADR-0011/0013)",
         "expect": expect,
     }));
+    Ok(())
+}
+
+/// Appends `trailer` to the first Schema tile's payload in `b` and recomputes its CRCs.
+fn with_schema_trailer(mut b: Vec<u8>, trailer: &[u8]) -> Vec<u8> {
+    let hsz = s3a_core::HYPER_TILE_HEADER_SIZE;
+    let mut off = s3a_core::FILE_HEADER_SIZE;
+    while off + s3a_core::HYPER_TILE_SIZE <= b.len() {
+        let mut h: s3a_core::HyperTileHeader = bytemuck::pod_read_unaligned(&b[off..off + hsz]);
+        if h.tile_type == s3a_core::TileType::SCHEMA {
+            let p0 = off + hsz;
+            let end = p0 + h.payload_bytes as usize;
+            b[end..end + trailer.len()].copy_from_slice(trailer);
+            h.payload_bytes += trailer.len() as u32;
+            h.data_crc32 = crc32c::crc32c(&b[p0..p0 + h.payload_bytes as usize]);
+            h.header_crc32 = s3a_engine::compute_tile_header_crc32(&h);
+            b[off..off + hsz].copy_from_slice(bytemuck::bytes_of(&h));
+            return b;
+        }
+        off += s3a_core::HYPER_TILE_SIZE;
+    }
+    panic!("no schema tile");
+}
+
+/// vectors-1.2 additions (item 6): the self-describing "about" entry in the Schema tile.
+fn v1_2_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
+    let cat = std::fs::read(g.dir.join("files/valid_schema_catalog.s3a")).unwrap();
+    // Fixed values so the file and its expectation never depend on the current spec text.
+    let fixed = s3a_core::SchemaAbout {
+        spec_version: "1.5-draft".into(),
+        spec_url: s3a_engine::SPEC_URL.into(),
+        spec_sha256: "0".repeat(64),
+        writer: "s3a-conformance vectors-1.2".into(),
+    };
+    let about_json = json!({"spec_version": fixed.spec_version, "spec_url": fixed.spec_url,
+        "spec_sha256": fixed.spec_sha256, "writer": fixed.writer});
+    let w = |name: &str, b: &[u8]| {
+        let p = tmp.join(format!("{name}.s3a"));
+        std::fs::write(&p, b).unwrap();
+        p
+    };
+
+    g.file(
+        "about_absent",
+        &g.dir.join("files/valid_schema_catalog.s3a"),
+        "reader",
+        "Schema tile without an about entry: report about=null",
+        json!({"outcome": "ok", "about": null, "embedded_spec": "absent"}),
+    )?;
+
+    let trailer = s3a_core::encode_schema_about(&fixed);
+    let unsealed = with_schema_trailer(cat.clone(), &trailer);
+    g.file("about_unsealed", &w("ab1", &unsealed), "reader",
+        "valid_schema_catalog with an about entry appended to the Schema tile payload (TILE-SPEC 14.5.4); readers report its four fields",
+        json!({"outcome": "ok", "about": about_json, "embedded_spec": "absent"}))?;
+
+    let mut bad = trailer.clone();
+    let n = bad.len();
+    bad[n - 2] ^= 0x01; // inside the text, so text_crc32 fails
+    g.file(
+        "about_crc_corrupt",
+        &w("ab2", &with_schema_trailer(cat.clone(), &bad)),
+        "reader",
+        "about entry whose text_crc32 does not match (tile CRCs recomputed); readers MUST reject",
+        json!({"outcome": "error"}),
+    )?;
+
+    let mismatch = s3a_engine::seal_buffer_v2(
+        &unsealed,
+        &s3a_engine::SealOptionsV2::default()
+            .with_manifest()
+            .with_embed_spec(),
+    )
+    .map_err(|e| e.to_string())?;
+    g.file("about_embedded_spec_mismatch", &w("ab3", &mismatch), "reader",
+        "Sealed with an embedded spec (tile 79) whose SHA-256 differs from the about entry's spec_sha256; readers report embedded_spec=mismatch (advisory, outcome stays ok)",
+        json!({"outcome": "ok", "is_sealed": true, "embedded_spec": "mismatch", "about.spec_sha256": "0".repeat(64)}))?;
+
+    let sealed = s3a_engine::seal_buffer_v2(
+        &cat,
+        &s3a_engine::SealOptionsV2::default()
+            .with_manifest()
+            .with_embed_spec()
+            .with_record_roots()
+            .with_about(),
+    )
+    .map_err(|e| e.to_string())?;
+    g.file("about_sealed_self_describing", &w("ab4", &sealed), "reader",
+        "`seal --about --embed-spec --record-roots`: about entry, embedded spec that matches it, manifest, record roots",
+        json!({"outcome": "ok", "is_sealed": true, "embedded_spec": "match",
+               "about.spec_url": s3a_engine::SPEC_URL, "record_roots": "ok",
+               "tile_types.77": 1, "tile_types.78": 1, "tile_types.79": 1, "tile_types.83": 1}))?;
     Ok(())
 }
