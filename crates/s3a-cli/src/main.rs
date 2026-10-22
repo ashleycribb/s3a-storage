@@ -664,7 +664,11 @@ fn main() {
             }
             match file_opt {
                 Some(f) => {
-                    verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url);
+                    // Exit codes: 0 = ok (warnings allowed), 2 = verification failed
+                    // (missing/corrupt archive), 3 = record-root mismatch.
+                    if !verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url) {
+                        std::process::exit(2);
+                    }
                     if let Ok(r) = s3a_engine::MmapReader::open(f) {
                         let rep = s3a_engine::record_roots::check(&r);
                         if rep.present && !json_mode {
@@ -678,11 +682,14 @@ fn main() {
                             }
                         }
                         if !rep.ok() {
+                            if json_mode {
+                                eprintln!("Record roots: MISMATCH ({})", rep.mismatches.len());
+                            }
                             std::process::exit(3);
                         }
                     }
                 }
-                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]"),
+                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch"),
             }
         }
         "status" => {
@@ -2298,7 +2305,7 @@ fn verify_file(
     anchor_mode: bool,
     trust_store: Option<&str>,
     esplora_url: Option<&str>,
-) {
+) -> bool {
     let p = Path::new(path);
     if !p.exists() {
         if json_mode {
@@ -2309,7 +2316,7 @@ fn verify_file(
         } else {
             eprintln!("Error: file '{}' not found", path);
         }
-        return;
+        return false;
     }
 
     let repair_path = repair_out.map(Path::new);
@@ -2418,7 +2425,7 @@ fn verify_file(
                         }
                     }
                 }
-                return;
+                return true;
             }
 
             if json_mode {
@@ -2456,6 +2463,7 @@ fn verify_file(
                     println!("Warning: {}", w);
                 }
             }
+            true
         }
         Err(e) => {
             if json_mode {
@@ -2467,6 +2475,7 @@ fn verify_file(
             } else {
                 eprintln!("Verification FAILED in {}: {}", path, e);
             }
+            false
         }
     }
 }
