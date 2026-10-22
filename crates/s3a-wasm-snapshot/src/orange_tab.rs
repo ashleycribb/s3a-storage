@@ -260,6 +260,11 @@ pub fn session_columns() -> Vec<OrangeColumn> {
     ]
 }
 
+/// Round to 4 decimals so f32 noise (0.800000011920929) exports as 0.8.
+fn num4(v: f64) -> String {
+    num((v * 1e4).round() / 1e4)
+}
+
 fn num(v: f64) -> String {
     if v.is_finite() {
         format!("{v}")
@@ -362,7 +367,7 @@ pub fn export_snapshot(snap: &WasmAgentSnapshot, opts: &ExportOptions) -> Orange
         b[8..].copy_from_slice(&uuid[1].to_be_bytes());
         let mean = |s: f64, n: usize| {
             if n > 0 {
-                num(s / n as f64)
+                num4(s / n as f64)
             } else {
                 String::new()
             }
@@ -484,6 +489,7 @@ mod tests {
             ("60", "2", "1")
         );
         assert_eq!(r[8], "0.75");
+        assert_eq!(r[9], "0.8", "f32 confidence must be rounded");
         // Pseudonymous: session key is not the raw uuid.
         assert_ne!(r[0], "00000000000000010000000000000001");
         assert_eq!(r[0].len(), 16);

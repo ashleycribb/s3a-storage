@@ -20,6 +20,35 @@ pub enum LineageMode {
     All,
 }
 
+/// Minimum hex chars accepted for a short hash.
+pub const MIN_SHORT_HASH: usize = 7;
+
+/// Resolve a full or short (unique prefix, >= 7 hex chars) seal hash or commit id
+/// to a seal hash. Errors on not found or ambiguous.
+pub fn resolve_hash_prefix(commits: &[VcsCommitRecord], hash: &str) -> Result<[u8; 32], VcsError> {
+    let q = hash.trim().to_ascii_lowercase();
+    let not_found = || VcsError::CommitNotFound(hash.to_string());
+    if q.len() < MIN_SHORT_HASH || q.len() > 64 || !q.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(not_found());
+    }
+    let mut hits: Vec<[u8; 32]> = Vec::new();
+    for c in commits {
+        if hex::encode(c.seal_hash).starts_with(&q) || hex::encode(c.commit_id).starts_with(&q) {
+            if !hits.contains(&c.seal_hash) {
+                hits.push(c.seal_hash);
+            }
+        }
+    }
+    match hits.len() {
+        0 => Err(not_found()),
+        1 => Ok(hits[0]),
+        n => Err(VcsError::AmbiguousHash {
+            prefix: hash.to_string(),
+            matches: n,
+        }),
+    }
+}
+
 fn parents(c: &VcsCommitRecord) -> impl Iterator<Item = &[u8; 32]> {
     c.parent_seal_hashes
         .iter()
@@ -67,23 +96,9 @@ impl<'a> Frontier<'a> {
         }
     }
 
-    /// Resolve a full hex seal hash or commit id.
+    /// Resolve a full hex seal hash / commit id, or a unique prefix (>= 7 hex chars).
     pub fn resolve(&self, hash: &str) -> Result<[u8; 32], VcsError> {
-        let not_found = || VcsError::CommitNotFound(hash.to_string());
-        let bytes = hex::decode(hash.trim()).map_err(|_| not_found())?;
-        if bytes.len() != 32 {
-            return Err(not_found());
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        if self.by_seal.contains_key(&arr) {
-            return Ok(arr);
-        }
-        self.commits
-            .iter()
-            .find(|c| c.commit_id == arr)
-            .map(|c| c.seal_hash)
-            .ok_or_else(not_found)
+        resolve_hash_prefix(&self.commits, hash)
     }
 
     /// Commits with no children, in stored order.
@@ -206,6 +221,44 @@ mod tests {
     }
     fn seals(v: &[VcsCommitRecord]) -> Vec<u8> {
         v.iter().map(|c| c.seal_hash[0]).collect()
+    }
+
+    #[test]
+    fn short_hash_prefix() {
+        let mut a = mk(1, &[], 0);
+        a.seal_hash = [0xab; 32];
+        let mut b = mk(2, &[], 0);
+        b.seal_hash = [0xab; 32];
+        b.seal_hash[4] = 0xcd; // shares "abababab" (8 hex) prefix with a
+        let cs = vec![a, b];
+        assert_eq!(resolve_hash_prefix(&cs, "ababababab").unwrap(), a.seal_hash);
+        assert_eq!(resolve_hash_prefix(&cs, "ABABABABCD").unwrap(), b.seal_hash);
+        assert!(matches!(
+            resolve_hash_prefix(&cs, "abababa"),
+            Err(VcsError::AmbiguousHash { matches: 2, .. })
+        ));
+        // Too short (6), not found, non-hex.
+        assert!(matches!(
+            resolve_hash_prefix(&cs, "ababab"),
+            Err(VcsError::CommitNotFound(_))
+        ));
+        assert!(matches!(
+            resolve_hash_prefix(&cs, "0000000"),
+            Err(VcsError::CommitNotFound(_))
+        ));
+        assert!(matches!(
+            resolve_hash_prefix(&cs, "zzzzzzz"),
+            Err(VcsError::CommitNotFound(_))
+        ));
+        // Full hash and commit_id prefix still work.
+        assert_eq!(
+            resolve_hash_prefix(&cs, &hex::encode(a.seal_hash)).unwrap(),
+            a.seal_hash
+        );
+        assert_eq!(
+            resolve_hash_prefix(&cs, &hex::encode(&b.commit_id[..4])).unwrap(),
+            b.seal_hash
+        );
     }
 
     #[test]

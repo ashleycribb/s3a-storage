@@ -4,7 +4,7 @@ use ed25519_dalek::SigningKey;
 use rand_core::{OsRng, RngCore};
 use std::path::PathBuf;
 
-use s3a_vcs::{export_git, sync_push, LineageMode, VcsRepo};
+use s3a_vcs::{export_git, sync_push_with_limits, LineageMode, PushLimits, VcsRepo};
 
 pub fn handle_vcs_command(args: &[String]) {
     if args.len() < 3 {
@@ -256,13 +256,13 @@ pub fn handle_vcs_command(args: &[String]) {
                     if let Some(tag_name) = new_tag {
                         let signing_key = load_or_generate_key(file);
                         let target_seal = if args.len() >= 6 {
-                            let mut arr = [0u8; 32];
-                            if let Ok(h) = hex::decode(&args[5]) {
-                                if h.len() == 32 {
-                                    arr.copy_from_slice(&h);
+                            match repo.resolve_rev(&args[5]) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("Failed to create tag: {}", e);
+                                    return;
                                 }
                             }
-                            arr
                         } else {
                             repo.get_ref("main")
                                 .ok()
@@ -308,18 +308,12 @@ pub fn handle_vcs_command(args: &[String]) {
             let target = &args[4];
             match VcsRepo::open(file) {
                 Ok(repo) => {
-                    let seal = if let Some(r) = repo.get_ref(target).ok().flatten() {
-                        Some(r.target_seal_hash)
-                    } else if let Ok(h) = hex::decode(target) {
-                        if h.len() == 32 {
-                            let mut a = [0u8; 32];
-                            a.copy_from_slice(&h);
-                            Some(a)
-                        } else {
+                    let seal = match repo.resolve_rev(target) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            eprintln!("{}", e);
                             None
                         }
-                    } else {
-                        None
                     };
 
                     match seal {
@@ -450,7 +444,7 @@ pub fn handle_vcs_command(args: &[String]) {
         }
         "push" => {
             if args.len() < 5 {
-                println!("Usage: s3a-cli vcs push <source_archive> <target_archive> [--branch <branch>] [--merge]");
+                println!("Usage: s3a-cli vcs push <source_archive> <target_archive> [--branch <branch>] [--merge] [--max-bundle-bytes N] [--max-commits N]");
                 return;
             }
             let src = &args[3];
@@ -462,6 +456,25 @@ pub fn handle_vcs_command(args: &[String]) {
                 .map(|s| s.as_str())
                 .unwrap_or("main");
             let allow_merge = args.iter().any(|a| a == "--merge");
+            let mut limits = PushLimits::default();
+            for (flag, slot) in [
+                ("--max-bundle-bytes", &mut limits.max_bundle_bytes),
+                ("--max-commits", &mut limits.max_commits),
+            ] {
+                if let Some(v) = args
+                    .iter()
+                    .position(|a| a == flag)
+                    .and_then(|p| args.get(p + 1))
+                {
+                    match v.parse::<u64>() {
+                        Ok(n) => *slot = n,
+                        Err(_) => {
+                            eprintln!("Invalid value for {}: {}", flag, v);
+                            std::process::exit(2);
+                        }
+                    }
+                }
+            }
             let signing_key = load_or_generate_key(src);
 
             let s_repo = match VcsRepo::open(src) {
@@ -479,12 +492,23 @@ pub fn handle_vcs_command(args: &[String]) {
                 }
             };
 
-            match sync_push(&s_repo, &t_repo, branch, allow_merge, None, &signing_key) {
+            match sync_push_with_limits(
+                &s_repo,
+                &t_repo,
+                branch,
+                allow_merge,
+                None,
+                &signing_key,
+                limits,
+            ) {
                 Ok(transferred) => println!(
                     "Push completed: transferred {} missing tiles to target",
                     transferred
                 ),
-                Err(e) => eprintln!("Push failed: {}", e),
+                Err(e) => {
+                    eprintln!("Push failed: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         _ => print_vcs_usage(),
@@ -508,6 +532,13 @@ fn print_vcs_usage() {
         "  s3a-cli vcs merge <archive> <source> <target>         Append-only union merge branches"
     );
     println!("  s3a-cli vcs push <src> <tgt> [--branch B] [--merge]   Inventory sync push transmitting missing tiles");
+    println!("        [--max-bundle-bytes N] [--max-commits N]        Push limits (defaults 64 MiB / 1000 commits)");
+    println!(
+        "  s3a-cli vcs leaves <archive> [--agent A] [--json]     Commits nobody has built on yet"
+    );
+    println!("  s3a-cli vcs children <archive> <hash|ref> [--json]    Direct children of a commit");
+    println!("  s3a-cli vcs lineage <archive> <hash|ref> [--all]      Ancestors back to root (first-parent default)");
+    println!("  Hashes may be shortened to a unique prefix of at least 7 hex chars.");
     println!("  s3a-cli vcs export-git <archive> <out_dir>            Export repository to real read-only Git repo");
 }
 
