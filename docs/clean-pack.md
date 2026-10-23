@@ -72,4 +72,8 @@ keeps an append-only, hash-chained, fsynced log at `<dir>/intake.log`. Sealed ra
 - **Dead letters** carry `MARK_QUARANTINE`, the step, the source path, the item hash and the sealed raw archive (once sealed), the reason, the attempt count, and whether the error was transient. List them with `clean dlq <dir>`.
 - **Rulebook problems** are not failures. They land in the cleaned version's review queue and are never retried.
 - **Provenance:** each intake step (`fetch`, `seal_raw`, `clean`, `commit`) appends an Ed25519-signed event chained to the log head. Check it with `clean log-verify <dir>`.
-- **Crash safety:** a torn final line is truncated on reopen. A bad line anywhere else is an error.
+- **Crash safety:** a torn final line is truncated on the next intake, under the lock. A bad line anywhere else is an error.
+- **Lock:** each intake, `gc` and `log-repair` run holds an exclusive OS lock on `<dir>/intake.lock` for its whole duration. A second run fails at once with "intake state is locked by another run". The kernel drops the lock when the process exits, so a crash never leaves a stale lock. A leftover lock file is harmless.
+- **`clean log-verify <dir>`** is read-only. It never creates or truncates the log. If the log has a torn tail, it reports the size and exits 4.
+- **`clean log-repair <dir>`** takes the lock and truncates a torn final line.
+- **`clean gc <dir> [--apply]`** lists `.s3a` archives under `raw/` and `clean/` that `intake.log` doesn't reference. It's a dry run by default; only `--apply` deletes. Raw archives count as referenced when a dedup or dead-letter record names them. Clean archives count as referenced when a signed `clean` event carries their hash. `gc` refuses to run on a log with a torn tail.

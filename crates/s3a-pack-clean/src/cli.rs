@@ -9,7 +9,9 @@ s3a-cli clean ingest <file>... --rulebook <rb.yaml> --raw-out <raw.s3a> --clean-
 s3a-cli clean intake <file>... --state <dir> --rulebook <rb.yaml> --key <key.hex> [--label-scope <s> --label <l>]
                      [--retries <n>] [--connector <name>] [--org ..] [--user ..] [--device ..] [--location ..] [--captured-at <unix>]
                      (dedup + labels + dead letters + signed provenance log at <dir>/intake.log)
-s3a-cli clean log-verify <dir>                                       (check intake log chain + signatures)
+s3a-cli clean log-verify <dir>                                       (read-only: chain + signatures; exit 4 if torn tail)
+s3a-cli clean log-repair <dir>                                       (truncate a torn final line; takes the lock)
+s3a-cli clean gc <dir> [--apply]                                     (list archives not referenced by intake.log; delete with --apply)
 s3a-cli clean dlq <dir>                                              (list dead-letter entries)
 s3a-cli clean verify <raw.s3a> <clean.s3a> [--rulebook <rb.yaml>]   (exit 0 ok, 2 failed)
 s3a-cli clean queue <clean.s3a>                                      (review queue)
@@ -138,8 +140,9 @@ fn go(args: &[String]) -> Result<i32, String> {
         }
         "log-verify" | "dlq" => {
             let dir = positional(rest).into_iter().next().ok_or("missing <dir>")?;
-            let log = crate::intake_log::IntakeLog::open(&crate::intake::log_path(Path::new(&dir)))
-                .map_err(|e| e.to_string())?;
+            let log =
+                crate::intake_log::IntakeLog::inspect(&crate::intake::log_path(Path::new(&dir)))
+                    .map_err(|e| e.to_string())?;
             if cmd == "log-verify" {
                 println!(
                     "ok: {} records, {} signed events, head {}",
@@ -147,11 +150,50 @@ fn go(args: &[String]) -> Result<i32, String> {
                     log.events().count(),
                     log.last_hash()
                 );
+                if log.recovered_torn_tail {
+                    println!("torn tail: {} bytes after the last good line (crash mid-write); run `clean log-repair {dir}`", log.torn_tail_bytes);
+                    return Ok(4);
+                }
             } else {
                 for d in log.dead_letters() {
                     println!("{}", serde_json::to_string(d).map_err(|e| e.to_string())?);
                 }
             }
+            Ok(0)
+        }
+        "log-repair" => {
+            let dir = PathBuf::from(positional(rest).into_iter().next().ok_or("missing <dir>")?);
+            let _lock = crate::intake::StateLock::acquire(&dir).map_err(|e| e.to_string())?;
+            let n = crate::intake_log::IntakeLog::repair(&crate::intake::log_path(&dir))
+                .map_err(|e| e.to_string())?;
+            println!("removed {n} torn bytes");
+            Ok(0)
+        }
+        "gc" => {
+            let dir = PathBuf::from(
+                rest.iter()
+                    .find(|a| !a.starts_with("--"))
+                    .ok_or("missing <dir>")?,
+            );
+            let apply = rest.iter().any(|a| a == "--apply");
+            let orphans = crate::intake::gc(&dir, apply).map_err(|e| e.to_string())?;
+            for o in &orphans {
+                println!(
+                    "{} {} ({} bytes)",
+                    if apply { "deleted" } else { "would delete" },
+                    o.path.display(),
+                    o.bytes
+                );
+            }
+            println!(
+                "{} unreferenced archive(s){}",
+                orphans.len(),
+                if apply {
+                    ""
+                } else {
+                    "; dry run, pass --apply to delete"
+                }
+            );
             Ok(0)
         }
         "ingest" => {

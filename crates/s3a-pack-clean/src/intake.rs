@@ -80,6 +80,8 @@ pub enum Outcome {
 #[derive(Debug)]
 pub enum IntakeError {
     LabelReused(LabelEntry),
+    /// Another intake run holds `<state>/intake.lock`.
+    Locked(PathBuf),
     Io(io::Error),
 }
 impl std::fmt::Display for IntakeError {
@@ -89,6 +91,11 @@ impl std::fmt::Display for IntakeError {
                 f,
                 "label '{}' in scope '{}' was already committed (raw snapshot {})",
                 l.label, l.scope, l.raw_snapshot_hash
+            ),
+            IntakeError::Locked(p) => write!(
+                f,
+                "intake state is locked by another run ({}); retry when it finishes",
+                p.display()
             ),
             IntakeError::Io(e) => write!(f, "{e}"),
         }
@@ -126,6 +133,7 @@ pub fn ingest(
     key: &SigningKey,
     io_: &mut dyn IntakeIo,
 ) -> Result<Outcome, IntakeError> {
+    let _lock = StateLock::acquire(req.state_dir)?;
     let mut log = IntakeLog::open(&log_path(req.state_dir))?;
     if let Some((scope, label)) = &req.label {
         if let Some(l) = log.label(scope, label) {
@@ -307,4 +315,87 @@ pub fn ingest(
         duplicates: dups,
         dead_letters: dls,
     })
+}
+
+/// Exclusive OS file lock on `<state>/intake.lock`, held until dropped.
+/// The kernel releases it when the process exits, so a crashed run never leaves a
+/// stale lock; the lock file's mere existence means nothing.
+pub struct StateLock {
+    _file: std::fs::File,
+}
+impl StateLock {
+    pub fn acquire(state_dir: &Path) -> Result<Self, IntakeError> {
+        std::fs::create_dir_all(state_dir)?;
+        let p = state_dir.join("intake.lock");
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&p)?;
+        match f.try_lock() {
+            Ok(()) => Ok(StateLock { _file: f }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(IntakeError::Locked(p)),
+            Err(std::fs::TryLockError::Error(e)) => Err(IntakeError::Io(e)),
+        }
+    }
+}
+
+/// An archive under `<state>/raw` or `<state>/clean` not referenced by the log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Orphan {
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+/// List (and with `apply`, delete) unreferenced archives. Takes the state lock.
+/// Referenced: raw archives named by dedup or dead-letter records; clean archives
+/// whose cleaned hash appears in a signed `clean` event.
+pub fn gc(state_dir: &Path, apply: bool) -> Result<Vec<Orphan>, IntakeError> {
+    let _lock = StateLock::acquire(state_dir)?;
+    let log = IntakeLog::inspect(&log_path(state_dir))?;
+    if log.recovered_torn_tail {
+        return Err(IntakeError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "intake log has a torn tail; run `clean log-repair` first",
+        )));
+    }
+    let refs = log.referenced_archives();
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let raw_refs: std::collections::BTreeSet<PathBuf> = refs
+        .iter()
+        .filter(|r| !r.starts_with("clean:"))
+        .map(|r| canon(Path::new(r)))
+        .collect();
+    let mut out = vec![];
+    for sub in ["raw", "clean"] {
+        let dir = state_dir.join(sub);
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = rd.filter_map(Result::ok).map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if !p.is_file() || p.extension().and_then(|e| e.to_str()) != Some("s3a") {
+                continue;
+            }
+            let referenced = if sub == "raw" {
+                raw_refs.contains(&canon(&p))
+            } else {
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                refs.contains(&format!("clean:{stem}"))
+            };
+            if !referenced {
+                out.push(Orphan {
+                    bytes: std::fs::metadata(&p)?.len(),
+                    path: p,
+                });
+            }
+        }
+    }
+    if apply {
+        for o in &out {
+            std::fs::remove_file(&o.path)?;
+        }
+    }
+    Ok(out)
 }

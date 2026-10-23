@@ -114,11 +114,37 @@ pub struct IntakeLog {
     labels: BTreeMap<(String, String), LabelEntry>,
     /// True when a torn trailing line was dropped on open.
     pub recovered_torn_tail: bool,
+    /// Size of the torn trailing fragment (0 if none).
+    pub torn_tail_bytes: usize,
 }
 
 impl IntakeLog {
-    /// Open (or create) the log at `path`.
+    /// Open (or create) the log at `path` for appending; a torn tail is truncated.
+    /// Callers should hold the state lock (see `intake::StateLock`).
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::load(path, true)
+    }
+
+    /// Read-only open: never creates, truncates or writes. A torn tail is reported
+    /// in `recovered_torn_tail` / `torn_tail_bytes` but left on disk.
+    pub fn inspect(path: &Path) -> io::Result<Self> {
+        if !path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no intake log at {}", path.display()),
+            ));
+        }
+        Self::load(path, false)
+    }
+
+    /// Truncate a torn final line, if any. Returns the number of bytes removed.
+    pub fn repair(path: &Path) -> io::Result<usize> {
+        let before = std::fs::metadata(path)?.len();
+        Self::load(path, true)?;
+        Ok((before - std::fs::metadata(path)?.len()) as usize)
+    }
+
+    fn load(path: &Path, write: bool) -> io::Result<Self> {
         let bad = |m: String| io::Error::new(io::ErrorKind::InvalidData, m);
         let mut log = IntakeLog {
             path: path.to_path_buf(),
@@ -127,6 +153,7 @@ impl IntakeLog {
             dedup: BTreeMap::new(),
             labels: BTreeMap::new(),
             recovered_torn_tail: false,
+            torn_tail_bytes: 0,
         };
         if !path.exists() {
             if let Some(p) = path.parent() {
@@ -153,6 +180,10 @@ impl IntakeLog {
                 if is_tail && !ends_nl {
                     // Torn write from a crash: drop it and truncate.
                     log.recovered_torn_tail = true;
+                    log.torn_tail_bytes = data.len() - good_len;
+                    if !write {
+                        break;
+                    }
                     let f = std::fs::OpenOptions::new().write(true).open(path)?;
                     f.set_len(good_len as u64)?;
                     f.sync_all()?;
@@ -190,6 +221,28 @@ impl IntakeLog {
             }
             _ => {}
         }
+    }
+
+    /// Archive paths referenced by any record (dedup entries and dead letters).
+    pub fn referenced_archives(&self) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for r in &self.records {
+            match r {
+                Record::Dedup(d) => {
+                    out.insert(d.raw_archive.clone());
+                }
+                Record::DeadLetter(d) => {
+                    if let Some(a) = &d.raw_archive {
+                        out.insert(a.clone());
+                    }
+                }
+                Record::Event(e) if e.step == "clean" => {
+                    out.insert(format!("clean:{}", e.output_hash));
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     pub fn last_hash(&self) -> &str {
