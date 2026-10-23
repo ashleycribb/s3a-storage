@@ -837,6 +837,9 @@ impl Tool for SandboxBuildTool {
 /// and cryptographic provenance execution logging.
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+    /// Permission modes, per-tool rules, agent passes and human approval. `None` keeps the
+    /// legacy behaviour (allowlist + grant + judgment refusal only).
+    policy: RwLock<Option<crate::permissions::PermissionPolicy>>,
 }
 
 impl Default for ToolRegistry {
@@ -850,6 +853,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: RwLock::new(HashMap::new()),
+            policy: RwLock::new(None),
         }
     }
 
@@ -864,6 +868,11 @@ impl ToolRegistry {
         registry.register(Arc::new(PreflightCheckTool));
         registry.register(Arc::new(SandboxBuildTool::new()));
         registry
+    }
+
+    /// Install (or replace) the permission policy checked on every tool call.
+    pub fn set_permission_policy(&self, policy: crate::permissions::PermissionPolicy) {
+        *self.policy.write().unwrap() = Some(policy);
     }
 
     /// Register a tool into the registry.
@@ -932,8 +941,26 @@ impl ToolRegistry {
             });
         }
 
+        // 1b. Permission policy: mode + rule, owner-signed agent pass, human approval.
+        //     A judgment tool only gets past this with an explicit human approval.
+        let human_approved_judgment = {
+            let guard = self.policy.read().unwrap();
+            match guard.as_ref() {
+                Some(policy) => {
+                    policy
+                        .authorize(&ctx.agent_id, tool_name, args, chrono_timestamp())
+                        .map_err(|details| ToolError::ExecutionFailed {
+                            tool: tool_name.to_string(),
+                            details,
+                        })?;
+                    s3a_vault::is_judgment_action(tool_name)
+                }
+                None => false,
+            }
+        };
+
         // 2. Non-delegable judgment invariant check (§3.2, §12.5)
-        if s3a_vault::is_judgment_action(tool_name) {
+        if s3a_vault::is_judgment_action(tool_name) && !human_approved_judgment {
             return Err(ToolError::ExecutionFailed {
                 tool: tool_name.to_string(),
                 details: "Non-delegable judgment action requires interactive human approval"

@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod eval;
 pub mod mcp;
 pub mod model;
+pub mod permissions;
 pub mod repair;
 pub mod runtime;
 pub mod sandbox;

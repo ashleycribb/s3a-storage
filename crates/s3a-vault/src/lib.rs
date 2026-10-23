@@ -5,6 +5,7 @@
 
 pub mod access_code;
 pub mod address;
+pub mod agent_pass;
 pub mod backup;
 pub mod delegation;
 pub mod errors;
@@ -18,6 +19,10 @@ pub mod vault;
 
 pub use access_code::{AccessCode, AccessCodeSessionManager};
 pub use address::{GateAddress, GateTarget};
+pub use agent_pass::{
+    check_agent_pass, issue_agent_pass, verify_agent_pass, AgentPass, PassConditions,
+    AGENT_PASS_DOMAIN,
+};
 pub use backup::{create_backup, restore_backup};
 pub use delegation::{
     create_delegation_grant, evaluate_agent_action, is_judgment_action, verify_delegation_grant,
