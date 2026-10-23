@@ -60,3 +60,16 @@ s3a-cli clean rulebook-sign | rulebook-verify ...
 - The signature proves which key signed. The pack cannot prove that a human held an approver key; that is enforced by key custody.
 - Records are stored as JSON chunked across `RECORD` tiles, not as fixed-size binary records.
 - No connector interface beyond local files yet, and no AI suggestions.
+
+## Duplicate-safe intake (`s3a-cli clean intake`)
+
+`clean intake <file>... --state <dir> --rulebook <rb.yaml> --key <key.hex> [--label-scope S --label L] [--retries N]`
+keeps an append-only, hash-chained, fsynced log at `<dir>/intake.log`. Sealed raws are kept under `<dir>/raw/<raw_snapshot_hash>.s3a` and cleaned versions under `<dir>/clean/<cleaned_hash>.s3a`.
+
+- **Dedup index** keyed `(item_sha256, connector_id)`. If every fetched item is already known, the run is a no-op that returns the existing raw snapshot and writes nothing.
+- **Load labels** `(scope, label, raw_snapshot_hash, committed_at)` are supplied by the caller. A label that is already committed in a scope is refused; the error names the original snapshot.
+- **Redelivery** defaults to 0 retries. Only transient I/O errors (timeout, interrupted, would-block, connection reset/aborted, broken pipe) are retried. Permanent errors are recorded after one attempt.
+- **Dead letters** carry `MARK_QUARANTINE`, the step, the source path, the item hash and the sealed raw archive (once sealed), the reason, the attempt count, and whether the error was transient. List them with `clean dlq <dir>`.
+- **Rulebook problems** are not failures. They land in the cleaned version's review queue and are never retried.
+- **Provenance:** each intake step (`fetch`, `seal_raw`, `clean`, `commit`) appends an Ed25519-signed event chained to the log head. Check it with `clean log-verify <dir>`.
+- **Crash safety:** a torn final line is truncated on reopen. A bad line anywhere else is an error.
