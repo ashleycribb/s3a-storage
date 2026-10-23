@@ -246,3 +246,90 @@ fn default_no_retry_and_permanent_errors_never_retried() {
         .iter()
         .all(|r| matches!(r, Record::DeadLetter(_))));
 }
+
+#[test]
+fn concurrent_intake_blocked_by_state_lock() {
+    use s3a_pack_clean::intake::StateLock;
+    let d = tempfile::tempdir().unwrap();
+    let st = d.path().join("state");
+    let f = d.path().join("a.csv");
+    std::fs::write(&f, CSV).unwrap();
+    let held = StateLock::acquire(&st).unwrap();
+    match run(&req(&st, vec![f.clone()], None, 0), &mut FsIo) {
+        Err(IntakeError::Locked(p)) => assert!(p.ends_with("intake.lock")),
+        o => panic!("{o:?}"),
+    }
+    assert!(matches!(
+        s3a_pack_clean::intake::gc(&st, false),
+        Err(IntakeError::Locked(_))
+    ));
+    drop(held);
+    // Lock file still exists but the OS lock is gone: not stale.
+    assert!(st.join("intake.lock").exists());
+    assert!(matches!(
+        run(&req(&st, vec![f], None, 0), &mut FsIo).unwrap(),
+        Outcome::Committed { .. }
+    ));
+}
+
+#[test]
+fn gc_dry_run_vs_apply() {
+    use s3a_pack_clean::intake::gc;
+    let d = tempfile::tempdir().unwrap();
+    let st = d.path().join("state");
+    let f = d.path().join("a.csv");
+    std::fs::write(&f, CSV).unwrap();
+    let Outcome::Committed {
+        raw_archive,
+        clean_archive,
+        ..
+    } = run(&req(&st, vec![f], None, 0), &mut FsIo).unwrap()
+    else {
+        panic!()
+    };
+    let orphan_raw = st.join("raw").join("staging-deadbeef.s3a");
+    let orphan_clean = st.join("clean").join(format!("{}.s3a", "ab".repeat(32)));
+    std::fs::write(&orphan_raw, b"x").unwrap();
+    std::fs::write(&orphan_clean, b"y").unwrap();
+    let dry = gc(&st, false).unwrap();
+    assert_eq!(dry.len(), 2);
+    assert!(orphan_raw.exists() && orphan_clean.exists());
+    let applied = gc(&st, true).unwrap();
+    assert_eq!(applied, dry);
+    assert!(!orphan_raw.exists() && !orphan_clean.exists());
+    assert!(
+        raw_archive.exists() && clean_archive.exists(),
+        "referenced archives untouched"
+    );
+    assert!(gc(&st, false).unwrap().is_empty());
+}
+
+#[test]
+fn log_verify_is_read_only_and_repair_truncates() {
+    let d = tempfile::tempdir().unwrap();
+    let st = d.path().join("state");
+    let f = d.path().join("a.csv");
+    std::fs::write(&f, CSV).unwrap();
+    run(&req(&st, vec![f], None, 0), &mut FsIo).unwrap();
+    let lp = log_path(&st);
+    let mut bytes = std::fs::read(&lp).unwrap();
+    bytes.extend_from_slice(b"{\"prev\":\"00");
+    std::fs::write(&lp, &bytes).unwrap();
+    let dir = st.display().to_string();
+    let args = |c: &str| vec![c.to_string(), dir.clone()];
+    assert_eq!(s3a_pack_clean::cli::run(&args("log-verify")), 4);
+    assert_eq!(
+        std::fs::read(&lp).unwrap(),
+        bytes,
+        "log-verify must not modify the log"
+    );
+    let l = IntakeLog::inspect(&lp).unwrap();
+    assert_eq!((l.recovered_torn_tail, l.torn_tail_bytes), (true, 11));
+    assert_eq!(s3a_pack_clean::cli::run(&args("log-repair")), 0);
+    assert_eq!(std::fs::read(&lp).unwrap().len(), bytes.len() - 11);
+    assert_eq!(s3a_pack_clean::cli::run(&args("log-verify")), 0);
+    // Missing log: inspect does not create one.
+    let empty = d.path().join("nope");
+    assert!(IntakeLog::inspect(&log_path(&empty)).is_err());
+    assert!(!empty.exists());
+}
