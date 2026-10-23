@@ -58,12 +58,25 @@ pub fn intake(
     captured_at: u64,
     out: &Path,
 ) -> io::Result<RawSnapshot> {
+    let mut fetched = Vec::new();
+    for f in files {
+        fetched.push((f.to_path_buf(), std::fs::read(f)?));
+    }
+    intake_bytes(&fetched, meta, captured_at, out)
+}
+
+/// Like [`intake`], but from already-fetched `(source path, bytes)` pairs (connectors).
+pub fn intake_bytes(
+    fetched: &[(std::path::PathBuf, Vec<u8>)],
+    meta: &SourceMeta,
+    captured_at: u64,
+    out: &Path,
+) -> io::Result<RawSnapshot> {
     let mut items = Vec::new();
     let mut tiles = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for f in files {
-        let bytes = std::fs::read(f)?;
-        let sha = crate::sha256_hex(&bytes);
+    for (f, bytes) in fetched {
+        let sha = crate::sha256_hex(bytes);
         items.push(RawItem {
             item_sha256: sha.clone(),
             size: bytes.len() as u64,
@@ -77,7 +90,7 @@ pub fn intake(
         });
         if seen.insert(sha.clone()) {
             let key: [u8; 32] = hex::decode(&sha).unwrap().try_into().unwrap();
-            tiles.extend(archive::chunk_tiles(RAW_BLOB_TILE, &key, &bytes));
+            tiles.extend(archive::chunk_tiles(RAW_BLOB_TILE, &key, bytes));
         }
     }
     items.sort_by(|a, b| (&a.source_path, &a.item_sha256).cmp(&(&b.source_path, &b.item_sha256)));

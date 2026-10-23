@@ -16,6 +16,8 @@
 pub mod archive;
 pub mod clean;
 pub mod cli;
+pub mod intake;
+pub mod intake_log;
 pub mod raw;
 pub mod rulebook;
 

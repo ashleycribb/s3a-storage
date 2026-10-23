@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 pub const USAGE: &str = "\
 s3a-cli clean ingest <file>... --rulebook <rb.yaml> --raw-out <raw.s3a> --clean-out <clean.s3a> --key <key.hex>
                      [--connector <name>] [--org <o>] [--user <u>] [--device <d>] [--location <l>] [--captured-at <unix>]
+s3a-cli clean intake <file>... --state <dir> --rulebook <rb.yaml> --key <key.hex> [--label-scope <s> --label <l>]
+                     [--retries <n>] [--connector <name>] [--org ..] [--user ..] [--device ..] [--location ..] [--captured-at <unix>]
+                     (dedup + labels + dead letters + signed provenance log at <dir>/intake.log)
+s3a-cli clean log-verify <dir>                                       (check intake log chain + signatures)
+s3a-cli clean dlq <dir>                                              (list dead-letter entries)
 s3a-cli clean verify <raw.s3a> <clean.s3a> [--rulebook <rb.yaml>]   (exit 0 ok, 2 failed)
 s3a-cli clean queue <clean.s3a>                                      (review queue)
 s3a-cli clean rulebook-sign <old.yaml> <new.yaml> --key <human.hex> --reason <text> --out <update.json>
@@ -59,6 +64,96 @@ fn go(args: &[String]) -> Result<i32, String> {
     let rest = &args[1..];
     let need = |k: &str| opt(rest, k).ok_or(format!("missing {k}"));
     match cmd.as_str() {
+        "intake" => {
+            let files: Vec<PathBuf> = positional(rest).into_iter().map(PathBuf::from).collect();
+            if files.is_empty() {
+                return Err("no input files".into());
+            }
+            let state = PathBuf::from(need("--state")?);
+            let rb_bytes = std::fs::read(need("--rulebook")?).map_err(|e| e.to_string())?;
+            let rb = Rulebook::parse(&rb_bytes)?;
+            let key = load_key(Path::new(&need("--key")?))?;
+            let label = match (opt(rest, "--label-scope"), opt(rest, "--label")) {
+                (Some(s), Some(l)) => Some((s, l)),
+                (None, None) => None,
+                _ => return Err("--label-scope and --label go together".into()),
+            };
+            let max_retries = opt(rest, "--retries")
+                .map(|s| s.parse())
+                .transpose()
+                .map_err(|_| "bad --retries")?
+                .unwrap_or(0);
+            let req = crate::intake::Request {
+                state_dir: &state,
+                files,
+                meta: raw::SourceMeta {
+                    connector: opt(rest, "--connector").unwrap_or_else(|| "file".into()),
+                    org: opt(rest, "--org"),
+                    user: opt(rest, "--user"),
+                    device: opt(rest, "--device"),
+                    location: opt(rest, "--location"),
+                },
+                label,
+                captured_at: match opt(rest, "--captured-at") {
+                    Some(s) => s.parse().map_err(|_| "bad --captured-at")?,
+                    None => std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                },
+                redelivery: crate::intake::Redelivery { max_retries },
+            };
+            use crate::intake::Outcome::*;
+            match crate::intake::ingest(&req, &rb, &rb_bytes, &key, &mut crate::intake::FsIo)
+                .map_err(|e| e.to_string())?
+            {
+                Committed {
+                    raw_snapshot_hash,
+                    raw_archive,
+                    clean_archive,
+                    dead_letters,
+                    duplicates,
+                    ..
+                } => {
+                    println!("committed raw={raw_snapshot_hash} raw_archive={} clean_archive={} duplicates_skipped={} dead_letters={}", raw_archive.display(), clean_archive.display(), duplicates.len(), dead_letters.len());
+                    Ok(if dead_letters.is_empty() { 0 } else { 3 })
+                }
+                Duplicate {
+                    existing,
+                    dead_letters,
+                } => {
+                    for d in &existing {
+                        println!(
+                            "duplicate {} (connector {}) already in raw {}",
+                            d.item_sha256, d.connector_id, d.raw_snapshot_hash
+                        );
+                    }
+                    Ok(if dead_letters.is_empty() { 0 } else { 3 })
+                }
+                AllDeadLettered(d) => {
+                    println!("all inputs dead-lettered: {}", d.len());
+                    Ok(3)
+                }
+            }
+        }
+        "log-verify" | "dlq" => {
+            let dir = positional(rest).into_iter().next().ok_or("missing <dir>")?;
+            let log = crate::intake_log::IntakeLog::open(&crate::intake::log_path(Path::new(&dir)))
+                .map_err(|e| e.to_string())?;
+            if cmd == "log-verify" {
+                println!(
+                    "ok: {} records, {} signed events, head {}",
+                    log.records.len(),
+                    log.events().count(),
+                    log.last_hash()
+                );
+            } else {
+                for d in log.dead_letters() {
+                    println!("{}", serde_json::to_string(d).map_err(|e| e.to_string())?);
+                }
+            }
+            Ok(0)
+        }
         "ingest" => {
             let files: Vec<PathBuf> = positional(rest).into_iter().map(PathBuf::from).collect();
             if files.is_empty() {
