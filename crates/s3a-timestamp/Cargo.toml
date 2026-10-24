@@ -1,0 +1,18 @@
+[package]
+name = "s3a-timestamp"
+description = "Anchor a hash with RFC 3161 timestamps from k-of-n independent TSAs (outside S3A core)"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+fetch = ["dep:ureq"]
+
+[dependencies]
+sha2 = "0.10"
+ureq = { version = "2", optional = true, default-features = false, features = ["tls"] }
+
+[[bin]]
+name = "s3a-timestamp"
+required-features = ["fetch"]
