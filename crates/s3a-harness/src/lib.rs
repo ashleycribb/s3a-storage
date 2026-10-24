@@ -6,6 +6,7 @@ pub mod agent;
 pub mod config;
 pub mod decision;
 pub mod doctor;
+pub mod enforcement;
 pub mod eval;
 pub mod mcp;
 pub mod model;

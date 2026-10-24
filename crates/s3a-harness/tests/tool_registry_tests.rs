@@ -254,6 +254,12 @@ fn test_retraction_watch_check_clean_and_retracted() {
 #[test]
 fn test_mcp_client_external_tool_delegation() {
     let registry = ToolRegistry::new();
+    // Deny by default: external tools only run under an explicit policy.
+    let mut policy = s3a_harness::permissions::PermissionPolicy::new(
+        s3a_harness::permissions::PermissionMode::Auto,
+    );
+    policy.require_pass = false;
+    registry.set_permission_policy(policy);
     let (ctx, _tmp) = create_test_context();
 
     // Register simulated external MCP tool

@@ -378,6 +378,8 @@ pub struct S3AMcpDispatcher {
     project_uuid: [u64; 2],
     session_uuid: [u64; 2],
     negotiated_version: RwLock<String>,
+    agent_id: u64,
+    gate: Arc<crate::enforcement::EnforcementGate>,
 }
 
 impl S3AMcpDispatcher {
@@ -396,7 +398,20 @@ impl S3AMcpDispatcher {
             project_uuid,
             session_uuid,
             negotiated_version: RwLock::new(MCP_PROTOCOL_VERSION.to_string()),
+            agent_id,
+            gate: Arc::new(crate::enforcement::EnforcementGate::new()),
         }
+    }
+
+    /// Share an enforcement gate (e.g. the tool registry's) with this dispatcher.
+    pub fn with_enforcement_gate(mut self, gate: Arc<crate::enforcement::EnforcementGate>) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// The enforcement gate checked on every `tools/call`.
+    pub fn enforcement_gate(&self) -> Arc<crate::enforcement::EnforcementGate> {
+        self.gate.clone()
     }
 
     /// Backwards-compatible constructor for quick dispatch or testing.
@@ -559,7 +574,15 @@ impl S3AMcpDispatcher {
                 };
 
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                let call_result = self.call_tool(tool_name, &args);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let agent = format!("mcp-agent-{}", self.agent_id);
+                let call_result = match self.gate.check(&agent, tool_name, &args, now) {
+                    Ok(_) => self.call_tool(tool_name, &args),
+                    Err(reason) => Ok((reason, true)),
+                };
 
                 match call_result {
                     Ok((text, is_err)) => {
