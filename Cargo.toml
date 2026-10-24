@@ -25,6 +25,7 @@ members = [
     "crates/s3a-trace", "crates/s3a-pack-clean",
     "crates/s3a-exp-neighbor-delta",
     "crates/s3a-flat",
+    "crates/s3a-runledger",
 ]
 
 [workspace.package]

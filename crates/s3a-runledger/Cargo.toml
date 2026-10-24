@@ -1,0 +1,16 @@
+[package]
+name = "s3a-runledger"
+description = "Append-only, hash-chained, Ed25519-signed ledger of research plans, amendments and runs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+
+[dev-dependencies]
+rand_core = { version = "0.6", features = ["std"] }
