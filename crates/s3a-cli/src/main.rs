@@ -411,6 +411,41 @@ fn main() {
                 }
             }
         }
+        "flatten" | "unflatten" => {
+            let pos: Vec<&String> = args
+                .iter()
+                .skip(2)
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            let [input, output] = pos.as_slice() else {
+                println!("Usage: s3a-cli flatten [--zstd] <in.s3a> <out.s3af> | s3a-cli unflatten <in.s3af> <out.s3a>");
+                return;
+            };
+            let res = std::fs::read(input.as_str())
+                .map_err(|e| e.to_string())
+                .and_then(|d| {
+                    if args[1] == "flatten" {
+                        let z = args.iter().any(|a| a == "--zstd").then_some(3);
+                        s3a_flat::flatten(&d, z).map_err(|e| e.to_string())
+                    } else {
+                        s3a_flat::unflatten(&d).map_err(|e| e.to_string())
+                    }
+                });
+            match res.and_then(|out| {
+                if std::path::Path::new(output.as_str()).exists() {
+                    return Err(format!("refusing to overwrite existing {output}"));
+                }
+                std::fs::write(output.as_str(), &out)
+                    .map(|_| out.len())
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(n) => println!("{} -> {} ({} bytes)", input, output, n),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
         "inspect" => {
             let json_mode = args.iter().any(|a| a == "--json");
             let file_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
@@ -1282,6 +1317,10 @@ fn main() {
 
 fn print_usage() {
     println!("S3A Storage CLI Tool (v{})", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("FLAT TRANSPORT COPIES (.s3af, outside the core format):");
+    println!("  s3a-cli flatten [--zstd] <in.s3a> <out.s3af>    Zero-run-elided copy for export/backup/sync (sha256 + CRC32C)");
+    println!("  s3a-cli unflatten <in.s3af> <out.s3a>           Rebuild the byte-identical original (verified)");
     println!();
     println!("GATE DIRECTORY & SOVEREIGN IDENTITIES:");
     println!("  s3a-cli gate register <name> --directory <url>   Register sovereign gate name with challenge-response signature");

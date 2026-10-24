@@ -19,6 +19,7 @@ s3a-pack-ontology = { path = "../s3a-pack-ontology" }
 s3a-vault = { path = "../s3a-vault" }
 s3a-vcs = { path = "../s3a-vcs" }
 s3a-pack-clean = { path = "../s3a-pack-clean" }
+s3a-flat = { path = "../s3a-flat" }
 s3a-wasm-snapshot = { path = "../s3a-wasm-snapshot", default-features = false }
 bytemuck = { workspace = true }
 crc32c = { workspace = true }

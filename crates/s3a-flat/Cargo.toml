@@ -1,0 +1,13 @@
+[package]
+name = "s3a-flat"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Flattened transport/storage form (.s3af) for sealed/export/backup/sync copies of S3A files: zero runs elided, byte-identical unflatten. Outside S3A core; the .s3a format is unchanged."
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
+zstd = { version = "0.13", default-features = false }

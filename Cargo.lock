@@ -1749,6 +1749,7 @@ dependencies = [
  "s3a-core",
  "s3a-edge",
  "s3a-engine",
+ "s3a-flat",
  "s3a-pack-clean",
  "s3a-pack-da",
  "s3a-pack-gis",
@@ -1827,6 +1828,16 @@ version = "0.1.0"
 dependencies = [
  "crc32c",
  "s3a-core",
+ "zstd",
+]
+
+[[package]]
+name = "s3a-flat"
+version = "0.1.0"
+dependencies = [
+ "crc32c",
+ "s3a-core",
+ "sha2",
  "zstd",
 ]
 
