@@ -26,6 +26,7 @@ members = [
     "crates/s3a-exp-neighbor-delta",
     "crates/s3a-flat",
     "crates/s3a-runledger",
+    "crates/s3a-timestamp",
 ]
 
 [workspace.package]
