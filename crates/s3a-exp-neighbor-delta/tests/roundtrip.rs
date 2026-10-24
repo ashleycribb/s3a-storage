@@ -86,3 +86,42 @@ fn real_fixture_roundtrip_read_only() {
     assert!(!tiles.is_empty());
     rt(&tiles);
 }
+
+#[test]
+fn checksum_mismatch_rejected() {
+    // Flip a stored CRC byte (header is 23 bytes; first CRC follows).
+    let t = vec![7u8; 64];
+    let mut enc = encode(&[&t, &t], Predictor::ReferenceTile, Elem::U32, 3).unwrap();
+    enc[23] ^= 0xff;
+    assert_eq!(decode(&enc), Err(Error::ChecksumMismatch { tile: 0 }));
+}
+
+#[test]
+fn originals_never_mutated() {
+    let tiles: Vec<Vec<u8>> = (0..3u8).map(|k| (0..64).map(|i| i ^ k).collect()).collect();
+    let snapshot = tiles.clone();
+    let refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+    for p in Predictor::ALL {
+        let enc = encode(&refs, p, Elem::U32, 3).unwrap();
+        let mut dec = decode(&enc).unwrap();
+        dec[0][0] ^= 1; // mutate the working copy only
+    }
+    assert_eq!(tiles, snapshot);
+}
+
+#[test]
+fn reference_tile_beats_baseline_on_variants() {
+    let reference: Vec<u8> = (0..4096u32).flat_map(|v| v.wrapping_mul(2654435761).to_le_bytes()).collect();
+    let tiles: Vec<Vec<u8>> = (0..8).map(|k| {
+        // every element differs slightly from the reference ("variants"),
+        // so plain LZ matching cannot reuse the reference bytes
+        reference.chunks(4).enumerate().flat_map(|(i, c)| {
+            let v = u32::from_le_bytes(c.try_into().unwrap());
+            v.wrapping_add(((i * 7 + k) % 3) as u32).to_le_bytes()
+        }).collect()
+    }).collect();
+    let refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
+    let base = encode(&refs, Predictor::None, Elem::U32, 3).unwrap().len();
+    let rf = encode(&refs, Predictor::ReferenceTile, Elem::U32, 3).unwrap().len();
+    assert!(rf <= base, "{rf} > {base}");
+}

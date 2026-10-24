@@ -10,3 +10,4 @@ publish = false
 [dependencies]
 s3a-core = { path = "../s3a-core" }
 zstd = { version = "0.13", default-features = false }
+crc32c = { workspace = true }

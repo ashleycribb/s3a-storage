@@ -10,10 +10,19 @@
 //! * `F32`: `bits(x) XOR bits(pred)` where `pred` is computed in f32 from
 //!   already-decoded values, so NaN / inf / -0.0 round-trip bit-exactly.
 //! * `U8`: wrapping byte subtraction.
+//!
+//! Design analogies (analogies only, not biology claims):
+//! * reference-based genome compression (CRAM/VCF) -> `ReferenceTile` predictor;
+//! * transcription (DNA -> working RNA copy) -> encode borrows tiles immutably,
+//!   decode builds fresh working copies; originals are never mutated;
+//! * mismatch repair -> per-tile CRC32C verified on decode, reject on mismatch;
+//! * codon reading frame -> fixed-width residuals (1 or 4 bytes) at fixed
+//!   offsets, so decoding can never drift out of alignment.
 
 use s3a_core::{HYPER_TILE_HEADER_SIZE, HYPER_TILE_PAYLOAD_SIZE, HYPER_TILE_SIZE};
 
 pub const MAGIC: [u8; 4] = *b"NDX1";
+const VERSION: u8 = 2;
 const HDR: usize = 4 + 1 + 1 + 1 + 4 + 4 + 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +35,9 @@ pub enum Predictor {
     NeighborTileMean,
     /// In-tile neighbour values: residual = x[i] - mean(x[i-1], x[i-2]).
     NeighborValueMean,
+    /// Reference-based (cf. CRAM/VCF variants vs a reference genome):
+    /// residual = tile[t] - tile[0]; tile 0 is the reference, stored as-is.
+    ReferenceTile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,14 +53,17 @@ pub enum Error {
     Truncated,
     BadField(&'static str),
     Codec(String),
+    /// Per-tile CRC32C of the decoded tile did not match the stored one.
+    ChecksumMismatch { tile: usize },
 }
 
 impl Predictor {
-    pub const ALL: [Predictor; 4] = [
+    pub const ALL: [Predictor; 5] = [
         Predictor::None,
         Predictor::PrevTile,
         Predictor::NeighborTileMean,
         Predictor::NeighborValueMean,
+        Predictor::ReferenceTile,
     ];
     fn id(self) -> u8 {
         self as u8
@@ -124,8 +139,9 @@ fn add(e: Elem, r: u32, p: u32) -> u32 {
 
 /// Prediction for element `i` of tile `t`, given fully-decoded tiles `prev`
 /// (t-1, t-2) and the already-decoded prefix of the current tile.
-fn predict(p: Predictor, e: Elem, prev: &[&[u8]], cur: &[u8], i: usize) -> u32 {
+fn predict(p: Predictor, e: Elem, reference: Option<&[u8]>, prev: &[&[u8]], cur: &[u8], i: usize) -> u32 {
     match p {
+        Predictor::ReferenceTile => reference.map_or(0, |r| get(r, e, i)),
         Predictor::None => 0,
         Predictor::PrevTile => prev.first().map_or(0, |a| get(a, e, i)),
         Predictor::NeighborTileMean => match prev {
@@ -154,7 +170,8 @@ pub fn encode(tiles: &[&[u8]], p: Predictor, e: Elem, level: i32) -> Result<Vec<
         let prev: Vec<&[u8]> = (1..=2).filter(|k| t >= *k).map(|k| tiles[t - k]).collect();
         let mut out = tile.to_vec();
         for i in 0..n {
-            let r = sub(e, get(tile, e, i), predict(p, e, &prev, tile, i));
+            let reference = if t > 0 { Some(tiles[0]) } else { None };
+            let r = sub(e, get(tile, e, i), predict(p, e, reference, &prev, tile, i));
             put(&mut out, e, i, r);
         }
         resid.extend_from_slice(&out);
@@ -162,12 +179,16 @@ pub fn encode(tiles: &[&[u8]], p: Predictor, e: Elem, level: i32) -> Result<Vec<
     let z = zstd::bulk::compress(&resid, level).map_err(|x| Error::Codec(x.to_string()))?;
     let mut v = Vec::with_capacity(HDR + z.len());
     v.extend_from_slice(&MAGIC);
-    v.push(1); // version
+    v.push(VERSION);
     v.push(p.id());
     v.push(e.id());
     v.extend_from_slice(&(tile_len as u32).to_le_bytes());
     v.extend_from_slice(&(tiles.len() as u32).to_le_bytes());
     v.extend_from_slice(&(resid.len() as u64).to_le_bytes());
+    // "Mismatch repair" analogue: one CRC32C per original tile, checked on decode.
+    for tile in tiles {
+        v.extend_from_slice(&crc32c::crc32c(tile).to_le_bytes());
+    }
     v.extend_from_slice(&z);
     Ok(v)
 }
@@ -179,7 +200,7 @@ pub fn decode(buf: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     if buf[..4] != MAGIC {
         return Err(Error::BadMagic);
     }
-    if buf[4] != 1 {
+    if buf[4] != VERSION {
         return Err(Error::BadField("version"));
     }
     let p = Predictor::from_id(buf[5])?;
@@ -190,7 +211,12 @@ pub fn decode(buf: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     if tile_len.checked_mul(count) != Some(raw_len) {
         return Err(Error::BadField("length"));
     }
-    let resid = zstd::bulk::decompress(&buf[HDR..], raw_len).map_err(|x| Error::Codec(x.to_string()))?;
+    let crc_end = count.checked_mul(4).and_then(|c| c.checked_add(HDR)).ok_or(Error::BadField("count"))?;
+    if buf.len() < crc_end {
+        return Err(Error::Truncated);
+    }
+    let crcs = &buf[HDR..crc_end];
+    let resid = zstd::bulk::decompress(&buf[crc_end..], raw_len).map_err(|x| Error::Codec(x.to_string()))?;
     if resid.len() != raw_len {
         return Err(Error::Truncated);
     }
@@ -201,10 +227,15 @@ pub fn decode(buf: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         for i in 0..n {
             let pr = {
                 let prev: Vec<&[u8]> = (1..=2).filter(|k| t >= *k).map(|k| tiles[t - k].as_slice()).collect();
-                predict(p, e, &prev, &cur, i)
+                let reference = if t > 0 { Some(tiles[0].as_slice()) } else { None };
+                predict(p, e, reference, &prev, &cur, i)
             };
             let v = add(e, get(&cur, e, i), pr);
             put(&mut cur, e, i, v);
+        }
+        let want = u32::from_le_bytes(crcs[t * 4..t * 4 + 4].try_into().unwrap());
+        if crc32c::crc32c(&cur) != want {
+            return Err(Error::ChecksumMismatch { tile: t });
         }
         tiles.push(cur);
     }

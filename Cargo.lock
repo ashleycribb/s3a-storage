@@ -1825,6 +1825,7 @@ dependencies = [
 name = "s3a-exp-neighbor-delta"
 version = "0.1.0"
 dependencies = [
+ "crc32c",
  "s3a-core",
  "zstd",
 ]
