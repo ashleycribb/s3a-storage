@@ -35,3 +35,6 @@ sha2 = { workspace = true }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
