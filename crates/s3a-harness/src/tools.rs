@@ -840,6 +840,9 @@ pub struct ToolRegistry {
     /// Permission modes, per-tool rules, agent passes and human approval. `None` keeps the
     /// legacy behaviour (allowlist + grant + judgment refusal only).
     policy: RwLock<Option<crate::permissions::PermissionPolicy>>,
+    /// Runtime enforcement: deny by default, core off limits, human-only needs sign-off,
+    /// every decision audited.
+    gate: Arc<crate::enforcement::EnforcementGate>,
 }
 
 impl Default for ToolRegistry {
@@ -854,6 +857,7 @@ impl ToolRegistry {
         Self {
             tools: RwLock::new(HashMap::new()),
             policy: RwLock::new(None),
+            gate: Arc::new(crate::enforcement::EnforcementGate::new()),
         }
     }
 
@@ -872,7 +876,13 @@ impl ToolRegistry {
 
     /// Install (or replace) the permission policy checked on every tool call.
     pub fn set_permission_policy(&self, policy: crate::permissions::PermissionPolicy) {
+        self.gate.set_policy(policy.clone());
         *self.policy.write().unwrap() = Some(policy);
+    }
+
+    /// The enforcement gate (register humans, set the audit log, read audit entries).
+    pub fn enforcement_gate(&self) -> Arc<crate::enforcement::EnforcementGate> {
+        self.gate.clone()
     }
 
     /// Register a tool into the registry.
@@ -941,23 +951,16 @@ impl ToolRegistry {
             });
         }
 
-        // 1b. Permission policy: mode + rule, owner-signed agent pass, human approval.
-        //     A judgment tool only gets past this with an explicit human approval.
-        let human_approved_judgment = {
-            let guard = self.policy.read().unwrap();
-            match guard.as_ref() {
-                Some(policy) => {
-                    policy
-                        .authorize(&ctx.agent_id, tool_name, args, chrono_timestamp())
-                        .map_err(|details| ToolError::ExecutionFailed {
-                            tool: tool_name.to_string(),
-                            details,
-                        })?;
-                    s3a_vault::is_judgment_action(tool_name)
-                }
-                None => false,
-            }
-        };
+        // 1b. Enforcement gate: deny by default, core off limits, human-only actions need a
+        //     human sign-off (or an attached human approver), every decision audited.
+        let gate_entry = self
+            .gate
+            .check(&ctx.agent_id, tool_name, args, chrono_timestamp())
+            .map_err(|details| ToolError::ExecutionFailed {
+                tool: tool_name.to_string(),
+                details,
+            })?;
+        let human_approved_judgment = gate_entry.signed_off_by.is_some();
 
         // 2. Non-delegable judgment invariant check (§3.2, §12.5)
         if s3a_vault::is_judgment_action(tool_name) && !human_approved_judgment {

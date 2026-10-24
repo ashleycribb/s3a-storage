@@ -486,6 +486,12 @@ mod tests {
         let mock_model =
             Arc::new(MockModel::new("mock-model").with_default_response(model_response));
         let runtime = AgentRuntime::new(config, mock_model, None, store, sandbox.clone());
+        // The enforcement gate denies writes by default; this test explicitly allows builds.
+        let mut policy =
+            crate::permissions::PermissionPolicy::new(crate::permissions::PermissionMode::Auto)
+                .with_rule("sandbox_build", crate::permissions::ToolRule::Always);
+        policy.require_pass = false;
+        runtime.tools.set_permission_policy(policy);
         (runtime, sandbox)
     }
 

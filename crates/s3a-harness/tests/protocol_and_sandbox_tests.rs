@@ -35,7 +35,34 @@ fn create_test_dispatcher(sandbox: Sandbox, read_only: bool) -> S3AMcpDispatcher
     let store: Arc<dyn Store> = Arc::new(LocalStore::new(&db_path, read_only));
     let p_uuid = [0x1111222233334444, 0x5555666677778888];
     let s_uuid = [0xAAAABBBBCCCCDDDD, 0xEEEEFFFF00001111];
-    S3AMcpDispatcher::new(sandbox, store, p_uuid, s_uuid, 42)
+    let d = S3AMcpDispatcher::new(sandbox, store, p_uuid, s_uuid, 42);
+    // The enforcement gate denies writes by default; these protocol tests install an explicit
+    // policy and register a test human who can sign off human-only actions.
+    let mut policy = s3a_harness::permissions::PermissionPolicy::new(
+        s3a_harness::permissions::PermissionMode::Auto,
+    );
+    policy.require_pass = false;
+    d.enforcement_gate().set_policy(policy);
+    d.enforcement_gate()
+        .register_human("test-human", test_human_key().verifying_key());
+    d
+}
+
+fn test_human_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+}
+
+fn human_signoff(action: &str, nonce: &str) -> serde_json::Value {
+    s3a_harness::enforcement::SignOff::sign(
+        &test_human_key(),
+        "test-human",
+        "mcp-agent-42",
+        action,
+        "",
+        u64::MAX,
+        nonce,
+    )
+    .to_value()
 }
 
 #[test]
@@ -271,7 +298,8 @@ fn test_sandbox_read_only_mode_enforcement() {
             "arguments": {
                 "actor_id": 100,
                 "verb_id": 3,
-                "decision_score": 1.0
+                "decision_score": 1.0,
+                "human_signoff": human_signoff("record_human_decision", "ro-1")
             }
         }
     })
@@ -417,7 +445,8 @@ fn test_agent_gates_tools_and_rejection_logging() {
                 "actor_id": 0x05E8_1111,
                 "verb_id": 3, // approved
                 "decision_score": 1.0,
-                "gate_id": gate_id
+                "gate_id": gate_id,
+                "human_signoff": human_signoff("record_human_decision", "gate-1")
             }
         }
     })
