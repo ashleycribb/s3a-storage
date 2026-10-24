@@ -1,0 +1,13 @@
+[package]
+name = "s3a-exp-neighbor-delta"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "EXPERIMENT: lossless neighbour-residual (delta / Laplacian) coding of Hyper-Tile payloads before zstd. Not part of the S3A format."
+publish = false
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+zstd = { version = "0.13", default-features = false }
+crc32c = { workspace = true }
