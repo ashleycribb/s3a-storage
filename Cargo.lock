@@ -1985,6 +1985,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "s3a-runledger"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "s3a-simd"
 version = "0.1.0"
 dependencies = [
