@@ -33,7 +33,8 @@ pub fn unique_compact_temp_path<P: AsRef<Path>>(live_path: P) -> PathBuf {
 /// 1. Source file data and metadata are flushed to durable storage (`sync_all`) before
 ///    replacement. A sync failure is returned as an error and the destination is left
 ///    untouched (see ADR 0001).
-/// 2. Atomic rename on POSIX; on Windows, attempts MoveFileExW-backed replace with backup swap fallback.
+/// 2. Atomic rename on POSIX; on Windows, a single `MoveFileExW(MOVEFILE_REPLACE_EXISTING |
+///    MOVEFILE_WRITE_THROUGH)` with no backup/rename fallback window.
 /// 3. On POSIX, the parent directory is fsynced after the rename so the new directory entry
 ///    itself is durable; a failure to sync the directory is returned as an error (the rename
 ///    has already happened at that point, so the destination holds the new contents).
@@ -48,6 +49,56 @@ fn atomic_replace_with(
     from: &Path,
     to: &Path,
     sync_file: &dyn Fn(&File) -> io::Result<()>,
+) -> io::Result<()> {
+    atomic_replace_with_rename(from, to, sync_file, &platform_rename)
+}
+
+/// POSIX: `rename(2)` is atomic and replaces an existing destination.
+#[cfg(not(windows))]
+fn platform_rename(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+/// Windows: `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
+/// Declared directly against kernel32 to avoid adding a dependency.
+#[cfg(windows)]
+fn platform_rename(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+    }
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let (f, t) = (wide(from), wide(to));
+    // SAFETY: both buffers are valid NUL-terminated UTF-16 strings that outlive the call.
+    let ok = unsafe {
+        MoveFileExW(
+            f.as_ptr(),
+            t.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// [`atomic_replace_with`] with an injectable replace step, so tests can simulate a failed
+/// rename/MoveFileExW and check the destination still holds the old contents.
+fn atomic_replace_with_rename(
+    from: &Path,
+    to: &Path,
+    sync_file: &dyn Fn(&File) -> io::Result<()>,
+    rename: &dyn Fn(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
     if !from.exists() {
         return Err(io::Error::new(
@@ -64,47 +115,19 @@ fn atomic_replace_with(
         sync_file(&f)?;
     }
 
+    // Single atomic replace step. On Windows this is MoveFileExW with
+    // MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH: the destination is never removed
+    // first, so it always holds either the old or the new contents, and the call does not
+    // return until the move is flushed (Windows has no directory fsync; WRITE_THROUGH is
+    // the documented durability barrier). Errors are returned; there is no fallback path.
     #[cfg(windows)]
     {
-        // TODO(A5/ADR-0001): use MoveFileExW with MOVEFILE_WRITE_THROUGH so the rename is
-        // durable before returning. Windows has no portable directory fsync; behavior is
-        // intentionally unchanged for now.
-        // Try standard rename first (calls MoveFileExW with MOVEFILE_REPLACE_EXISTING)
-        match fs::rename(from, to) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                let pid = std::process::id();
-                let nonce = NONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-                let backup = to.with_extension(format!("old.{}_{}.tmp", pid, nonce));
-
-                if backup.exists() {
-                    let _ = fs::remove_file(&backup);
-                }
-
-                if to.exists() {
-                    fs::rename(to, &backup)?;
-                }
-
-                match fs::rename(from, to) {
-                    Ok(()) => {
-                        let _ = fs::remove_file(&backup);
-                        Ok(())
-                    }
-                    Err(e) => {
-                        // Restore original file if replacing failed
-                        if backup.exists() {
-                            let _ = fs::rename(&backup, to);
-                        }
-                        Err(e)
-                    }
-                }
-            }
-        }
+        rename(from, to)
     }
 
     #[cfg(not(windows))]
     {
-        fs::rename(from, to)?;
+        rename(from, to)?;
         #[cfg(unix)]
         {
             let parent = match to.parent() {
@@ -217,6 +240,44 @@ mod atomic_replace_tests {
         assert!(err.to_string().contains("injected fsync failure"));
         assert_eq!(fs::read(&to).unwrap(), b"old contents");
         assert!(from.exists(), "source must not be consumed on failure");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn rename_failure_leaves_old_destination_and_source_intact() {
+        let d = tmpdir("renamefail");
+        let to = d.join("live.s3a");
+        let from = d.join("src.s3a");
+        fs::write(&to, b"old contents").unwrap();
+        fs::write(&from, b"new contents").unwrap();
+        let fail = |_: &Path, _: &Path| -> io::Result<()> {
+            Err(io::Error::other("injected rename failure"))
+        };
+        let err =
+            atomic_replace_with_rename(&from, &to, &|f: &File| f.sync_all(), &fail).unwrap_err();
+        assert!(err.to_string().contains("injected rename failure"));
+        assert_eq!(fs::read(&to).unwrap(), b"old contents");
+        assert!(from.exists(), "source must not be consumed on failure");
+        // A subsequent real replace yields exactly the new contents.
+        atomic_replace(&from, &to).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"new contents");
+        assert!(!from.exists());
+        let leftovers: Vec<_> = fs::read_dir(&d).unwrap().collect();
+        assert_eq!(leftovers.len(), 1, "no backup/temp files left behind");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn repeated_replace_always_leaves_old_or_new() {
+        let d = tmpdir("repeat");
+        let to = d.join("live.s3a");
+        fs::write(&to, b"v0").unwrap();
+        for i in 1..=20u32 {
+            let from = d.join(format!("src{}.s3a", i));
+            fs::write(&from, format!("v{}", i)).unwrap();
+            atomic_replace(&from, &to).unwrap();
+            assert_eq!(fs::read(&to).unwrap(), format!("v{}", i).as_bytes());
+        }
         fs::remove_dir_all(&d).unwrap();
     }
 
