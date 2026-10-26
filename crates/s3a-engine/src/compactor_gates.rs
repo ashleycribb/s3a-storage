@@ -244,7 +244,7 @@ impl CompactionPreflight {
         }
 
         // 3. Verify input tile header CRC (fail-closed: zero CRC rejected unless explicitly legacy)
-        let is_legacy = header.record_layout_version == 0;
+        let is_legacy = crate::is_legacy_tile(header);
         if header.header_crc32 == 0 {
             if !is_legacy {
                 return Err(io::Error::new(

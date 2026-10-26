@@ -315,6 +315,28 @@ pub fn verify_header_slot(header: &FileHeader) -> bool {
     header.header_crc32 != 0 && header.header_crc32 == compute_header_crc32(header)
 }
 
+/// A HyperTile is explicitly legacy (written before tile header CRCs) only when its
+/// `record_layout_version` is 0. Shared fail-closed rule for read, verify and compaction gates.
+#[inline]
+pub fn is_legacy_tile(header: &HyperTileHeader) -> bool {
+    header.record_layout_version == 0
+}
+
+/// Fail-closed tile header CRC check: a zero CRC is accepted only on explicitly legacy tiles.
+pub fn check_tile_header_crc(header: &HyperTileHeader) -> Result<(), S3AError> {
+    if header.header_crc32 == 0 && is_legacy_tile(header) {
+        return Ok(());
+    }
+    let expected = compute_tile_header_crc32(header);
+    if header.header_crc32 != expected {
+        return Err(S3AError::ChecksumMismatch {
+            expected: header.header_crc32,
+            actual: expected,
+        });
+    }
+    Ok(())
+}
+
 /// Resolves the active FileHeader from dual slots (Slot A and Slot B).
 /// Selects the valid slot with the highest generation counter.
 /// Returns (active_header, slot_index: 0 for A, 1 for B).
@@ -336,8 +358,13 @@ pub fn resolve_active_header(
         (true, false) => Ok((*slot_a, 0)),
         (false, true) => Ok((*slot_b, 1)),
         (false, false) => {
-            // Backward compatibility: if slot_a has valid magic & version but header_crc32 == 0 (unhashed/legacy)
-            if slot_a.verify().is_ok() && slot_a.header_crc32 == 0 {
+            // Backward compatibility for genuinely legacy single-slot files written before the
+            // A/B header: slot A has valid magic & version, an unset CRC, and slot B was never
+            // written (all zero). A zeroed CRC next to a written-but-corrupt slot B is corruption.
+            if slot_a.verify().is_ok()
+                && slot_a.header_crc32 == 0
+                && bytemuck::bytes_of(slot_b).iter().all(|b| *b == 0)
+            {
                 Ok((*slot_a, 0))
             } else {
                 Err(S3AError::CorruptedHeader)
@@ -1298,6 +1325,8 @@ impl MmapReader {
 
     pub fn verify_checksums(&self) -> Result<(), S3AError> {
         // Verify active header slot integrity
+        // A zero CRC here is only reachable via the legacy single-slot fallback in
+        // `resolve_active_header`, which already required slot B to be unwritten.
         if self.active_header.header_crc32 != 0 {
             let expected_header_crc = compute_header_crc32(&self.active_header);
             if self.active_header.header_crc32 != expected_header_crc {
@@ -1317,7 +1346,10 @@ impl MmapReader {
         if self.is_edge_archive() {
             for i in 0..count {
                 if let Some((header, payload)) = self.get_edge_tile(i) {
-                    if header.header_crc32 != 0 {
+                    // Fail closed: tiles flagged CRC_CHAIN must carry real CRCs (zero is not
+                    // "unset"). Only tiles without the flag (legacy edge writers) may skip.
+                    let crc_chain = header.flags & s3a_edge::TILE_FLAG_CRC_CHAIN != 0;
+                    if crc_chain || header.header_crc32 != 0 {
                         let expected_hdr_crc = s3a_edge::compute_common_tile_header_crc32(header);
                         if header.header_crc32 != expected_hdr_crc {
                             return Err(S3AError::ChecksumMismatch {
@@ -1326,7 +1358,7 @@ impl MmapReader {
                             });
                         }
                     }
-                    if header.data_crc32 != 0 {
+                    if crc_chain || header.data_crc32 != 0 {
                         let actual_data_crc = crc32c::crc32c(payload);
                         if actual_data_crc != header.data_crc32 {
                             return Err(S3AError::ChecksumMismatch {
@@ -1355,15 +1387,7 @@ impl MmapReader {
 
         for i in 0..count {
             if let Some((header, payload)) = self.get_tile(i) {
-                if header.header_crc32 != 0 {
-                    let expected_hdr_crc = compute_tile_header_crc32(header);
-                    if header.header_crc32 != expected_hdr_crc {
-                        return Err(S3AError::ChecksumMismatch {
-                            expected: header.header_crc32,
-                            actual: expected_hdr_crc,
-                        });
-                    }
-                }
+                check_tile_header_crc(header)?;
                 if self.active_header.file_uuid != [0, 0] || header.file_uuid != [0, 0] {
                     let is_legacy = header.record_layout_version <= 1 && header.file_uuid == [0, 0];
                     if !is_legacy && header.file_uuid != self.active_header.file_uuid {
@@ -3837,7 +3861,7 @@ impl Compactor {
                         if actual_crc != header.data_crc32 {
                             return (path.to_path_buf(), header.tile_id, gen);
                         }
-                        let is_legacy = header.record_layout_version == 0;
+                        let is_legacy = crate::is_legacy_tile(header);
                         if header.header_crc32 == 0 && !is_legacy {
                             return (path.to_path_buf(), header.tile_id, gen);
                         }
