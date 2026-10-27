@@ -134,7 +134,7 @@ The canonical edge tile header is identical in byte layout to the 64-byte Common
 
 - **Integrity rules**:
   - Writers MUST set `data_crc32`, `header_crc32` and `generation` on every sealed tile, and the reference writer sets `TILE_FLAG_CRC_CHAIN` (`flags` bit value `2`) alongside `TILE_FLAG_SEALED` (`1`).
-  - When `TILE_FLAG_CRC_CHAIN` is set, desktop/full-engine readers SHOULD verify `header_crc32` and `data_crc32` and treat a mismatch as a torn or corrupt tile. Edge recovery (§4) MUST verify them. *Note: the current reference engine (`s3a-engine` `get_edge_tile`) does not yet verify them; tracked for Phase A3.*
+  - When `TILE_FLAG_CRC_CHAIN` is set, desktop/full-engine readers SHOULD verify `header_crc32` and `data_crc32` and treat a mismatch as a torn or corrupt tile. Edge recovery (§4) MUST verify them. *The reference engine (`s3a-engine` `try_get_edge_tile` / `get_edge_tile`) verifies both CRCs for any tile that is sealed, CRC-chained, or carries a non-zero CRC, and rejects a mismatch with `HeaderCrcMismatch` / `DataCrcMismatch`; only an unsealed tile with both CRCs zero is read unchecked.*
   - `header_crc32 == 0` means the header is unsealed/invalid (`CommonTileHeader::verify` returns false).
   - Vectors: `spec-vectors/hashes/edge_data_crc32c.json`, `edge_header_crc32c.json`.
 - **Capacities**:

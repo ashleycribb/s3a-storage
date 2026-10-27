@@ -142,3 +142,69 @@ fn truncated_file_rejected_by_open() {
     ));
     assert_eq!(r.verify_checksums(), Err(S3AError::OutOfBounds));
 }
+
+fn open_edge(bytes: &[u8]) -> (MmapReader, usize, usize) {
+    let dir = tempfile_dir();
+    let path = dir.join("e.s3a");
+    std::fs::write(&path, bytes).unwrap();
+    let r = MmapReader::open(&path).unwrap();
+    let last = r.tile_count() as usize - 1;
+    let off = r.header_extent() + last * r.tile_stride();
+    (r, last, off)
+}
+
+#[test]
+fn edge_tile_valid_reads_with_matching_crcs() {
+    let bytes = edge_file();
+    let (r, last, _) = open_edge(&bytes);
+    let (h, payload) = r.try_get_edge_tile(last).expect("valid tile reads");
+    assert_eq!(crc32c::crc32c(payload), h.data_crc32);
+    assert!(r.get_edge_tile(last).is_some());
+}
+
+#[test]
+fn edge_tile_one_flipped_payload_byte_is_typed_data_crc_error() {
+    let bytes = edge_file();
+    let (_, last, off) = open_edge(&bytes);
+    let mut d = bytes.clone();
+    d[off + COMMON_TILE_HEADER_SIZE] ^= 0x01;
+    let (r, last2, _) = open_edge(&d);
+    assert_eq!(last, last2);
+    let e = r.try_get_edge_tile(last).unwrap_err();
+    assert_eq!(e.tile, last);
+    assert!(
+        matches!(e.reason, CorruptReason::DataCrcMismatch { .. }),
+        "{e}"
+    );
+    assert!(r.get_edge_tile(last).is_none());
+    assert!(r.try_get_promoted_tile(last).is_err());
+}
+
+/// Clearing TILE_FLAG_CRC_CHAIN/SEALED must not switch verification off.
+#[test]
+fn edge_tile_cleared_crc_flag_does_not_bypass_verification() {
+    let bytes = edge_file();
+    let (_, last, off) = open_edge(&bytes);
+
+    // Flags cleared, payload byte flipped, header CRC left stale -> header CRC mismatch.
+    let mut d = bytes.clone();
+    d[off + 4] = 0;
+    d[off + 5] = 0;
+    d[off + COMMON_TILE_HEADER_SIZE] ^= 0x01;
+    let (r, _, _) = open_edge(&d);
+    assert!(r.try_get_edge_tile(last).is_err());
+    assert!(r.get_edge_tile(last).is_none());
+
+    // Attacker also recomputes the header CRC: the non-zero data CRC still catches the flip.
+    let mut d2 = d.clone();
+    let hdr: CommonTileHeader =
+        bytemuck::pod_read_unaligned(&d2[off..off + COMMON_TILE_HEADER_SIZE]);
+    let fixed = compute_common_tile_header_crc32(&hdr);
+    d2[off + 56..off + 60].copy_from_slice(&fixed.to_le_bytes());
+    let (r, _, _) = open_edge(&d2);
+    let e = r.try_get_edge_tile(last).unwrap_err();
+    assert!(
+        matches!(e.reason, CorruptReason::DataCrcMismatch { .. }),
+        "{e}"
+    );
+}
