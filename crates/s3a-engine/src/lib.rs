@@ -1159,8 +1159,9 @@ impl MmapReader {
         Ok((start, end))
     }
 
-    /// Like [`MmapReader::get_edge_tile`] but reports why a tile was rejected. When the tile has
-    /// `TILE_FLAG_CRC_CHAIN` set, both `header_crc32` and `data_crc32` are verified.
+    /// Like [`MmapReader::get_edge_tile`] but reports why a tile was rejected. Both `header_crc32` and
+    /// `data_crc32` (CRC32C) are verified when the tile is sealed or CRC-chained or carries any
+    /// non-zero CRC; a mismatch is `HeaderCrcMismatch` / `DataCrcMismatch`, never returned data.
     pub fn try_get_edge_tile(
         &self,
         index: usize,
@@ -1190,7 +1191,14 @@ impl MmapReader {
             ))?;
         let payload = &self.mmap[payload_start..payload_end];
 
-        if tile_header.flags & s3a_edge::TILE_FLAG_CRC_CHAIN != 0 {
+        // Fail closed: verify whenever the tile claims to be sealed or CRC-chained, or carries any
+        // non-zero CRC. Gating on CRC_CHAIN alone let a tile with that flag bit cleared skip both
+        // checks. Only an unsealed tile with both CRCs zero (an active tail) is read unchecked.
+        let must_verify =
+            tile_header.flags & (s3a_edge::TILE_FLAG_CRC_CHAIN | s3a_edge::TILE_FLAG_SEALED) != 0
+                || tile_header.header_crc32 != 0
+                || tile_header.data_crc32 != 0;
+        if must_verify {
             let h = s3a_edge::compute_common_tile_header_crc32(tile_header);
             if h != tile_header.header_crc32 {
                 return Err(Corrupt::new(
