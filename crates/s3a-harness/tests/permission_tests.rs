@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 
 use s3a_harness::config::{AgentConfig, DecisionThresholds, RunLimits, SafeDefaults};
 use s3a_harness::permissions::{
-    ApprovalRequest, Decision, HumanApprover, PermissionMode, PermissionPolicy, ToolRule,
+    ApprovalRequest, Decision, HumanApprover, PermissionMode, PermissionPolicy, SideEffects,
+    ToolRule,
 };
 use s3a_harness::sandbox::Sandbox;
 use s3a_harness::store::LocalStore;
@@ -19,10 +20,14 @@ const OWNER: [u8; 16] = [1; 16];
 const AGENT: [u8; 16] = [2; 16];
 const AGENT_ID: &str = "pass_agent";
 
-struct Echo(&'static str);
+/// Test fixture tool with an explicit side-effect declaration.
+struct Echo(&'static str, SideEffects);
 impl Tool for Echo {
     fn name(&self) -> &str {
         self.0
+    }
+    fn side_effects(&self) -> SideEffects {
+        self.1
     }
     fn description(&self) -> &str {
         "echo"
@@ -43,6 +48,15 @@ impl HumanApprover for Human {
     fn approve(&self, _r: &ApprovalRequest) -> bool {
         self.asked.fetch_add(1, Ordering::SeqCst);
         self.answer
+    }
+}
+
+/// Declarations used by the fixtures: only `s3a_query` is read-only.
+fn decl(t: &str) -> SideEffects {
+    if t == "s3a_query" {
+        SideEffects::ReadOnly
+    } else {
+        SideEffects::Mutating
     }
 }
 
@@ -134,7 +148,7 @@ fn pass(ks: &MemoryKeyStore, agent: &str, kinds: &[&str], nb: u64, na: u64) -> A
 fn registry(policy: PermissionPolicy) -> ToolRegistry {
     let r = ToolRegistry::new();
     for t in TOOLS {
-        r.register(Arc::new(Echo(t)));
+        r.register(Arc::new(Echo(t, decl(t))));
     }
     r.set_permission_policy(policy);
     r
@@ -174,7 +188,10 @@ fn mode_table() {
     ];
     for (mode, want) in expect {
         let p = PermissionPolicy::new(mode);
-        let got: Vec<_> = TOOLS.iter().map(|t| p.decide(t)).collect();
+        let got: Vec<_> = TOOLS
+            .iter()
+            .map(|t| p.decide_with(t, Some(decl(t))))
+            .collect();
         assert_eq!(got, want, "{mode:?}");
     }
 }
@@ -329,11 +346,86 @@ fn judgment_refused_unless_a_human_approves() {
 #[test]
 fn legacy_registry_without_policy_unchanged() {
     let r = ToolRegistry::new();
-    r.register(Arc::new(Echo("s3a_query")));
-    r.register(Arc::new(Echo("erasure_execute")));
+    r.register(Arc::new(Echo("s3a_query", SideEffects::ReadOnly)));
+    r.register(Arc::new(Echo("erasure_execute", SideEffects::Mutating)));
     let (c, _d) = ctx();
     r.call_tool(&config(), "s3a_query", &json!({}), &c).unwrap();
     assert!(r
         .call_tool(&config(), "erasure_execute", &json!({}), &c)
         .is_err());
+}
+
+// --- Explicit side-effect declarations (names never decide read-only) ---
+
+fn smart_registry(tools: Vec<Echo>) -> ToolRegistry {
+    let (p, _ks, _a) = good_policy(PermissionMode::Smart);
+    let r = ToolRegistry::new();
+    for t in tools {
+        r.register(Arc::new(t));
+    }
+    r.set_permission_policy(p);
+    r
+}
+
+#[test]
+fn undeclared_tool_is_denied_in_read_only_mode() {
+    // Not registered at all: no declaration, so it is not read-only even though the name
+    // looks like a query. Smart mode with no approver must deny.
+    let (p, _ks, _a) = good_policy(PermissionMode::Smart);
+    assert_eq!(p.decide("s3a_query"), Decision::Ask);
+    assert_eq!(p.decide_with("s3a_query", None), Decision::Ask);
+    let r = ToolRegistry::new();
+    r.set_permission_policy(p);
+    assert!(call(&r, "s3a_query", json!({})).is_err());
+}
+
+#[test]
+fn declared_read_only_tool_is_allowed() {
+    let r = smart_registry(vec![Echo("s3a_query", SideEffects::ReadOnly)]);
+    call(&r, "s3a_query", json!({})).unwrap();
+}
+
+#[test]
+fn read_only_looking_name_declared_mutating_is_denied() {
+    // Pass covers the tool, so only the declaration can be the reason for the denial.
+    let (ks, agent) = keys();
+    let p = pass(&ks, &agent, &["get_records"], 0, now() + 3600);
+    let policy = PermissionPolicy::new(PermissionMode::Smart).with_pass(AGENT_ID, &agent, p);
+    assert_eq!(
+        policy.decide_with("get_records", Some(SideEffects::Mutating)),
+        Decision::Ask
+    );
+    let r = ToolRegistry::new();
+    r.register(Arc::new(Echo("get_records", SideEffects::Mutating)));
+    r.set_permission_policy(policy);
+    let e = call(&r, "get_records", json!({})).unwrap_err();
+    assert!(e.contains("no human handler"), "{e}");
+    // Lint only: the name heuristic disagrees with the declaration, which is what we warn on.
+    assert!(s3a_harness::permissions::name_looks_read_only(
+        "get_records"
+    ));
+}
+
+#[test]
+fn builtin_tools_declare_side_effects_and_names_agree_or_are_listed() {
+    // Lint: flag built-ins whose name heuristic disagrees with their declaration. The
+    // declaration wins; disagreements must be listed here on purpose.
+    let expected_disagreements: &[&str] = &[];
+    let r = ToolRegistry::new_default();
+    let mut disagreements = Vec::new();
+    for info in r.list_tools(None) {
+        let d = r
+            .side_effects(&info.name)
+            .expect("built-in must be registered");
+        let looks = s3a_harness::permissions::name_looks_read_only(&info.name);
+        if looks != (d == SideEffects::ReadOnly) {
+            eprintln!(
+                "warning: tool '{}' name heuristic says read_only={looks}, declared {d:?}",
+                info.name
+            );
+            disagreements.push(info.name);
+        }
+    }
+    disagreements.sort();
+    assert_eq!(disagreements, expected_disagreements);
 }

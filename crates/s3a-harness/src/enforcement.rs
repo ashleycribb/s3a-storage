@@ -14,7 +14,7 @@
 //!   cannot be written the call is denied.
 //!
 //! This module adds no S3A format or core semantics; it only gates what agents may call.
-use crate::permissions::{is_read_only_tool, is_vault_tool, PermissionPolicy, ToolRule};
+use crate::permissions::{is_vault_tool, PermissionPolicy, SideEffects, ToolRule};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,18 +49,21 @@ fn touches_core(s: &str) -> bool {
         || t.contains("core_write")
 }
 
-/// Classify a tool call. Core wins over everything, then human-only, then read, else write.
+/// Classify a call with no side-effect declaration (never `Read`).
 pub fn classify(tool: &str, target: &str) -> ActionClass {
+    classify_with(tool, target, None)
+}
+
+/// Classify a tool call. Core wins over everything, then human-only, then read, else write.
+/// `Read` requires an explicit [`SideEffects::ReadOnly`] declaration; names never decide it.
+pub fn classify_with(tool: &str, target: &str, side_effects: Option<SideEffects>) -> ActionClass {
+    let read_only = SideEffects::is_read_only(side_effects);
     let t = tool.to_ascii_lowercase();
     if touches_core(&t) || touches_core(target) {
         return ActionClass::Core;
     }
-    // Asking a human is always safe: it only creates a request a human must answer.
-    if t.contains("request_human") {
-        return ActionClass::Read;
-    }
     if s3a_vault::is_judgment_action(&t)
-        || (is_vault_tool(&t) && !is_read_only_tool(&t))
+        || (is_vault_tool(&t) && !read_only)
         || [
             "approve",
             "approval",
@@ -75,7 +78,7 @@ pub fn classify(tool: &str, target: &str) -> ActionClass {
     {
         return ActionClass::HumanOnly;
     }
-    if is_read_only_tool(&t) {
+    if read_only {
         return ActionClass::Read;
     }
     ActionClass::Write
@@ -367,10 +370,12 @@ impl EnforcementGate {
         Ok(s.human_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn decide(
         &self,
         agent_id: &str,
         tool: &str,
+        side_effects: Option<SideEffects>,
         target: &str,
         class: ActionClass,
         args: &Value,
@@ -397,7 +402,7 @@ impl EnforcementGate {
                         // (messages keep the words "judgment action" for existing callers)
                         // A policy with an attached human approver can still approve interactively.
                         Some(p) if p.approver.is_some() => {
-                            match p.authorize(agent_id, tool, args, now) {
+                            match p.authorize_with(agent_id, tool, side_effects, args, now) {
                                 Ok(()) => (
                                     GateDecision::Allow,
                                     "approved by attached human approver".into(),
@@ -410,20 +415,22 @@ impl EnforcementGate {
                                 ),
                             }
                         }
-                        Some(p) => match p.authorize(agent_id, tool, args, now) {
-                            // Without an approver authorize cannot succeed for a human-only tool;
-                            // treat any Ok defensively as deny (fail closed).
-                            Ok(()) => (
-                                GateDecision::Deny,
-                                format!("human-only judgment action: {sign_err}"),
-                                None,
-                            ),
-                            Err(e) => (
-                                GateDecision::Deny,
-                                format!("human-only judgment action: {sign_err}; {e}"),
-                                None,
-                            ),
-                        },
+                        Some(p) => {
+                            match p.authorize_with(agent_id, tool, side_effects, args, now) {
+                                // Without an approver authorize cannot succeed for a human-only tool;
+                                // treat any Ok defensively as deny (fail closed).
+                                Ok(()) => (
+                                    GateDecision::Deny,
+                                    format!("human-only judgment action: {sign_err}"),
+                                    None,
+                                ),
+                                Err(e) => (
+                                    GateDecision::Deny,
+                                    format!("human-only judgment action: {sign_err}; {e}"),
+                                    None,
+                                ),
+                            }
+                        }
                         None => (
                             GateDecision::Deny,
                             format!("human-only judgment action: {sign_err}"),
@@ -443,7 +450,7 @@ impl EnforcementGate {
                     "deny by default: no permission policy installed".into(),
                     None,
                 ),
-                Some(p) => match p.authorize(agent_id, tool, args, now) {
+                Some(p) => match p.authorize_with(agent_id, tool, side_effects, args, now) {
                     Ok(()) => (
                         GateDecision::Allow,
                         format!("allowed by policy ({:?} mode)", p.mode),
@@ -455,7 +462,7 @@ impl EnforcementGate {
         }
     }
 
-    /// Check one agent call and audit the decision. `Ok(entry)` means the call may run.
+    /// Check a call with no side-effect declaration (treated as mutating).
     pub fn check(
         &self,
         agent_id: &str,
@@ -463,9 +470,23 @@ impl EnforcementGate {
         args: &Value,
         now: u64,
     ) -> Result<AuditEntry, String> {
+        self.check_with(agent_id, tool, None, args, now)
+    }
+
+    /// Check one agent call and audit the decision. `Ok(entry)` means the call may run.
+    /// `side_effects` is the tool's explicit declaration; `None` fails closed.
+    pub fn check_with(
+        &self,
+        agent_id: &str,
+        tool: &str,
+        side_effects: Option<SideEffects>,
+        args: &Value,
+        now: u64,
+    ) -> Result<AuditEntry, String> {
         let target = call_target(args);
-        let class = classify(tool, &target);
-        let (decision, reason, by) = self.decide(agent_id, tool, &target, class, args, now);
+        let class = classify_with(tool, &target, side_effects);
+        let (decision, reason, by) =
+            self.decide(agent_id, tool, side_effects, &target, class, args, now);
         let entry = AuditEntry {
             seq: 0,
             timestamp: now,

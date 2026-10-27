@@ -579,10 +579,15 @@ impl S3AMcpDispatcher {
                     .unwrap_or_default()
                     .as_secs();
                 let agent = format!("mcp-agent-{}", self.agent_id);
-                let call_result = match self.gate.check(&agent, tool_name, &args, now) {
-                    Ok(_) => self.call_tool(tool_name, &args),
-                    Err(reason) => Ok((reason, true)),
-                };
+                let side_effects = mcp_tool_side_effects(tool_name);
+                let call_result =
+                    match self
+                        .gate
+                        .check_with(&agent, tool_name, side_effects, &args, now)
+                    {
+                        Ok(_) => self.call_tool(tool_name, &args),
+                        Err(reason) => Ok((reason, true)),
+                    };
 
                 match call_result {
                     Ok((text, is_err)) => {
@@ -1124,5 +1129,69 @@ fn parse_coord_str(s: &str) -> Option<S3ACoordinate> {
         Some(S3ACoordinate::new(level, tile_id, offset))
     } else {
         None
+    }
+}
+
+/// Explicit side-effect declarations for every tool this MCP server exposes. A name not in
+/// this table is undeclared and treated as mutating (fail closed).
+pub const MCP_TOOL_SIDE_EFFECTS: &[(&str, crate::permissions::SideEffects)] = {
+    use crate::permissions::SideEffects::{Mutating, ReadOnly};
+    &[
+        ("s3a_search_library", ReadOnly),
+        ("s3a_get_synthesis_matrix", ReadOnly),
+        ("s3a_get_vault_audit_trail", ReadOnly),
+        // Writes a snapshot file into the sandbox export directory.
+        ("s3a_export_srs", Mutating),
+        // Opens, verifies and summarizes a snapshot; does not import into the live DB.
+        ("s3a_intake_srs", ReadOnly),
+        ("record_xapi_statement", Mutating),
+        ("get_session_context", ReadOnly),
+        ("list_academic_verbs", ReadOnly),
+        ("get_researcher_timeline", ReadOnly),
+        ("preflight_check", ReadOnly),
+        // Only creates a pending request a human must answer (was a name special-case).
+        ("request_human_gate", ReadOnly),
+        ("record_human_decision", Mutating),
+        ("record_ai_step", Mutating),
+    ]
+};
+
+/// Declared side effects of an MCP server tool, or `None` if undeclared.
+pub fn mcp_tool_side_effects(name: &str) -> Option<crate::permissions::SideEffects> {
+    MCP_TOOL_SIDE_EFFECTS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, d)| *d)
+}
+
+#[cfg(test)]
+mod side_effect_decl_tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_mcp_tool_is_declared() {
+        let names = [
+            SearchLibraryArgs::tool_name(),
+            GetSynthesisMatrixArgs::tool_name(),
+            GetVaultAuditTrailArgs::tool_name(),
+            ExportSrsArgs::tool_name(),
+            IntakeSrsArgs::tool_name(),
+            RecordXapiStatementArgs::tool_name(),
+            GetSessionContextArgs::tool_name(),
+            ListAcademicVerbsArgs::tool_name(),
+            GetResearcherTimelineArgs::tool_name(),
+            PreflightCheckArgs::tool_name(),
+            RequestHumanGateArgs::tool_name(),
+            RecordHumanDecisionArgs::tool_name(),
+            RecordAiStepArgs::tool_name(),
+        ];
+        assert_eq!(names.len(), MCP_TOOL_SIDE_EFFECTS.len());
+        for n in names {
+            assert!(
+                mcp_tool_side_effects(n).is_some(),
+                "undeclared MCP tool {n}"
+            );
+        }
+        assert_eq!(mcp_tool_side_effects("unknown_get_tool"), None);
     }
 }
