@@ -136,7 +136,7 @@ impl MmapReader {
         for i in 0..self.tile_count() as usize {
             // Non-schema tiles that fail bounds checks are not the catalog's concern;
             // verify_checksums() reports them. A bad Schema tile is always an error.
-            let Ok((hdr, payload)) = self.try_get_tile(i) else {
+            let Ok((hdr, payload)) = self.try_get_tile_unverified(i) else {
                 continue;
             };
             if hdr.tile_type != TileType::SCHEMA {

@@ -1246,7 +1246,48 @@ impl MmapReader {
     }
 
     /// Like [`MmapReader::get_tile`] but reports why a tile was rejected.
+    /// Verifies header and data CRC32C (zero CRCs accepted only on legacy tiles).
     pub fn try_get_tile(&self, index: usize) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
+        let (tile_header, payload) = self.try_get_tile_unverified(index)?;
+        // Fail closed on hot reads. Non-legacy tiles must carry a matching header CRC (zero is
+        // not "unset", same rule as #161). Explicitly legacy tiles (`record_layout_version == 0`)
+        // skip the header CRC: v1.0 writers hashed an older header layout, so their stored
+        // value is not reproducible (see tests/fixtures/legacy_v1_0_telemetry.s3a). Their
+        // payload is still checked against a non-zero data CRC.
+        let legacy = is_legacy_tile(tile_header);
+        if !legacy {
+            let h = compute_tile_header_crc32(tile_header);
+            if h != tile_header.header_crc32 {
+                return Err(Corrupt::new(
+                    index,
+                    CorruptReason::HeaderCrcMismatch {
+                        stored: tile_header.header_crc32,
+                        computed: h,
+                    },
+                ));
+            }
+        }
+        if !(legacy && tile_header.data_crc32 == 0) {
+            let d = crc32c::crc32c(payload);
+            if d != tile_header.data_crc32 {
+                return Err(Corrupt::new(
+                    index,
+                    CorruptReason::DataCrcMismatch {
+                        stored: tile_header.data_crc32,
+                        computed: d,
+                    },
+                ));
+            }
+        }
+        Ok((tile_header, payload))
+    }
+
+    /// Structural bounds checks only, no CRC verification. For integrity gates
+    /// (verify, compaction Before-Gate, recovery) that report CRC failures themselves.
+    pub fn try_get_tile_unverified(
+        &self,
+        index: usize,
+    ) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
         let (offset, slot_end) = self.tile_slot(
             index,
             FILE_HEADER_SIZE,
@@ -1278,9 +1319,18 @@ impl MmapReader {
 
     /// Instantaneous O(1) direct record lookup by S3ACoordinate address (Level, Tile ID, Record Offset)
     pub fn read_record_by_coordinate<T: Pod>(&self, coord: &S3ACoordinate) -> Result<T, S3AError> {
-        let (header, payload) = self
-            .get_tile(coord.tile_id as usize)
-            .ok_or(S3AError::OutOfBounds)?;
+        let (header, payload) =
+            self.try_get_tile(coord.tile_id as usize)
+                .map_err(|c| match c.reason {
+                    CorruptReason::HeaderCrcMismatch { stored, computed }
+                    | CorruptReason::DataCrcMismatch { stored, computed } => {
+                        S3AError::ChecksumMismatch {
+                            expected: stored,
+                            actual: computed,
+                        }
+                    }
+                    _ => S3AError::OutOfBounds,
+                })?;
 
         // Self-addressing verification: reject tile if file_uuid does not match
         if (self.active_header.file_uuid != [0, 0] || header.file_uuid != [0, 0])
@@ -1386,7 +1436,7 @@ impl MmapReader {
         }
 
         for i in 0..count {
-            if let Some((header, payload)) = self.get_tile(i) {
+            if let Ok((header, payload)) = self.try_get_tile_unverified(i) {
                 check_tile_header_crc(header)?;
                 if self.active_header.file_uuid != [0, 0] || header.file_uuid != [0, 0] {
                     let is_legacy = header.record_layout_version <= 1 && header.file_uuid == [0, 0];
@@ -1601,7 +1651,7 @@ impl TileFusionEngine {
             let gen = reader.generation();
             refuse_unreadable_input(&reader, path.as_ref())?;
             for i in 0..reader.tile_count() as usize {
-                if let Some((header, payload)) = reader.get_tile(i) {
+                if let Ok((header, payload)) = reader.try_get_tile_unverified(i) {
                     // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
                     preflight.verify_and_register_tile(path, gen, i, header, payload)?;
 
@@ -2326,7 +2376,8 @@ pub fn refuse_unreadable_input(reader: &MmapReader, path: &Path) -> io::Result<(
         ));
     }
     for i in 0..reader.tile_count() as usize {
-        if let Err(e) = reader.try_get_tile(i) {
+        // Structural check only; CRC failures go to the Before-Gate, which quarantines.
+        if let Err(e) = reader.try_get_tile_unverified(i) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -3856,7 +3907,7 @@ impl Compactor {
             if let Ok(reader) = MmapReader::open(path) {
                 let gen = reader.generation();
                 for i in 0..reader.tile_count() as usize {
-                    if let Some((header, payload)) = reader.get_tile(i) {
+                    if let Ok((header, payload)) = reader.try_get_tile_unverified(i) {
                         let actual_crc = crc32c::crc32c(payload);
                         if actual_crc != header.data_crc32 {
                             return (path.to_path_buf(), header.tile_id, gen);
@@ -3928,7 +3979,7 @@ impl Compactor {
 
             refuse_unreadable_input(&reader, input_path.as_ref())?;
             for i in 0..tile_count {
-                if let Some((header, payload)) = reader.get_tile(i) {
+                if let Ok((header, payload)) = reader.try_get_tile_unverified(i) {
                     // BEFORE GATE: verify input tile CRC, quarantine, uniqueness
                     preflight.verify_and_register_tile(input_path, gen, i, header, payload)?;
 
