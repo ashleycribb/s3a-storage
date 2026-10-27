@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use s3a_core::{FileHeader, HyperTileHeader, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE};
 use s3a_engine::{
-    compute_header_crc32, resolve_active_header, MmapReader, S3AError, TelemetryRecord, TileType,
-    TileWriter,
+    compute_header_crc32, resolve_active_header, CorruptReason, MmapReader, S3ACoordinate,
+    S3AError, TelemetryRecord, TileType, TileWriter,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -81,7 +81,18 @@ fn zero_header_crc_on_non_legacy_tile_rejected_on_read() {
     write_one_tile(t.path());
     patch(t.path(), HDR_CRC, &[0; 4]);
     let r = MmapReader::open(t.path()).unwrap();
-    assert!(r.get_tile(0).unwrap().0.record_layout_version != 0);
+    assert!(
+        r.try_get_tile_unverified(0)
+            .unwrap()
+            .0
+            .record_layout_version
+            != 0
+    );
+    assert!(r.get_tile(0).is_none(), "hot read must fail closed");
+    assert!(matches!(
+        r.try_get_tile(0).unwrap_err().reason,
+        CorruptReason::HeaderCrcMismatch { stored: 0, .. }
+    ));
     assert!(matches!(
         r.verify_checksums(),
         Err(S3AError::ChecksumMismatch { expected: 0, .. })
@@ -138,5 +149,81 @@ fn zero_crc_slot_a_rejected_when_slot_b_was_written() {
     assert!(matches!(
         resolve_active_header(&a, &b),
         Err(S3AError::CorruptedHeader)
+    ));
+}
+
+const PAYLOAD0: usize = TILE0 + HYPER_TILE_HEADER_SIZE;
+
+#[test]
+fn corrupt_payload_byte_rejected_on_every_hot_read() {
+    let t = Tmp::new("hot_payload");
+    write_one_tile(t.path());
+    patch(t.path(), PAYLOAD0, &[0xFF]);
+    let r = MmapReader::open(t.path()).unwrap();
+    assert!(matches!(
+        r.try_get_tile(0).unwrap_err().reason,
+        CorruptReason::DataCrcMismatch { .. }
+    ));
+    assert!(r.get_tile(0).is_none());
+    assert!(r.get_promoted_tile(0).is_none());
+    let coord = S3ACoordinate::new(0, 0, 0);
+    assert!(matches!(
+        r.read_record_by_coordinate::<TelemetryRecord>(&coord),
+        Err(S3AError::ChecksumMismatch { .. })
+    ));
+}
+
+#[test]
+fn corrupt_header_byte_rejected_on_hot_read() {
+    let t = Tmp::new("hot_hdr");
+    write_one_tile(t.path());
+    patch(
+        t.path(),
+        TILE0 + offset_of!(HyperTileHeader, record_count),
+        &[0x7F],
+    );
+    let r = MmapReader::open(t.path()).unwrap();
+    assert!(matches!(
+        r.try_get_tile(0).unwrap_err().reason,
+        CorruptReason::HeaderCrcMismatch { .. }
+    ));
+    assert!(r.get_promoted_tile(0).is_none());
+}
+
+#[test]
+fn legacy_zero_crc_tile_still_hot_reads() {
+    let t = Tmp::new("hot_legacy");
+    write_one_tile(t.path());
+    patch(t.path(), LAYOUT_VER, &0u32.to_le_bytes());
+    patch(t.path(), HDR_CRC, &[0; 4]);
+    let r = MmapReader::open(t.path()).unwrap();
+    assert!(r.get_tile(0).is_some());
+    assert!(r.get_promoted_tile(0).is_some());
+    r.try_get_tile(0).unwrap();
+}
+
+#[test]
+fn legacy_v1_0_fixture_reads_every_tile() {
+    let f = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/legacy_v1_0_telemetry.s3a"
+    );
+    let r = MmapReader::open(f).unwrap();
+    for i in 0..r.tile_count() as usize {
+        r.try_get_tile(i).unwrap();
+        assert!(r.get_promoted_tile(i).is_some());
+    }
+}
+
+#[test]
+fn legacy_tile_payload_corruption_still_rejected() {
+    let t = Tmp::new("legacy_payload");
+    write_one_tile(t.path());
+    patch(t.path(), LAYOUT_VER, &0u32.to_le_bytes());
+    patch(t.path(), PAYLOAD0, &[0xFF]);
+    let r = MmapReader::open(t.path()).unwrap();
+    assert!(matches!(
+        r.try_get_tile(0).unwrap_err().reason,
+        CorruptReason::DataCrcMismatch { .. }
     ));
 }
