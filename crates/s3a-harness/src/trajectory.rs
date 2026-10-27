@@ -32,10 +32,9 @@ impl TrajectoryFormat {
 }
 
 /// Checks whether a run is permitted for the requested usage purpose under consent policy.
+/// Fails closed: a run with no explicit consent for the purpose is never permitted.
 pub fn is_consent_permitted(run: &RunState, required_purpose: &str) -> bool {
-    run.consent_purposes
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(required_purpose))
+    run.has_consent(required_purpose)
 }
 
 /// Formats a single RunState into OpenAI ChatML tool-call format.
@@ -171,6 +170,9 @@ pub struct TrajectoryExportSummary {
     pub total_runs_found: usize,
     pub consent_accepted: usize,
     pub consent_filtered: usize,
+    /// (run_id, reason) for every run skipped for missing consent.
+    #[serde(default)]
+    pub filtered_runs: Vec<(String, String)>,
     pub exported_records: usize,
     pub output_file: PathBuf,
     pub format: TrajectoryFormat,
@@ -194,6 +196,7 @@ pub fn export_trajectories(
     let mut total_runs = 0;
     let mut accepted = 0;
     let mut filtered = 0;
+    let mut filtered_runs = Vec::new();
     let mut output_lines = Vec::new();
 
     for entry in fs::read_dir(&runs_dir).map_err(|e| e.to_string())? {
@@ -213,6 +216,10 @@ pub fn export_trajectories(
                             .push(serde_json::to_string(&json_val).map_err(|e| e.to_string())?);
                     } else {
                         filtered += 1;
+                        filtered_runs.push((
+                            run.run_id.clone(),
+                            format!("no '{required_purpose}' consent on run"),
+                        ));
                     }
                 }
             }
@@ -232,6 +239,7 @@ pub fn export_trajectories(
         total_runs_found: total_runs,
         consent_accepted: accepted,
         consent_filtered: filtered,
+        filtered_runs,
         exported_records: output_lines.len(),
         output_file: output_path.to_path_buf(),
         format,

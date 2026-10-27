@@ -78,7 +78,9 @@ fn test_trajectory_export_chatml_and_sharegpt_formats() {
         [1, 1],
         [2, 2],
         Some("snap_base_01".to_string()),
-    );
+    )
+    // Exporting for training needs explicit consent (none by default).
+    .with_consent_purposes(vec!["model_training".to_string()]);
     run.turn_count = 2;
     run.tool_call_count = 1;
     run.executed_tools.push("preflight_check".to_string());
@@ -237,4 +239,76 @@ fn test_eval_runner_passes_action_assertions_and_tracks_metrics() {
         .contains("Expected tool 's3a_write' was not invoked"));
 
     let _ = fs::remove_dir_all(&root);
+}
+
+// --- Consent defaults (fail closed) ---
+
+#[test]
+fn test_new_run_has_empty_consent() {
+    let run = RunState::new("a", "g", [1, 1], [2, 2]);
+    assert!(run.consent_purposes.is_empty());
+    assert!(run.consent_events.is_empty());
+    assert!(!run.has_consent("model_training"));
+    assert!(!s3a_harness::is_consent_permitted(&run, "model_training"));
+    // A persisted run without the field also loads with no consent.
+    let mut v = serde_json::to_value(&run).unwrap();
+    v.as_object_mut().unwrap().remove("consent_purposes");
+    let back: RunState = serde_json::from_value(v).unwrap();
+    assert!(back.consent_purposes.is_empty());
+}
+
+fn export_one(run: RunState, tag: &str) -> (s3a_harness::TrajectoryExportSummary, String) {
+    let root = create_temp_dir(tag);
+    let sandbox = Sandbox::new(&root, false).unwrap();
+    let store: Arc<dyn Store> = Arc::new(LocalStore::new(sandbox.root().join("t.s3a"), false));
+    let model: Arc<dyn Model> = Arc::new(MockModel::new("mock-model"));
+    let runtime = AgentRuntime::new(valid_test_config(), model, None, store, sandbox.clone());
+    runtime.persist_run(&run).unwrap();
+    let out = root.join("out.jsonl");
+    let summary =
+        export_trajectories(&sandbox, TrajectoryFormat::ChatMl, &out, "model_training").unwrap();
+    let content = fs::read_to_string(&out).unwrap();
+    let _ = fs::remove_dir_all(&root);
+    (summary, content)
+}
+
+#[test]
+fn test_training_export_denied_without_consent() {
+    let run = RunState::new("a", "default-consent run", [1, 1], [2, 2]);
+    let id = run.run_id.clone();
+    let (summary, content) = export_one(run, "no_consent");
+    assert_eq!(summary.consent_accepted, 0);
+    assert_eq!(summary.consent_filtered, 1);
+    assert_eq!(summary.exported_records, 0);
+    assert!(!content.contains(&id));
+    assert_eq!(summary.filtered_runs.len(), 1);
+    assert_eq!(summary.filtered_runs[0].0, id);
+    assert!(summary.filtered_runs[0].1.contains("model_training"));
+}
+
+#[test]
+fn test_training_export_allowed_with_explicit_consent() {
+    let run = RunState::new("a", "consented run", [1, 1], [2, 2])
+        .with_consent_from(vec!["model_training".to_string()], "human: test owner");
+    let id = run.run_id.clone();
+    let (summary, content) = export_one(run, "with_consent");
+    assert_eq!(summary.consent_accepted, 1);
+    assert_eq!(summary.exported_records, 1);
+    assert!(content.contains(&id));
+}
+
+#[test]
+fn test_consent_recorded_in_run_audit_trail() {
+    let mut run = RunState::new("a", "g", [1, 1], [2, 2]);
+    assert!(run
+        .require_consent("model_training", "training export")
+        .is_err());
+    let run = run.with_consent_from(vec!["model_training".to_string()], "cli --consent");
+    let kinds: Vec<_> = run.consent_events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(kinds, ["denied", "granted"]);
+    assert_eq!(run.consent_events[1].source, "cli --consent");
+    assert_eq!(run.consent_events[1].purposes, ["model_training"]);
+    // It survives persistence.
+    let back: RunState = serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+    assert_eq!(back.consent_events, run.consent_events);
 }

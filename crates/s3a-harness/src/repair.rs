@@ -61,6 +61,9 @@ pub struct RepairLoopReport {
     pub promoted_to_baseline: bool,
     pub exported_chatml_path: Option<PathBuf>,
     pub exported_sharegpt_path: Option<PathBuf>,
+    /// Why training trajectories were not exported (no `model_training` consent), if so.
+    #[serde(default)]
+    pub training_export_skipped: Option<String>,
 }
 
 /// Parses structured failures from a tool output JSON payload.
@@ -102,7 +105,8 @@ pub fn parse_structured_failures(output: &Value) -> Vec<StructuredFailure> {
 /// 2. Uses DecisionEngine with confidence gating (>= 0.70) and claim modification guard.
 /// 3. Quarantines unpromoted fixes on shadow branch (`state.forked_snapshot_id`).
 /// 4. Caps repair attempts at max 3; escalates to `ask_human` on repeated failure or claim edit.
-/// 5. Exports ChatML and ShareGPT trajectories for model fine-tuning.
+/// 5. Exports ChatML and ShareGPT trajectories for model fine-tuning, only with explicit
+///    `model_training` consent (none by default; see [`run_repair_loop_with_consent`]).
 pub fn run_repair_loop(
     runtime: &AgentRuntime,
     project_id: &str,
@@ -110,6 +114,27 @@ pub fn run_repair_loop(
     shadow_branch: &str,
     worker_url: Option<&str>,
     initial_failure_override: Option<StructuredFailure>,
+) -> Result<RepairLoopReport, String> {
+    run_repair_loop_with_consent(
+        runtime,
+        project_id,
+        agent_id,
+        shadow_branch,
+        worker_url,
+        initial_failure_override,
+        None,
+    )
+}
+
+/// [`run_repair_loop`] with an explicit consent grant `(purposes, source)` for the run.
+pub fn run_repair_loop_with_consent(
+    runtime: &AgentRuntime,
+    project_id: &str,
+    agent_id: &str,
+    shadow_branch: &str,
+    worker_url: Option<&str>,
+    initial_failure_override: Option<StructuredFailure>,
+    consent: Option<(Vec<String>, &str)>,
 ) -> Result<RepairLoopReport, String> {
     let session_uuid = [0x533a_cafe, 0x1000];
     let project_uuid = [0xdead_beef, 0xcafe_babe];
@@ -125,6 +150,9 @@ pub fn run_repair_loop(
     );
     // Invariant: Fixes remain quarantined on shadow branch until green
     state.forked_snapshot_id = Some(shadow_branch.to_string());
+    if let Some((purposes, source)) = consent {
+        state = state.with_consent_from(purposes, source);
+    }
 
     let session_str = crate::uuid_pair_to_string(session_uuid);
 
@@ -178,6 +206,7 @@ pub fn run_repair_loop(
             promoted_to_baseline: true,
             exported_chatml_path: None,
             exported_sharegpt_path: None,
+            training_export_skipped: None,
         });
     }
 
@@ -408,22 +437,29 @@ pub fn run_repair_loop(
         }
     }
 
-    // 6. Export Trajectories for Model Training
+    // 6. Export Trajectories for Model Training (fail closed without explicit consent)
     let runs_dir = runtime.sandbox.root().join("runs");
     if !runs_dir.exists() {
         let _ = fs::create_dir_all(&runs_dir);
     }
+    let consent = state.require_consent("model_training", "training trajectory export");
     let _ = runtime.persist_run(&state);
 
-    let chatml_val = run_to_chatml(&state);
-    let chatml_path = runs_dir.join("repair_trajectory_chatml.jsonl");
-    let chatml_line = serde_json::to_string(&chatml_val).unwrap_or_default();
-    let _ = fs::write(&chatml_path, format!("{}\n", chatml_line));
+    let (chatml_out, sharegpt_out, training_export_skipped) = match consent {
+        Ok(()) => {
+            let chatml_val = run_to_chatml(&state);
+            let chatml_path = runs_dir.join("repair_trajectory_chatml.jsonl");
+            let chatml_line = serde_json::to_string(&chatml_val).unwrap_or_default();
+            let _ = fs::write(&chatml_path, format!("{}\n", chatml_line));
 
-    let sharegpt_val = run_to_sharegpt(&state);
-    let sharegpt_path = runs_dir.join("repair_trajectory_sharegpt.jsonl");
-    let sharegpt_line = serde_json::to_string(&sharegpt_val).unwrap_or_default();
-    let _ = fs::write(&sharegpt_path, format!("{}\n", sharegpt_line));
+            let sharegpt_val = run_to_sharegpt(&state);
+            let sharegpt_path = runs_dir.join("repair_trajectory_sharegpt.jsonl");
+            let sharegpt_line = serde_json::to_string(&sharegpt_val).unwrap_or_default();
+            let _ = fs::write(&sharegpt_path, format!("{}\n", sharegpt_line));
+            (Some(chatml_path), Some(sharegpt_path), None)
+        }
+        Err(reason) => (None, None, Some(reason)),
+    };
 
     Ok(RepairLoopReport {
         run_id: state.run_id,
@@ -435,8 +471,9 @@ pub fn run_repair_loop(
         total_attempts: state.turn_count,
         outcome,
         promoted_to_baseline,
-        exported_chatml_path: Some(chatml_path),
-        exported_sharegpt_path: Some(sharegpt_path),
+        exported_chatml_path: chatml_out,
+        exported_sharegpt_path: sharegpt_out,
+        training_export_skipped,
     })
 }
 
@@ -509,15 +546,18 @@ mod tests {
             stage: "build".to_string(),
         };
 
-        let report = run_repair_loop(
+        // Training export needs explicit consent (none by default).
+        let report = run_repair_loop_with_consent(
             &runtime,
             "test_proj",
             "agent_7",
             "shadow/agent_7",
             None,
             Some(initial_fail),
+            Some((vec!["model_training".to_string()], "test")),
         )
         .expect("Repair loop execution");
+        assert!(report.training_export_skipped.is_none());
 
         assert!(
             report.promoted_to_baseline,
@@ -541,6 +581,46 @@ mod tests {
         let chatml_content = fs::read_to_string(&chatml_p).unwrap();
         assert!(chatml_content.contains("components/MatchCard.tsx"));
 
+        let _ = fs::remove_dir_all(sandbox.root());
+    }
+
+    #[test]
+    fn test_repair_loop_skips_training_export_without_consent() {
+        let (runtime, sandbox) = test_runtime(
+            r#"{"answer": "apply_fix", "confidence": 0.95, "rationale": "Score property should be number"}"#,
+        );
+        let initial_fail = StructuredFailure {
+            file: "components/MatchCard.tsx".to_string(),
+            line: 42,
+            col: 15,
+            message: "Type 'string' is not assignable to type 'number'".to_string(),
+            stage: "build".to_string(),
+        };
+        let report = run_repair_loop(
+            &runtime,
+            "test_proj",
+            "agent_7",
+            "shadow/agent_7",
+            None,
+            Some(initial_fail),
+        )
+        .expect("Repair loop execution");
+        assert!(report.exported_chatml_path.is_none());
+        assert!(report.exported_sharegpt_path.is_none());
+        let reason = report
+            .training_export_skipped
+            .expect("skip reason recorded");
+        assert!(reason.contains("model_training"), "{reason}");
+        // The denial is in the persisted run's consent audit trail.
+        let run_json =
+            fs::read_to_string(sandbox.root().join(format!("runs/{}.json", report.run_id)))
+                .unwrap();
+        let run: crate::RunState = serde_json::from_str(&run_json).unwrap();
+        assert!(run.consent_purposes.is_empty());
+        assert!(run
+            .consent_events
+            .iter()
+            .any(|e| e.kind == "denied" && e.source.contains("model_training")));
         let _ = fs::remove_dir_all(sandbox.root());
     }
 

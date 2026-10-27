@@ -40,7 +40,7 @@ s3a-harness export-trajectories --format sharegpt --out data/trajectories_shareg
 ```
 
 The exporter strictly enforces:
-1. **Consent Filtering**: Only trajectories with `model_training` in their `consent_purposes` are exported. All other runs are omitted.
+1. **Consent Filtering**: Only trajectories with `model_training` in their `consent_purposes` are exported. All other runs are omitted and listed with a reason in `filtered_runs`. New runs have **no** consent by default; grant it explicitly per run (e.g. `s3a-harness run --consent model_training`, or `RunState::with_consent_from`). Grants and denials are recorded in the run's `consent_events`.
 2. **Deterministic Tool Schema**: Turns contain system prompts, user goals, assistant tool-calls with input argument hashes, and tool result payloads.
 3. **No Hallucinated Paths**: Every turn reflects actual verified executions and supervisory gate interventions.
 
