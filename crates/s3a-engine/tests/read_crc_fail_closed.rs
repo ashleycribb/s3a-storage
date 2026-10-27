@@ -202,17 +202,65 @@ fn legacy_zero_crc_tile_still_hot_reads() {
     r.try_get_tile(0).unwrap();
 }
 
+const LEGACY_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/legacy_v1_0_telemetry.s3a"
+);
+
 #[test]
-fn legacy_v1_0_fixture_reads_every_tile() {
-    let f = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/legacy_v1_0_telemetry.s3a"
-    );
-    let r = MmapReader::open(f).unwrap();
+fn raw_v1_0_fixture_rejected_on_every_hot_read() {
+    let r = MmapReader::open(LEGACY_FIXTURE).unwrap();
+    assert!(r.tile_count() > 0);
+    for i in 0..r.tile_count() as usize {
+        assert!(matches!(
+            r.try_get_tile(i).unwrap_err().reason,
+            CorruptReason::HeaderCrcMismatch { .. }
+        ));
+        assert!(r.get_tile(i).is_none());
+        assert!(r.get_promoted_tile(i).is_none());
+        assert!(matches!(
+            r.read_record_by_coordinate::<TelemetryRecord>(&S3ACoordinate::new(0, i as u32, 0)),
+            Err(S3AError::ChecksumMismatch { .. })
+        ));
+    }
+}
+
+#[test]
+fn migrated_v1_0_fixture_reads_every_tile() {
+    let t = Tmp::new("migrated");
+    let _ = fs::remove_file(t.path());
+    s3a_engine::migrate::migrate_file(Path::new(LEGACY_FIXTURE), t.path(), false).unwrap();
+    let r = MmapReader::open(t.path()).unwrap();
+    r.verify_checksums().unwrap();
+    assert!(r.tile_count() > 0);
     for i in 0..r.tile_count() as usize {
         r.try_get_tile(i).unwrap();
         assert!(r.get_promoted_tile(i).is_some());
+        r.read_record_by_coordinate::<TelemetryRecord>(&S3ACoordinate::new(0, i as u32, 0))
+            .unwrap();
     }
+}
+
+#[test]
+fn verify_sealed_archive_rejects_non_legacy_zero_header_crc() {
+    // `s3a-cli verify` runs verify_sealed_archive; unsealed files take the scan path.
+    let t = Tmp::new("vsa_zero");
+    write_one_tile(t.path());
+    s3a_engine::verify_sealed_archive(t.path(), None).unwrap();
+    patch(t.path(), HDR_CRC, &[0; 4]);
+    assert!(matches!(
+        s3a_engine::verify_sealed_archive(t.path(), None),
+        Err(S3AError::ChecksumMismatch { expected: 0, .. })
+    ));
+}
+
+#[test]
+fn verify_sealed_archive_accepts_legacy_zero_header_crc() {
+    let t = Tmp::new("vsa_legacy");
+    write_one_tile(t.path());
+    patch(t.path(), LAYOUT_VER, &0u32.to_le_bytes());
+    patch(t.path(), HDR_CRC, &[0; 4]);
+    s3a_engine::verify_sealed_archive(t.path(), None).unwrap();
 }
 
 #[test]
@@ -220,6 +268,7 @@ fn legacy_tile_payload_corruption_still_rejected() {
     let t = Tmp::new("legacy_payload");
     write_one_tile(t.path());
     patch(t.path(), LAYOUT_VER, &0u32.to_le_bytes());
+    patch(t.path(), HDR_CRC, &[0; 4]);
     patch(t.path(), PAYLOAD0, &[0xFF]);
     let r = MmapReader::open(t.path()).unwrap();
     assert!(matches!(
