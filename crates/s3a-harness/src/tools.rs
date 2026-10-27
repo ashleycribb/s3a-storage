@@ -101,6 +101,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn input_schema(&self) -> Value;
+    /// Required, explicit side-effect declaration. This (never the tool's name) decides
+    /// whether the tool counts as read-only for permission modes and the enforcement gate.
+    fn side_effects(&self) -> crate::permissions::SideEffects;
     fn execute(&self, args: &Value, ctx: &ToolExecutionContext) -> Result<Value, ToolError>;
 }
 
@@ -112,6 +115,11 @@ pub trait Tool: Send + Sync {
 pub struct S3aQueryTool;
 
 impl Tool for S3aQueryTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // reads local archives
+        crate::permissions::SideEffects::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "s3a_query"
     }
@@ -237,6 +245,11 @@ impl Tool for S3aQueryTool {
 pub struct S3aWriteTool;
 
 impl Tool for S3aWriteTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // writes records
+        crate::permissions::SideEffects::Mutating
+    }
+
     fn name(&self) -> &str {
         "s3a_write"
     }
@@ -318,6 +331,11 @@ impl Tool for S3aWriteTool {
 pub struct OpenAlexLookupTool;
 
 impl Tool for OpenAlexLookupTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // outbound HTTP GET only
+        crate::permissions::SideEffects::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "openalex_lookup"
     }
@@ -431,6 +449,11 @@ impl Tool for OpenAlexLookupTool {
 pub struct CrossrefLookupTool;
 
 impl Tool for CrossrefLookupTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // outbound HTTP GET only
+        crate::permissions::SideEffects::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "crossref_lookup"
     }
@@ -514,6 +537,11 @@ impl Tool for CrossrefLookupTool {
 pub struct RetractionWatchCheckTool;
 
 impl Tool for RetractionWatchCheckTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // outbound HTTP GET only
+        crate::permissions::SideEffects::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "retraction_watch_check"
     }
@@ -604,6 +632,11 @@ impl McpExternalTool {
 }
 
 impl Tool for McpExternalTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // remote MCP tool: side effects unknown, fail closed
+        crate::permissions::SideEffects::Mutating
+    }
+
     fn name(&self) -> &str {
         &self.tool_name
     }
@@ -676,6 +709,11 @@ impl Tool for McpExternalTool {
 pub struct PreflightCheckTool;
 
 impl Tool for PreflightCheckTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // pure check, no I/O
+        crate::permissions::SideEffects::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "preflight_check"
     }
@@ -720,6 +758,11 @@ impl SandboxBuildTool {
 }
 
 impl Tool for SandboxBuildTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        // triggers a remote build
+        crate::permissions::SideEffects::Mutating
+    }
+
     fn name(&self) -> &str {
         "sandbox_build"
     }
@@ -893,6 +936,15 @@ impl ToolRegistry {
             .insert(tool.name().to_string(), tool);
     }
 
+    /// The declared side effects of a registered tool (`None` if not registered).
+    pub fn side_effects(&self, tool_name: &str) -> Option<crate::permissions::SideEffects> {
+        self.tools
+            .read()
+            .unwrap()
+            .get(tool_name)
+            .map(|t| t.side_effects())
+    }
+
     /// Connect and register an external MCP server's tools into this registry.
     pub fn register_mcp_client(
         &self,
@@ -953,9 +1005,17 @@ impl ToolRegistry {
 
         // 1b. Enforcement gate: deny by default, core off limits, human-only actions need a
         //     human sign-off (or an attached human approver), every decision audited.
+        // The tool's own declaration decides read-only; an unregistered tool has none.
+        let side_effects = self.side_effects(tool_name);
         let gate_entry = self
             .gate
-            .check(&ctx.agent_id, tool_name, args, chrono_timestamp())
+            .check_with(
+                &ctx.agent_id,
+                tool_name,
+                side_effects,
+                args,
+                chrono_timestamp(),
+            )
             .map_err(|details| ToolError::ExecutionFailed {
                 tool: tool_name.to_string(),
                 details,
@@ -1096,6 +1156,9 @@ mod tests {
     #[test]
     fn test_harness_denies_tool_call_without_grant_and_blocks_judgment() {
         let registry = ToolRegistry::new();
+        // Registered so its ReadOnly declaration is known (an unregistered tool fails closed
+        // at the gate before the grant check).
+        registry.register(Arc::new(S3aQueryTool));
         let store = Arc::new(DummyStore);
         let sandbox = Sandbox::new(std::env::temp_dir(), false).unwrap();
 
@@ -1132,5 +1195,37 @@ mod tests {
         assert!(
             matches!(err_judgment, Err(ToolError::ExecutionFailed { ref details, .. }) if details.contains("judgment action"))
         );
+    }
+}
+
+#[cfg(test)]
+mod side_effect_tests {
+    use super::*;
+    use crate::permissions::SideEffects;
+
+    #[test]
+    fn builtin_declarations() {
+        let r = ToolRegistry::new_default();
+        let want = [
+            ("s3a_query", SideEffects::ReadOnly),
+            ("s3a_write", SideEffects::Mutating),
+            ("preflight_check", SideEffects::ReadOnly),
+        ];
+        for (n, d) in want {
+            assert_eq!(r.side_effects(n), Some(d), "{n}");
+        }
+        assert_eq!(r.side_effects("not_registered"), None);
+        let ext = McpExternalTool::new("srv", "get_thing", "", json!({}), None);
+        assert_eq!(ext.side_effects(), SideEffects::Mutating);
+    }
+
+    #[test]
+    fn unregistered_tool_is_denied_by_gate_without_policy() {
+        let r = ToolRegistry::new();
+        let e = r
+            .enforcement_gate()
+            .check_with("a", "s3a_query", r.side_effects("s3a_query"), &json!({}), 0)
+            .unwrap_err();
+        assert!(e.contains("deny by default"), "{e}");
     }
 }

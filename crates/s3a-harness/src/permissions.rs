@@ -68,8 +68,28 @@ pub fn is_vault_tool(tool: &str) -> bool {
         || t.contains("delegation")
 }
 
-/// Tools considered read-only for `Smart` mode.
-pub fn is_read_only_tool(tool: &str) -> bool {
+/// A tool's declared side effects. Every tool must declare this explicitly; a tool with no
+/// declaration (unknown, unregistered, remote MCP) is treated as [`SideEffects::Mutating`]:
+/// it needs approval and is blocked in read-only / no-approver mode (fail closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffects {
+    /// Reads only: no writes, no state changes, no remote actions.
+    ReadOnly,
+    /// Anything else (writes, sends, triggers, or unknown).
+    Mutating,
+}
+
+impl SideEffects {
+    /// `None` (undeclared) is never read-only.
+    pub fn is_read_only(decl: Option<SideEffects>) -> bool {
+        decl == Some(SideEffects::ReadOnly)
+    }
+}
+
+/// Lint only, never a decision: does the tool *name* look read-only? Used by tests to warn
+/// when a name and its declared [`SideEffects`] disagree (e.g. `get_*` declared mutating).
+pub fn name_looks_read_only(tool: &str) -> bool {
     let t = tool.to_ascii_lowercase();
     ["query", "lookup", "check", "read", "list", "get", "search"]
         .iter()
@@ -136,7 +156,15 @@ impl PermissionPolicy {
     /// The rule step. Sensitive (vault and judgment) tools are pinned: `Always` is read as
     /// `Ask`, judgment tools default to `Never` and vault tools to `Ask`, and no mode can
     /// turn them into `Allow`.
+    ///
+    /// Same as [`PermissionPolicy::decide_with`] with no declaration (treated as mutating).
     pub fn decide(&self, tool: &str) -> Decision {
+        self.decide_with(tool, None)
+    }
+
+    /// The rule step with the tool's declared [`SideEffects`]. Only a declared
+    /// `ReadOnly` tool can run without asking in `Smart` mode.
+    pub fn decide_with(&self, tool: &str, side_effects: Option<SideEffects>) -> Decision {
         let rule = self.rules.get(tool).copied();
         if self.mode == PermissionMode::Chat || rule == Some(ToolRule::Never) {
             return Decision::Deny;
@@ -153,13 +181,15 @@ impl PermissionPolicy {
             (PermissionMode::Approve, _) => Decision::Ask,
             (_, Some(ToolRule::Always)) => Decision::Allow,
             (PermissionMode::Auto, None) => Decision::Allow,
-            (PermissionMode::Smart, None) if is_read_only_tool(tool) => Decision::Allow,
+            (PermissionMode::Smart, None) if SideEffects::is_read_only(side_effects) => {
+                Decision::Allow
+            }
             (PermissionMode::Smart, None) => Decision::Ask,
             (PermissionMode::Chat, _) | (_, Some(ToolRule::Never)) => Decision::Deny,
         }
     }
 
-    /// Full check for one call. `Ok(())` means the call may run.
+    /// Full check for one call with no declaration (treated as mutating).
     pub fn authorize(
         &self,
         agent_id: &str,
@@ -167,7 +197,19 @@ impl PermissionPolicy {
         args: &serde_json::Value,
         now: u64,
     ) -> Result<(), String> {
-        let decision = self.decide(tool);
+        self.authorize_with(agent_id, tool, None, args, now)
+    }
+
+    /// Full check for one call. `Ok(())` means the call may run.
+    pub fn authorize_with(
+        &self,
+        agent_id: &str,
+        tool: &str,
+        side_effects: Option<SideEffects>,
+        args: &serde_json::Value,
+        now: u64,
+    ) -> Result<(), String> {
+        let decision = self.decide_with(tool, side_effects);
         if decision == Decision::Deny {
             return Err(format!(
                 "permission denied: tool '{tool}' is not allowed in {:?} mode or by rule",
