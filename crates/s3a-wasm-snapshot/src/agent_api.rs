@@ -10,9 +10,10 @@ use s3a_pack_ontology::{
 };
 use s3a_pack_scholar::{
     AcademicPaperRecord, AgentDenied, AgentRegistryRecord, AiTraceRecord,
-    CitationFingerprintRecord, HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord,
-    ScholarTileType, SrsDeltaEntry, SrsManifestHeader, SrsSyncDeltaPacket, SrsWorkspaceRecord,
-    SCHOLAR_LAYOUT_VERSION_V1, STEP_CLAIM,
+    CitationFingerprintRecord, CommitteeDecisionRecord, CommitteeError, HumanLrsRecord,
+    ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType, SrsDeltaEntry,
+    SrsManifestHeader, SrsSyncDeltaPacket, SrsWorkspaceRecord, SCHOLAR_LAYOUT_VERSION_V1,
+    STEP_CLAIM,
 };
 use s3a_simd::cosine_similarity;
 
@@ -143,6 +144,9 @@ pub struct WasmAgentSnapshot {
     pub statement_log: Vec<SrsDeltaEntry>,
     /// Append-only, hash-chained consent events (Tile 71). Empty = never consented (fail-closed).
     pub consents: Vec<ConsentRecord>,
+    /// Append-only, hash-chained, reviewer-signed committee decisions (Scholar Tile 96).
+    /// Not a trace tile: independent of `consents`, never consent-gated or withdrawn.
+    pub committee_decisions: Vec<CommitteeDecisionRecord>,
 }
 
 impl WasmAgentSnapshot {
@@ -199,6 +203,14 @@ impl WasmAgentSnapshot {
             }
         }
 
+        s3a_pack_scholar::verify_committee_chain(&view.committee_decisions)
+            .map_err(|_| "Tile 96 committee decision hash chain is broken")?;
+        for d in &view.committee_decisions {
+            if let Ok(e) = SrsDeltaEntry::from_record(ScholarTileType::COMMITTEE_DECISION, d) {
+                statement_log.push(e);
+            }
+        }
+
         Ok(Self {
             manifest,
             workspace: view.workspace,
@@ -217,6 +229,7 @@ impl WasmAgentSnapshot {
             last_applied_delta_seq: 0,
             statement_log,
             consents: view.consents.into_iter().copied().collect(),
+            committee_decisions: view.committee_decisions,
         })
     }
 
@@ -283,6 +296,66 @@ impl WasmAgentSnapshot {
             }
         }
         rec
+    }
+
+    /// Hash of the last committee decision (or zeros), i.e. the `prev_hash` for the next one.
+    pub fn committee_chain_head(&self) -> [u8; 32] {
+        self.committee_decisions
+            .last()
+            .map(|d| d.record_hash())
+            .unwrap_or([0u8; 32])
+    }
+
+    /// Builds the unsigned committee decision that would be appended next.
+    /// The caller signs `rec.signing_message()` with the reviewer key it holds.
+    pub fn prepare_committee_decision(
+        &self,
+        verdict: u32,
+        reviewer_id: &str,
+        submission_id: &str,
+        comment: &str,
+        timestamp_sec: u64,
+    ) -> Result<CommitteeDecisionRecord, CommitteeError> {
+        CommitteeDecisionRecord::new_unsigned(
+            verdict,
+            reviewer_id,
+            submission_id,
+            comment,
+            timestamp_sec,
+            self.committee_chain_head(),
+        )
+    }
+
+    /// Appends a reviewer-signed committee decision after verifying the signature.
+    /// Deliberately NOT gated by `tracing_allowed()`: the student's tracing consent
+    /// governs Tiles 10/11 only, never committee judgments. Errors are never silent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_committee_decision(
+        &mut self,
+        verdict: u32,
+        reviewer_id: &str,
+        submission_id: &str,
+        comment: &str,
+        timestamp_sec: u64,
+        reviewer_pubkey: &[u8; 32],
+        signature: &[u8; 64],
+    ) -> Result<usize, CommitteeError> {
+        let mut rec = self.prepare_committee_decision(
+            verdict,
+            reviewer_id,
+            submission_id,
+            comment,
+            timestamp_sec,
+        )?;
+        rec.signature = *signature;
+        rec.verify_signature(reviewer_pubkey)?;
+        self.committee_decisions.push(rec);
+        if let Ok(entry) = SrsDeltaEntry::from_record(ScholarTileType::COMMITTEE_DECISION, &rec) {
+            self.pending_delta.push(entry);
+            self.statement_log.push(entry);
+        }
+        self.manifest.total_records += 1;
+        Ok(self.committee_decisions.len() - 1)
     }
 
     /// Exports only statements and delta records recorded after `cursor`.
@@ -608,6 +681,28 @@ impl WasmAgentSnapshot {
             ));
         }
 
+        if !self.committee_decisions.is_empty() {
+            let min_ts = self
+                .committee_decisions
+                .iter()
+                .map(|d| d.timestamp_sec)
+                .min()
+                .unwrap_or(0);
+            let max_ts = self
+                .committee_decisions
+                .iter()
+                .map(|d| d.timestamp_sec)
+                .max()
+                .unwrap_or(0);
+            tiles.push((
+                ScholarTileType::COMMITTEE_DECISION,
+                cast_slice(&self.committee_decisions).to_vec(),
+                self.committee_decisions.len() as u32,
+                min_ts,
+                max_ts,
+            ));
+        }
+
         let payload_tile_count = tiles.len();
         let total_tile_count = (payload_tile_count + 1) as u32; // including Tile 15 manifest
 
@@ -750,6 +845,7 @@ impl WasmAgentSnapshot {
                 | ScholarTileType::SRS_WORKSPACE
                 | ScholarTileType::NOTE_CLAIMS
                 | ScholarTileType::CITATION_FINGERPRINT
+                | ScholarTileType::COMMITTEE_DECISION
                 | TileType::EMBEDDING
                 | OntologyTileType::ONTOLOGY_CONCEPT
                 | OntologyTileType::ONTOLOGY_AXIOM => {
@@ -759,6 +855,22 @@ impl WasmAgentSnapshot {
                     return Err(format!("UnknownTileType({})", other));
                 }
             }
+        }
+
+        // Committee decisions must extend the local hash chain (fail closed, nothing applied).
+        {
+            let mut chain = self.committee_decisions.clone();
+            for entry in &packet.entries {
+                if entry.tile_type == ScholarTileType::COMMITTEE_DECISION {
+                    let d: CommitteeDecisionRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
+                    d.verdict_enum()
+                        .map_err(|e| format!("CommitteeDecision: {}", e))?;
+                    chain.push(d);
+                }
+            }
+            s3a_pack_scholar::verify_committee_chain(&chain)
+                .map_err(|e| format!("CommitteeDecision: {}", e))?;
         }
 
         // 4. Phase 2: Commit all entries
@@ -812,6 +924,13 @@ impl WasmAgentSnapshot {
                         text: String::new(),
                         embedding: None,
                     });
+                    count += 1;
+                }
+                ScholarTileType::COMMITTEE_DECISION => {
+                    // Not consent-gated: committee decisions are judgments on the work.
+                    let r: CommitteeDecisionRecord =
+                        bytemuck::pod_read_unaligned(&entry.record_bytes()[..160]);
+                    self.committee_decisions.push(r);
                     count += 1;
                 }
                 ScholarTileType::CITATION_FINGERPRINT => {

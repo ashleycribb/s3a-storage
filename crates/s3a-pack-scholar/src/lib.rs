@@ -12,6 +12,7 @@
 //! - Tile 15: Scholar Research Snapshot Manifest (`SrsManifestHeader`)
 //! - Tile 18: Task Agent Registry (`AgentRegistryRecord`)
 
+pub mod committee;
 pub mod evidence;
 pub mod ext;
 pub mod ingest;
@@ -23,6 +24,11 @@ pub mod snapshot;
 pub mod sync;
 pub mod xapi;
 
+pub use committee::{
+    committee_comment_hash, committee_reviewer_hash, committee_submission_hash,
+    verify_committee_chain, verify_committee_log, CommitteeDecisionRecord, CommitteeError,
+    CommitteeVerdict, COMMITTEE_COMMENT_MAX_BYTES, COMMITTEE_SIGNING_DOMAIN,
+};
 pub use evidence::{
     build_claim_proof, export_bibliography_with_proof, BibliographyCompanionProof,
     BibliographyProofItem, ClaimProofChain,

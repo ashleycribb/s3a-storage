@@ -433,6 +433,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: vec![],
             consents: vec![],
+            committee_decisions: vec![],
         }
     }
 

@@ -120,6 +120,37 @@ fn current_timestamp_sec() -> u64 {
     }
 }
 
+fn committee_ts(ts: f64) -> Result<u64, JsValue> {
+    if !(ts.is_finite() && ts >= 1.0 && ts.fract() == 0.0 && ts <= 9.0e15) {
+        return Err(js_error(
+            "timestamp_sec must be a positive whole number of seconds",
+        ));
+    }
+    Ok(ts as u64)
+}
+
+pub(crate) fn committee_list_json(recs: &[s3a_pack_scholar::CommitteeDecisionRecord]) -> String {
+    fn hx(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{:02x}", x)).collect()
+    }
+    let mut prev = [0u8; 32];
+    let mut out = String::from("[");
+    for (i, r) in recs.iter().enumerate() {
+        let chain_ok = r.prev_hash == prev;
+        prev = r.record_hash();
+        let name = r.verdict_enum().map(|v| v.as_str()).unwrap_or("invalid");
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"index\":{},\"verdict\":{},\"verdict_name\":\"{}\",\"submission_hash\":\"{}\",\"reviewer_hash\":\"{}\",\"comment_hash\":\"{}\",\"timestamp_sec\":{},\"chain_ok\":{}}}",
+            i, r.verdict, name, hx(&r.submission_hash), hx(&r.reviewer_hash), hx(&r.comment_hash), r.timestamp_sec, chain_ok
+        ));
+    }
+    out.push(']');
+    out
+}
+
 /// Index returned by `record_human`/`record_ai` when the consent gate suppressed the write.
 pub const NOT_RECORDED: u32 = u32::MAX;
 
@@ -183,6 +214,7 @@ impl WasmAgentSnapshot {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
 
         Ok(Self {
@@ -609,6 +641,103 @@ impl WasmAgentSnapshot {
             self.inner
                 .search_claims_hybrid(query, query_embedding.as_deref(), 0.5, 0.5, k, hidden);
         format_claim_results(&results)
+    }
+
+    // ---- Committee decisions (Scholar Tile 96) ---------------------------------------
+    // Signed human judgments on submitted work. NOT gated by tracing consent and never
+    // written to the Tile 10/11 trace. The library never holds a private key: the web app
+    // signs `committee_signing_payload(...)` with the reviewer key from its vault and passes
+    // the public key + signature to `record_committee_decision`, which only verifies.
+    // There is intentionally no function that suggests or pre-fills a verdict.
+
+    /// Bytes the reviewer must sign with Ed25519 for the *next* decision.
+    /// verdict: 1=Approve, 2=Revise, 3=Reject. `timestamp_sec` must be passed unchanged
+    /// to `record_committee_decision`.
+    #[wasm_bindgen]
+    pub fn committee_signing_payload(
+        &self,
+        verdict: u32,
+        reviewer_id: &str,
+        submission_id: &str,
+        comment: &str,
+        timestamp_sec: f64,
+    ) -> Result<Vec<u8>, JsValue> {
+        let ts = committee_ts(timestamp_sec)?;
+        self.inner
+            .prepare_committee_decision(verdict, reviewer_id, submission_id, comment, ts)
+            .map(|r| r.signing_message())
+            .map_err(|e| js_error(&e.to_string()))
+    }
+
+    /// Verifies and appends a reviewer-signed decision. Returns its index.
+    /// Errors (never silent) on bad verdict, empty reviewer/submission, oversize comment,
+    /// malformed key/signature, or a signature that does not verify.
+    #[wasm_bindgen]
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_committee_decision(
+        &mut self,
+        verdict: u32,
+        reviewer_id: &str,
+        submission_id: &str,
+        comment: &str,
+        timestamp_sec: f64,
+        reviewer_public_key: &[u8],
+        signature: &[u8],
+    ) -> Result<u32, JsValue> {
+        let ts = committee_ts(timestamp_sec)?;
+        let pk: [u8; 32] = reviewer_public_key
+            .try_into()
+            .map_err(|_| js_error("Reviewer public key must be 32 bytes (Ed25519)"))?;
+        let sig: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| js_error("Signature must be 64 bytes (Ed25519)"))?;
+        self.inner
+            .record_committee_decision(verdict, reviewer_id, submission_id, comment, ts, &pk, &sig)
+            .map(|i| i as u32)
+            .map_err(|e| js_error(&e.to_string()))
+    }
+
+    /// Read-only JSON list of committee decisions (hashes, verdict, timestamp, chain status).
+    #[wasm_bindgen]
+    pub fn list_committee_decisions(&self) -> String {
+        committee_list_json(&self.inner.committee_decisions)
+    }
+
+    /// Verifies decision `index` against the reviewer public key held by the app.
+    #[wasm_bindgen]
+    pub fn verify_committee_decision(
+        &self,
+        index: u32,
+        reviewer_public_key: &[u8],
+    ) -> Result<(), JsValue> {
+        s3a_pack_scholar::verify_committee_chain(&self.inner.committee_decisions)
+            .map_err(|e| js_error(&e.to_string()))?;
+        let rec = self
+            .inner
+            .committee_decisions
+            .get(index as usize)
+            .ok_or_else(|| js_error("No committee decision at that index"))?;
+        let pk: [u8; 32] = reviewer_public_key
+            .try_into()
+            .map_err(|_| js_error("Reviewer public key must be 32 bytes (Ed25519)"))?;
+        rec.verify_signature(&pk)
+            .map_err(|e| js_error(&e.to_string()))
+    }
+
+    /// True if decision `index` was made by `reviewer_id` on `submission_id` with exactly `comment`.
+    #[wasm_bindgen]
+    pub fn committee_decision_matches(
+        &self,
+        index: u32,
+        reviewer_id: &str,
+        submission_id: &str,
+        comment: &str,
+    ) -> bool {
+        self.inner
+            .committee_decisions
+            .get(index as usize)
+            .map(|r| r.matches(reviewer_id, submission_id, comment))
+            .unwrap_or(false)
     }
 
     /// Resolves an xAPI IRI or label to its 32-bit integer verb_id.

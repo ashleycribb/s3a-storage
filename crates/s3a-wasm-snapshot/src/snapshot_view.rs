@@ -29,6 +29,7 @@ pub struct WasmSnapshotView<'a> {
     pub embeddings: Vec<&'a EmbeddingRecord128>,
     pub policy_marks: Vec<&'a MarkRecord>,
     pub consents: Vec<&'a s3a_core::ConsentRecord>,
+    pub committee_decisions: Vec<s3a_pack_scholar::CommitteeDecisionRecord>,
 }
 
 impl<'a> WasmSnapshotView<'a> {
@@ -76,6 +77,7 @@ impl<'a> WasmSnapshotView<'a> {
         let mut embeddings = Vec::new();
         let mut policy_marks = Vec::new();
         let mut consents = Vec::new();
+        let mut committee_decisions = Vec::new();
 
         let tile_count = header.tile_count as usize;
         for i in 0..tile_count {
@@ -148,6 +150,16 @@ impl<'a> WasmSnapshotView<'a> {
                         .map_err(|_| "Corrupted Tile 71 consent payload")?;
                     consents.extend(recs.iter());
                 }
+                ScholarTileType::COMMITTEE_DECISION => {
+                    if payload.len() % s3a_pack_scholar::CommitteeDecisionRecord::SIZE != 0 {
+                        return Err("Corrupted Tile 96 committee decision payload");
+                    }
+                    for chunk in
+                        payload.chunks_exact(s3a_pack_scholar::CommitteeDecisionRecord::SIZE)
+                    {
+                        committee_decisions.push(bytemuck::pod_read_unaligned(chunk));
+                    }
+                }
                 OntologyTileType::ONTOLOGY_CONCEPT => {
                     let recs: &[OntologyConceptRecord] = bytemuck::cast_slice(payload);
                     concepts.extend(recs.iter());
@@ -176,6 +188,7 @@ impl<'a> WasmSnapshotView<'a> {
             embeddings,
             policy_marks,
             consents,
+            committee_decisions,
         })
     }
 }

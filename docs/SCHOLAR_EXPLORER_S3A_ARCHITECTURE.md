@@ -230,6 +230,48 @@ Instead of clumsy SQL dumps:
 * Withdrawing mid-session stops tracing immediately and appends whole-tile `MARK_CONSENT_WITHDRAWN` marks over Tiles 10 and 11.
 * WASM API: `set_consent(granted, purpose, study_id)`, `consent_state()` (`none` / `granted` / `withdrawn`), `recording_active()` (engine truth for the UI indicator).
 
+#### 3.6.2 Signed Committee Decisions (Tile 96, not consent-gated)
+Committee Approve / Revise / Reject verdicts are human judgments on submitted work, not
+student activity. They live in their own Scholar pack tile, `COMMITTEE_DECISION = 96`
+(`CommitteeDecisionRecord`, 160 bytes), never in the Tile 10/11 trace.
+
+* **Not gated by tracing consent.** Decisions record whether the student's consent is `none`,
+  `granted`, declined or `withdrawn`. A withdrawal never marks Tile 96.
+* **Signed and chained.** Each record holds 16-byte SHA-256 commitments to the submission id,
+  reviewer id and comment, a timestamp, the verdict (`1` Approve, `2` Revise, `3` Reject; anything
+  else is rejected), `prev_hash` (SHA-256 of the previous record) and an Ed25519 signature over
+  `"S3A-SCHOLAR-COMMITTEE-DECISION-v1\0" || record[0..96]`.
+* **Errors are never silent.** A bad verdict, empty reviewer or submission id, a comment over
+  4096 bytes, a malformed key or signature, or a signature that fails to verify all return an error.
+* **Keys.** The library never generates, stores or persists private keys. The web app holds
+  each reviewer's Ed25519 key (in the vault), signs the payload, and passes only the public key
+  and signature in. The library only verifies.
+* **Comments** are stored only as a hash commitment. The app keeps the text and uses
+  `committee_decision_matches` to prove the text it shows is the text that was signed.
+* There is no function that suggests or pre-fills a verdict.
+* Decisions are included in `export_bytes` / `from_bytes` and `export_delta` / `apply_delta`.
+  An inbound delta whose decisions do not extend the local hash chain is rejected as a whole.
+
+```js
+// Committee view: one member records a decision
+const ts = Math.floor(Date.now() / 1000);
+const payload = snap.committee_signing_payload(verdict, reviewerId, submissionId, comment, ts);
+const signature = await vault.signEd25519(reviewerKeyId, payload); // 64 bytes, key stays in the vault
+const publicKey = await vault.publicKey(reviewerKeyId);            // 32 bytes
+try {
+  const index = snap.record_committee_decision(
+    verdict, reviewerId, submissionId, comment, ts, publicKey, signature);
+} catch (err) {
+  showError(String(err)); // never silent
+}
+
+// Read-only list: [{index, verdict, verdict_name, submission_hash, reviewer_hash,
+//                   comment_hash, timestamp_sec, chain_ok}]
+const decisions = JSON.parse(snap.list_committee_decisions());
+snap.verify_committee_decision(0, publicKey); // throws if chain or signature fails
+snap.committee_decision_matches(0, reviewerId, submissionId, comment); // true/false
+```
+
 ### 3.7 In-Browser WebAssembly Engine (`s3a-wasm-snapshot`)
 
 The Scholar Explorer web interface runs S3A directly inside researcher browsers using WebAssembly:
