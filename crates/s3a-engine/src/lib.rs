@@ -1249,23 +1249,19 @@ impl MmapReader {
     /// Verifies header and data CRC32C (zero CRCs accepted only on legacy tiles).
     pub fn try_get_tile(&self, index: usize) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
         let (tile_header, payload) = self.try_get_tile_unverified(index)?;
-        // Fail closed on hot reads. Non-legacy tiles must carry a matching header CRC (zero is
-        // not "unset", same rule as #161). Explicitly legacy tiles (`record_layout_version == 0`)
-        // skip the header CRC: v1.0 writers hashed an older header layout, so their stored
-        // value is not reproducible (see tests/fixtures/legacy_v1_0_telemetry.s3a). Their
-        // payload is still checked against a non-zero data CRC.
+        // Fail closed on hot reads with the #161 rule (`check_tile_header_crc`): a zero header
+        // CRC is accepted only on explicitly legacy tiles; any non-zero CRC must match the
+        // current layout. Unmigrated v1.0 tiles (prefix-only CRC, shifted fields) therefore fail
+        // with HeaderCrcMismatch; use `s3a-cli migrate`.
         let legacy = is_legacy_tile(tile_header);
-        if !legacy {
-            let h = compute_tile_header_crc32(tile_header);
-            if h != tile_header.header_crc32 {
-                return Err(Corrupt::new(
-                    index,
-                    CorruptReason::HeaderCrcMismatch {
-                        stored: tile_header.header_crc32,
-                        computed: h,
-                    },
-                ));
-            }
+        if check_tile_header_crc(tile_header).is_err() {
+            return Err(Corrupt::new(
+                index,
+                CorruptReason::HeaderCrcMismatch {
+                    stored: tile_header.header_crc32,
+                    computed: compute_tile_header_crc32(tile_header),
+                },
+            ));
         }
         if !(legacy && tile_header.data_crc32 == 0) {
             let d = crc32c::crc32c(payload);

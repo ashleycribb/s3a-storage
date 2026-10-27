@@ -1,18 +1,34 @@
-//! Per-record Merkle proofs against the committed legacy v1.0 fixture (old-file compatibility).
+//! Per-record Merkle proofs against the committed legacy v1.0 fixture after `migrate`
+//! (old-file compatibility). Raw v1.0 files fail closed on read until migrated.
 use s3a_cli::proof_cli::{prove, tile_record_root, verify};
 use std::process::Command;
+use std::sync::OnceLock;
 
 const LEGACY: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../s3a-engine/tests/fixtures/legacy_v1_0_telemetry.s3a"
 );
 
+/// The v1.0 fixture migrated to the current format once per test process.
+fn migrated() -> &'static str {
+    static P: OnceLock<String> = OnceLock::new();
+    P.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("s3a_proof_mig_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("migrated.s3a");
+        s3a_engine::migrate::migrate_file(std::path::Path::new(LEGACY), &out, false).unwrap();
+        out.to_str().unwrap().to_string()
+    })
+}
+
 #[test]
-fn legacy_file_records_prove_and_verify() {
-    let (root, n) = tile_record_root(LEGACY, 0).expect("legacy tile 0 root");
+fn migrated_legacy_file_records_prove_and_verify() {
+    let mig = migrated();
+    let (root, n) = tile_record_root(mig, 0).expect("legacy tile 0 root");
     assert!(n > 0);
     for r in [0, (n / 2) as usize, (n - 1) as usize] {
-        let p = prove(LEGACY, 0, r).unwrap();
+        let p = prove(mig, 0, r).unwrap();
         assert!(verify(&p, Some(&root)).unwrap());
         let mut bad = p.clone();
         let mut rec = hex::decode(&bad.record_hex).unwrap();
@@ -28,14 +44,15 @@ fn legacy_file_records_prove_and_verify() {
         }
         assert!(!verify(&p, Some(&[0u8; 32])).unwrap());
     }
-    assert!(prove(LEGACY, 0, n as usize).is_err());
+    assert!(prove(mig, 0, n as usize).is_err());
 }
 
 #[test]
 fn cli_prove_then_verify_proof() {
+    let mig = migrated();
     let bin = env!("CARGO_BIN_EXE_s3a-cli");
     let out = Command::new(bin)
-        .args(["prove", LEGACY, "0", "1"])
+        .args(["prove", mig, "0", "1"])
         .output()
         .unwrap();
     assert!(
@@ -47,7 +64,7 @@ fn cli_prove_then_verify_proof() {
     path.push(format!("s3a_proof_{}.json", std::process::id()));
     std::fs::write(&path, &out.stdout).unwrap();
     let v = Command::new(bin)
-        .args(["verify-proof", path.to_str().unwrap(), LEGACY])
+        .args(["verify-proof", path.to_str().unwrap(), mig])
         .output()
         .unwrap();
     let _ = std::fs::remove_file(&path);
@@ -116,4 +133,9 @@ fn cli_seal_record_roots_then_verify_proof_against_seal() {
     for f in [&inp, &sealed, &proof] {
         let _ = std::fs::remove_file(f);
     }
+}
+
+#[test]
+fn raw_v1_0_file_fails_closed_on_prove() {
+    assert!(tile_record_root(LEGACY, 0).is_err());
 }

@@ -2088,13 +2088,8 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
             let hdr: &HyperTileHeader =
                 &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
             let payload_len = hdr.payload_bytes as usize;
-            let expected_hdr_crc = compute_tile_header_crc32(hdr);
-            if hdr.header_crc32 != 0 && hdr.header_crc32 != expected_hdr_crc {
-                return Err(S3AError::ChecksumMismatch {
-                    expected: hdr.header_crc32,
-                    actual: expected_hdr_crc,
-                });
-            }
+            // Same rule as MmapReader::verify_checksums (#161): zero header CRC only on legacy tiles.
+            crate::check_tile_header_crc(hdr)?;
             if HYPER_TILE_HEADER_SIZE + payload_len <= tile.len() {
                 let actual_crc = crc32c::crc32c(
                     &tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_len],

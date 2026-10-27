@@ -35,9 +35,11 @@ pub fn read_report(path: &Path) -> Value {
     let mut layout_bad = false;
     let registry = s3a_core::registry::global_registry();
     for i in 0..reader.tile_count() as usize {
-        if let Some((h, _)) = reader.get_tile(i) {
+        // Inventory pass (bounds only); the outcome comes from verify_checksums below, so a
+        // rejected file (e.g. raw v1.0) still reports its tile types.
+        if let Ok((h, _)) = reader.try_get_tile_unverified(i) {
             *tile_types.entry(h.tile_type.to_string()).or_default() += 1;
-            if let Some((_, p)) = reader.get_tile(i) {
+            if let Ok((_, p)) = reader.try_get_tile_unverified(i) {
                 payload_sha
                     .entry(h.tile_type.to_string())
                     .or_default()
