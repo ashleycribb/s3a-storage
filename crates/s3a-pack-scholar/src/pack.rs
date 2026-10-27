@@ -26,6 +26,10 @@ impl ScholarTileType {
     pub const NOTE_CLAIMS: u32 = 20;
     /// Hyper-Tile 32: Cryptographic Citation Fingerprints (CitationFingerprintRecord, 96 bytes)
     pub const CITATION_FINGERPRINT: u32 = 32;
+    /// Hyper-Tile 96: Signed Committee Decisions (CommitteeDecisionRecord, 160 bytes).
+    /// Human judgments on submitted work; NOT a trace tile and NOT consent-gated.
+    /// Allocated in the pack band (>= 64) because 10..=32 is full.
+    pub const COMMITTEE_DECISION: u32 = 96;
 }
 
 pub static SCHOLAR_DESCRIPTORS: &[TileTypeDescriptor] = &[
@@ -140,6 +144,19 @@ pub static SCHOLAR_DESCRIPTORS: &[TileTypeDescriptor] = &[
         lifecycle: TileLifecycle::Active,
         required_addon: Some(ADDON_EDU),
         record_size: 96,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::from_bits_truncate(
+            TileTypeFlags::FIXED_POD.bits() | TileTypeFlags::COPY_THROUGH_COMPACT.bits(),
+        ),
+    },
+    TileTypeDescriptor {
+        tile_type: ScholarTileType::COMMITTEE_DECISION,
+        name: "committee_decision",
+        owner_pack: "Scholar Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(ADDON_EDU),
+        record_size: 160,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::from_bits_truncate(

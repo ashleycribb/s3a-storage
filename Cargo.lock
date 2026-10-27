@@ -1963,6 +1963,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "crc32c",
+ "ed25519-dalek",
  "hex",
  "memmap2",
  "s3a-core",
@@ -2113,6 +2114,7 @@ dependencies = [
  "bytemuck",
  "console_error_panic_hook",
  "crc32c",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "js-sys",
  "s3a-core",

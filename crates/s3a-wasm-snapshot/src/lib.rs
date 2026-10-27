@@ -11,6 +11,9 @@ pub mod bindgen;
 pub mod orange_tab;
 pub mod snapshot_view;
 
+#[cfg(test)]
+mod committee_tests;
+
 pub use agent_api::WasmAgentSnapshot;
 pub use bindgen::{
     export_bytes, from_bytes, iri_for_verb_id, new_session, verb_id_for_iri,
@@ -110,6 +113,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
 
         // 2. Export to byte buffer (simulates web app packaging)
@@ -202,6 +206,7 @@ mod tests {
                 last_applied_delta_seq: 0,
                 statement_log: Vec::new(),
                 consents: Vec::new(),
+                committee_decisions: Vec::new(),
             }
             .export_bytes()
             .unwrap(),
@@ -250,6 +255,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
         snap2.set_consent(
             true,
@@ -289,6 +295,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
 
         // Claim 1: Quantum physics with vector [1.0, 0.0, 0.0, 0.0]
@@ -372,6 +379,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
 
         snap.add_claim(
@@ -438,6 +446,7 @@ mod tests {
             last_applied_delta_seq: 0,
             statement_log: Vec::new(),
             consents: Vec::new(),
+            committee_decisions: Vec::new(),
         };
 
         // 1. Delta with AGENT_REGISTRY is rejected fail-closed
