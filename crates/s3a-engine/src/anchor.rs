@@ -365,14 +365,20 @@ pub fn attach_anchor_to_file<P: AsRef<Path>>(path: P, new_anchor: AnchorProof) -
     let mut file_bytes = std::fs::read(path.as_ref())?;
     attach_anchor_to_sealed_bytes(&mut file_bytes, new_anchor)?;
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path.as_ref())?;
-    file.write_all(&file_bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-    Ok(())
+    // Write a sibling temp and atomically replace, so a crash mid-write never leaves the
+    // sealed archive truncated or half-written (it is always fully old or fully new).
+    let tmp = crate::fsutil::unique_compact_temp_path(path.as_ref());
+    let res = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(&file_bytes)?;
+        file.flush()?;
+        drop(file);
+        crate::fsutil::atomic_replace(&tmp, path.as_ref())
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
 // -----------------------------------------------------------------------------
