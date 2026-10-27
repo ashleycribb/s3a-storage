@@ -70,6 +70,7 @@ fn print_usage() {
     println!("    --root <dir>                        Sandbox root directory (default: current directory)");
     println!("    --goal <text>                       Research goal / task description");
     println!("    --base-snapshot <id>                Base sealed snapshot ID to fork this run branch from");
+    println!("    --consent <purpose>                 Grant a data-use purpose for this run (repeatable, e.g. model_training). Default: none");
     println!(
         "    --mock                              Use internal MockModel for offline/test execution"
     );
@@ -483,6 +484,7 @@ fn run_agent_cli(args: &[String]) {
     let mut project_uuid = generate_random_uuid_pair();
     let mut base_snapshot_id: Option<String> = None;
     let mut verbose = false;
+    let mut consent_purposes: Vec<String> = Vec::new();
 
     let mut shadow_model_name: Option<String> = None;
     let mut i = 0;
@@ -509,6 +511,12 @@ fn run_agent_cli(args: &[String]) {
             "--base-snapshot" => {
                 if i + 1 < args.len() {
                     base_snapshot_id = Some(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--consent" => {
+                if i + 1 < args.len() {
+                    consent_purposes.push(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -637,13 +645,17 @@ fn run_agent_cli(args: &[String]) {
         };
         runtime = runtime.with_shadow_model(sm);
     }
-    let state = s3a_harness::RunState::with_base_snapshot(
+    let mut state = s3a_harness::RunState::with_base_snapshot(
         &runtime.config.id,
         &task_goal,
         session_uuid,
         project_uuid,
         base_snapshot_id,
     );
+    // Consent is empty unless the human running the CLI grants purposes explicitly.
+    if !consent_purposes.is_empty() {
+        state = state.with_consent_from(consent_purposes, "cli --consent");
+    }
 
     println!("=========================================================================");
     println!("Starting Autonomous Agent Run: {}", state.run_id);

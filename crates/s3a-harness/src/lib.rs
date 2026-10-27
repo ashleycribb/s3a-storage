@@ -21,8 +21,8 @@ pub mod trajectory;
 pub mod vcs;
 
 pub use repair::{
-    parse_structured_failures, run_repair_loop, RepairAttemptResult, RepairLoopReport,
-    RepairOutcome,
+    parse_structured_failures, run_repair_loop, run_repair_loop_with_consent, RepairAttemptResult,
+    RepairLoopReport, RepairOutcome,
 };
 pub use vcs::harness_merge;
 
@@ -43,7 +43,9 @@ pub use model::{
     ChatMessage, CompletionRequest, CompletionResponse, MockModel, Model, ModelError,
     OpenAiHttpAdapter,
 };
-pub use runtime::{AgentRuntime, RunDiffSummary, RunState, RunStatus, ShadowReportSummary};
+pub use runtime::{
+    AgentRuntime, ConsentEvent, RunDiffSummary, RunState, RunStatus, ShadowReportSummary,
+};
 pub use sandbox::{Sandbox, SandboxError};
 pub use srs::SrsContainerManager;
 pub use store::{LocalStore, LrsStore, Store, StoreError};

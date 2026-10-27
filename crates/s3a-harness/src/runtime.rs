@@ -46,16 +46,32 @@ pub struct RunState {
     pub base_snapshot_id: Option<String>,
     #[serde(default)]
     pub forked_snapshot_id: Option<String>,
-    #[serde(default = "default_consent_purposes")]
+    /// Purposes this run's data may be used for. Empty by default: nothing (including
+    /// `model_training`) is granted unless a caller or recorded human consent sets it.
+    /// Runs persisted without this field also load with no consent.
+    #[serde(default)]
     pub consent_purposes: Vec<String>,
+    /// Audit trail of consent grants and consent-based denials/skips for this run.
+    #[serde(default)]
+    pub consent_events: Vec<ConsentEvent>,
 }
 
-fn default_consent_purposes() -> Vec<String> {
-    vec![
-        "model_training".to_string(),
-        "research_audit".to_string(),
-        "academic_peer_review".to_string(),
-    ]
+/// One consent audit entry on a run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsentEvent {
+    /// "granted" or "denied".
+    pub kind: String,
+    pub purposes: Vec<String>,
+    /// Who/what granted it (e.g. "cli --consent", "caller"), or the reason for a denial.
+    pub source: String,
+    pub timestamp: u64,
+}
+
+fn consent_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl RunState {
@@ -93,13 +109,49 @@ impl RunState {
             tool_provenance: Vec::new(),
             base_snapshot_id,
             forked_snapshot_id: None,
-            consent_purposes: default_consent_purposes(),
+            consent_purposes: Vec::new(),
+            consent_events: Vec::new(),
         }
     }
 
-    pub fn with_consent_purposes(mut self, purposes: Vec<String>) -> Self {
+    /// Set the run's consent explicitly (source recorded as "caller").
+    pub fn with_consent_purposes(self, purposes: Vec<String>) -> Self {
+        self.with_consent_from(purposes, "caller")
+    }
+
+    /// Set the run's consent explicitly and record who granted it in the consent audit trail.
+    pub fn with_consent_from(mut self, purposes: Vec<String>, source: &str) -> Self {
+        self.consent_events.push(ConsentEvent {
+            kind: "granted".into(),
+            purposes: purposes.clone(),
+            source: source.into(),
+            timestamp: consent_now(),
+        });
         self.consent_purposes = purposes;
         self
+    }
+
+    /// Whether `purpose` was explicitly consented to.
+    pub fn has_consent(&self, purpose: &str) -> bool {
+        self.consent_purposes
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(purpose))
+    }
+
+    /// Fail-closed consent check: `Ok` only with explicit consent; otherwise records a
+    /// "denied" event with `reason` and returns it.
+    pub fn require_consent(&mut self, purpose: &str, action: &str) -> Result<(), String> {
+        if self.has_consent(purpose) {
+            return Ok(());
+        }
+        let reason = format!("{action} skipped: run has no '{purpose}' consent");
+        self.consent_events.push(ConsentEvent {
+            kind: "denied".into(),
+            purposes: vec![purpose.into()],
+            source: reason.clone(),
+            timestamp: consent_now(),
+        });
+        Err(reason)
     }
 }
 
