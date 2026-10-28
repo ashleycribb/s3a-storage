@@ -409,6 +409,27 @@ impl Vault {
         &self.grants
     }
 
+    /// Every identity record in the vault, in file order. The first is the primary identity.
+    /// Records passed their CRC, key-algorithm and owner-kind checks on load. Identity records
+    /// carry no signature, so nothing here is proof the holder controls the key.
+    pub fn identities(&self) -> &[VaultIdentityRecord] {
+        &self.identities
+    }
+
+    /// Transfer records by item hash, each chain in file order (genesis link first). Records
+    /// passed their CRC on load; signatures are NOT checked by `open`. Use
+    /// [`Vault::verify_records`] for that.
+    pub fn transfers(&self) -> &HashMap<[u8; 32], Vec<ItemTransferRecord>> {
+        &self.transfers
+    }
+
+    /// Checks the Ed25519 signatures on every loaded delegation grant and transfer record and
+    /// resolves every ownership chain. Read-only; `Vault::open` does not do this, and keeps
+    /// accepting such records, so an existing vault opens exactly as before.
+    pub fn verify_records(&self) -> crate::verify::VaultVerifyReport {
+        crate::verify::verify_all(&self.grants, &self.items, &self.transfers)
+    }
+
     pub fn revocation_registry(&self) -> &RevocationRegistry {
         &self.revocation_registry
     }
@@ -510,6 +531,107 @@ mod tests {
         assert_eq!(
             reopened.primary_identity().unwrap().public_key,
             vault.primary_identity().unwrap().public_key
+        );
+    }
+
+    fn vector_copy(name: &str, dir: &std::path::Path) -> PathBuf {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../conformance/vectors-1.5/files")
+            .join(name);
+        let dst = dir.join(name);
+        std::fs::copy(&src, &dst).unwrap();
+        dst
+    }
+
+    #[test]
+    fn identities_transfers_and_verify_records_on_transfer_chain_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vector_copy("vault_transfer_chain.s3a", dir.path());
+        let v = Vault::open(&path).unwrap();
+        assert!(!v.identities().is_empty());
+        assert_eq!(
+            v.identities()[0].public_key,
+            v.primary_identity().unwrap().public_key
+        );
+        assert_eq!(v.transfers().len(), 1);
+        let chain = v.transfers().values().next().unwrap();
+        assert_eq!(chain.len(), 2, "issuer -> alice -> bob");
+        assert_eq!(
+            chain[0].from_pubkey,
+            v.items().values().next().unwrap().issuer_pubkey
+        );
+
+        let rep = v.verify_records();
+        assert!(rep.all_ok(), "{rep:?}");
+        assert_eq!(rep.transfers.len(), 2);
+        assert_eq!(
+            rep.transfers.iter().map(|t| t.index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(rep.chains.len(), 1);
+        assert_eq!(rep.chains[0].owner_pubkey, Some(chain[1].to_pubkey));
+        assert_eq!(
+            rep.chains[0].owner_pubkey,
+            Some(v.get_item_owner(&chain[0].item_hash).unwrap())
+        );
+    }
+
+    #[test]
+    fn forged_transfer_signature_loads_as_before_but_verify_records_flags_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vector_copy("vault_transfer_chain.s3a", dir.path());
+        let clean = Vault::open(&path).unwrap();
+        let mut forged = *clean.transfers().values().next().unwrap().last().unwrap();
+        forged.transfer_id = [0xEE; 16];
+        forged.record_crc32 = forged.compute_crc();
+        forged.sender_signature[0] ^= 0xFF; // the CRC does not cover the signature
+        assert!(forged.is_crc_valid());
+        let mut w = TileWriter::open_append(&path).unwrap();
+        w.write_hyper_tile(TileType::RECORD, &[forged], None, None)
+            .unwrap();
+        drop(w);
+
+        // open() is unchanged: it still accepts a CRC-valid record, so the chain grows to 3.
+        let v = Vault::open(&path).unwrap();
+        assert_eq!(v.transfers().values().next().unwrap().len(), 3);
+        let rep = v.verify_records();
+        assert!(!rep.all_ok());
+        let bad: Vec<_> = rep.transfers.iter().filter(|t| !t.ok).collect();
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].transfer_id, [0xEE; 16]);
+        assert!(bad[0].error.as_ref().unwrap().contains("signature"));
+        assert!(!rep.chains[0].ok && rep.chains[0].owner_pubkey.is_none());
+    }
+
+    #[test]
+    fn forged_grant_signature_is_flagged_and_genuine_grants_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vector_copy("vault_delegation_governance.s3a", dir.path());
+        let clean = Vault::open(&path).unwrap();
+        assert!(!clean.grants().is_empty());
+        assert!(clean.verify_records().all_ok());
+
+        let mut forged = *clean.grants().values().next().unwrap();
+        forged.grant_id = [0xDD; 16];
+        forged.granter_signature[3] ^= 0x55;
+        let mut w = TileWriter::open_append(&path).unwrap();
+        w.write_hyper_tile(TileType::RECORD, &[forged], None, None)
+            .unwrap();
+        drop(w);
+
+        let v = Vault::open(&path).unwrap();
+        assert_eq!(
+            v.grants().len(),
+            clean.grants().len() + 1,
+            "open() still loads it"
+        );
+        let rep = v.verify_records();
+        let bad: Vec<_> = rep.grants.iter().filter(|g| !g.ok).collect();
+        assert_eq!(bad.len(), 1);
+        assert_eq!(bad[0].grant_id, [0xDD; 16]);
+        assert_eq!(
+            rep.grants.iter().filter(|g| g.ok).count(),
+            clean.grants().len()
         );
     }
 }
