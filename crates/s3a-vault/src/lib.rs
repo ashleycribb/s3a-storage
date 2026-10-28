@@ -8,6 +8,7 @@ pub mod address;
 pub mod agent_pass;
 pub mod backup;
 pub mod delegation;
+pub mod display_layouts;
 pub mod errors;
 pub mod keystore;
 pub mod records;
@@ -28,6 +29,7 @@ pub use backup::{create_backup, restore_backup};
 pub use delegation::{
     create_delegation_grant, evaluate_agent_action, is_judgment_action, verify_delegation_grant,
 };
+pub use display_layouts::{display_layouts, display_registry};
 pub use errors::VaultError;
 pub use keystore::{FileKeyStore, KeyStore, MemoryKeyStore};
 pub use records::*;

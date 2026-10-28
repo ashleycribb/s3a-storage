@@ -13,6 +13,7 @@
 //! - Tile 18: Task Agent Registry (`AgentRegistryRecord`)
 
 pub mod committee;
+pub mod display_layouts;
 pub mod evidence;
 pub mod ext;
 pub mod ingest;
@@ -29,6 +30,7 @@ pub use committee::{
     verify_committee_chain, verify_committee_log, CommitteeDecisionRecord, CommitteeError,
     CommitteeVerdict, COMMITTEE_COMMENT_MAX_BYTES, COMMITTEE_SIGNING_DOMAIN,
 };
+pub use display_layouts::{display_layouts, display_registry};
 pub use evidence::{
     build_claim_proof, export_bibliography_with_proof, BibliographyCompanionProof,
     BibliographyProofItem, ClaimProofChain,

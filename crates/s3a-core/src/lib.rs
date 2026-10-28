@@ -9,6 +9,11 @@ extern crate std as alloc;
 #[cfg(test)]
 extern crate std;
 
+#[doc(hidden)]
+pub use alloc::string as __alloc_string;
+#[doc(hidden)]
+pub use alloc::vec as __alloc_vec;
+
 use bytemuck::{Pod, Zeroable};
 use core::fmt;
 use core::str::FromStr;
@@ -17,6 +22,7 @@ pub mod algorithms;
 pub mod array;
 pub mod columnar;
 pub mod consent;
+pub mod display_layout;
 pub mod dop;
 pub mod erasure;
 pub mod hilbert;
