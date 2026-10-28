@@ -1467,6 +1467,20 @@ pub fn verify_sealed_archive<P: AsRef<Path>>(
 ) -> Result<SealedVerifyReport, S3AError> {
     let path_ref = path.as_ref();
     let file_bytes = std::fs::read(path_ref).map_err(|_| S3AError::OutOfBounds)?;
+    verify_sealed_impl(&file_bytes, repair_out)
+}
+
+/// Same checks as [`verify_sealed_archive`], on an in-memory copy of the file. Strictly
+/// read-only: there is no repair output (use [`verify_sealed_archive`] with a path for that), and
+/// nothing is written anywhere. The result is identical to the path-based call on the same bytes.
+pub fn verify_sealed_bytes(file_bytes: &[u8]) -> Result<SealedVerifyReport, S3AError> {
+    verify_sealed_impl(file_bytes, None)
+}
+
+fn verify_sealed_impl(
+    file_bytes: &[u8],
+    repair_out: Option<&Path>,
+) -> Result<SealedVerifyReport, S3AError> {
     let file_len = file_bytes.len();
 
     if file_len < FILE_HEADER_SIZE {
