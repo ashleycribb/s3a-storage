@@ -17,7 +17,8 @@ use crate::transfer::resolve_chain_ownership;
 
 /// An S3A Digital Vault archive handle (§1.2).
 pub struct Vault {
-    path: PathBuf,
+    /// `None` for a vault opened from bytes: such a vault is read-only.
+    path: Option<PathBuf>,
     identities: Vec<VaultIdentityRecord>,
     grants: HashMap<[u8; 16], DelegationGrantRecord>,
     items: HashMap<[u8; 32], VaultItemRecord>,
@@ -98,7 +99,7 @@ impl Vault {
         events.push(initial_event);
 
         Ok(Self {
-            path: path_buf,
+            path: Some(path_buf),
             identities,
             grants: HashMap::new(),
             items: HashMap::new(),
@@ -113,7 +114,28 @@ impl Vault {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VaultError> {
         let path_buf = path.as_ref().to_path_buf();
         let reader = MmapReader::open(&path_buf)?;
+        Self::from_reader(&reader, Some(path_buf))
+    }
 
+    /// Opens a vault from an in-memory copy of its file (no file path, no scratch copy). Reads
+    /// the same records as [`Vault::open`] with the same filters. The result is read-only: every
+    /// method that would append to the file (`add_*`, `log_event`) returns an
+    /// `IoError(PermissionDenied)` instead.
+    pub fn open_bytes(bytes: &[u8]) -> Result<Self, VaultError> {
+        let reader = MmapReader::from_bytes(bytes)?;
+        Self::from_reader(&reader, None)
+    }
+
+    fn writable_path(&self) -> Result<&Path, VaultError> {
+        self.path.as_deref().ok_or_else(|| {
+            VaultError::IoError(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "vault was opened from bytes and is read-only",
+            ))
+        })
+    }
+
+    fn from_reader(reader: &MmapReader, path: Option<PathBuf>) -> Result<Self, VaultError> {
         let mut identities = Vec::new();
         let mut grants = HashMap::new();
         let mut items = HashMap::new();
@@ -233,7 +255,7 @@ impl Vault {
         }
 
         Ok(Self {
-            path: path_buf,
+            path,
             identities,
             grants,
             items,
@@ -264,8 +286,9 @@ impl Vault {
 
     /// Record a new item in the vault.
     pub fn add_item(&mut self, mut item: VaultItemRecord) -> Result<(), VaultError> {
+        self.writable_path()?; // read-only vaults must fail before touching any state
         item.record_crc32 = item.compute_crc();
-        let mut writer = TileWriter::open_append(&self.path)?;
+        let mut writer = TileWriter::open_append(self.writable_path()?)?;
         writer.write_hyper_tile(TileType::RECORD, &[item], None, None)?;
         self.items.insert(item.item_hash, item);
         self.log_event(EVENT_ITEM_RECEIVED, 1, item.item_id, 0)?;
@@ -274,8 +297,9 @@ impl Vault {
 
     /// Record a delegation grant.
     pub fn add_grant(&mut self, grant: DelegationGrantRecord) -> Result<(), VaultError> {
+        self.writable_path()?; // read-only vaults must fail before touching any state
         crate::delegation::verify_delegation_grant(&grant)?;
-        let mut writer = TileWriter::open_append(&self.path)?;
+        let mut writer = TileWriter::open_append(self.writable_path()?)?;
         writer.write_hyper_tile(TileType::RECORD, &[grant], None, None)?;
         self.grants.insert(grant.grant_id, grant);
         self.log_event(EVENT_GRANT_ISSUED, 1, grant.grant_id, 0)?;
@@ -284,6 +308,7 @@ impl Vault {
 
     /// Record an item transfer link.
     pub fn add_transfer(&mut self, mut transfer: ItemTransferRecord) -> Result<(), VaultError> {
+        self.writable_path()?; // read-only vaults must fail before touching any state
         transfer.record_crc32 = transfer.compute_crc();
         crate::transfer::verify_transfer_record(&transfer)?;
 
@@ -303,7 +328,7 @@ impl Vault {
 
         resolve_chain_ownership(&issuer_pk, &chain)?;
 
-        let mut writer = TileWriter::open_append(&self.path)?;
+        let mut writer = TileWriter::open_append(self.writable_path()?)?;
         writer.write_hyper_tile(TileType::RECORD, &[transfer], None, None)?;
 
         self.transfers.insert(transfer.item_hash, chain);
@@ -313,8 +338,9 @@ impl Vault {
 
     /// Append a KeyRotationRecord.
     pub fn add_key_rotation(&mut self, rotation: KeyRotationRecord) -> Result<(), VaultError> {
+        self.writable_path()?; // read-only vaults must fail before touching any state
         self.revocation_registry.register_rotation(&rotation)?;
-        let mut writer = TileWriter::open_append(&self.path)?;
+        let mut writer = TileWriter::open_append(self.writable_path()?)?;
         writer.write_hyper_tile(TileType::RECORD, &[rotation], None, None)?;
         self.log_event(EVENT_KEY_ROTATED, 1, rotation.rotation_id, 0)?;
         Ok(())
@@ -341,6 +367,7 @@ impl Vault {
         target_id: [u8; 16],
         grant_id_suffix: u64,
     ) -> Result<u64, VaultError> {
+        self.writable_path()?; // read-only vaults must fail before touching any state
         let seq = (self.events.len() as u64) + 1;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -363,7 +390,7 @@ impl Vault {
         hasher.update(bytemuck::bytes_of(&event));
         self.latest_event_hash = hasher.finalize().into();
 
-        let mut writer = TileWriter::open_append(&self.path)?;
+        let mut writer = TileWriter::open_append(self.writable_path()?)?;
         writer.write_hyper_tile(TileType::RECORD, &[event], None, None)?;
         self.events.push(event);
 
@@ -391,6 +418,76 @@ impl Vault {
 mod tests {
     use super::*;
     use crate::keystore::MemoryKeyStore;
+
+    #[test]
+    fn open_bytes_matches_open_and_is_read_only() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_path = temp_dir.path().join("bob.vault.s3a");
+        let mut ks = MemoryKeyStore::new();
+        let vault =
+            Vault::create(&vault_path, "Bob Vault", VaultOwnerKind::Person, &mut ks).unwrap();
+        let bytes = std::fs::read(&vault_path).unwrap();
+
+        let mut ro = Vault::open_bytes(&bytes).unwrap();
+        let from_file = Vault::open(&vault_path).unwrap();
+        assert_eq!(ro.gate_address().unwrap(), vault.gate_address().unwrap());
+        assert_eq!(ro.events().len(), from_file.events().len());
+        assert_eq!(ro.items().len(), from_file.items().len());
+        assert_eq!(ro.grants().len(), from_file.grants().len());
+        assert_eq!(
+            ro.primary_identity().unwrap().public_key,
+            from_file.primary_identity().unwrap().public_key
+        );
+
+        // Mutators fail without touching in-memory state or any file.
+        let before = ro.events().len();
+        assert!(matches!(
+            ro.log_event(EVENT_ITEM_RECEIVED, 1, [0u8; 16], 0),
+            Err(VaultError::IoError(e)) if e.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(ro.events().len(), before);
+        assert_eq!(std::fs::read(&vault_path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn open_bytes_matches_open_on_conformance_vault_vectors() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance");
+        let mut seen = 0;
+        for v in std::fs::read_dir(&dir).unwrap() {
+            let files = v.unwrap().path().join("files");
+            let Ok(rd) = std::fs::read_dir(&files) else {
+                continue;
+            };
+            for f in rd {
+                let path = f.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().to_string();
+                if !name.starts_with("vault_") || !name.ends_with(".s3a") {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                let (a, b) = (Vault::open(&path), Vault::open_bytes(&bytes));
+                match (a, b) {
+                    (Ok(a), Ok(b)) => {
+                        assert_eq!(a.events().len(), b.events().len(), "{name}");
+                        assert_eq!(a.items().len(), b.items().len(), "{name}");
+                        assert_eq!(a.grants().len(), b.grants().len(), "{name}");
+                        assert_eq!(
+                            a.primary_identity().map(|i| i.public_key),
+                            b.primary_identity().map(|i| i.public_key),
+                            "{name}"
+                        );
+                    }
+                    (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{name}"),
+                    _ => panic!("{name}: open and open_bytes disagree"),
+                }
+                seen += 1;
+            }
+        }
+        assert!(
+            seen >= 4,
+            "expected the vault conformance vectors, saw {seen}"
+        );
+    }
 
     #[test]
     fn test_vault_create_open_and_gate_address() {

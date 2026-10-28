@@ -986,17 +986,60 @@ impl std::error::Error for Corrupt {}
 
 /// Zero-copy memory-mapped reader for S3A archives with dual-generation metadata validation.
 pub struct MmapReader {
-    _file: File,
-    mmap: Mmap,
+    mmap: ReaderBacking,
     active_header: FileHeader,
     active_slot: usize,
+}
+
+/// Where a reader's bytes live: a memory-mapped file, or an owned in-memory copy.
+enum ReaderBacking {
+    Mapped {
+        _file: File,
+        map: Mmap,
+    },
+    /// Stored as `u64` words so the bytes are 8-byte aligned, like a page-aligned mmap. The tile
+    /// accessors hand out `&Header` borrows that need that alignment.
+    Owned {
+        words: Vec<u64>,
+        len: usize,
+    },
+}
+
+impl std::ops::Deref for ReaderBacking {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Mapped { map, .. } => map,
+            Self::Owned { words, len } => &bytemuck::cast_slice::<u64, u8>(words)[..*len],
+        }
+    }
 }
 
 impl MmapReader {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let map = unsafe { Mmap::map(&file)? };
+        Self::from_backing(ReaderBacking::Mapped { _file: file, map })
+    }
 
+    /// Opens an archive from an in-memory copy of its bytes (no file, no scratch copy). Applies
+    /// exactly the same header validation as [`MmapReader::open`], and every accessor behaves the
+    /// same. Read-only: the bytes are copied once and never modified.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let mut words = vec![0u64; bytes.len().div_ceil(8)];
+        bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..bytes.len()].copy_from_slice(bytes);
+        Self::from_backing(ReaderBacking::Owned {
+            words,
+            len: bytes.len(),
+        })
+    }
+
+    /// The whole file as bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.mmap
+    }
+
+    fn from_backing(mmap: ReaderBacking) -> io::Result<Self> {
         if mmap.len() < FILE_HEADER_SIZE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1042,7 +1085,6 @@ impl MmapReader {
         let _ = need;
 
         Ok(Self {
-            _file: file,
             mmap,
             active_header,
             active_slot,
