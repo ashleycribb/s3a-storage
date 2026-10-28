@@ -20,6 +20,7 @@ pub mod compactor_daemon;
 pub mod compactor_gates;
 pub mod concurrent_writer;
 pub mod edge_import;
+pub mod edge_view;
 pub mod elr;
 pub mod erasure;
 pub mod fsutil;
@@ -31,6 +32,7 @@ pub mod ql;
 pub mod record_roots;
 pub mod ring_buffer;
 pub mod schema;
+pub mod seal_probe;
 pub mod sealed;
 pub mod tiering;
 
@@ -38,9 +40,11 @@ pub use anchor::*;
 pub use compactor_gates::*;
 pub use concurrent_writer::*;
 pub use edge_import::*;
+pub use edge_view::EdgeSealEntry;
 pub use elr::*;
 pub use fsutil::{atomic_replace, clean_orphan_temps, unique_compact_temp_path};
 pub use lrs_store::*;
+pub use seal_probe::{probe_seal_footer, SealFooterProbe};
 pub use sealed::*;
 
 pub use bvh::{BvhNode, HullBvh};
@@ -1201,10 +1205,12 @@ impl MmapReader {
         Ok((start, end))
     }
 
-    /// Like [`MmapReader::get_edge_tile`] but reports why a tile was rejected. Both `header_crc32` and
-    /// `data_crc32` (CRC32C) are verified when the tile is sealed or CRC-chained or carries any
-    /// non-zero CRC; a mismatch is `HeaderCrcMismatch` / `DataCrcMismatch`, never returned data.
-    pub fn try_get_edge_tile(
+    /// Structure-checked but CRC-unchecked edge tile access, for tools that must show a damaged
+    /// tile (and say it is damaged) instead of hiding it. Bounds, alignment and payload length are
+    /// still enforced, so it never panics and never reads outside its slot; header and data CRCs
+    /// are NOT checked. Anything read this way is unverified: pair it with
+    /// [`MmapReader::try_get_edge_tile`] to learn whether the CRCs hold. Read-only.
+    pub fn try_get_edge_tile_unverified(
         &self,
         index: usize,
     ) -> Result<(&s3a_edge::CommonTileHeader, &[u8]), Corrupt> {
@@ -1232,6 +1238,17 @@ impl MmapReader {
                 },
             ))?;
         let payload = &self.mmap[payload_start..payload_end];
+        Ok((tile_header, payload))
+    }
+
+    /// Like [`MmapReader::get_edge_tile`] but reports why a tile was rejected. Both `header_crc32` and
+    /// `data_crc32` (CRC32C) are verified when the tile is sealed or CRC-chained or carries any
+    /// non-zero CRC; a mismatch is `HeaderCrcMismatch` / `DataCrcMismatch`, never returned data.
+    pub fn try_get_edge_tile(
+        &self,
+        index: usize,
+    ) -> Result<(&s3a_edge::CommonTileHeader, &[u8]), Corrupt> {
+        let (tile_header, payload) = self.try_get_edge_tile_unverified(index)?;
 
         // Fail closed: verify whenever the tile claims to be sealed or CRC-chained, or carries any
         // non-zero CRC. Gating on CRC_CHAIN alone let a tile with that flag bit cleared skip both
