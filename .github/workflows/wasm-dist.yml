@@ -52,26 +52,8 @@ jobs:
         working-directory: crates/s3a-wasm-snapshot
         run: wasm-pack build --target web --release --out-dir pkg
 
-      - name: Node smoke test (export_bytes must not throw)
-        working-directory: crates/s3a-wasm-snapshot/pkg
-        run: |
-          cat > smoke.mjs <<'JS'
-          import fs from 'fs';
-          const m = await import('./s3a_wasm_snapshot.js');
-          m.initSync({ module: fs.readFileSync('./s3a_wasm_snapshot_bg.wasm') });
-          const s = m.new_session('0123456789abcdef0123456789abcdef');
-          s.record_human(1, 12345n, 777, undefined);
-          s.record_ai('openalex-agent', 18, 0.9, 0);
-          const b = s.export_bytes();
-          if (!b || b.length === 0) throw new Error('export_bytes returned empty');
-          const b2 = m.from_bytes(b).export_bytes();
-          if (Buffer.compare(Buffer.from(b), Buffer.from(b2)) !== 0) throw new Error('round-trip mismatch');
-          const d = s.export_delta();
-          if (!d || d.length === 0) throw new Error('export_delta returned empty');
-          console.log(`smoke OK export_bytes=${b.length} roundtrip=identical export_delta=${d.length}`);
-          JS
-          node smoke.mjs
-          rm smoke.mjs
+      - name: Node smoke test (consent + committee decisions + byte-identical round-trip)
+        run: node crates/s3a-wasm-snapshot/tests/smoke.mjs crates/s3a-wasm-snapshot/pkg
 
       - name: Attest build provenance (wasm + js glue)
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
