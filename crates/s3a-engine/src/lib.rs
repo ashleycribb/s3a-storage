@@ -19,6 +19,7 @@ pub mod bvh;
 pub mod compactor_daemon;
 pub mod compactor_gates;
 pub mod concurrent_writer;
+pub mod display_layouts;
 pub mod edge_import;
 pub mod elr;
 pub mod erasure;
