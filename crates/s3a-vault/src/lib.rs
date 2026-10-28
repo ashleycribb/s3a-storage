@@ -16,6 +16,7 @@ pub mod share;
 pub mod share_cli;
 pub mod transfer;
 pub mod vault;
+pub mod verify;
 
 pub use access_code::{AccessCode, AccessCodeSessionManager};
 pub use address::{GateAddress, GateTarget};
@@ -35,6 +36,7 @@ pub use transfer::{
     compute_transfer_hash, create_transfer_record, resolve_chain_ownership, verify_transfer_record,
 };
 pub use vault::Vault;
+pub use verify::{ChainCheck, GrantCheck, TransferCheck, VaultVerifyReport};
 
 pub fn version() -> &'static str {
     "0.1.0"
