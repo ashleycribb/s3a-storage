@@ -1823,35 +1823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "s3a-events"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "crc32c",
- "ed25519-dalek",
- "hex",
- "rand 0.8.8",
- "rand_core 0.6.4",
- "s3a-core",
- "s3a-engine",
- "s3a-ledger",
- "s3a-pack-clean",
- "s3a-pack-da",
- "s3a-pack-gis",
- "s3a-pack-ontology",
- "s3a-pack-robotics",
- "s3a-pack-scholar",
- "s3a-pack-wearable",
- "s3a-swarm",
- "s3a-trace",
- "s3a-vault",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
-]
-
-[[package]]
 name = "s3a-exp-neighbor-delta"
 version = "0.1.0"
 dependencies = [
