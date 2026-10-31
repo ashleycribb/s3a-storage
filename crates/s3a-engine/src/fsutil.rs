@@ -111,7 +111,10 @@ fn atomic_replace_with_rename(
     // renaming an unsynced file over the live archive could leave a torn file after
     // power loss.
     {
-        let f = File::open(from)?;
+        let f = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(from)?;
         sync_file(&f)?;
     }
 
