@@ -389,3 +389,222 @@ mod about_tests {
         assert!(decode_schema_about(&p).is_err());
     }
 }
+
+
+// -----------------------------------------------------------------------------
+// Quantized Slab Size Classes & Addressing
+// -----------------------------------------------------------------------------
+
+/// The 10 quantized slab size classes in bytes (1.5x stepping):
+/// [4, 8, 12, 16, 24, 32, 48, 64, 96, 128 KB]
+pub const SLAB_CLASS_4KB: u32 = 4 * 1024; // 4,096
+pub const SLAB_CLASS_8KB: u32 = 8 * 1024; // 8,192
+pub const SLAB_CLASS_12KB: u32 = 12 * 1024; // 12,288
+pub const SLAB_CLASS_16KB: u32 = 16 * 1024; // 16,384
+pub const SLAB_CLASS_24KB: u32 = 24 * 1024; // 24,576
+pub const SLAB_CLASS_32KB: u32 = 32 * 1024; // 32,768
+pub const SLAB_CLASS_48KB: u32 = 48 * 1024; // 49,152
+pub const SLAB_CLASS_64KB: u32 = 64 * 1024; // 65,536
+pub const SLAB_CLASS_96KB: u32 = 96 * 1024; // 98,304
+pub const SLAB_CLASS_128KB: u32 = 128 * 1024; // 131,072
+
+pub const NUM_SLAB_CLASSES: usize = 10;
+pub const MAX_SLAB_PAYLOAD_SIZE: usize = SLAB_CLASS_128KB as usize;
+
+/// Array of all 10 quantized size classes sorted ascending.
+pub const SLAB_SIZE_CLASSES: [u32; NUM_SLAB_CLASSES] = [
+    SLAB_CLASS_4KB,
+    SLAB_CLASS_8KB,
+    SLAB_CLASS_12KB,
+    SLAB_CLASS_16KB,
+    SLAB_CLASS_24KB,
+    SLAB_CLASS_32KB,
+    SLAB_CLASS_48KB,
+    SLAB_CLASS_64KB,
+    SLAB_CLASS_96KB,
+    SLAB_CLASS_128KB,
+];
+
+/// Selects the smallest quantized size class (0..9) that fits `payload_len` bytes.
+/// Returns `None` if `payload_len` exceeds 128 KB (131,072 bytes).
+pub fn select_size_class(payload_len: usize) -> Option<u8> {
+    for (idx, &class_bytes) in SLAB_SIZE_CLASSES.iter().enumerate() {
+        if payload_len <= class_bytes as usize {
+            return Some(idx as u8);
+        }
+    }
+    None
+}
+
+/// Returns the byte capacity for a given size class ID (0..9),
+/// or `None` if `class_id >= 10`.
+pub fn size_class_bytes(class_id: u8) -> Option<u32> {
+    SLAB_SIZE_CLASSES.get(class_id as usize).copied()
+}
+
+pub const MAX_SIZE_CLASS_ID: u8 = (NUM_SLAB_CLASSES - 1) as u8; // 9
+pub const MAX_SLAB_EXTENT_ID: u32 = 0x0FFF_FFFF; // 28 bits (268,435,455)
+pub const MAX_SLOT_INDEX: u32 = 0x00FF_FFFF; // 24 bits (16,777,215)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileAddressError {
+    InvalidSizeClass(u8),
+    ExtentIdOverflow(u32),
+    SlotIndexOverflow(u32),
+    ReservedNonZero(u8),
+}
+
+impl core::fmt::Display for TileAddressError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidSizeClass(c) => write!(f, "Invalid size class ID {c} (max {MAX_SIZE_CLASS_ID})"),
+            Self::ExtentIdOverflow(e) => {
+                write!(f, "Extent ID {e:#x} overflows 28 bits (max {MAX_SLAB_EXTENT_ID:#x})")
+            }
+            Self::SlotIndexOverflow(s) => {
+                write!(f, "Slot index {s:#x} overflows 24 bits (max {MAX_SLOT_INDEX:#x})")
+            }
+            Self::ReservedNonZero(r) => write!(f, "Reserved field must be 0, got {r:#x}"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for TileAddressError {}
+
+/// 64-bit hardware-aligned global tile address referencing a quantized slab slot:
+/// - Bits 63..60 (4 bits): SizeClassId (0..=9)
+/// - Bits 59..32 (28 bits): SlabExtentId (0..=0x0FFF_FFFF)
+/// - Bits 31..8  (24 bits): SlotIndexInExtent (0..=0x00FF_FFFF)
+/// - Bits 7..0   (8 bits): Reserved (must be 0)
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TileAddress(pub u64);
+
+impl TileAddress {
+    pub const NULL: Self = Self(0);
+
+    /// Packs size class ID, extent ID, and slot index into a TileAddress with bounds checking.
+    pub fn new(size_class_id: u8, extent_id: u32, slot_index: u32) -> Result<Self, TileAddressError> {
+        if size_class_id > MAX_SIZE_CLASS_ID {
+            return Err(TileAddressError::InvalidSizeClass(size_class_id));
+        }
+        if extent_id > MAX_SLAB_EXTENT_ID {
+            return Err(TileAddressError::ExtentIdOverflow(extent_id));
+        }
+        if slot_index > MAX_SLOT_INDEX {
+            return Err(TileAddressError::SlotIndexOverflow(slot_index));
+        }
+        let raw = ((size_class_id as u64) << 60)
+            | ((extent_id as u64) << 32)
+            | ((slot_index as u64) << 8);
+        Ok(Self(raw))
+    }
+
+    /// Unpacks and validates a TileAddress from a raw u64.
+    pub fn from_u64(raw: u64) -> Result<Self, TileAddressError> {
+        let addr = Self(raw);
+        if addr.size_class_id() > MAX_SIZE_CLASS_ID {
+            return Err(TileAddressError::InvalidSizeClass(addr.size_class_id()));
+        }
+        if addr.extent_id() > MAX_SLAB_EXTENT_ID {
+            return Err(TileAddressError::ExtentIdOverflow(addr.extent_id()));
+        }
+        if addr.slot_index() > MAX_SLOT_INDEX {
+            return Err(TileAddressError::SlotIndexOverflow(addr.slot_index()));
+        }
+        if addr.reserved() != 0 {
+            return Err(TileAddressError::ReservedNonZero(addr.reserved()));
+        }
+        Ok(addr)
+    }
+
+    #[inline]
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn size_class_id(&self) -> u8 {
+        ((self.0 >> 60) & 0x0F) as u8
+    }
+
+    #[inline]
+    pub const fn extent_id(&self) -> u32 {
+        ((self.0 >> 32) & 0x0FFF_FFFF) as u32
+    }
+
+    #[inline]
+    pub const fn slot_index(&self) -> u32 {
+        ((self.0 >> 8) & 0x00FF_FFFF) as u32
+    }
+
+    #[inline]
+    pub const fn reserved(&self) -> u8 {
+        (self.0 & 0xFF) as u8
+    }
+
+    /// Computes the deterministic physical byte offset within the extent file:
+    /// PhysicalOffset = 4096 + (slot_index * slot_size_bytes)
+    pub fn physical_offset(&self) -> Result<u64, TileAddressError> {
+        let class_bytes = size_class_bytes(self.size_class_id())
+            .ok_or(TileAddressError::InvalidSizeClass(self.size_class_id()))?;
+        Ok(4096 + (self.slot_index() as u64 * class_bytes as u64))
+    }
+}
+
+#[cfg(test)]
+mod slab_address_tests {
+    use super::*;
+
+    #[test]
+    fn test_tile_address_roundtrip() {
+        let addr = TileAddress::new(3, 42, 100).expect("valid address");
+        assert_eq!(addr.size_class_id(), 3);
+        assert_eq!(addr.extent_id(), 42);
+        assert_eq!(addr.slot_index(), 100);
+        assert_eq!(addr.reserved(), 0);
+
+        let parsed = TileAddress::from_u64(addr.as_u64()).expect("valid parse");
+        assert_eq!(addr, parsed);
+    }
+
+    #[test]
+    fn test_tile_address_limits() {
+        // Max values
+        let addr = TileAddress::new(MAX_SIZE_CLASS_ID, MAX_SLAB_EXTENT_ID, MAX_SLOT_INDEX).unwrap();
+        assert_eq!(addr.size_class_id(), MAX_SIZE_CLASS_ID);
+        assert_eq!(addr.extent_id(), MAX_SLAB_EXTENT_ID);
+        assert_eq!(addr.slot_index(), MAX_SLOT_INDEX);
+
+        // Class overflow
+        assert!(TileAddress::new(10, 0, 0).is_err());
+        // Extent overflow
+        assert!(TileAddress::new(0, MAX_SLAB_EXTENT_ID + 1, 0).is_err());
+        // Slot overflow
+        assert!(TileAddress::new(0, 0, MAX_SLOT_INDEX + 1).is_err());
+        // Reserved non-zero
+        assert!(TileAddress::from_u64(addr.as_u64() | 0x01).is_err());
+    }
+
+    #[test]
+    fn test_size_class_selection() {
+        assert_eq!(select_size_class(0), Some(0));
+        assert_eq!(select_size_class(4096), Some(0));
+        assert_eq!(select_size_class(4097), Some(1));
+        assert_eq!(select_size_class(8192), Some(1));
+        assert_eq!(select_size_class(8193), Some(2));
+        assert_eq!(select_size_class(131072), Some(9));
+        assert_eq!(select_size_class(131073), None);
+    }
+
+    #[test]
+    fn test_physical_offset() {
+        let a0 = TileAddress::new(0, 0, 0).unwrap();
+        assert_eq!(a0.physical_offset().unwrap(), 4096);
+        let a1 = TileAddress::new(0, 0, 1).unwrap();
+        assert_eq!(a1.physical_offset().unwrap(), 4096 + 4096);
+        let a_128k = TileAddress::new(9, 5, 2).unwrap();
+        assert_eq!(a_128k.physical_offset().unwrap(), 4096 + 2 * 131072);
+    }
+}

@@ -35,6 +35,7 @@ pub mod ring_buffer;
 pub mod schema;
 pub mod seal_probe;
 pub mod sealed;
+pub mod slab;
 pub mod tiering;
 
 pub use anchor::*;
@@ -47,6 +48,7 @@ pub use fsutil::{atomic_replace, clean_orphan_temps, unique_compact_temp_path};
 pub use lrs_store::*;
 pub use seal_probe::{probe_seal_footer, SealFooterProbe};
 pub use sealed::*;
+pub use slab::*;
 
 pub use bvh::{BvhNode, HullBvh};
 pub use compactor_daemon::{BackgroundCompactor, CompactorStats};
