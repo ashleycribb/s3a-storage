@@ -4733,6 +4733,7 @@ mod tests {
 
         let initial_count = writer.tile_count();
         assert_eq!(initial_count, 5);
+        drop(writer);
 
         // Run compaction via S3ACrudEngine (emits domain tiles + self-describing schema tile)
         let engine = S3ACrudEngine::open_or_create(temp_file.path()).unwrap();
