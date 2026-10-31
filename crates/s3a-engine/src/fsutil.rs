@@ -185,6 +185,7 @@ pub fn clean_orphan_temps<P: AsRef<Path>>(live_path: P) -> io::Result<usize> {
 #[cfg(test)]
 mod atomic_replace_tests {
     use super::*;
+    #[cfg(unix)]
     use std::cell::Cell;
 
     fn tmpdir(tag: &str) -> PathBuf {
