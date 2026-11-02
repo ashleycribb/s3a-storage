@@ -92,14 +92,14 @@ AI agents are tirelessly effective at surface-level diagnostics, parsing million
 
 ---
 
-## 5. Cost Control via `s3a-ledger`
+## 5. Cost Control via `s3a-ledger` (usage metering)
 
-Uncontrolled agentic systems risk runaway API and compute billing. S3A enforces rigorous financial controls:
+Uncontrolled agentic systems risk runaway API and compute billing. S3A meters usage against an estimated daily budget:
 
 - **Meters Every Compute Unit**: `s3a-ledger` meters token usage (`llm`), test runtime (`sandbox`), browser testing (`browser`), and storage operations (`r2`).
 - **Free vs. Paid Boundaries**: Diagnostic planning, triage, and PR review descriptions are metered at \$0.00 (free work). Only heavy code generation, sandbox testing, and rendering consume budget.
 - **Engagement Caps**: Each client engagement carries an explicit hard budget cap. If compute reaches 100% of the daily or engagement ceiling, paid actions enter `deferred_budget` status without dropping progress, while free triage continues.
-- **Transparent Invoicing**: Client invoices map 1:1 to immutable `s3a-ledger` records, proving the exact compute cost invested in remediating each table.
+- **Usage Reporting, Not Billing**: `s3a-ledger` is a usage meter. Its USD figures are cost estimates from fixed rates, and it takes no payments, makes no transfers and issues no invoices. Its entries are in-memory records that are not signed or stored in hyper-tiles, so they are not tamper-evident, and they are not a basis for client invoices on their own. Any billing or invoicing would be a separate system outside S3A core.
 
 ---
 

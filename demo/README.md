@@ -145,7 +145,7 @@ The entire S3A storage and version control workspace is **100% green**:
 | **`s3a-vault`** (identities, gate addresses, delegation, rotation) | **9** | Pass |
 | **`s3a-harness`** (decision layer, ask_human pause/resume, eval) | **58** | Pass |
 | **`s3a-engine`** (hyper-tile read/write, RS parity, compactor, sealed) | **140** | Pass |
-| **`s3a-ledger`** (micro-billing, budget caps, deferral) | **4** | Pass |
+| **`s3a-ledger`** (usage metering, budget caps, deferral) | **4** | Pass |
 | **`s3a-trace`** (trajectory capture, replay harness, fine-tuning export) | **1** | Pass |
 | **`s3a-lrs-server`** (IEEE P2997 ELR projection, rules engine, batch sync) | **25** | Pass |
 | **`s3a-spec-vectors`** (conformance test vectors) | **32** | Pass |

@@ -1,4 +1,7 @@
-//! S3A Ledger & Budget Agent
+//! S3A Ledger & Budget Agent: usage metering.
+//! The USD figures are cost estimates from fixed rates only. This crate takes no payments,
+//! moves no money and issues no invoices. Entries are in-memory records; they are not signed,
+//! hash-chained or stored in hyper-tiles.
 //! Epistemic Invariant: The ledger records cost and meters budgets.
 //! The ledger never approves or rejects code; code judgments are human-only.
 //! Paid actions at 100% cap receive "deferred_budget" status and queue.
