@@ -7,34 +7,42 @@ import type { Env } from "./types";
 class S3ASandbox extends CloudflareSandbox<Env> {
   override enableInternet = true;
 
+  /**
+   * Forward a preview request to the app inside the container.
+   * Never starts a container: if none is running this throws and the caller serves its static
+   * fallback. A preview is started on purpose (POST /project/:id/preview), not by a page view.
+   * The "start the server if it is not up" step runs only after a connection fails, not on
+   * every request.
+   */
   async forwardToPort(request: Request, port: number = 3001): Promise<Response> {
     const container = (this as any).ctx?.container;
-    if (container) {
-      if (!container.running) {
-        container.start();
-      }
-      // Ensure the background server is running inside the container if standalone server exists
-      try {
-        await this.exec(
-          "if [ -f '/workspace/baseline-repo/demo/brakets-bracket/.next/standalone/server.js' ] && ! pgrep -f 'server.js' > /dev/null; then " +
-          "cd /workspace/baseline-repo/demo/brakets-bracket/.next/standalone && PORT=3001 HOSTNAME=0.0.0.0 node server.js >/dev/null 2>&1 & " +
-          "sleep 0.5; fi"
-        );
-      } catch (e) {}
-
-      const tcp = container.getTcpPort(port);
-      let lastErr: any = null;
-      for (let attempt = 0; attempt < 8; attempt++) {
-        try {
-          return await tcp.fetch(request.clone());
-        } catch (err: any) {
-          lastErr = err;
-          await new Promise((r) => setTimeout(r, 250));
-        }
-      }
-      throw lastErr;
+    if (!container || !container.running) {
+      throw new Error("preview_not_running: no container is running; start a preview first (POST /project/:id/preview)");
     }
-    return (this as any).containerFetch(request, port);
+
+    const tcp = container.getTcpPort(port);
+    let startedServer = false;
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        return await tcp.fetch(request.clone());
+      } catch (err: any) {
+        lastErr = err;
+        if (!startedServer) {
+          startedServer = true;
+          // Ensure the background server is running inside the container if a standalone server exists
+          try {
+            await this.exec(
+              "if [ -f '/workspace/baseline-repo/demo/brakets-bracket/.next/standalone/server.js' ] && ! pgrep -f 'server.js' > /dev/null; then " +
+              "cd /workspace/baseline-repo/demo/brakets-bracket/.next/standalone && PORT=3001 HOSTNAME=0.0.0.0 node server.js >/dev/null 2>&1 & " +
+              "sleep 0.5; fi"
+            );
+          } catch (e) {}
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+    throw lastErr;
   }
 }
 

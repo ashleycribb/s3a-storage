@@ -58,6 +58,7 @@ import {
 } from "../crypto";
 import { callModel } from "../models";
 import { sandbox_build } from "../sandbox";
+import { withTaskSandbox, taskSandboxId, previewSandboxId, diagSandboxId, wakeRequested, autoPreviewRebuildEnabled, SANDBOX_SLEEP_AFTER } from "../sandboxPolicy";
 import { formatPREvidenceComment } from "../types";
 import { renderBraketsPreviewHtml } from "../ui/preview";
 import { generateVisualReviewSvg, VisualFindingRun, DEFAULT_FINDINGS_SPEC } from "../ui/visualReviewSvg";
@@ -1353,14 +1354,14 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
 
       if (this.env.Sandbox) {
         try {
-          const sandbox = getSandbox(this.env.Sandbox, `s3a-preview-${projectId}-v6`, { normalizeId: true });
           const pkgRoot = (candidate.files_allowed && candidate.files_allowed[0]?.includes("demo/brakets-bracket")) || targetFile.includes("demo/brakets-bracket")
             ? "demo/brakets-bracket"
             : (candidate.files_allowed && candidate.files_allowed[0]?.includes("apps/brakets-gg")) || targetFile.includes("apps/brakets-gg")
             ? "apps/brakets-gg"
             : undefined;
 
-          buildRes = await sandbox_build(
+          // One sandbox per task run, destroyed in `finally` so it cannot stay on after the task.
+          buildRes = await withTaskSandbox(getSandbox, this.env.Sandbox, taskSandboxId(projectId, candidate.id, opId), (sandbox) => sandbox_build(
             sandbox,
             this.env,
             ["npm", "run", "build"],
@@ -1387,7 +1388,7 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
                 );
               },
             }
-          );
+          ));
         } catch (e: any) {
           buildRes = {
             success: false,
@@ -4490,13 +4491,17 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
       signature: signatureHex,
     });
 
-    // Automatically trigger Sandbox cloud preview rebuild after conflict resolution
-    const reqUrl = request.url;
-    this.state.waitUntil(
-      this.runPreviewBuild(projectId || "s3a-swarm-main", reqUrl).catch((err) => {
-        console.error("Auto-rebuild error after conflict resolution:", err);
-      })
-    );
+    // The preview rebuild starts a container, so it only runs automatically when AUTO_PREVIEW_REBUILD=true.
+    // Otherwise start it on purpose with POST /project/:id/preview.
+    const autoRebuild = autoPreviewRebuildEnabled(this.env);
+    if (autoRebuild) {
+      const reqUrl = request.url;
+      this.state.waitUntil(
+        this.runPreviewBuild(projectId || "s3a-swarm-main", reqUrl).catch((err) => {
+          console.error("Auto-rebuild error after conflict resolution:", err);
+        })
+      );
+    }
 
     return new Response(JSON.stringify({
       status: "resolved",
@@ -4504,7 +4509,7 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
       conflict_id: conflictId,
       chosen_side: chosenSide,
       reviewer_pubkey: reviewerPubkeyHex,
-      preview_rebuilding: true,
+      preview_rebuilding: autoRebuild,
     }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -4540,14 +4545,13 @@ Apply the requested fixes for ${targetFile} ensuring standard valid syntax and z
       throw new Error(err);
     }
 
-    // 1. Reuse one sandbox per project with 15m idle auto-stop to keep cost low
-    const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}-v6`;
-    await emitLog("sandbox", `Connecting to sandbox instance '${sandboxId}' (sleepAfter: 15m idle)...`);
+    // 1. One preview sandbox per project, started on purpose; short idle auto-stop to keep cost low
+    const sandboxId = previewSandboxId(projectId);
+    await emitLog("sandbox", `Connecting to sandbox instance '${sandboxId}' (sleepAfter: ${SANDBOX_SLEEP_AFTER} idle)...`);
 
     const sandbox = getSandbox(this.env.Sandbox, sandboxId, {
       normalizeId: true,
-      sleepAfter: "15m",
+      sleepAfter: SANDBOX_SLEEP_AFTER,
       transport: "rpc",
       containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
     });
@@ -4813,8 +4817,7 @@ fi
       return new Response("Sandbox binding not configured", { status: 500 });
     }
 
-    const safeProjectId = projectId.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 32);
-    const sandboxId = `s3a-preview-${safeProjectId}-v6`;
+    const sandboxId = previewSandboxId(projectId);
     const sandboxNamespace = this.env.Sandbox as any;
     const stub = sandboxNamespace.get(sandboxNamespace.idFromName(sandboxId));
 
@@ -4837,11 +4840,12 @@ fi
     });
 
     try {
+      // forwardToPort only forwards to a container that is already running; it never starts one.
+      // Viewing the preview must not spend money, so there is no getSandbox().fetch() fallback.
       if (typeof (stub as any).forwardToPort === "function") {
         return await (stub as any).forwardToPort(forwardRequest, 3001);
       }
-      const sandbox = getSandbox(this.env.Sandbox, sandboxId, { normalizeId: true });
-      return await sandbox.fetch(forwardRequest);
+      throw new Error("preview_not_running");
     } catch (err: any) {
       // Seamlessly serve interactive Brakets live preview application
       return new Response(renderBraketsPreviewHtml(projectId), {
@@ -4858,17 +4862,29 @@ fi
     if (!this.env.Sandbox) {
       return new Response(JSON.stringify({ ok: false, error: "Sandbox binding not configured" }), { status: 500 });
     }
+    const auth = checkAdminAuth(request, this.env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({
+        error: "Unauthorized: Admin authentication required (Cloudflare Access or Bearer ADMIN_SECRET).",
+        reason: auth.reason,
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
     const url = new URL(request.url);
+    if (!wakeRequested(url)) {
+      return new Response(JSON.stringify({
+        ok: false,
+        started: false,
+        error: "This starts a billed container. Add ?wake=1 to run it (admin auth required).",
+      }), { status: 400, headers: { "Content-Type": "application/json" } });
+    }
     const cmd = url.searchParams.get("cmd") || "echo 's3a-sandbox-alive'";
-    const sandboxId = "s3a-preview-s3a-swarm-main-v6";
     try {
-      const sandbox = getSandbox(this.env.Sandbox, sandboxId, {
-        normalizeId: true,
+      const t0 = Date.now();
+      // Throwaway sandbox, destroyed as soon as the command returns.
+      const res = await withTaskSandbox(getSandbox, this.env.Sandbox, diagSandboxId(), (sandbox) => sandbox.exec(cmd), {
         transport: "rpc",
         containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
       });
-      const t0 = Date.now();
-      const res = await sandbox.exec(cmd);
       const elapsedMs = Date.now() - t0;
       return new Response(JSON.stringify({
         ok: res.success,

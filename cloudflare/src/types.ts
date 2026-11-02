@@ -16,6 +16,8 @@ export interface Env {
   ADMIN_SECRET?: string;
   SUPERVISOR_PUBKEYS?: string;
   GATE_AGENT_ED25519_SECRET?: string;
+  /** "true" lets conflict resolution start a preview container automatically. Off by default (cost). */
+  AUTO_PREVIEW_REBUILD?: string;
 }
 
 export type OperationStatus = "accepted" | "running" | "done" | "failed";

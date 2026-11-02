@@ -4,6 +4,7 @@
 import type { Env } from "../types";
 import { checkAdminAuth, isSupervisorKeyAllowed } from "../crypto";
 import { getSandbox } from "../sandbox";
+import { withTaskSandbox, diagSandboxId, wakeRequested } from "../sandboxPolicy";
 import { generateRehearsalEvidenceSvg } from "../rehearsal/visualEvidence";
 import { generateVisualReviewSvg } from "../ui/visualReviewSvg";
 
@@ -198,16 +199,30 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
   // 3. Direct Sandbox Diagnostics Endpoint
   // --------------------------------------------------------------------------
   if (path === "/test-sandbox") {
+    // Runs a command in a billed container, so it needs admin auth AND an explicit ?wake=1.
+    const auth = checkAdminAuth(request, env);
+    if (!auth.authorized) {
+      return new Response(JSON.stringify({
+        error: "Unauthorized: Admin authentication required (Cloudflare Access or Bearer ADMIN_SECRET).",
+        reason: auth.reason,
+      }), { status: 401, headers: { "Content-Type": "application/json" } });
+    }
+    if (!wakeRequested(url)) {
+      return new Response(JSON.stringify({
+        ok: false,
+        started: false,
+        error: "This starts a billed container. Add ?wake=1 to run it.",
+      }), { status: 400, headers: { "Content-Type": "application/json" } });
+    }
     if (!env.Sandbox) return new Response("No Sandbox binding", { status: 500 });
     const cmd = url.searchParams.get("cmd") || "echo 's3a-sandbox-alive'";
     try {
-      const sandbox = getSandbox(env.Sandbox, "s3a-preview-s3a-swarm-main-v6", {
-        normalizeId: true,
+      const t0 = Date.now();
+      // Throwaway sandbox, destroyed as soon as the command returns.
+      const res = await withTaskSandbox(getSandbox, env.Sandbox, diagSandboxId(), (sandbox) => sandbox.exec(cmd), {
         transport: "rpc",
         containerTimeouts: { instanceGetTimeoutMS: 120_000, portReadyTimeoutMS: 240_000 },
       });
-      const t0 = Date.now();
-      const res = await sandbox.exec(cmd);
       return new Response(JSON.stringify({
         ok: res.success,
         cmd,

@@ -21,6 +21,10 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Pinned to 0.12.10 to match the container image in cloudflare/wrangler.toml and the 0.x API in
+      # cloudflare/src. 1.x has a different API (no getSandbox/Sandbox/ContainerProxy). Bump the SDK,
+      # the image tag and the code together, on purpose.
+      - dependency-name: "@cloudflare/sandbox"
   - package-ecosystem: npm
     directory: "/demo/cloudflare-worker"
     schedule: { interval: weekly }
