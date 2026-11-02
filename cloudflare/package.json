@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "test": "node --test \"test/*.test.ts\""
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0",
-    "@cloudflare/sandbox": "^1.0.3",
+    "@cloudflare/sandbox": "0.12.10",
     "isomorphic-git": "^1.44.4"
   },
   "devDependencies": {

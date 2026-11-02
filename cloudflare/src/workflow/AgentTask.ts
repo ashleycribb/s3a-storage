@@ -13,6 +13,7 @@ import type {
 } from "../types";
 import { callModel } from "../models";
 import { getSandbox, sandbox_build } from "../sandbox";
+import { withTaskSandbox, taskSandboxId } from "../sandboxPolicy";
 import { hexToBytes, bytesToHex } from "../crypto";
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -259,14 +260,14 @@ Return ONLY the code/content within a single codeblock.`;
 
       if (this.env.Sandbox) {
         try {
-          const sandbox = getSandbox(this.env.Sandbox, `s3a-preview-${projectId}-v6`, { normalizeId: true });
           const pkgRoot = (filesAllowed && filesAllowed[0]?.includes("demo/brakets-bracket")) || repoContext.targetFile.includes("demo/brakets-bracket")
             ? "demo/brakets-bracket"
             : (filesAllowed && filesAllowed[0]?.includes("apps/brakets-gg")) || repoContext.targetFile.includes("apps/brakets-gg")
             ? "apps/brakets-gg"
             : undefined;
 
-          buildRes = await sandbox_build(
+          // One sandbox per task run, destroyed in `finally` so it cannot stay on after the task.
+          buildRes = await withTaskSandbox(getSandbox, this.env.Sandbox, taskSandboxId(projectId, taskId, opId), (sandbox) => sandbox_build(
             sandbox,
             this.env,
             ["npm", "run", "build"],
@@ -283,7 +284,7 @@ Return ONLY the code/content within a single codeblock.`;
                 await recordCoordinatorTrace(stepName, actor, verb, details);
               },
             }
-          );
+          ));
           await recordCoordinatorUsage("sandbox", 2);
         } catch (e: any) {
           buildRes = {

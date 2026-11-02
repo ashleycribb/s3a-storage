@@ -29,7 +29,9 @@ name = "s3a-gate-sandbox"
 class_name = "Sandbox"
 image = "docker.io/cloudflare/sandbox:0.12.10"
 instance_type = "standard-1"
-max_instances = 5
+# Cost cap: at most 2 containers at once (the scheduler already runs at most 2 tasks).
+# This limits concurrency, not time; destroy() and sleepAfter bound how long each one runs.
+max_instances = 2
 
 # Workers AI binding for Autonomous Coding and Planning
 [ai]
