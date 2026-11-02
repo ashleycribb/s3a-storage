@@ -880,20 +880,25 @@ fn main() {
             run_remote_query(addr, query);
         }
         "mcp-server" | "mcp" => {
-            let file = if args.len() >= 3 {
-                &args[2]
-            } else {
-                "test.s3a"
-            };
-            mcp::run_mcp_server(file);
+            // Read-only unless the caller opts in with --allow-writes.
+            let allow_writes = args.iter().skip(2).any(|a| a == "--allow-writes");
+            let file = args
+                .iter()
+                .skip(2)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str())
+                .unwrap_or("test.s3a");
+            mcp::run_mcp_server(file, allow_writes);
         }
         "mcp-client" => {
-            let file = if args.len() >= 3 {
-                &args[2]
-            } else {
-                "test.s3a"
-            };
-            mcp::run_mcp_client_test(file);
+            let allow_writes = args.iter().skip(2).any(|a| a == "--allow-writes");
+            let file = args
+                .iter()
+                .skip(2)
+                .find(|a| !a.starts_with("--"))
+                .map(|s| s.as_str())
+                .unwrap_or("test.s3a");
+            mcp::run_mcp_client_test(file, allow_writes);
         }
         "shell" | "sqlcmd" | "sql" => {
             run_interactive_shell();
@@ -1383,8 +1388,8 @@ fn print_usage() {
     println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
     println!("  s3a-cli serve-tcp [host:port]                     Start low-latency binary S3AP wire protocol server (default: 127.0.0.1:9333)");
     println!("  s3a-cli remote-query \"<STMT>\" [host:port]          Query remote S3A server via binary S3AP wire protocol");
-    println!("  s3a-cli mcp-server [archive]                      Run standard Model Context Protocol (MCP) server over stdin/stdout");
-    println!("  s3a-cli mcp-client [archive]                      Execute MCP JSON-RPC protocol validation tests");
+    println!("  s3a-cli mcp-server [archive] [--allow-writes]     Run MCP server over stdin/stdout (read-only unless --allow-writes)");
+    println!("  s3a-cli mcp-client [archive] [--allow-writes]     Execute MCP JSON-RPC protocol validation tests");
     println!();
     println!("DOMAIN PACK & LAKEHOUSE INTEGRATIONS:");
     println!("  s3a-cli scholar ingest <json_dir> <out.s3a>       Ingest academic literature into Scholar Hyper-Tiles");

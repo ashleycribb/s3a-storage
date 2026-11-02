@@ -131,7 +131,14 @@ cargo run -p s3a-cli -- remote-query "SIFT TELEMETRY FROM 'sensor.s3a' WHERE VAL
 
 S3A includes native support for the **Model Context Protocol (MCP 2024-11-05)** over standard JSON-RPC `stdio`.
 
-Register S3A in Claude Desktop, Cursor, or Gemini:
+**The MCP server is read-only by default.** An AI tool that connects can query and inspect an archive, and it cannot change it. The write tools are neither listed nor callable unless you start the server with the explicit `--allow-writes` flag (off by default):
+
+```bash
+s3a-cli mcp-server production.s3a                  # read-only (default)
+s3a-cli mcp-server production.s3a --allow-writes   # also exposes insert, delete, compact and export
+```
+
+Register S3A in Claude Desktop, Cursor, or Gemini (read-only):
 ```json
 {
   "mcpServers": {
@@ -143,17 +150,24 @@ Register S3A in Claude Desktop, Cursor, or Gemini:
 }
 ```
 
-Exposed MCP Tools:
-- `s3a_query`: Execute native S3A-QL statements.
-- `s3a_fetch_coordinate`: Instant $O(1)$ coordinate lookup (`L0:T0:R0`).
+Read tools (always available):
+- `s3a_query`: Execute native S3A-QL `FETCH` and `SIFT` statements. In read-only mode `INSERT`, `DELETE`, `COMPACT`, `FUSE` and anything that does not parse are refused.
+- `s3a_fetch_coordinate`: Instant $O(1)$ coordinate lookup (`L0:T0:R0`). Never creates a missing archive.
+- `s3a_inspect_archive`: Inspect generation, slot state, Bloom filter, and CRC32C status.
+- `s3a_search_library`, `s3a_get_synthesis_matrix`, `s3a_intake_srs`: read scholar records and mount a snapshot.
+
+Write tools (only with `--allow-writes`):
 - `s3a_insert_telemetry`: Real-time ingestion into L0 buffer & Hyper-Tiles.
 - `s3a_delete_telemetry`: Transactional tombstoning.
-- `s3a_inspect_archive`: Inspect generation, slot state, Bloom filter, and CRC32C status.
 - `s3a_compact_archive`: Purge tombstones and re-stratify Hyper-Tiles.
+- `s3a_export_srs`: Write a snapshot file.
+
+Note: tools take an optional `file` argument, so a connected AI can name any archive path the server process can read. Run the server with an account that can only see the archives you intend to share.
 
 Verify MCP protocol compliance:
 ```bash
-cargo run -p s3a-cli -- mcp-client test.s3a
+cargo run -p s3a-cli -- mcp-client test.s3a                  # read-only: the insert step is expected to be refused
+cargo run -p s3a-cli -- mcp-client test.s3a --allow-writes   # also exercises the write path
 ```
 
 ---
