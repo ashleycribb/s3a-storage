@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Usage metering and daily budget caps for agent actions. USD figures are cost estimates only; no payments."
 
 [dependencies]
 s3a-core = { path = "../s3a-core" }

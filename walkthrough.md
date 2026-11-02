@@ -1824,7 +1824,7 @@ The dashboard has been modularized and transformed into a full GitHub-style ente
   - **Agents**: Live agent registry, health status, model tiers, and performance metrics.
   - **Actions / Runs**: Autonomous test runs, execution logs, and workflow dispatch.
   - **Insights & Rehearsals**: Failure fingerprint deduplication, tournament journey metrics, and format pass rates.
-  - **Ledger**: Token consumption, compute costs, and budget cap enforcement.
+  - **Ledger**: Token consumption, estimated compute costs, and budget cap enforcement (usage metering, not billing).
 - **Deep Linking**: Full support for direct URLs (`/project/:id/issues`, `/issues/:taskId`, `/pulls`, `/pulls/:crId`, `/agents`, `/actions`, `/insights`, `/rehearsal`) with breadcrumbs and back navigation.
 
 ### 29.3 Autonomous In-Gate Builder & PM Agent (`gate-agent`)
@@ -1851,14 +1851,14 @@ The dashboard has been modularized and transformed into a full GitHub-style ente
 
 ---
 
-## 31. Autonomous Swarm Infrastructure: Micro-Billing & Agent Provenance
+## 31. Autonomous Swarm Infrastructure: Usage Metering & Agent Provenance
 
-### 31.1 Micro-Billing & Budget Caps (`crates/s3a-ledger`)
-- Implements granular micro-billing for autonomous agent swarms:
-  - Strict hourly and daily spending limits (`budget_cap`).
-  - Real-time warnings at 80% consumption threshold.
-  - Automatic deferral of non-urgent tasks (`deferred_budget`) at 100% threshold until quota reset.
-  - Immutable tamper-evident ledger records stored in S3A hyper-tiles.
+### 31.1 Usage Metering & Budget Caps (`crates/s3a-ledger`)
+- Implements usage metering for autonomous agent swarms. The USD figures are cost estimates only; the crate takes no payments, moves no money and sends no invoices:
+  - A daily spending cap (`daily_cap_usd`) against estimated cost. There is no hourly limit.
+  - A warning at 80% of the cap (configurable).
+  - Automatic deferral of paid actions (`deferred_budget`) at the cap until the daily reset or a manual reset. Free actions never block.
+  - Ledger entries are plain in-memory records. The crate does not sign them, hash-chain them or write them to S3A hyper-tiles, so they are not tamper-evident.
 
 ### 31.2 Agent Trajectory Capture & Fine-Tuning Replay (`crates/s3a-trace`)
 - Records structured agent execution trajectories (tool inputs, outputs, thoughts, and outcomes).
