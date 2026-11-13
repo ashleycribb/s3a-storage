@@ -10,6 +10,7 @@ repository.workspace = true
 bytemuck.workspace = true
 sha2 = { workspace = true }
 crc32c = { workspace = true }
+xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 
 [features]
 default = ["std"]

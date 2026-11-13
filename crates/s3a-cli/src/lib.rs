@@ -1,3 +1,4 @@
+pub mod first_run;
 pub mod gate_cli;
 pub mod proof_cli;
 pub mod tour;

@@ -254,6 +254,7 @@ fn anchor_confirm_flow(wrong_root: bool) -> std::process::Output {
 }
 
 #[test]
+#[cfg(feature = "packs")]
 fn test_cli_scholar_recheck_command() {
     use s3a_core::ADDON_EDU;
     use s3a_engine::S3ACrudEngine;
@@ -357,6 +358,7 @@ fn test_cli_scholar_recheck_command() {
 }
 
 #[test]
+#[cfg(feature = "packs")]
 fn test_cli_scholar_proof_and_export_bib() {
     use s3a_core::ADDON_EDU;
     use s3a_engine::anchor::mock_calendar::MockOtsCalendar;

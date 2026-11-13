@@ -480,7 +480,7 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
-    // Tile 23: Core Document Store (State / Profile APIs, variable payload)
+    // Tile 23: Core Document & Key-Value Store (variable payload)
     reg.register(TileTypeDescriptor {
         tile_type: 23,
         name: "document_store",

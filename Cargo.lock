@@ -1774,6 +1774,7 @@ dependencies = [
  "bytemuck",
  "crc32c",
  "sha2",
+ "xxhash-rust",
 ]
 
 [[package]]

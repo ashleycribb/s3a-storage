@@ -56,10 +56,11 @@ pub const DOC_KIND_STATE: u32 = 1;
 pub const DOC_KIND_AGENT_PROFILE: u32 = 2;
 pub const DOC_KIND_ACTIVITY_PROFILE: u32 = 3;
 
-// Document Flags
-pub const DOC_FLAG_ACTIVE: u32 = 0;
-pub const DOC_FLAG_DELETED: u32 = 1 << 0;
-pub const DOC_FLAG_IS_JSON: u32 = 1 << 1;
+// Plain Document Flags & Header re-exported from core document module (Tile 23)
+pub use crate::document::{
+    compute_key_hash, DocumentRecordHeader, KvRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_DELETED,
+    DOC_FLAG_IS_JSON,
+};
 
 /// EXACT 64-BYTE STATEMENT INDEX RECORD (8-byte aligned, Pod/Zeroable).
 ///
@@ -198,45 +199,6 @@ impl StatementBlobHeader {
     }
 }
 
-/// EXACT 64-BYTE DOCUMENT RECORD HEADER (8-byte aligned, Pod/Zeroable).
-///
-/// Precedes State, Agent Profile, and Activity Profile documents in `TileType::DOCUMENT_STORE` (Tile 23).
-/// The variable key string and content payload follow immediately after this header.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
-pub struct DocumentRecordHeader {
-    pub doc_kind: u32, // DOC_KIND_STATE, DOC_KIND_AGENT_PROFILE, etc. (offset 0..4)
-    pub flags: u32,    // DOC_FLAG_ACTIVE, DOC_FLAG_DELETED (offset 4..8)
-    pub key_hash: u64, // 64-bit hash of compound key for fast O(1) lookup (offset 8..16)
-    pub etag_hash: [u8; 16], // 128-bit hash representing document ETag (offset 16..32)
-    pub timestamp_ms: u64, // Last-Modified timestamp in epoch ms (offset 32..40)
-    pub content_len: u32, // Byte length of document payload (offset 40..44)
-    pub key_len: u32,  // Byte length of UTF-8 key string (offset 44..48)
-    pub content_crc32: u32, // CRC32C of document content payload (offset 48..52)
-    pub _reserved: [u32; 3], // Zero-padded alignment to 64 bytes (offset 52..64)
-}
-
-impl Default for DocumentRecordHeader {
-    fn default() -> Self {
-        Self {
-            doc_kind: 0,
-            flags: DOC_FLAG_ACTIVE,
-            key_hash: 0,
-            etag_hash: [0u8; 16],
-            timestamp_ms: 0,
-            content_len: 0,
-            key_len: 0,
-            content_crc32: 0,
-            _reserved: [0u32; 3],
-        }
-    }
-}
-
-impl DocumentRecordHeader {
-    pub fn is_deleted(&self) -> bool {
-        (self.flags & DOC_FLAG_DELETED) != 0
-    }
-}
 
 /// EXACT 64-BYTE ATTACHMENT BLOB HEADER (8-byte aligned, Pod/Zeroable).
 ///

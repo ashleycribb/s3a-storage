@@ -23,6 +23,7 @@ pub mod array;
 pub mod columnar;
 pub mod consent;
 pub mod display_layout;
+pub mod document;
 pub mod dop;
 pub mod erasure;
 pub mod hilbert;
@@ -33,6 +34,7 @@ pub mod schema;
 pub use array::*;
 pub use columnar::*;
 pub use consent::*;
+pub use document::*;
 pub use dop::{toroidal_distance_3d, toroidal_interval_contains, Dop14Hull};
 pub use erasure::*;
 pub use hilbert::{
@@ -526,7 +528,7 @@ impl TileType {
     pub const STATEMENT_BODY: u32 = 21;
     /// Core xAPI 1.0.3 Statement Index tile (Tile 22)
     pub const STATEMENT_INDEX: u32 = 22;
-    /// Core xAPI 1.0.3 Document Store tile (Tile 23: State / Profile APIs)
+    /// Core Document Store tile (Tile 23)
     pub const DOCUMENT_STORE: u32 = 23;
     /// Core xAPI 1.0.3 Attachment Blob tile (Tile 24)
     pub const ATTACHMENT_BLOB: u32 = 24;

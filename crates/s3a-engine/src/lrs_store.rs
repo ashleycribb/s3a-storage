@@ -3071,10 +3071,9 @@ impl LrsStore {
     // DOCUMENT STORE CRUD (State, Agent Profile, Activity Profile APIs)
     // -------------------------------------------------------------------------
 
-    /// Builds compound key hash from document kind and compound key string.
+    /// Builds compound key hash from document kind and compound key string using the core xxh3 hasher.
     pub fn document_key_hash(doc_kind: u32, key: &str) -> u64 {
-        let combined = format!("{}\0{}", doc_kind, key);
-        xxh3_64(combined.as_bytes())
+        s3a_core::document::compute_key_hash(doc_kind, key)
     }
 
     /// Calculates document ETag hash (SHA1) and formatted string enclosed in quotes per xAPI 1.0.3 §4.1.3.

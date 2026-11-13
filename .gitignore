@@ -15,5 +15,9 @@ node_modules/
 # Next.js build output
 .next/
 
+# Design drafts and review artifacts
+design_draft.md
+goldfish_review_report.md
+
 # Conformance vectors are committed on purpose
 !conformance/vectors-*/files/*.s3a

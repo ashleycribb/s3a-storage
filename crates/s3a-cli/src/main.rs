@@ -17,12 +17,17 @@ use s3a_engine::{
     S3AClient, S3ACoordinate, S3ACrudEngine, S3AProtocolServer, SimplexHull, TelemetryRecord,
     TileFusionEngine, TileShard, TileType, TileWriter,
 };
+#[cfg(feature = "packs")]
 use s3a_pack_da::{DACommitmentRecord, DaPack, DaQueryExt, DaTileType};
+#[cfg(feature = "packs")]
 use s3a_pack_gis::{GISSurveyPointRecord, GisPack, GisQueryExt, GisTileType};
+#[cfg(feature = "packs")]
 use s3a_pack_ontology::OntologyPack;
+#[cfg(feature = "packs")]
 use s3a_pack_robotics::{
     RoboticsKinematicRecord, RoboticsPack, RoboticsQueryExt, RoboticsStreamWriter, RoboticsTileType,
 };
+#[cfg(feature = "packs")]
 use s3a_pack_scholar::{
     build_claim_proof, export_bibliography_with_proof, ingest_scholar_intermediate_dir,
     intake_srs_snapshot, intake_srs_snapshot_into_live, AcademicPaperRecord, AiTraceRecord,
@@ -30,6 +35,7 @@ use s3a_pack_scholar::{
     ScholarQueryExt, ScholarTileType, SrsManifestHeader, CLAIM_KIND_EMPIRICAL, CONTENT_KIND_PDF,
     SCHOLAR_LAYOUT_VERSION_V1,
 };
+#[cfg(feature = "packs")]
 use s3a_pack_wearable::{CompactWearableRecord, WearablePack, WearableTileType};
 
 mod gate_cli;
@@ -320,28 +326,100 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 "#;
 
 fn register_all_types() {
-    s3a_core::registry::with_global_registry_mut(|reg| {
-        let _ = s3a_pack_wearable::register_pack_types(reg);
-        let _ = s3a_pack_robotics::register_pack_types(reg);
-        let _ = s3a_pack_gis::register_pack_types(reg);
-        let _ = s3a_pack_da::register_pack_types(reg);
-        let _ = s3a_pack_scholar::register_pack_types(reg);
-    });
-    s3a_pack_robotics::register_ql_handlers();
-    s3a_pack_gis::register_ql_handlers();
-    s3a_pack_da::register_ql_handlers();
-    s3a_pack_scholar::register_ql_handlers();
+    #[cfg(feature = "packs")]
+    {
+        s3a_core::registry::with_global_registry_mut(|reg| {
+            let _ = s3a_pack_wearable::register_pack_types(reg);
+            let _ = s3a_pack_robotics::register_pack_types(reg);
+            let _ = s3a_pack_gis::register_pack_types(reg);
+            let _ = s3a_pack_da::register_pack_types(reg);
+            let _ = s3a_pack_scholar::register_pack_types(reg);
+        });
+        s3a_pack_robotics::register_ql_handlers();
+        s3a_pack_gis::register_ql_handlers();
+        s3a_pack_da::register_ql_handlers();
+        s3a_pack_scholar::register_ql_handlers();
+    }
 }
 
 fn main() {
     register_all_types();
     let args: Vec<String> = env::args().collect();
+    let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
     if args.len() < 2 {
-        print_usage();
+        s3a_cli::first_run::handle_help(&[]);
         return;
     }
 
     match args[1].as_str() {
+        "init" => {
+            s3a_cli::first_run::handle_init(&args, verbose);
+        }
+        "put" => {
+            s3a_cli::first_run::handle_put(&args, verbose);
+        }
+        "get" => {
+            s3a_cli::first_run::handle_get(&args, verbose);
+        }
+        "telemetry" => {
+            if args.len() < 3 {
+                println!("Usage: s3a telemetry <get|insert|delete> [args...]");
+                println!("  s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
+                println!("  s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
+                println!("  s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
+                return;
+            }
+            match args[2].as_str() {
+                "get" => {
+                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    if pos.len() < 5 {
+                        println!("Usage: s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
+                        return;
+                    }
+                    get_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
+                }
+                "insert" => {
+                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    if pos.len() < 5 {
+                        println!("Usage: s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
+                        return;
+                    }
+                    insert_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
+                }
+                "delete" => {
+                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    if pos.len() < 4 {
+                        println!("Usage: s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
+                        return;
+                    }
+                    delete_telemetry(&pos[0], &pos[1], &pos[2], &pos[3]);
+                }
+                other => {
+                    println!("Unknown telemetry subcommand '{}'. Expected 'get', 'insert', or 'delete'.", other);
+                }
+            }
+        }
+        "import" => {
+            s3a_cli::first_run::handle_import(&args, verbose);
+        }
+        "export" => {
+            s3a_cli::first_run::handle_export(&args, verbose);
+        }
+        "query" => {
+            s3a_cli::first_run::handle_query(&args, verbose);
+        }
+        "ls" | "list" => {
+            s3a_cli::first_run::handle_ls(&args, verbose);
+        }
+        "info" => {
+            s3a_cli::first_run::handle_info(&args, verbose);
+        }
+        "demo" => {
+            s3a_cli::first_run::handle_demo(&args, verbose);
+        }
+        "help" | "--help" | "-h" => {
+            s3a_cli::first_run::handle_help(&args);
+        }
         "prove" => {
             let pos: Vec<&String> = args
                 .iter()
@@ -498,6 +576,14 @@ fn main() {
                     file_opt = Some(args[i].clone());
                 }
             }
+            let file_opt = file_opt.or_else(|| {
+                let p = s3a_cli::first_run::resolve_vault_path(&args);
+                if p.exists() {
+                    Some(p.display().to_string())
+                } else {
+                    None
+                }
+            });
             match file_opt {
                 Some(f) => {
                     let opts = tour::TourOptions {
@@ -536,7 +622,14 @@ fn main() {
                         }
                     }
                 }
-                None => println!("Usage: s3a-cli tour <file> [--json] [--floor <N>] [--slice <axis=range,...>] [--cross <key=val>] [--history]"),
+                None => {
+                    s3a_cli::first_run::print_cli_error(
+                        "no vault archive specified and no default vault found ('./my.s3a')",
+                        Some("run 's3a init' to create a new vault, or specify: 's3a tour <file.s3a>'"),
+                        verbose,
+                        None,
+                    );
+                }
             }
         }
         "seal" => {
@@ -773,15 +866,6 @@ fn main() {
             }
             insert_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
         }
-        "get" => {
-            if args.len() < 7 {
-                println!(
-                    "Usage: s3a-cli get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>"
-                );
-                return;
-            }
-            get_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
-        }
         "delete" => {
             if args.len() < 6 {
                 println!("Usage: s3a-cli delete <file_path> <sensor_id> <metric_id> <timestamp>");
@@ -806,15 +890,19 @@ fn main() {
         "benchmark" => {
             run_benchmark();
         }
+        #[cfg(feature = "packs")]
         "benchmark-wearable" => {
             run_wearable_benchmark();
         }
+        #[cfg(feature = "packs")]
         "benchmark-robotics" => {
             run_robotics_benchmark();
         }
+        #[cfg(feature = "packs")]
         "benchmark-gis" => {
             run_gis_benchmark();
         }
+        #[cfg(feature = "packs")]
         "benchmark-da" => {
             run_da_benchmark();
         }
@@ -841,14 +929,6 @@ fn main() {
                 10_000
             };
             run_stream_ingest_benchmark(file, duration, rate);
-        }
-        "query" => {
-            let json_mode = args.iter().any(|a| a == "--json");
-            let query_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
-            match query_opt {
-                Some(q) => execute_s3a_ql(q, json_mode),
-                None => println!("Usage: s3a-cli query [--json] \"<S3A_QL_STATEMENT>\""),
-            }
         }
         "serve" => {
             let port = if args.len() >= 3 {
@@ -1033,6 +1113,16 @@ fn main() {
             };
             run_snowflake_server(port);
         }
+        #[cfg(not(feature = "packs"))]
+        "trace-session" | "trace" | "snapshot" | "scholar" | "import-academic-bundle" | "import-academic" | "snapshot-export" | "snapshot-intake" | "snapshot-inspect" => {
+            s3a_cli::first_run::print_cli_error(
+                "this command requires the 'packs' feature flag",
+                Some("rebuild with '--features packs' or install the full s3a distribution"),
+                verbose,
+                None,
+            );
+        }
+        #[cfg(feature = "packs")]
         "trace-session" | "trace" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli trace-session <archive_file> <session_uuid>");
@@ -1040,6 +1130,7 @@ fn main() {
             }
             run_trace_session(&args[2], &args[3]);
         }
+        #[cfg(feature = "packs")]
         "snapshot" => {
             if args.len() < 3 {
                 println!("Usage:");
@@ -1087,6 +1178,7 @@ fn main() {
                 }
             }
         }
+        #[cfg(feature = "packs")]
         "scholar" => {
             if args.len() < 3 {
                 println!("Usage:");
@@ -1259,6 +1351,7 @@ fn main() {
                 }
             }
         }
+        #[cfg(feature = "packs")]
         "import-academic-bundle" | "import-academic" => {
             if args.len() < 4 {
                 println!(
@@ -1269,6 +1362,7 @@ fn main() {
             let fresh = args.len() >= 5 && args[4] == "--fresh";
             run_scholar_ingest(&args[2], &args[3], fresh);
         }
+        #[cfg(feature = "packs")]
         "snapshot-export" => {
             if args.len() < 4 {
                 println!(
@@ -1283,6 +1377,7 @@ fn main() {
             };
             run_snapshot_export(&args[2], &args[3], project_uuid);
         }
+        #[cfg(feature = "packs")]
         "snapshot-intake" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli snapshot-intake <snapshot_file> [--into <live_db>]");
@@ -1295,6 +1390,7 @@ fn main() {
             };
             run_snapshot_intake(&args[2], into_live);
         }
+        #[cfg(feature = "packs")]
         "snapshot-inspect" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli snapshot-inspect <snapshot_file>");
@@ -1312,14 +1408,36 @@ fn main() {
             std::process::exit(s3a_vault::share_cli::run(&args[2..]));
         }
         "clean" => {
-            std::process::exit(s3a_pack_clean::cli::run(&args[2..]));
+            #[cfg(feature = "packs")]
+            {
+                std::process::exit(s3a_pack_clean::cli::run(&args[2..]));
+            }
+            #[cfg(not(feature = "packs"))]
+            {
+                s3a_cli::first_run::print_cli_error(
+                    "clean pack is not enabled in this build",
+                    Some("rebuild with '--features packs' to use clean pack commands"),
+                    verbose,
+                    None,
+                );
+            }
         }
         _ => {
-            print_usage();
+            let hint = match s3a_cli::first_run::suggest_command(&args[1]) {
+                Some(s) => format!(" Did you mean '{}'?", s),
+                None => String::new(),
+            };
+            s3a_cli::first_run::print_cli_error(
+                &format!("unknown command '{}'.{}", args[1], hint),
+                Some("run 's3a help' to see all available commands"),
+                verbose,
+                None,
+            );
         }
     }
 }
 
+#[allow(dead_code)]
 fn print_usage() {
     println!("S3A Storage CLI Tool (v{})", env!("CARGO_PKG_VERSION"));
     println!();
@@ -1433,82 +1551,89 @@ fn run_addon_list(archive_file: &str) {
     println!("Active Addons Bitmask: 0x{:08X}", mask);
     println!("-------------------------------------------------------------------------");
 
-    let is_edu = engine.is_addon_active(ADDON_EDU);
-    let is_wearable = engine.is_addon_active(ADDON_WEARABLE);
-    let is_robotics = engine.is_addon_active(ADDON_ROBOTICS);
-    let is_gis = engine.is_addon_active(ADDON_GIS);
-    let is_da = engine.is_addon_active(ADDON_DA);
-    let is_ontology = engine.is_addon_active(ADDON_ONTOLOGY);
-    let is_fintech = engine.is_addon_active(ADDON_FINTECH);
+    #[cfg(feature = "packs")]
+    {
+        let is_edu = engine.is_addon_active(ADDON_EDU);
+        let is_wearable = engine.is_addon_active(ADDON_WEARABLE);
+        let is_robotics = engine.is_addon_active(ADDON_ROBOTICS);
+        let is_gis = engine.is_addon_active(ADDON_GIS);
+        let is_da = engine.is_addon_active(ADDON_DA);
+        let is_ontology = engine.is_addon_active(ADDON_ONTOLOGY);
+        let is_fintech = engine.is_addon_active(ADDON_FINTECH);
 
-    let scholar_pack = ScholarPack;
-    let wearable_pack = WearablePack;
-    let robotics_pack = RoboticsPack;
-    let gis_pack = GisPack;
-    let da_pack = DaPack;
-    let ontology_pack = OntologyPack;
+        let scholar_pack = ScholarPack;
+        let wearable_pack = WearablePack;
+        let robotics_pack = RoboticsPack;
+        let gis_pack = GisPack;
+        let da_pack = DaPack;
+        let ontology_pack = OntologyPack;
 
-    println!("Registered Domain Packs & Addons:");
-    println!(
-        "  [1] {} (v{}): {}",
-        scholar_pack.name(),
-        scholar_pack.version(),
-        if is_edu {
-            "ACTIVE (Tiles 10..=15)"
-        } else {
-            "INACTIVE"
-        }
-    );
-    println!(
-        "  [2] {} (v{}): {}",
-        wearable_pack.name(),
-        wearable_pack.version(),
-        if is_wearable {
-            "ACTIVE (Tile 3)"
-        } else {
-            "INACTIVE"
-        }
-    );
-    println!(
-        "  [3] {} (v{}): {}",
-        robotics_pack.name(),
-        robotics_pack.version(),
-        if is_robotics {
-            "ACTIVE (Tile 4)"
-        } else {
-            "INACTIVE"
-        }
-    );
-    println!(
-        "  [4] {} (v{}): {}",
-        gis_pack.name(),
-        gis_pack.version(),
-        if is_gis {
-            "ACTIVE (Tile 5)"
-        } else {
-            "INACTIVE"
-        }
-    );
-    println!(
-        "  [5] {} (v{}): {}",
-        da_pack.name(),
-        da_pack.version(),
-        if is_da { "ACTIVE (Tile 6)" } else { "INACTIVE" }
-    );
-    println!(
-        "  [6] {} (v{}): {}",
-        ontology_pack.name(),
-        ontology_pack.version(),
-        if is_ontology {
-            "ACTIVE (Tiles 16..=17)"
-        } else {
-            "INACTIVE"
-        }
-    );
-    println!(
-        "  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}",
-        if is_fintech { "ACTIVE" } else { "INACTIVE" }
-    );
+        println!("Registered Domain Packs & Addons:");
+        println!(
+            "  [1] {} (v{}): {}",
+            scholar_pack.name(),
+            scholar_pack.version(),
+            if is_edu {
+                "ACTIVE (Tiles 10..=15)"
+            } else {
+                "INACTIVE"
+            }
+        );
+        println!(
+            "  [2] {} (v{}): {}",
+            wearable_pack.name(),
+            wearable_pack.version(),
+            if is_wearable {
+                "ACTIVE (Tile 3)"
+            } else {
+                "INACTIVE"
+            }
+        );
+        println!(
+            "  [3] {} (v{}): {}",
+            robotics_pack.name(),
+            robotics_pack.version(),
+            if is_robotics {
+                "ACTIVE (Tile 4)"
+            } else {
+                "INACTIVE"
+            }
+        );
+        println!(
+            "  [4] {} (v{}): {}",
+            gis_pack.name(),
+            gis_pack.version(),
+            if is_gis {
+                "ACTIVE (Tile 5)"
+            } else {
+                "INACTIVE"
+            }
+        );
+        println!(
+            "  [5] {} (v{}): {}",
+            da_pack.name(),
+            da_pack.version(),
+            if is_da { "ACTIVE (Tile 6)" } else { "INACTIVE" }
+        );
+        println!(
+            "  [6] {} (v{}): {}",
+            ontology_pack.name(),
+            ontology_pack.version(),
+            if is_ontology {
+                "ACTIVE (Tiles 16..=17)"
+            } else {
+                "INACTIVE"
+            }
+        );
+        println!(
+            "  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}",
+            if is_fintech { "ACTIVE" } else { "INACTIVE" }
+        );
+    }
+    #[cfg(not(feature = "packs"))]
+    {
+        println!("Registered Domain Packs & Addons: (Core mode - packs disabled)");
+    }
 
     if mask == 0 {
         println!();
@@ -2085,9 +2210,13 @@ fn inspect_file(path: &str, json_mode: bool) {
                         TileType::TELEMETRY => "TELEMETRY",
                         TileType::EMBEDDING => "EMBEDDING",
                         TileType::HYBRID => "HYBRID",
+                        #[cfg(feature = "packs")]
                         WearableTileType::WEARABLE_MICRO => "WEARABLE_MICRO",
+                        #[cfg(feature = "packs")]
                         RoboticsTileType::ROBOTICS_KINEMATIC => "ROBOTICS_KINEMATIC",
+                        #[cfg(feature = "packs")]
                         GisTileType::GIS_SURVEY_MESH => "GIS_SURVEY_MESH",
+                        #[cfg(feature = "packs")]
                         DaTileType::DATA_AVAILABILITY => "DATA_AVAILABILITY",
                         TileType::QUANTIZED_EMBEDDING_INT8 => "QUANTIZED_EMBEDDING_INT8",
                         TileType::QUANTIZED_EMBEDDING_4BIT => "QUANTIZED_EMBEDDING_4BIT",
@@ -2099,15 +2228,21 @@ fn inspect_file(path: &str, json_mode: bool) {
                             "ERASURE (Right-to-be-Forgotten Cryptographic Audit Receipt)"
                         }
                         TileType::SCHEMA => "SCHEMA (Embedded Schema Registry)",
+                        #[cfg(feature = "packs")]
                         ScholarTileType::HUMAN_LRS => "HUMAN_LRS (Researcher Review / xAPI)",
+                        #[cfg(feature = "packs")]
                         ScholarTileType::AI_TRACE_LOG => {
                             "AI_TRACE_LOG (Reasoning / Hallucination / Tool)"
                         }
+                        #[cfg(feature = "packs")]
                         ScholarTileType::ACADEMIC_PAPERS => {
                             "ACADEMIC_PAPERS (Literature 3D Slices)"
                         }
+                        #[cfg(feature = "packs")]
                         ScholarTileType::RESEARCH_GRAPH => "RESEARCH_GRAPH (Knowledge Graph Edges)",
+                        #[cfg(feature = "packs")]
                         ScholarTileType::SRS_WORKSPACE => "SRS_WORKSPACE (Workspace Pod)",
+                        #[cfg(feature = "packs")]
                         ScholarTileType::SRS_MANIFEST => "SRS_MANIFEST (Manifest Pod)",
                         _ => {
                             if resolved_schema_name != "UNKNOWN" {
@@ -2237,8 +2372,12 @@ fn run_lrs_benchmark() {
 
     for chunk in records.chunks(recs_per_tile) {
         let ts: Vec<u64> = chunk.iter().map(|r| r.timestamp_sec).collect();
+        #[cfg(feature = "packs")]
+        let tile_type = ScholarTileType::HUMAN_LRS;
+        #[cfg(not(feature = "packs"))]
+        let tile_type = 10;
         writer
-            .write_hyper_tile(ScholarTileType::HUMAN_LRS, chunk, Some(&ts), None)
+            .write_hyper_tile(tile_type, chunk, Some(&ts), None)
             .unwrap();
     }
     let write_duration = start_write.elapsed();
@@ -3271,6 +3410,7 @@ fn fuse_files(output_path: &str, input_paths: &[String]) {
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_da_benchmark() {
     println!("==================================================================");
     println!("   S3A BLOCKCHAIN INDEXER & DECENTRALIZED AI DA BENCHMARK          ");
@@ -3352,6 +3492,7 @@ fn run_da_benchmark() {
     println!("==================================================================");
 }
 
+#[cfg(feature = "packs")]
 fn run_gis_benchmark() {
     println!("==================================================================");
     println!("   S3A GIS SURVEYING & SUBSURFACE TOPOGRAPHY MESH BENCHMARK        ");
@@ -3470,6 +3611,7 @@ fn run_gis_benchmark() {
     println!("==================================================================");
 }
 
+#[cfg(feature = "packs")]
 fn run_robotics_benchmark() {
     println!("==================================================================");
     println!("   S3A ROBOTICS PLATFORM HIGH-FREQUENCY KINEMATICS BENCHMARK      ");
@@ -3544,10 +3686,12 @@ fn run_robotics_benchmark() {
     println!("==================================================================");
 }
 
+#[allow(dead_code)]
 fn start_write_elapsed(start: Instant) -> std::time::Duration {
     start.elapsed()
 }
 
+#[cfg(feature = "packs")]
 fn run_wearable_benchmark() {
     println!("==================================================================");
     println!("   S3A WEARABLE DEVICE MICRO-TILE STORAGE & RAM BENCHMARK         ");
@@ -4088,6 +4232,7 @@ fn handle_connection(stream: &mut TcpStream) {
         return;
     }
 
+    #[cfg(feature = "packs")]
     if method == "POST"
         && (url == "/api/snapshot/ingest" || url.starts_with("/api/snapshot/ingest?"))
     {
@@ -4188,6 +4333,18 @@ fn handle_connection(stream: &mut TcpStream) {
         send_response(stream, "200 OK", "application/json", resp.as_bytes());
         return;
     }
+    #[cfg(not(feature = "packs"))]
+    if method == "POST"
+        && (url == "/api/snapshot/ingest" || url.starts_with("/api/snapshot/ingest?"))
+    {
+        send_response(
+            stream,
+            "501 Not Implemented",
+            "application/json",
+            b"{\"error\":\"Scholar pack is disabled in this build\"}",
+        );
+        return;
+    }
 
     if method == "GET" && (url == "/api/addons" || url.starts_with("/api/addons?")) {
         let target_db = extract_query_param(url, "target_db")
@@ -4221,6 +4378,7 @@ fn handle_connection(stream: &mut TcpStream) {
         return;
     }
 
+    #[cfg(feature = "packs")]
     if method == "POST" && (url == "/api/lrs/log" || url.starts_with("/api/lrs/log?")) {
         let body = extract_body(&request);
         let dest_db = extract_query_param(url, "target_db")
@@ -4308,6 +4466,16 @@ fn handle_connection(stream: &mut TcpStream) {
         send_response(stream, "200 OK", "application/json", resp.as_bytes());
         return;
     }
+    #[cfg(not(feature = "packs"))]
+    if method == "POST" && (url == "/api/lrs/log" || url.starts_with("/api/lrs/log?")) {
+        send_response(
+            stream,
+            "501 Not Implemented",
+            "application/json",
+            b"{\"error\":\"Scholar pack is disabled in this build\"}",
+        );
+        return;
+    }
 
     if method == "GET" && (url == "/api/lrs/records" || url.starts_with("/api/lrs/records?")) {
         let target_db = extract_query_param(url, "target_db")
@@ -4327,15 +4495,20 @@ fn handle_connection(stream: &mut TcpStream) {
         };
 
         let is_edu = engine.is_addon_active(s3a_core::ADDON_EDU);
+    #[cfg(feature = "packs")]
+    let (human_count, ai_count) = {
         let reader = MmapReader::open(&target_db).ok();
-        let (human_count, ai_count) = if let Some(ref r) = reader {
+        if let Some(ref r) = reader {
             let sieve = QuerySieve::new(r);
             let h = sieve.query_human_lrs(None, None, 0, u64::MAX);
             let a = sieve.query_ai_traces(None, None, 0, u64::MAX);
             (h.len(), a.len())
         } else {
             (0, 0)
-        };
+        }
+    };
+    #[cfg(not(feature = "packs"))]
+    let (human_count, ai_count) = (0, 0);
 
         let resp = format!(
             "{{\"target_db\":\"{}\",\"addon_active\":{},\"human_records_count\":{},\"ai_traces_count\":{}}}",
@@ -4721,6 +4894,7 @@ fn parse_json_f64(json: &str, key: &str) -> Option<f64> {
     }
 }
 
+#[allow(dead_code)]
 fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     let search = format!("\"{}\":", key);
     let pos = json.find(&search)?;
@@ -4757,6 +4931,7 @@ fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     Some(items)
 }
 
+#[cfg(feature = "packs")]
 fn run_trace_session(archive_file: &str, uuid_str: &str) {
     let session_uuid = match parse_uuid_to_u64_pair(uuid_str) {
         Some(u) => u,
@@ -4834,6 +5009,7 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     println!("=========================================================================");
 }
 
+#[allow(dead_code)]
 fn parse_uuid_to_u64_pair(s: &str) -> Option<[u64; 2]> {
     let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if clean.len() != 32 {
@@ -4844,6 +5020,7 @@ fn parse_uuid_to_u64_pair(s: &str) -> Option<[u64; 2]> {
     Some([high, low])
 }
 
+#[allow(dead_code)]
 fn parse_hex_uuid_128(s: &str) -> Option<[u64; 2]> {
     let clean = s.replace('-', "");
     if clean.len() != 32 {
@@ -4854,6 +5031,7 @@ fn parse_hex_uuid_128(s: &str) -> Option<[u64; 2]> {
     Some([high, low])
 }
 
+#[cfg(feature = "packs")]
 fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<[u64; 2]>) {
     println!("=========================================================================");
     println!("           S3A SCHOLAR RESEARCH SNAPSHOT (SRS) EXPORT PIPELINE           ");
@@ -4927,6 +5105,7 @@ fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
     println!("=========================================================================");
     println!("       S3A SCHOLAR PACK INTERMEDIATE INGESTION (scholar_ingest_v1)       ");
@@ -4972,6 +5151,7 @@ fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_scholar_recheck(
     archive_path: &str,
     online: bool,
@@ -5067,6 +5247,7 @@ fn run_scholar_recheck(
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_scholar_proof(archive_path: &str, claim_id: u64, json_ld: bool, out_path: Option<&str>) {
     match build_claim_proof(archive_path, claim_id) {
         Ok(proof) => {
@@ -5101,6 +5282,7 @@ fn run_scholar_proof(archive_path: &str, claim_id: u64, json_ld: bool, out_path:
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_scholar_export_bib(archive_path: &str, out_path: &str, format: &str) {
     match export_bibliography_with_proof(archive_path, out_path, format) {
         Ok(()) => {
@@ -5115,6 +5297,7 @@ fn run_scholar_export_bib(archive_path: &str, out_path: &str, format: &str) {
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_scholar_demo_seed(out_path: &str) {
     println!("Seeding demo Scholar snapshot at '{}'...", out_path);
     let engine = S3ACrudEngine::open_or_create(out_path).expect("failed to create archive");
@@ -5163,6 +5346,7 @@ fn run_scholar_demo_seed(out_path: &str) {
     println!("✓ Successfully seeded Scholar research snapshot with paper 1001, citation fingerprint, and claim 42.");
 }
 
+#[cfg(feature = "packs")]
 fn run_snapshot_intake(snapshot_file: &str, into_live_db: Option<&str>) {
     println!("=========================================================================");
     println!("         S3A SCHOLAR RESEARCH SNAPSHOT (SRS) ZERO-COPY INTAKE            ");
@@ -5240,6 +5424,7 @@ fn run_snapshot_intake(snapshot_file: &str, into_live_db: Option<&str>) {
     }
 }
 
+#[cfg(feature = "packs")]
 fn run_snapshot_inspect(snapshot_file: &str) {
     println!("=========================================================================");
     println!("              S3A SCHOLAR RESEARCH SNAPSHOT (SRS) INSPECTOR              ");

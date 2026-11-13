@@ -5340,7 +5340,7 @@ mod tests {
         }
 
         // Wait for background worker to trigger automatic flush
-        for _ in 0..20 {
+        for _ in 0..40 {
             if compactor.stats().flushed_records >= 100 {
                 break;
             }

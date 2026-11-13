@@ -5,20 +5,24 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Command-line interface and tools for S3A multidimensional hyper-tile spatial storage"
+keywords = ["storage", "database", "hyper-tile", "spatial", "cli"]
+categories = ["command-line-utilities", "database-implementations"]
+readme = "README.md"
 
 [dependencies]
 s3a-core = { path = "../s3a-core" }
 s3a-engine = { path = "../s3a-engine" }
 s3a-edge = { path = "../s3a-edge" }
-s3a-pack-scholar = { path = "../s3a-pack-scholar" }
-s3a-pack-wearable = { path = "../s3a-pack-wearable" }
-s3a-pack-robotics = { path = "../s3a-pack-robotics" }
-s3a-pack-gis = { path = "../s3a-pack-gis" }
-s3a-pack-da = { path = "../s3a-pack-da" }
-s3a-pack-ontology = { path = "../s3a-pack-ontology" }
+s3a-pack-scholar = { path = "../s3a-pack-scholar", optional = true }
+s3a-pack-wearable = { path = "../s3a-pack-wearable", optional = true }
+s3a-pack-robotics = { path = "../s3a-pack-robotics", optional = true }
+s3a-pack-gis = { path = "../s3a-pack-gis", optional = true }
+s3a-pack-da = { path = "../s3a-pack-da", optional = true }
+s3a-pack-ontology = { path = "../s3a-pack-ontology", optional = true }
 s3a-vault = { path = "../s3a-vault" }
 s3a-vcs = { path = "../s3a-vcs" }
-s3a-pack-clean = { path = "../s3a-pack-clean" }
+s3a-pack-clean = { path = "../s3a-pack-clean", optional = true }
 s3a-flat = { path = "../s3a-flat" }
 s3a-wasm-snapshot = { path = "../s3a-wasm-snapshot", default-features = false }
 bytemuck = { workspace = true }
@@ -32,9 +36,25 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["std"] }
 ureq = { workspace = true }
 
+[features]
+default = ["packs"]
+packs = [
+    "dep:s3a-pack-scholar",
+    "dep:s3a-pack-wearable",
+    "dep:s3a-pack-robotics",
+    "dep:s3a-pack-gis",
+    "dep:s3a-pack-da",
+    "dep:s3a-pack-ontology",
+    "dep:s3a-pack-clean",
+]
+
 [lib]
 name = "s3a_cli"
 path = "src/lib.rs"
+
+[[bin]]
+name = "s3a"
+path = "src/bin/s3a.rs"
 
 [[bin]]
 name = "s3a-cli"

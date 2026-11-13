@@ -5,15 +5,23 @@ use s3a_engine::{
     execute_query, Lexer, MmapReader, Parser, QuerySieve, S3ACoordinate, S3ACrudEngine,
     S3AStatement, TelemetryRecord,
 };
+#[cfg(feature = "packs")]
 use s3a_pack_scholar::{intake_srs_snapshot, ScholarCrudExt, ScholarQueryExt, SrsManifestHeader};
 
 /// Tools that change the archive or write files. They are not listed and cannot be called
 /// unless the server was started with the explicit `--allow-writes` opt-in.
-pub const WRITE_TOOLS: [&str; 4] = [
+#[cfg(feature = "packs")]
+pub const WRITE_TOOLS: &[&str] = &[
     "s3a_insert_telemetry",
     "s3a_delete_telemetry",
     "s3a_compact_archive",
     "s3a_export_srs",
+];
+#[cfg(not(feature = "packs"))]
+pub const WRITE_TOOLS: &[&str] = &[
+    "s3a_insert_telemetry",
+    "s3a_delete_telemetry",
+    "s3a_compact_archive",
 ];
 
 fn write_refused(what: &str) -> String {
@@ -133,18 +141,22 @@ pub fn handle_mcp_request(
 }
 
 fn get_tools_definitions(allow_writes: bool) -> String {
-    let tools = vec![
+    #[allow(unused_mut)]
+    let mut tools = vec![
         r#"{"name":"s3a_query","description":"Execute a native S3A-QL query statement (FETCH, SIFT; INSERT, DELETE, COMPACT, FUSE only with --allow-writes)","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"The S3A-QL statement"}},"required":["query"]}}"#,
         r#"{"name":"s3a_fetch_coordinate","description":"Instant O(1) lookup of a record at coordinate address (e.g. L0:T0:R0)","inputSchema":{"type":"object","properties":{"coordinate":{"type":"string","description":"Coordinate address in format L<level>:T<tile>:R<offset>"},"file":{"type":"string","description":"Optional archive path"}},"required":["coordinate"]}}"#,
         r#"{"name":"s3a_insert_telemetry","description":"Append a telemetry record into the S3A archive with real-time L0 ring buffering","inputSchema":{"type":"object","properties":{"timestamp":{"type":"integer","description":"Epoch timestamp"},"sensor_id":{"type":"integer","description":"Sensor ID"},"metric_id":{"type":"integer","description":"Metric ID"},"value":{"type":"number","description":"Metric measurement value"},"file":{"type":"string","description":"Optional archive path"}},"required":["timestamp","sensor_id","metric_id","value"]}}"#,
         r#"{"name":"s3a_delete_telemetry","description":"Soft-delete a record by appending a tombstone","inputSchema":{"type":"object","properties":{"timestamp":{"type":"integer","description":"Timestamp of record"},"sensor_id":{"type":"integer","description":"Sensor ID"},"metric_id":{"type":"integer","description":"Metric ID"},"file":{"type":"string","description":"Optional archive path"}},"required":["timestamp","sensor_id","metric_id"]}}"#,
         r#"{"name":"s3a_inspect_archive","description":"Inspect S3A Hyper-Tile metadata, active generation, and hardware CRC32C status","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Optional archive path"}}}}"#,
         r#"{"name":"s3a_compact_archive","description":"Run stratified compaction and purge tombstoned records","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Optional archive path"}}}}"#,
-        r#"{"name":"s3a_search_library","description":"Search academic research papers across 3D topic and methodology space with Skilling Hilbert curve ranking","inputSchema":{"type":"object","properties":{"min_year":{"type":"integer","description":"Minimum publication year"},"max_year":{"type":"integer","description":"Maximum publication year"},"file":{"type":"string","description":"Optional archive path"}}}}"#,
-        r#"{"name":"s3a_get_synthesis_matrix","description":"Retrieve multi-dimensional research synthesis matrix showing papers, citation counts, and open-access status","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Optional archive path"}}}}"#,
-        r#"{"name":"s3a_export_srs","description":"Export a portable, reproducible Scholar Research Snapshot (.snapshot.s3a) container","inputSchema":{"type":"object","properties":{"snapshot_file":{"type":"string","description":"Target snapshot file path"},"file":{"type":"string","description":"Optional live database path"}},"required":["snapshot_file"]}}"#,
-        r#"{"name":"s3a_intake_srs","description":"Intake a Scholar Research Snapshot (.snapshot.s3a) container via zero-copy mmap with CRC32C verification","inputSchema":{"type":"object","properties":{"snapshot_file":{"type":"string","description":"Snapshot file path to intake"}},"required":["snapshot_file"]}}"#,
     ];
+    #[cfg(feature = "packs")]
+    {
+        tools.push(r#"{"name":"s3a_search_library","description":"Search academic research papers across 3D topic and methodology space with Skilling Hilbert curve ranking","inputSchema":{"type":"object","properties":{"min_year":{"type":"integer","description":"Minimum publication year"},"max_year":{"type":"integer","description":"Maximum publication year"},"file":{"type":"string","description":"Optional archive path"}}}}"#);
+        tools.push(r#"{"name":"s3a_get_synthesis_matrix","description":"Retrieve multi-dimensional research synthesis matrix showing papers, citation counts, and open-access status","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"Optional archive path"}}}}"#);
+        tools.push(r#"{"name":"s3a_export_srs","description":"Export a portable, reproducible Scholar Research Snapshot (.snapshot.s3a) container","inputSchema":{"type":"object","properties":{"snapshot_file":{"type":"string","description":"Target snapshot file path"},"file":{"type":"string","description":"Optional live database path"}},"required":["snapshot_file"]}}"#);
+        tools.push(r#"{"name":"s3a_intake_srs","description":"Intake a Scholar Research Snapshot (.snapshot.s3a) container via zero-copy mmap with CRC32C verification","inputSchema":{"type":"object","properties":{"snapshot_file":{"type":"string","description":"Snapshot file path to intake"}},"required":["snapshot_file"]}}"#);
+    }
     tools
         .into_iter()
         .filter(|t| {
@@ -254,6 +266,7 @@ fn execute_tool(
             },
             Err(e) => (format!("Engine error: {}", e), true),
         },
+        #[cfg(feature = "packs")]
         "s3a_search_library" => {
             let min_year = parse_u64(args_json, "min_year").unwrap_or(0) as u16;
             let max_year = parse_u64(args_json, "max_year").unwrap_or(u16::MAX as u64) as u16;
@@ -284,6 +297,7 @@ fn execute_tool(
                 Err(e) => (format!("Search error: {}", e), true),
             }
         }
+        #[cfg(feature = "packs")]
         "s3a_get_synthesis_matrix" => match MmapReader::open(&file) {
             Ok(reader) => {
                 let sieve = QuerySieve::new(&reader);
@@ -302,6 +316,7 @@ fn execute_tool(
             }
             Err(e) => (format!("Synthesis error: {}", e), true),
         },
+        #[cfg(feature = "packs")]
         "s3a_export_srs" => {
             let snapshot_file = parse_str(args_json, "snapshot_file")
                 .unwrap_or_else(|| "project.snapshot.s3a".to_string());
@@ -334,6 +349,7 @@ fn execute_tool(
                 Err(e) => (format!("Engine error: {}", e), true),
             }
         }
+        #[cfg(feature = "packs")]
         "s3a_intake_srs" => {
             let snapshot_file = parse_str(args_json, "snapshot_file")
                 .unwrap_or_else(|| "project.snapshot.s3a".to_string());
@@ -521,14 +537,19 @@ mod tests {
         for w in WRITE_TOOLS {
             assert!(!list.contains(w), "{} must not be listed read-only", w);
         }
-        for r in [
+        #[allow(unused_mut)]
+        let mut expected_reads = vec![
             "s3a_query",
             "s3a_fetch_coordinate",
             "s3a_inspect_archive",
+        ];
+        #[cfg(feature = "packs")]
+        expected_reads.extend_from_slice(&[
             "s3a_search_library",
             "s3a_get_synthesis_matrix",
             "s3a_intake_srs",
-        ] {
+        ]);
+        for r in expected_reads {
             assert!(list.contains(r), "{} should stay available", r);
         }
     }
