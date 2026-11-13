@@ -177,10 +177,9 @@ impl DecisionEngine {
         }
 
         // 2. Select model (stronger model if run has escalated and stronger model is available)
-        let active_model = if escalation_used && self.escalation_model.is_some() {
-            self.escalation_model.as_ref().unwrap()
-        } else {
-            &self.model
+        let active_model = match (escalation_used, self.escalation_model.as_ref()) {
+            (true, Some(m)) => m,
+            _ => &self.model,
         };
 
         // 3. Format structured decision prompt
