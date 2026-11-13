@@ -1,4 +1,5 @@
 name: S3A Research Agent Harness CI
+# CI workflow for harness evaluation, linting, and end-to-end tests
 
 on:
   push:
