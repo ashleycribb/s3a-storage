@@ -44,6 +44,16 @@ fn find_server_exe() -> PathBuf {
     if candidate.exists() {
         return candidate;
     }
+
+    // If s3a-lrs-server binary is missing, attempt to build it on the fly
+    let _ = Command::new("cargo")
+        .args(["build", "-p", "s3a-lrs-server"])
+        .status();
+
+    if candidate.exists() {
+        return candidate;
+    }
+
     PathBuf::from(if cfg!(windows) {
         "target/debug/s3a-lrs-server.exe"
     } else {

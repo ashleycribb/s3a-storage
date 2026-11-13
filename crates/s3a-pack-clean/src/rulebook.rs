@@ -76,7 +76,7 @@ pub struct Rule {
 impl Rulebook {
     pub fn parse(yaml: &[u8]) -> Result<Self, String> {
         let rb: Rulebook =
-            serde_yaml::from_slice(yaml).map_err(|e| format!("rulebook YAML: {e}"))?;
+            serde_saphyr::from_slice(yaml).map_err(|e| format!("rulebook YAML: {e}"))?;
         rb.validate()?;
         Ok(rb)
     }

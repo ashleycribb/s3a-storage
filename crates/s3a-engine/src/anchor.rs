@@ -1761,14 +1761,23 @@ mod tests {
     use crate::anchor::mock_calendar::MockOtsCalendar;
     use std::collections::HashMap;
 
+    fn get_fixture_merkle2_txt_bytes() -> Vec<u8> {
+        // Strip carriage returns (\r) to guarantee identical hash across OSes (protect against git CRLF checkout)
+        include_bytes!("../tests/fixtures/merkle2.txt")
+            .iter()
+            .copied()
+            .filter(|&b| b != b'\r')
+            .collect()
+    }
+
     #[test]
     fn test_offline_confirmed_ots_fixture_against_bitcoin_header() {
         let ots_bytes = include_bytes!("../tests/fixtures/merkle2_confirmed.ots");
-        let txt_bytes = include_bytes!("../tests/fixtures/merkle2.txt");
+        let txt_bytes = get_fixture_merkle2_txt_bytes();
         let header_bytes = include_bytes!("../tests/fixtures/block_429808.header");
 
         let mut hasher = Sha256::new();
-        hasher.update(txt_bytes);
+        hasher.update(&txt_bytes);
         let expected_fp: [u8; 32] = hasher.finalize().into();
 
         let mut header_map = HashMap::new();
@@ -1802,10 +1811,10 @@ mod tests {
     #[test]
     fn test_offline_pending_ots_fixture() {
         let ots_bytes = include_bytes!("../tests/fixtures/merkle2.txt.ots");
-        let txt_bytes = include_bytes!("../tests/fixtures/merkle2.txt");
+        let txt_bytes = get_fixture_merkle2_txt_bytes();
 
         let mut hasher = Sha256::new();
-        hasher.update(txt_bytes);
+        hasher.update(&txt_bytes);
         let expected_fp: [u8; 32] = hasher.finalize().into();
 
         let proof = AnchorProof {
@@ -1854,10 +1863,10 @@ mod tests {
     #[test]
     fn test_ots_tampered_proof_fails_verification() {
         let ots_bytes = include_bytes!("../tests/fixtures/merkle2_confirmed.ots");
-        let txt_bytes = include_bytes!("../tests/fixtures/merkle2.txt");
+        let txt_bytes = get_fixture_merkle2_txt_bytes();
 
         let mut hasher = Sha256::new();
-        hasher.update(txt_bytes);
+        hasher.update(&txt_bytes);
         let expected_fp: [u8; 32] = hasher.finalize().into();
 
         let mut tampered = ots_bytes.to_vec();
@@ -1885,10 +1894,10 @@ mod tests {
     #[test]
     fn test_ots_forged_bitcoin_attestation_fails_verification() {
         let ots_bytes = include_bytes!("../tests/fixtures/merkle2_confirmed.ots");
-        let txt_bytes = include_bytes!("../tests/fixtures/merkle2.txt");
+        let txt_bytes = get_fixture_merkle2_txt_bytes();
 
         let mut hasher = Sha256::new();
-        hasher.update(txt_bytes);
+        hasher.update(&txt_bytes);
         let expected_fp: [u8; 32] = hasher.finalize().into();
 
         // Pass a block header whose Merkle root does NOT match the proof's computed Merkle root

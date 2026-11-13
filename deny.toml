@@ -6,7 +6,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  # RUSTSEC-2024-0384: instant is unmaintained. Transitive dependency of reed-solomon-erasure 6.0.0 (latest available release) via parking_lot 0.11; no safe upstream upgrade available.
+  "RUSTSEC-2024-0384",
+  # RUSTSEC-2026-0387: crypto-bigint timing variability. Transitive dependency of p256 0.13 via elliptic-curve 0.13; upgrading requires breaking overhaul to p256 0.14+.
+  "RUSTSEC-2026-0387",
+]
 
 [licenses]
 version = 2

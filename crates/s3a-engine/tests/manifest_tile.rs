@@ -180,10 +180,12 @@ fn test_manifest_no_restricted_data_leaks_counts_only() {
     ];
     let secret_subject_hex = hex::encode(secret_subject_uuid);
 
+    let secret_study_id = 999_888_777_666u64;
+
     engine
         .grant_consent(
             secret_subject_uuid,
-            9999, // study_id
+            secret_study_id, // study_id
             ConsentPurpose::Research,
             0xFFFF,
             1700000000,
@@ -198,7 +200,7 @@ fn test_manifest_no_restricted_data_leaks_counts_only() {
     engine
         .withdraw_consent(
             secret_subject_uuid,
-            9999,
+            secret_study_id,
             ConsentPurpose::Research,
             0xFFFF,
             1700001000,
@@ -221,7 +223,7 @@ fn test_manifest_no_restricted_data_leaks_counts_only() {
     // CRITICAL PRIVACY ASSERTION: The secret subject UUID, hex string, or private identifiers MUST NEVER leak into the manifest!
     assert!(!manifest.contains(&secret_subject_hex));
     assert!(!manifest.contains("deadbeefcafebabe"));
-    assert!(!manifest.contains("9999")); // study_id not leaked in text
+    assert!(!manifest.contains("999888777666")); // study_id not leaked in text
 }
 
 #[test]

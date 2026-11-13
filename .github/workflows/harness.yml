@@ -44,5 +44,8 @@ jobs:
       - name: Clippy Linter (-D warnings)
         run: cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings
 
+      - name: Build LRS Server
+        run: cargo build -p s3a-lrs-server
+
       - name: Run Harness Tests
         run: cargo test -p s3a-harness --all-targets

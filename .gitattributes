@@ -1,0 +1,12 @@
+# Auto detect text files and perform LF normalization on checkout
+* text=auto eol=lf
+
+# Explicit binary rules for test fixtures and storage files
+*.ots binary
+*.txt binary
+*.tsr binary
+*.s3a binary
+*.header binary
+tests/fixtures/** binary
+**/tests/fixtures/** binary
+conformance/** binary

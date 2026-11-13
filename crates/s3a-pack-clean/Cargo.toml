@@ -15,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-serde_yaml = "0.9"
+serde-saphyr = "2"
 ed25519-dalek = { version = "2.1" }
 
 [dev-dependencies]

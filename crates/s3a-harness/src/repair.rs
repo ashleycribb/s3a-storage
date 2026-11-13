@@ -487,7 +487,9 @@ mod tests {
     use std::sync::Arc;
 
     fn test_runtime(model_response: &str) -> (AgentRuntime, Sandbox) {
-        let temp_dir = std::env::temp_dir().join(format!("s3a_repair_test_{}", std::process::id()));
+        let unique = crate::generate_uuid_v7();
+        let temp_dir =
+            std::env::temp_dir().join(format!("s3a_repair_test_{}_{}", std::process::id(), unique));
         let _ = fs::create_dir_all(&temp_dir);
         let sandbox = Sandbox::new(&temp_dir, false).unwrap();
         let store = Arc::new(LocalStore::new(sandbox.default_db(), false));
