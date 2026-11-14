@@ -30,3 +30,30 @@ Notes:
   4. Fixed repair loop test concurrency by appending UUIDv7 to test temp directory.
   5. Fixed OTS fixtures on Windows by stripping CRLF bytes and adding .gitattributes.
   6. Configured rust-ci with continue-on-error for the known-failing full-workspace fmt job, and added dtolnay/rust-toolchain to python-packages. All CI workflows (rust-ci, cargo-deny, Harness CI) confirmed green on GitHub Actions.
+
+---
+
+## 002-open-export-pdf-step, 2026-11-13 19:35
+Status: done
+Commit: f2d6858
+Changed: .github/workflows/rust-ci.yml, .gitattributes, Cargo.toml, Cargo.lock, crates/s3a-cli/Cargo.toml, crates/s3a-cli/src/main.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/src/tour.rs, crates/s3a-cli/tests/tdp_cli_test.rs, crates/s3a-pack-tdp/**
+Tests:
+  - cargo fmt --all --check: passed (fmt check re-enabled with continue-on-error removed in rust-ci)
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-pack-tdp: 7 passed (6 unit + 1 integration round-trip)
+  - cargo test -p s3a-cli: 35 passed (including tdp_cli_test, quickstart_integration, tour_tests)
+  - cargo test --workspace: all passed in CI
+  - GitHub Actions runs on f2d6858:
+    - rust-ci (run 43535029176): success (all 13 jobs green, including workspace tests on Linux, Windows, macOS)
+    - cargo-deny (run 43535029260): success
+    - S3A Research Agent Harness CI (run 43535029137): success (ubuntu-latest & windows-latest)
+Notes:
+  1. Ran `cargo fmt --all` across workspace in separate commit `4a9eada` and removed continue-on-error from the fmt job in `rust-ci.yml`.
+  2. Implemented `crates/s3a-pack-tdp` maintaining core as database-only:
+     - Pure-Rust PDF parsing via `lopdf` (default features disabled to avoid unmaintained dependencies), extracting page_count, title, sha256, and size_bytes metadata into `.meta` sidecar records with `DOC_KIND_BINARY` payload.
+     - STEP AP242 ISO 10303-21 reader extracting header, products, definitions, and assembly structure (NEXT_ASSEMBLY_USAGE_OCCURRENCE, QUANTIFIED_ASSEMBLY_COMPONENT_USAGE) into an assembly tree and `.assembly` sidecar records.
+     - BOM export in CSV and JSON formats from the assembly tree.
+     - Magic bytes / MIME type detection supporting PDF, STEP, JSON, CSV, PNG, JPEG.
+  3. Integrated `s3a open <vault> <key>` to write payload to a temporary file and launch the OS default application (open/xdg-open/start with fallback).
+  4. Integrated `s3a export <vault> <key> -o <path>` for file payload export with automatic extension deduction, and `--format csv|json` for assembly BOM export.
+  5. Added real PDF and STEP fixtures in `crates/s3a-pack-tdp/tests/fixtures` marked `-text` in `.gitattributes`.

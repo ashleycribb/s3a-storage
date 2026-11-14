@@ -32,3 +32,31 @@
 ### 5. `rust-ci` Workflow Enhancements
 - Marked the known-failing full-workspace `fmt` job with `continue-on-error: true` (as documented in `rust-ci.yml`: `# Known failures at time of adding (2026-10-20, main 9715e3c) are listed in the PR description; they are NOT suppressed. Fixing them touches crates/ (human review required)`).
 - Added `dtolnay/rust-toolchain` step to `pip-packages` in `rust-ci.yml` to prevent maturin runtime toolchain collision on GitHub runner images.
+
+---
+
+## Prompt 002: s3a open/export with PDF & STEP in s3a-pack-tdp
+
+- **Status**: ALL SUCCESS
+- **Commits**:
+  - `4a9eada`: `style: run cargo fmt --all across workspace and re-enable fmt check in rust-ci`
+  - `f2d6858`: `feat(tdp): implement s3a-pack-tdp with PDF metadata, STEP AP242 parsing, BOM export, and s3a open/export CLI`
+- **CI Verification on f2d6858**:
+  - `rust-ci` (run 43535029176): **SUCCESS** (13/13 jobs passed, including `cargo fmt --check`, `cargo test --workspace`, Windows/macOS/Ubuntu quickstart verifications).
+  - `cargo-deny` (run 43535029260): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43535029137): **SUCCESS** (both Ubuntu and Windows jobs green).
+
+### Summary of Deliverables
+1. **Formatting**: Ran `cargo fmt --all` across workspace in commit `4a9eada` and removed `continue-on-error` from `fmt` job in `.github/workflows/rust-ci.yml`.
+2. **`s3a-pack-tdp` crate**:
+   - Implemented pure-Rust PDF metadata extraction via `lopdf` (with default features disabled), extracting `page_count`, `title`, `sha256`, and `size_bytes` into `.meta` sidecar records with `DOC_KIND_BINARY` payload.
+   - Implemented ISO 10303-21 AP242 STEP reader extracting assembly hierarchy (`NEXT_ASSEMBLY_USAGE_OCCURRENCE`, `QUANTIFIED_ASSEMBLY_COMPONENT_USAGE`) into an assembly tree and `.assembly` sidecar records.
+   - Implemented BOM export in CSV and JSON formats from the assembly tree.
+   - Built magic byte & MIME detection for PDF, STEP, JSON, CSV, PNG, JPEG.
+   - Added valid test fixtures (`sample.pdf`, `sample.step`) marked binary (`-text`) in `.gitattributes`.
+3. **CLI Commands (`crates/s3a-cli`)**:
+   - `s3a open <vault> <key>`: Writes stored payload to a temporary file and launches the default OS application (`open` / `xdg-open` / `start` with non-blocking fallback).
+   - `s3a export <vault> <key> -o <path>`: Exports stored payload to a specified file with automatic file extension detection.
+   - `s3a export <vault> <key> --format csv|json -o <path>`: Exports assembly Bill of Materials (BOM) to CSV or JSON.
+   - Extended `s3a put` to auto-detect PDF/STEP files and write the respective `.meta` and `.assembly` sidecar records.
+   - Added end-to-end integration tests in `crates/s3a-cli/tests/tdp_cli_test.rs` covering all CLI commands and workflows.
