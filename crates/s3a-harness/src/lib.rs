@@ -11,6 +11,7 @@ pub mod eval;
 pub mod mcp;
 pub mod model;
 pub mod permissions;
+pub mod proxy;
 pub mod repair;
 pub mod runtime;
 pub mod sandbox;
@@ -42,6 +43,11 @@ pub use mcp::S3AMcpDispatcher;
 pub use model::{
     ChatMessage, CompletionRequest, CompletionResponse, MockModel, Model, ModelError,
     OpenAiHttpAdapter,
+};
+pub use proxy::{
+    AuthType, CredentialProxy, EgressAuditRecord, EgressRequest, EgressResponse, HostAllowlist,
+    MemorySecretStore, NamedConnection, OsSecretStore, ProxyDecision, ProxyError,
+    ProxyServerHandle, SecretStore, VaultSecretStore,
 };
 pub use runtime::{
     AgentRuntime, ConsentEvent, RunDiffSummary, RunState, RunStatus, ShadowReportSummary,

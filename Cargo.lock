@@ -2111,6 +2111,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "memmap2",
+ "rand_core 0.6.4",
  "s3a-core",
  "s3a-engine",
  "s3a-pack-ontology",
@@ -2294,6 +2295,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]

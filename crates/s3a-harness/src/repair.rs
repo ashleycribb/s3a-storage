@@ -520,6 +520,7 @@ mod tests {
             },
             allowed_tools: vec!["sandbox_build".to_string(), "ask_human".to_string()],
             require_grant: false,
+            network: Default::default(),
         };
 
         let mock_model =

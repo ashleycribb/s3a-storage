@@ -69,6 +69,7 @@ fn create_test_config() -> AgentConfig {
             "ask_human".to_string(),
         ],
         require_grant: false,
+        network: Default::default(),
     }
 }
 

@@ -26,6 +26,15 @@ pub struct TaskResponse {
 
 /// Executes a job within an isolated temporary sandbox directory and subprocess with scrubbed environment.
 pub fn execute_job_in_sandbox(job: &JobRecord) -> Result<Value, String> {
+    execute_job_in_sandbox_with_proxy(job, None)
+}
+
+/// Executes a job within an isolated temporary sandbox directory and subprocess with scrubbed environment
+/// and optional proxy egress routing.
+pub fn execute_job_in_sandbox_with_proxy(
+    job: &JobRecord,
+    proxy_url: Option<&str>,
+) -> Result<Value, String> {
     let temp_dir = tempfile::Builder::new()
         .prefix("s3a_sandbox_")
         .tempdir()
@@ -113,6 +122,14 @@ pub fn execute_job_in_sandbox(job: &JobRecord) -> Result<Value, String> {
         }
     }
 
+    // If egress proxy URL is provided, route sandbox egress through proxy
+    if let Some(url) = proxy_url {
+        cmd.env("HTTP_PROXY", url);
+        cmd.env("HTTPS_PROXY", url);
+        cmd.env("ALL_PROXY", url);
+        cmd.env("S3A_CREDENTIAL_PROXY", url);
+    }
+
     let output = cmd
         .output()
         .map_err(|e| format!("Failed to execute sandbox worker subprocess: {}", e))?;
@@ -149,7 +166,102 @@ pub fn run_task(kind: &str, inputs: &Value) -> Result<Value, String> {
     match kind {
         "render_step_preview" => run_render_step_preview(inputs),
         "extract_pdf_text" => run_extract_pdf_text(inputs),
+        "sandbox_proxy_egress" => run_sandbox_proxy_egress(inputs),
         other => Err(format!("Unsupported sandbox job kind: '{}'", other)),
+    }
+}
+
+/// Handler for `sandbox_proxy_egress`: routes outbound requests strictly through credential proxy
+/// while verifying that no secrets exist within the sandbox environment.
+fn run_sandbox_proxy_egress(inputs: &Value) -> Result<Value, String> {
+    // 1. Audit current process environment to verify that ambient secrets are scrubbed
+    let mut inspected_env = Vec::new();
+    let mut forbidden_var_names = Vec::new();
+
+    for (k, _v) in std::env::vars() {
+        let k_upper = k.to_uppercase();
+        // Check for any ambient secret, vault key, or credential token leaked into sandbox env
+        if k_upper.contains("SECRET")
+            || k_upper.contains("VAULT")
+            || k_upper.contains("TOKEN")
+            || k_upper.contains("API_KEY")
+            || k_upper.contains("PASSWORD")
+            || k_upper.contains("PRIVATE")
+        {
+            // S3A_CREDENTIAL_PROXY is the proxy URL, not a secret
+            if k != "S3A_CREDENTIAL_PROXY" {
+                forbidden_var_names.push(k.clone());
+            }
+        }
+        inspected_env.push(k);
+    }
+
+    if !forbidden_var_names.is_empty() {
+        return Err(format!(
+            "Sandbox environment isolation violated! Leaked secret variables found: {:?}",
+            forbidden_var_names
+        ));
+    }
+
+    // 2. Discover proxy URL from env or input
+    let proxy_url = inputs
+        .get("proxy_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("S3A_CREDENTIAL_PROXY").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .ok_or_else(|| "No proxy URL configured in sandbox environment".to_string())?;
+
+    let connection = inputs
+        .get("connection")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "sandbox_proxy_egress requires 'connection'".to_string())?;
+
+    let path = inputs
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("/api/test");
+
+    let method = inputs
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GET");
+
+    // 3. Make egress call via proxy
+    let egress_endpoint = format!("{}/egress", proxy_url.trim_end_matches('/'));
+    let req_body = json!({
+        "connection": connection,
+        "path": path,
+        "method": method,
+    });
+
+    let resp = ureq::post(&egress_endpoint)
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send_string(&req_body.to_string());
+
+    match resp {
+        Ok(r) => {
+            let body_text = r.into_string().unwrap_or_default();
+            Ok(json!({
+                "success": true,
+                "status": 200,
+                "response_body": body_text,
+                "env_vars_count": inspected_env.len(),
+                "inspected_env": inspected_env,
+            }))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let err_body = r.into_string().unwrap_or_default();
+            Ok(json!({
+                "success": false,
+                "status": code,
+                "error_body": err_body,
+                "env_vars_count": inspected_env.len(),
+                "inspected_env": inspected_env,
+            }))
+        }
+        Err(e) => Err(format!("Proxy connection failed: {}", e)),
     }
 }
 

@@ -18,6 +18,58 @@ pub struct AgentConfig {
     pub allowed_tools: Vec<String>,
     #[serde(default)]
     pub require_grant: bool,
+    #[serde(default)]
+    pub network: NetworkConfig,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            id: "default_agent".to_string(),
+            name: "Default Agent".to_string(),
+            system_prompt: "You are a rigorous, evidence-grounded research assistant.".to_string(),
+            model: "llama3.2:3b".to_string(),
+            escalation_model: None,
+            limits: RunLimits::default(),
+            thresholds: DecisionThresholds::default(),
+            safe_defaults: SafeDefaults::default(),
+            allowed_tools: vec![
+                "s3a_search_library".to_string(),
+                "get_synthesis_matrix".to_string(),
+                "preflight_check".to_string(),
+                "ask_human".to_string(),
+            ],
+            require_grant: false,
+            network: NetworkConfig::default(),
+        }
+    }
+}
+
+/// Network egress and host allowlist configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NetworkConfig {
+    #[serde(default)]
+    pub default_environment: Option<String>,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub environments: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+}
+
+impl NetworkConfig {
+    /// Retrieve allowed hosts for a specific environment (e.g. "dev", "prod", "staging").
+    /// Falls back to default_environment when env is None, then global allowed_hosts.
+    pub fn allowed_hosts_for_env(&self, env: Option<&str>) -> Vec<String> {
+        let target_env = env.or(self.default_environment.as_deref());
+        if let Some(e) = target_env {
+            if let Some(hosts) = self.environments.get(e) {
+                return hosts.clone();
+            }
+        }
+        self.allowed_hosts.clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -265,6 +317,38 @@ impl AgentConfig {
             }
         }
 
+        let mut network = NetworkConfig::default();
+        if let Some(net_sec) = sections.get("network") {
+            if let Some(arr) = net_sec
+                .get("allowed_hosts")
+                .and_then(|v| v.as_string_array())
+            {
+                network.allowed_hosts = arr;
+            }
+            if let Some(env_str) = net_sec.get("environment").and_then(|v| v.as_str()) {
+                network.default_environment = Some(env_str.to_string());
+            }
+            if let Some(proxy) = net_sec.get("proxy_url").and_then(|v| v.as_str()) {
+                network.proxy_url = Some(proxy.to_string());
+            }
+        }
+
+        // Support per-environment tables, e.g. [network.dev], [network.prod], [network.environments.dev]
+        for (sec_name, sec_values) in &sections {
+            let env_name = sec_name
+                .strip_prefix("network.environments.")
+                .or_else(|| sec_name.strip_prefix("network."));
+
+            if let Some(env) = env_name {
+                if let Some(arr) = sec_values
+                    .get("allowed_hosts")
+                    .and_then(|v| v.as_string_array())
+                {
+                    network.environments.insert(env.to_string(), arr);
+                }
+            }
+        }
+
         Ok(AgentConfig {
             id,
             name,
@@ -276,6 +360,7 @@ impl AgentConfig {
             safe_defaults,
             allowed_tools,
             require_grant: false,
+            network,
         })
     }
 }

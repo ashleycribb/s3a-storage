@@ -57,6 +57,7 @@ fn cfg() -> AgentConfig {
         safe_defaults: Default::default(),
         allowed_tools: vec![],
         require_grant: false,
+        network: Default::default(),
     }
 }
 fn ctx(t: &Tmp) -> ToolExecutionContext {

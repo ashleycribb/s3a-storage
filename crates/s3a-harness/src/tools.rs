@@ -1413,6 +1413,7 @@ mod tests {
             safe_defaults: Default::default(),
             allowed_tools: vec!["s3a_query".into()],
             require_grant: true,
+            network: Default::default(),
         };
 
         let ctx = ToolExecutionContext {

@@ -73,6 +73,7 @@ fn create_test_config() -> AgentConfig {
             "preflight_check".to_string(),
         ],
         require_grant: false,
+        network: Default::default(),
     }
 }
 

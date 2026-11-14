@@ -122,3 +122,25 @@ Notes:
      - `test_extract_pdf_text_e2e`: PDF text extraction.
      - `test_sandboxes_never_see_vault_keys`: verifies ambient vault keys are completely stripped from sandbox subprocess.
 
+
+
+---
+
+## 005-credential-proxy-allowlist, 2026-11-13 21:40
+Status: done
+Commit: HEAD
+Changed: crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/config.rs, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/main.rs, crates/s3a-harness/src/proxy.rs, crates/s3a-harness/src/repair.rs, crates/s3a-harness/src/tools.rs, crates/s3a-harness/tests/proxy_tests.rs, crates/s3a-harness/tests/*.rs, crates/s3a-sandbox/Cargo.toml, crates/s3a-sandbox/src/runner.rs, crates/s3a-sandbox/tests/work_queue_tests.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-sandbox: passed (7 passed in work_queue_tests)
+  - cargo test -p s3a-harness: passed (93 passed: 20 unittests, 1 e2e, 9 enforcement, 7 operability, 13 permissions, 14 protocol/sandbox, 4 proxy_tests, 11 runtime_core, 9 tool_registry, 7 training_and_eval)
+Notes:
+  1. Kept the proxy in `s3a-harness`, not core: created `crates/s3a-harness/src/proxy.rs`.
+  2. Secrets come from `s3a-vault` (`VaultSecretStore` wrapping `s3a-vault::keystore::KeyStore`) or OS secure store (`OsSecretStore`), never entering the sandbox env, logs, or records.
+  3. Sandboxes reference a connection name only (`NamedConnection`).
+  4. Per-environment allowlist in agent TOML (`NetworkConfig` with `allowed_hosts_for_env`).
+  5. Every injected-credential request is logged as a signed `EgressAuditRecord` (`agent`, `connection`, `host`, `method`, `decision`, `time`), with zero secret leakage.
+  6. Reused `s3a-sandbox`'s `env_clear()` runner and routed sandbox egress through the proxy via loopback server and `S3A_CREDENTIAL_PROXY` / `HTTP_PROXY`.
+  7. All 4 required tests in `crates/s3a-harness/tests/proxy_tests.rs`: blocked host refused, sandbox env contains zero ambient secrets, signed log entry written without secrets, and multi-environment TOML parsing.

@@ -61,8 +61,8 @@ fn test_claim_lease_expiry() {
     let worker1_id = [1u8; 16];
     let worker2_id = [2u8; 16];
 
-    // Worker 1 claims job with 1 second lease
-    let claimed = queue.claim_next(&worker1_id, 1, None).unwrap();
+    // Worker 1 claims job with 3 second lease
+    let claimed = queue.claim_next(&worker1_id, 3, None).unwrap();
     assert!(claimed.is_some());
     assert_eq!(claimed.unwrap().id, job_id);
 
@@ -70,8 +70,8 @@ fn test_claim_lease_expiry() {
     let attempt = queue.claim_next(&worker2_id, 1, None).unwrap();
     assert!(attempt.is_none());
 
-    // Wait 2 seconds for lease to expire
-    sleep(Duration::from_secs(2));
+    // Wait for lease to expire
+    sleep(Duration::from_millis(3500));
 
     // Worker 2 attempts to claim again: now lease has expired, so Worker 2 claims it!
     let claimed2 = queue.claim_next(&worker2_id, 10, None).unwrap();

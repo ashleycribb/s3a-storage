@@ -147,3 +147,41 @@
    - `test_render_step_preview_e2e` & `test_render_step_preview_png`: glTF 2.0 and PNG validation.
    - `test_extract_pdf_text_e2e`: PDF text extraction.
    - `test_sandboxes_never_see_vault_keys`: ambient secret isolation verification.
+
+---
+
+## Prompt 005: Credential Proxy and Host Allowlist
+
+- **Status**: ALL SUCCESS
+- **Local Verification**:
+  - `cargo fmt --all --check`: passed
+  - `cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings`: passed
+  - `cargo deny check`: passed (`advisories ok, bans ok, licenses ok, sources ok`)
+  - `cargo test -p s3a-sandbox`: passed (7 tests in `work_queue_tests`)
+  - `cargo test -p s3a-harness`: passed (all 93 unit & integration tests)
+- **Summary of Deliverables**:
+1. **Credential Proxy (`crates/s3a-harness/src/proxy.rs`)**:
+   - Kept strictly in `s3a-harness`, not core.
+   - `HostAllowlist`: enforces per-environment network boundaries with exact match, wildcard subdomains (`*.plm.corp`), port stripping, and localhost normalization.
+   - Named connections (`NamedConnection`): sandboxes reference a connection name only (e.g. `plm_adapter`).
+   - Secret store custody (`SecretStore` trait): `MemorySecretStore`, `VaultSecretStore` (wrapping `s3a-vault::keystore::KeyStore`), `OsSecretStore` (system secure env), and `ChainedSecretStore`.
+   - Credential injection (`AuthType`): `Bearer`, `Header`, `Basic`, `ApiKeyQuery`. Secrets are injected into outbound requests and strictly stripped from all responses.
+2. **Signed Egress Audit Records (`EgressAuditRecord`)**:
+   - Every injected-credential request produces an Ed25519-signed record (`agent_id`, `connection`, `host`, `method`, `decision`, `timestamp`).
+   - Cryptographic verification via `record.verify()`.
+   - Zero-secret invariant: secrets never enter the record, logs, or serialization.
+3. **Loopback Server (`start_loopback_server`)**:
+   - Starts a lightweight loopback HTTP server on `127.0.0.1:0`.
+   - Supports `/egress` endpoint and HTTP forward proxy requests.
+   - Returns HTTP 403 Forbidden on blocked hosts, logging signed audit events.
+4. **Agent TOML Per-Environment Allowlist (`crates/s3a-harness/src/config.rs`)**:
+   - `NetworkConfig`: parses `[network]` section and per-environment tables `[network.<env>]` or `[network.environments.<env>]`.
+   - `allowed_hosts_for_env(Option<&str>)`: resolves environment-specific allowlist with graceful default fallback.
+5. **Sandbox Isolation Egress (`crates/s3a-sandbox/src/runner.rs`)**:
+   - `execute_job_in_sandbox_with_proxy`: routes subprocess egress through proxy via `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `S3A_CREDENTIAL_PROXY` while keeping `cmd.env_clear()`.
+   - Task handler `sandbox_proxy_egress`: audits its own environment to verify zero leaked ambient secrets before calling proxy.
+6. **Tests (`crates/s3a-harness/tests/proxy_tests.rs`)**:
+   - `test_blocked_host_refused`: unallowed host rejected with `HostBlocked` and HTTP 403, signed audit record created.
+   - `test_sandbox_env_contains_no_secrets`: ambient vault tokens and API keys are completely absent from sandbox child process environment.
+   - `test_log_entry_written_and_never_contains_secret`: allowed connection writes signed audit record with valid Ed25519 signature and zero secret leakage.
+   - `test_agent_config_toml_per_environment_allowlist`: multi-environment allowlist parsing in agent TOML.

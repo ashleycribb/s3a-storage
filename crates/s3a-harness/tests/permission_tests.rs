@@ -102,6 +102,7 @@ fn config() -> AgentConfig {
         },
         allowed_tools: vec![],
         require_grant: false,
+        network: Default::default(),
     }
 }
 
