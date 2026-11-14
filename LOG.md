@@ -153,6 +153,14 @@
 ## Prompt 005: Credential Proxy and Host Allowlist
 
 - **Status**: ALL SUCCESS
+- **Commits**:
+  - `35df9cb`: `feat(harness): implement credential proxy, host allowlist, and sandbox egress isolation (prompt 005)`
+  - `31d1c44`: `fix(ci): pre-build s3a-sandbox binary in CI workflows and robust binary lookup`
+- **CI Verification on 31d1c44**:
+  - `rust-ci` (run 43604405815): **SUCCESS** (all 13 jobs green: `cargo fmt --check`, `cargo test --workspace`, engine tests, quickstart verifications).
+  - `cargo-deny` (run 43604405809): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43604405793): **SUCCESS** (both Ubuntu and Windows jobs green).
+  - `wasm-dist` (run 43604443311): **SUCCESS** (snapshot build and smoke test green).
 - **Local Verification**:
   - `cargo fmt --all --check`: passed
   - `cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings`: passed
