@@ -210,13 +210,18 @@ Notes:
 
 ## 007-fix-real-data-viewer, 2026-11-14 14:25
 Status: done
-Commit: HEAD
+Commit: acaee5b
 Changed: crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
   - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
   - cargo test -p s3a-harness --test viewer_mcp_tests: passed (9/9 tests passed, including anti-fabrication tests)
   - cargo test --workspace: passed
+  - GitHub Actions runs on acaee5b:
+    - rust-ci (run 43632164790): success (all 13/13 jobs passed)
+    - cargo-deny (run 43632164704): success
+    - S3A Research Agent Harness CI (run 43632164731): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43632281879): success
 Notes:
   1. Removed all hardcoded mock content ("Multidimensional Spatial Hyper-Tile Architecture", "Dr. A. Cribb", "part_piston", "ASM-704", static SVGs, mock figures/tables, fake nodes) from crates/s3a-harness/src/viewer.rs.
   2. Implemented dynamic extraction across all 4 domain packs: Scholar research decodes real hyper-tiles 10..=15, 20, 32; TDP decodes STEP AP242 models and PDF metadata; Aura decodes telemetry and wearable tiles; Manifest fallback inspects raw headers.

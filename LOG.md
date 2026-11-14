@@ -293,7 +293,12 @@
 ## Prompt 007 Fix: Real Data Rendering in S3A Record Viewer & Anti-Fabrication Guarantees
 
 - **Status**: ALL SUCCESS
-- **Commit**: HEAD
+- **Commit**: `acaee5b`
+- **CI Verification on acaee5b**:
+  - `rust-ci` (run 43632164790): **SUCCESS** (13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, Windows/macOS/Ubuntu runners, clippy, spec vectors, wasm snapshot).
+  - `cargo-deny` (run 43632164704): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43632164731): **SUCCESS** (both `windows-latest` and `ubuntu-latest` jobs passed).
+  - `wasm-dist` (run 43632281879): **SUCCESS** (build, test, publish, attestation green).
 - **Summary of Deliverables**:
 1. **Complete Removal of Hardcoded Mock Content**:
    - Eliminated all static mock data, hardcoded sample manuscripts ("Multidimensional Spatial Hyper-Tile Architecture", "Dr. A. Cribb"), static SVG templates, and mock parts ("part_piston", "ASM-704", "704-02-A", "704-01-A", "Cylinder Block", "aura-node-0x0042", "Linux 6.6.21-aura-rt", "Dr. Jane Doe", "Chief Mechanical Engineer", "Aura Fleet Security Daemon") from `crates/s3a-harness/src/viewer.rs`.
