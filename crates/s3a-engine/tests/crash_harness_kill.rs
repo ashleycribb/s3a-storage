@@ -11,7 +11,9 @@
 //!    still opens after #161.
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader};
 use std::mem::offset_of;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -93,7 +95,9 @@ fn crash_child_append_loop() {
         append(&mut w, i);
         i += 1;
         // Ack only after write_hyper_tile returned (tile + header slot synced).
-        writeln!(out.lock(), "ACK {i}").unwrap();
+        let mut handle = out.lock();
+        writeln!(handle, "ACK {i}").unwrap();
+        handle.flush().unwrap();
     }
 }
 
