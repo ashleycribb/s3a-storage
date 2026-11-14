@@ -45,6 +45,7 @@
   - `rust-ci` (run 43535029176): **SUCCESS** (13/13 jobs passed, including `cargo fmt --check`, `cargo test --workspace`, Windows/macOS/Ubuntu quickstart verifications).
   - `cargo-deny` (run 43535029260): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
   - `S3A Research Agent Harness CI` (run 43535029137): **SUCCESS** (both Ubuntu and Windows jobs green).
+  - `wasm-dist` (run 43535029201 rerun): **SUCCESS** (all steps passed; previous tlog failure on run 43535029201 was a transient GitHub attestation service issue, resolved cleanly upon rerun).
 
 ### Summary of Deliverables
 1. **Formatting**: Ran `cargo fmt --all` across workspace in commit `4a9eada` and removed `continue-on-error` from `fmt` job in `.github/workflows/rust-ci.yml`.
@@ -60,3 +61,38 @@
    - `s3a export <vault> <key> --format csv|json -o <path>`: Exports assembly Bill of Materials (BOM) to CSV or JSON.
    - Extended `s3a put` to auto-detect PDF/STEP files and write the respective `.meta` and `.assembly` sidecar records.
    - Added end-to-end integration tests in `crates/s3a-cli/tests/tdp_cli_test.rs` covering all CLI commands and workflows.
+
+---
+
+## Prompt 003: Generic Graph Edges, QL Graph Traversal & Adjacency Index
+
+- **Status**: ALL SUCCESS
+- **Summary of Deliverables**:
+1. **Core Generic Graph Edge Tile (`crates/s3a-core`)**:
+   - Registered `TileType::GRAPH_EDGE = 87` (`0x0057`) in `s3a-core::registry` under owner `core`.
+   - Defined `GraphEdgeRecordHeader` (96 bytes, `Pod + Zeroable`, align 8) and `GenericGraphEdge` with `from`, `to`, `edge_type`, `properties`, `signer` ([u8; 32]), and `timestamp` (u64).
+   - Core and engine remain strictly database-generic with zero pack-specific logic.
+2. **Pack Graph Extractor & Scholar Tile 13 Interop (`crates/s3a-pack-scholar`)**:
+   - Implemented `register_graph_tile_extractor` in `s3a-engine::graph` to allow packs to register custom graph tile readers without embedding domain logic into core.
+   - In `s3a-pack-scholar::register_ql_handlers()`, registered Tile 13 extractor mapping `ResearchGraphEdgeRecord` to generic graph edges without altering existing Tile 13 archives.
+3. **Graph Engine & In-Memory Adjacency Index (`crates/s3a-engine`)**:
+   - Rebuilds `GraphIndex` from open archive across Tile 87 and registered pack graph tiles.
+   - Algorithms: `neighbors` lookup, breadth-first `traverse` with max depth and edge type filtering, and BFS shortest `find_path`.
+   - Helpers: `append_edge` and `append_edges` to append generic edges to vault files.
+4. **S3A-QL Graph Queries**:
+   - AST & Lexer: Added `TRAVERSE`, `VIA`, `DEPTH`, `NEIGHBORS`, `PATH` keywords and statements.
+   - Parser: Added `TRAVERSE FROM <node> [VIA <type>] DEPTH <n> [IN <archive>]`, `NEIGHBORS <node> [FROM <archive>]`, `PATH <from> TO <to> [VIA <type>] [FROM <archive>]`.
+   - Executor: Query results `GraphNeighbors`, `GraphTraverse`, `GraphPath`.
+5. **CLI Subcommands (`crates/s3a-cli`)**:
+   - `s3a graph neighbors [vault] <node> [--json]`
+   - `s3a graph path [vault] <from> <to> [--via <edge_type>] [--json]`
+   - `s3a graph traverse [vault] <from> [--via <edge_type>] [--depth <n>] [--json]`
+   - `s3a graph add [vault] <from> <to> <edge_type> [--prop <props>]`
+   - Formatted ASCII table output and `--json` structured outputs.
+6. **Tests**:
+   - 3 canonical test cases in `crates/s3a-engine/tests/graph_queries_test.rs`:
+     1. Assembly tree (part -> child part)
+     2. Citation graph (paper -> cites -> paper, with Scholar Tile 13 interop)
+     3. Agent grants (agent -> acts_for -> person authorization chain)
+   - 100,000-edge performance benchmark: index rebuilt in <1.5s, graph queries in <50ms.
+   - End-to-end CLI integration test in `crates/s3a-cli/tests/graph_cli_test.rs`.

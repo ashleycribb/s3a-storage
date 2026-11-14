@@ -33,6 +33,24 @@ pub enum QueryResult {
     Fused {
         new_tile_count: u32,
     },
+    GraphNeighbors {
+        node: String,
+        neighbors: Vec<crate::graph::IndexedEdge>,
+    },
+    GraphTraverse {
+        from: String,
+        edge_type: Option<String>,
+        depth: usize,
+        visited_nodes: Vec<String>,
+        edges: Vec<crate::graph::IndexedEdge>,
+    },
+    GraphPath {
+        from: String,
+        to: String,
+        found: bool,
+        nodes: Vec<String>,
+        edges: Vec<crate::graph::IndexedEdge>,
+    },
 }
 
 pub type PackSiftHandler =
@@ -61,6 +79,9 @@ impl S3AQLEngine {
             S3AStatement::Delete(del) => Self::execute_delete(del),
             S3AStatement::Compact(comp) => Self::execute_compact(comp),
             S3AStatement::Fuse(fuse) => Self::execute_fuse(fuse),
+            S3AStatement::Traverse(traverse) => Self::execute_traverse(traverse),
+            S3AStatement::Neighbors(neighbors) => Self::execute_neighbors(neighbors),
+            S3AStatement::Path(path) => Self::execute_path(path),
         }
     }
 
@@ -351,5 +372,58 @@ impl S3AQLEngine {
         Ok(QueryResult::Fused {
             new_tile_count: count,
         })
+    }
+
+    fn execute_traverse(traverse: &TraverseStatement) -> Result<QueryResult, QlError> {
+        let path = traverse.archive_path.as_deref().unwrap_or("my.s3a");
+        let index = crate::graph::GraphIndex::build_from_file(path).map_err(QlError::Io)?;
+        let (visited_nodes, edges) = index.traverse(
+            &traverse.from_node,
+            traverse.via_edge_type.as_deref(),
+            traverse.depth,
+        );
+        Ok(QueryResult::GraphTraverse {
+            from: traverse.from_node.clone(),
+            edge_type: traverse.via_edge_type.clone(),
+            depth: traverse.depth,
+            visited_nodes,
+            edges,
+        })
+    }
+
+    fn execute_neighbors(neighbors: &NeighborsStatement) -> Result<QueryResult, QlError> {
+        let path = neighbors.archive_path.as_deref().unwrap_or("my.s3a");
+        let index = crate::graph::GraphIndex::build_from_file(path).map_err(QlError::Io)?;
+        let results = index.neighbors(&neighbors.node);
+        Ok(QueryResult::GraphNeighbors {
+            node: neighbors.node.clone(),
+            neighbors: results,
+        })
+    }
+
+    fn execute_path(path_stmt: &PathStatement) -> Result<QueryResult, QlError> {
+        let path = path_stmt.archive_path.as_deref().unwrap_or("my.s3a");
+        let index = crate::graph::GraphIndex::build_from_file(path).map_err(QlError::Io)?;
+        let opt = index.find_path(
+            &path_stmt.from_node,
+            &path_stmt.to_node,
+            path_stmt.via_edge_type.as_deref(),
+        );
+        match opt {
+            Some((nodes, edges)) => Ok(QueryResult::GraphPath {
+                from: path_stmt.from_node.clone(),
+                to: path_stmt.to_node.clone(),
+                found: true,
+                nodes,
+                edges,
+            }),
+            None => Ok(QueryResult::GraphPath {
+                from: path_stmt.from_node.clone(),
+                to: path_stmt.to_node.clone(),
+                found: false,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            }),
+        }
     }
 }

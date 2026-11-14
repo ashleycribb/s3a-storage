@@ -19,6 +19,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "put",
     "get",
     "open",
+    "graph",
     "import",
     "export",
     "query",
@@ -1786,24 +1787,45 @@ fn parse_csv_line(line: &str) -> Vec<String> {
 pub fn handle_query(args: &[String], verbose: bool) {
     let json_mode = args.iter().any(|a| a == "--json");
     let pos = extract_positional_args(args);
-    let query_opt = pos.first().map(|s| s.as_str());
+    let has_explicit_vault = args
+        .iter()
+        .any(|a| a == "--vault" || a.starts_with("--vault="));
 
-    let raw_query = match query_opt {
-        Some(q) => q,
-        None => {
-            print_cli_error(
-                "missing query string",
-                Some("usage: s3a query \"<S3A_QL_STATEMENT>\" [--json] [--vault <path>]"),
-                verbose,
-                None,
-            );
-        }
+    let (vault_path, raw_query) = if !has_explicit_vault && pos.len() >= 2 {
+        (PathBuf::from(pos[0]), pos[1].as_str())
+    } else if let Some(q) = pos.first() {
+        (resolve_vault_path(args), q.as_str())
+    } else {
+        print_cli_error(
+            "missing query string",
+            Some("usage: s3a query [vault] \"<S3A_QL_STATEMENT>\" [--json] [--vault <path>]"),
+            verbose,
+            None,
+        );
     };
 
-    let vault_path = resolve_vault_path(args);
+    let trimmed_upper = raw_query.trim().to_uppercase();
+    let is_traverse = trimmed_upper.starts_with("TRAVERSE");
+    let is_neighbors = trimmed_upper.starts_with("NEIGHBORS");
+    let is_path = trimmed_upper.starts_with("PATH");
 
-    // If query does not contain FROM, inject default vault path
-    let effective_query = if !contains_case_insensitive_word(raw_query, "FROM")
+    // If query does not contain FROM/IN, inject default vault path
+    let effective_query = if is_traverse {
+        let path_str = vault_path.to_string_lossy();
+        if !contains_case_insensitive_word(raw_query, "IN")
+            && raw_query.to_uppercase().matches("FROM").count() <= 1
+        {
+            format!("{} IN \"{}\"", raw_query.trim_end(), path_str)
+        } else {
+            raw_query.to_string()
+        }
+    } else if (is_neighbors || is_path)
+        && !contains_case_insensitive_word(raw_query, "FROM")
+        && !contains_case_insensitive_word(raw_query, "IN")
+    {
+        let path_str = vault_path.to_string_lossy();
+        format!("{} FROM \"{}\"", raw_query.trim_end(), path_str)
+    } else if !contains_case_insensitive_word(raw_query, "FROM")
         && !contains_case_insensitive_word(raw_query, "INTO")
     {
         let path_str = vault_path.to_string_lossy();
@@ -2087,6 +2109,196 @@ pub fn handle_query(args: &[String], verbose: bool) {
                         );
                     }
                 }
+                QueryResult::GraphNeighbors { node, neighbors } => {
+                    if json_mode {
+                        let records_json = neighbors
+                            .iter()
+                            .map(|e| {
+                                let prop_val = if e.properties.trim().starts_with('{') {
+                                    e.properties.clone()
+                                } else {
+                                    format!("\"{}\"", e.properties.replace('"', "\\\""))
+                                };
+                                format!(
+                                    r#"{{"from":"{}","to":"{}","edge_type":"{}","properties":{}}}"#,
+                                    e.from.replace('"', "\\\""),
+                                    e.to.replace('"', "\\\""),
+                                    e.edge_type.replace('"', "\\\""),
+                                    prop_val
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        println!(
+                            r#"{{"ok":true,"type":"graph_neighbors","elapsed_us":{},"node":"{}","count":{},"neighbors":[{}]}}"#,
+                            elapsed.as_micros(),
+                            node.replace('"', "\\\""),
+                            neighbors.len(),
+                            records_json
+                        );
+                    } else if neighbors.is_empty() {
+                        println!("No neighbors found for node '{}' (in {:?})", node, elapsed);
+                    } else {
+                        let headers = ["From", "Edge Type", "To", "Properties"];
+                        let rows: Vec<Vec<String>> = neighbors
+                            .iter()
+                            .map(|e| {
+                                vec![
+                                    e.from.clone(),
+                                    e.edge_type.clone(),
+                                    e.to.clone(),
+                                    e.properties.clone(),
+                                ]
+                            })
+                            .collect();
+                        print!("{}", format_ascii_table(&headers, &rows));
+                        println!(
+                            "({} neighbor{} in {:?})",
+                            neighbors.len(),
+                            if neighbors.len() == 1 { "" } else { "s" },
+                            elapsed
+                        );
+                    }
+                }
+                QueryResult::GraphTraverse {
+                    from,
+                    edge_type: _,
+                    depth,
+                    visited_nodes,
+                    edges,
+                } => {
+                    if json_mode {
+                        let nodes_json = visited_nodes
+                            .iter()
+                            .map(|n| format!("\"{}\"", n.replace('"', "\\\"")))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let edges_json = edges
+                            .iter()
+                            .map(|e| {
+                                let prop_val = if e.properties.trim().starts_with('{') {
+                                    e.properties.clone()
+                                } else {
+                                    format!("\"{}\"", e.properties.replace('"', "\\\""))
+                                };
+                                format!(
+                                    r#"{{"from":"{}","to":"{}","edge_type":"{}","properties":{}}}"#,
+                                    e.from.replace('"', "\\\""),
+                                    e.to.replace('"', "\\\""),
+                                    e.edge_type.replace('"', "\\\""),
+                                    prop_val
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        println!(
+                            r#"{{"ok":true,"type":"graph_traverse","elapsed_us":{},"from":"{}","depth":{},"visited_count":{},"visited_nodes":[{}],"edge_count":{},"edges":[{}]}}"#,
+                            elapsed.as_micros(),
+                            from.replace('"', "\\\""),
+                            depth,
+                            visited_nodes.len(),
+                            nodes_json,
+                            edges.len(),
+                            edges_json
+                        );
+                    } else if edges.is_empty() {
+                        println!("No edges traversed from node '{}' (in {:?})", from, elapsed);
+                    } else {
+                        let headers = ["From", "Edge Type", "To", "Properties"];
+                        let rows: Vec<Vec<String>> = edges
+                            .iter()
+                            .map(|e| {
+                                vec![
+                                    e.from.clone(),
+                                    e.edge_type.clone(),
+                                    e.to.clone(),
+                                    e.properties.clone(),
+                                ]
+                            })
+                            .collect();
+                        print!("{}", format_ascii_table(&headers, &rows));
+                        println!(
+                            "({} edge{} traversed across {} node{} (depth {}) in {:?})",
+                            edges.len(),
+                            if edges.len() == 1 { "" } else { "s" },
+                            visited_nodes.len(),
+                            if visited_nodes.len() == 1 { "" } else { "s" },
+                            depth,
+                            elapsed
+                        );
+                    }
+                }
+                QueryResult::GraphPath {
+                    from,
+                    to,
+                    found,
+                    nodes,
+                    edges,
+                } => {
+                    if json_mode {
+                        let nodes_json = nodes
+                            .iter()
+                            .map(|n| format!("\"{}\"", n.replace('"', "\\\"")))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        let edges_json = edges
+                            .iter()
+                            .map(|e| {
+                                let prop_val = if e.properties.trim().starts_with('{') {
+                                    e.properties.clone()
+                                } else {
+                                    format!("\"{}\"", e.properties.replace('"', "\\\""))
+                                };
+                                format!(
+                                    r#"{{"from":"{}","to":"{}","edge_type":"{}","properties":{}}}"#,
+                                    e.from.replace('"', "\\\""),
+                                    e.to.replace('"', "\\\""),
+                                    e.edge_type.replace('"', "\\\""),
+                                    prop_val
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        println!(
+                            r#"{{"ok":true,"type":"graph_path","elapsed_us":{},"from":"{}","to":"{}","found":{},"length":{},"nodes":[{}],"edges":[{}]}}"#,
+                            elapsed.as_micros(),
+                            from.replace('"', "\\\""),
+                            to.replace('"', "\\\""),
+                            found,
+                            edges.len(),
+                            nodes_json,
+                            edges_json
+                        );
+                    } else if !found {
+                        println!(
+                            "No path found between '{}' and '{}' (in {:?})",
+                            from, to, elapsed
+                        );
+                    } else {
+                        println!(
+                            "Path found ({} hop{}): {}",
+                            edges.len(),
+                            if edges.len() == 1 { "" } else { "s" },
+                            nodes.join(" -> ")
+                        );
+                        let headers = ["Step", "From", "Edge Type", "To", "Properties"];
+                        let rows: Vec<Vec<String>> = edges
+                            .iter()
+                            .enumerate()
+                            .map(|(i, e)| {
+                                vec![
+                                    (i + 1).to_string(),
+                                    e.from.clone(),
+                                    e.edge_type.clone(),
+                                    e.to.clone(),
+                                    e.properties.clone(),
+                                ]
+                            })
+                            .collect();
+                        print!("{}", format_ascii_table(&headers, &rows));
+                        println!("(Found in {:?})", elapsed);
+                    }
+                }
             }
         }
         Err(e) => {
@@ -2134,6 +2346,263 @@ fn contains_case_insensitive_word(text: &str, word: &str) -> bool {
         }
     }
     false
+}
+
+pub fn handle_graph(args: &[String], verbose: bool) {
+    let json_mode = args.iter().any(|a| a == "--json");
+    let mut via_opt: Option<String> = None;
+    let mut depth_opt: Option<usize> = None;
+    let mut prop_opt: Option<String> = None;
+    let mut has_explicit_vault = false;
+    let mut pos: Vec<&str> = Vec::new();
+
+    let mut i = 2; // skip binary and "graph"
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--json" || arg == "--verbose" || arg == "-v" {
+            i += 1;
+        } else if arg == "--vault" {
+            has_explicit_vault = true;
+            if i + 1 < args.len() {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if let Some(_stripped) = arg.strip_prefix("--vault=") {
+            has_explicit_vault = true;
+            i += 1;
+        } else if arg == "--via" {
+            if i + 1 < args.len() {
+                via_opt = Some(args[i + 1].clone());
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if let Some(stripped) = arg.strip_prefix("--via=") {
+            via_opt = Some(stripped.to_string());
+            i += 1;
+        } else if arg == "--depth" {
+            if i + 1 < args.len() {
+                depth_opt = args[i + 1].parse::<usize>().ok();
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if let Some(stripped) = arg.strip_prefix("--depth=") {
+            depth_opt = stripped.parse::<usize>().ok();
+            i += 1;
+        } else if arg == "--prop" {
+            if i + 1 < args.len() {
+                prop_opt = Some(args[i + 1].clone());
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if let Some(stripped) = arg.strip_prefix("--prop=") {
+            prop_opt = Some(stripped.to_string());
+            i += 1;
+        } else if arg.starts_with('-') {
+            i += 1;
+        } else {
+            pos.push(arg.as_str());
+            i += 1;
+        }
+    }
+
+    let subcmd = match pos.first() {
+        Some(s) => *s,
+        None => {
+            println!("Usage: s3a graph <subcommand> [args]");
+            println!("Subcommands:");
+            println!("  s3a graph neighbors [vault] <node> [--json]");
+            println!("  s3a graph path [vault] <from> <to> [--via <edge_type>] [--json]");
+            println!(
+                "  s3a graph traverse [vault] <from> [--via <edge_type>] [--depth <n>] [--json]"
+            );
+            println!("  s3a graph add [vault] <from> <to> <edge_type> [properties]");
+            return;
+        }
+    };
+
+    let remaining = &pos[1..];
+
+    match subcmd {
+        "neighbors" => {
+            let (vault_path, node) = if !has_explicit_vault && remaining.len() >= 2 {
+                (PathBuf::from(remaining[0]), remaining[1])
+            } else if !remaining.is_empty() {
+                (resolve_vault_path(args), remaining[0])
+            } else {
+                print_cli_error(
+                    "missing node identifier for 's3a graph neighbors'",
+                    Some("usage: s3a graph neighbors [vault] <node> [--json]"),
+                    verbose,
+                    None,
+                );
+            };
+
+            let query = format!("NEIGHBORS \"{}\" FROM \"{}\"", node, vault_path.display());
+            let mut query_args = vec!["s3a".to_string(), "query".to_string(), query];
+            if json_mode {
+                query_args.push("--json".to_string());
+            }
+            handle_query(&query_args, verbose);
+        }
+        "path" => {
+            let (vault_path, from_node, to_node) = if !has_explicit_vault && remaining.len() >= 3 {
+                (PathBuf::from(remaining[0]), remaining[1], remaining[2])
+            } else if remaining.len() >= 2 {
+                (resolve_vault_path(args), remaining[0], remaining[1])
+            } else {
+                print_cli_error(
+                    "missing start/end nodes for 's3a graph path'",
+                    Some("usage: s3a graph path [vault] <from> <to> [--via <edge_type>] [--json]"),
+                    verbose,
+                    None,
+                );
+            };
+
+            let query = if let Some(via) = via_opt {
+                format!(
+                    "PATH \"{}\" TO \"{}\" VIA \"{}\" FROM \"{}\"",
+                    from_node,
+                    to_node,
+                    via,
+                    vault_path.display()
+                )
+            } else {
+                format!(
+                    "PATH \"{}\" TO \"{}\" FROM \"{}\"",
+                    from_node,
+                    to_node,
+                    vault_path.display()
+                )
+            };
+
+            let mut query_args = vec!["s3a".to_string(), "query".to_string(), query];
+            if json_mode {
+                query_args.push("--json".to_string());
+            }
+            handle_query(&query_args, verbose);
+        }
+        "traverse" => {
+            let (vault_path, from_node) = if !has_explicit_vault && remaining.len() >= 2 {
+                (PathBuf::from(remaining[0]), remaining[1])
+            } else if !remaining.is_empty() {
+                (resolve_vault_path(args), remaining[0])
+            } else {
+                print_cli_error(
+                    "missing root node for 's3a graph traverse'",
+                    Some("usage: s3a graph traverse [vault] <from> [--via <edge_type>] [--depth <n>] [--json]"),
+                    verbose,
+                    None,
+                );
+            };
+
+            let depth = depth_opt.unwrap_or(3);
+            let via_clause = if let Some(via) = via_opt {
+                format!(" VIA \"{}\"", via)
+            } else {
+                String::new()
+            };
+            let query = format!(
+                "TRAVERSE FROM \"{}\"{} DEPTH {} IN \"{}\"",
+                from_node,
+                via_clause,
+                depth,
+                vault_path.display()
+            );
+
+            let mut query_args = vec!["s3a".to_string(), "query".to_string(), query];
+            if json_mode {
+                query_args.push("--json".to_string());
+            }
+            handle_query(&query_args, verbose);
+        }
+        "add" => {
+            let (vault_path, from_node, to_node, edge_type, properties) = if !has_explicit_vault
+                && remaining.len() >= 4
+            {
+                let prop = prop_opt
+                    .as_deref()
+                    .or_else(|| remaining.get(4).copied())
+                    .unwrap_or("");
+                (
+                    PathBuf::from(remaining[0]),
+                    remaining[1],
+                    remaining[2],
+                    remaining[3],
+                    prop,
+                )
+            } else if remaining.len() >= 3 {
+                let prop = prop_opt
+                    .as_deref()
+                    .or_else(|| remaining.get(3).copied())
+                    .unwrap_or("");
+                (
+                    resolve_vault_path(args),
+                    remaining[0],
+                    remaining[1],
+                    remaining[2],
+                    prop,
+                )
+            } else {
+                print_cli_error(
+                    "missing arguments for 's3a graph add'",
+                    Some("usage: s3a graph add [vault] <from> <to> <edge_type> [--prop <props>]"),
+                    verbose,
+                    None,
+                );
+            };
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let edge = s3a_core::graph::GenericGraphEdge::new(
+                from_node, to_node, edge_type, properties, [0u8; 32], now,
+            );
+
+            match s3a_engine::graph::append_edge(&vault_path, &edge) {
+                Ok(_) => {
+                    if json_mode {
+                        println!(
+                            r#"{{"ok":true,"from":"{}","to":"{}","edge_type":"{}","vault":"{}"}}"#,
+                            from_node.replace('"', "\\\""),
+                            to_node.replace('"', "\\\""),
+                            edge_type.replace('"', "\\\""),
+                            vault_path.display()
+                        );
+                    } else {
+                        println!(
+                            "Edge added: {} -[{}]-> {} in '{}'",
+                            from_node,
+                            edge_type,
+                            to_node,
+                            vault_path.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    print_cli_error(
+                        &format!("failed to append graph edge: {}", e),
+                        Some("verify vault file path and permissions"),
+                        verbose,
+                        Some(&e.to_string()),
+                    );
+                }
+            }
+        }
+        other => {
+            print_cli_error(
+                &format!("unknown graph subcommand '{}'", other),
+                Some("supported subcommands: neighbors, path, traverse, add"),
+                verbose,
+                None,
+            );
+        }
+    }
 }
 
 pub fn handle_ls(args: &[String], verbose: bool) {
@@ -2604,6 +3073,28 @@ pub fn handle_help(args: &[String]) {
             println!("  s3a query \"SIFT TELEMETRY FROM \\\"my.s3a\\\" WHERE TIME BETWEEN 1000 AND 2000\"");
             println!("  s3a query \"SIFT TELEMETRY WHERE VALUE > 90.0\" --json");
         }
+        Some("graph") => {
+            println!("s3a graph - Query and traverse shared memory knowledge graphs");
+            println!();
+            println!("Usage:");
+            println!("  s3a graph neighbors [vault] <node> [--json]");
+            println!("  s3a graph path [vault] <from> <to> [--via <edge_type>] [--json]");
+            println!(
+                "  s3a graph traverse [vault] <from> [--via <edge_type>] [--depth <n>] [--json]"
+            );
+            println!("  s3a graph add [vault] <from> <to> <edge_type> [properties]");
+            println!();
+            println!("Description:");
+            println!("  Queries knowledge graphs stored in core Tile 87 and Scholar Tile 13.");
+            println!("  Supports outgoing neighbor inspection, shortest path search (BFS), and");
+            println!("  bounded breadth-first graph traversal.");
+            println!();
+            println!("Examples:");
+            println!("  s3a graph neighbors \"GEARBOX-001\"");
+            println!("  s3a graph path \"GEARBOX-001\" \"BALL-01\"");
+            println!("  s3a graph traverse \"GEARBOX-001\" --via has_part --depth 3");
+            println!("  s3a graph add \"GEARBOX-001\" \"SHAFT-001\" has_part '{{\"qty\":1}}'");
+        }
         Some("ls") | Some("list") => {
             println!("s3a ls - List stored keys and records in the vault");
             println!();
@@ -2722,6 +3213,7 @@ pub fn print_general_help() {
     println!(
         "  s3a query \"<QL>\" [--json]        Execute native S3A-QL statement with table output"
     );
+    println!("  s3a graph <subcommand>           Query graph (neighbors, path, traverse, add)");
     println!("  s3a ls [--json]                  List stored keys and records");
     println!("  s3a info [--json]                Vault summary (tiles, types, size, last commit)");
     println!("  s3a tour [--json] [archive]      Interactive building & floor tour");

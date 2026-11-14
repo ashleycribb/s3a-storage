@@ -117,6 +117,31 @@ pub struct FuseStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TraverseStatement {
+    pub from_node: String,
+    pub via_edge_type: Option<String>,
+    pub depth: usize,
+    pub archive_path: Option<String>,
+    pub version: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NeighborsStatement {
+    pub node: String,
+    pub archive_path: Option<String>,
+    pub version: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathStatement {
+    pub from_node: String,
+    pub to_node: String,
+    pub via_edge_type: Option<String>,
+    pub archive_path: Option<String>,
+    pub version: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum S3AStatement {
     Fetch(FetchStatement),
     Sift(SiftStatement),
@@ -124,6 +149,9 @@ pub enum S3AStatement {
     Delete(DeleteStatement),
     Compact(CompactStatement),
     Fuse(FuseStatement),
+    Traverse(TraverseStatement),
+    Neighbors(NeighborsStatement),
+    Path(PathStatement),
 }
 
 impl S3AStatement {
@@ -135,6 +163,9 @@ impl S3AStatement {
             S3AStatement::Delete(s) => s.version,
             S3AStatement::Compact(s) => s.version,
             S3AStatement::Fuse(s) => s.version,
+            S3AStatement::Traverse(s) => s.version,
+            S3AStatement::Neighbors(s) => s.version,
+            S3AStatement::Path(s) => s.version,
         }
     }
 }

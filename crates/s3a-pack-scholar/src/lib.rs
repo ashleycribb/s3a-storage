@@ -199,6 +199,32 @@ pub fn register_ql_handlers() {
             })
         }),
     );
+
+    // GRAPH TILE EXTRACTOR for Tile 13 (Research Knowledge Graph Edges)
+    s3a_engine::graph::register_graph_tile_extractor(std::sync::Arc::new(|tile_type, payload| {
+        if tile_type == 13 {
+            let chunk_size = std::mem::size_of::<crate::records::ResearchGraphEdgeRecord>();
+            let mut edges = Vec::new();
+            for chunk in payload.chunks_exact(chunk_size) {
+                let rec: crate::records::ResearchGraphEdgeRecord =
+                    bytemuck::pod_read_unaligned(chunk);
+                if !rec.is_tombstone() {
+                    let gen = rec.to_generic_edge();
+                    edges.push(s3a_engine::graph::IndexedEdge {
+                        from: gen.from,
+                        to: gen.to,
+                        edge_type: gen.edge_type,
+                        properties: gen.properties,
+                        signer: gen.signer,
+                        timestamp: gen.timestamp,
+                    });
+                }
+            }
+            edges
+        } else {
+            Vec::new()
+        }
+    }));
 }
 
 #[cfg(test)]

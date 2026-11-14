@@ -26,6 +26,7 @@ pub mod display_layout;
 pub mod document;
 pub mod dop;
 pub mod erasure;
+pub mod graph;
 pub mod hilbert;
 pub mod lrs;
 pub mod registry;
@@ -37,6 +38,7 @@ pub use consent::*;
 pub use document::*;
 pub use dop::{toroidal_distance_3d, toroidal_interval_contains, Dop14Hull};
 pub use erasure::*;
+pub use graph::*;
 pub use hilbert::{
     compare_hilbert_vs_morton_curve_continuity, compare_hilbert_vs_morton_locality,
     hilbert_to_point_3d, morton_to_point_3d, point_to_hilbert_3d, s3a_morton_3d,
@@ -570,6 +572,8 @@ impl TileType {
     pub const GATE_DIRECTORY: u32 = 85;
     /// Gate Network Relay Mailbox Item Tile (Tile 86 / 0x0056)
     pub const GATE_MAILBOX: u32 = 86;
+    /// Core Generic Graph Edge Tile (Tile 87 / 0x0057)
+    pub const GRAPH_EDGE: u32 = 87;
     /// Deprecated: Tile 9 is strictly reserved for boundary markers (no user writes permitted).
     /// Greenfield LRS records belong in Scholar Pack (Tile 10, `HumanLrsRecord`).
     #[deprecated(

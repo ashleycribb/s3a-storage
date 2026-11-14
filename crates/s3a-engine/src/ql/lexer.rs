@@ -26,6 +26,13 @@ pub enum Token {
     Version,
     Pragma,
 
+    // Graph keywords
+    Traverse,
+    Via,
+    Depth,
+    Neighbors,
+    Path,
+
     // Domain keywords
     Telemetry,
     Kinematics,
@@ -303,6 +310,12 @@ impl<'a> Lexer<'a> {
             "WITH" => Token::With,
             "TRUE" => Token::True,
             "FALSE" => Token::False,
+
+            "TRAVERSE" => Token::Traverse,
+            "VIA" => Token::Via,
+            "DEPTH" => Token::Depth,
+            "NEIGHBORS" => Token::Neighbors,
+            "PATH" => Token::Path,
 
             "TELEMETRY" => Token::Telemetry,
             "KINEMATICS" => Token::Kinematics,

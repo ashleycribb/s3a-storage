@@ -385,7 +385,7 @@ fn main() {
                         println!("Usage: s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
                         return;
                     }
-                    get_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
+                    get_telemetry(pos[0], pos[1], pos[2], pos[3], pos[4]);
                 }
                 "insert" => {
                     let pos: Vec<&String> = args
@@ -397,7 +397,7 @@ fn main() {
                         println!("Usage: s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
                         return;
                     }
-                    insert_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
+                    insert_telemetry(pos[0], pos[1], pos[2], pos[3], pos[4]);
                 }
                 "delete" => {
                     let pos: Vec<&String> = args
@@ -409,7 +409,7 @@ fn main() {
                         println!("Usage: s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
                         return;
                     }
-                    delete_telemetry(&pos[0], &pos[1], &pos[2], &pos[3]);
+                    delete_telemetry(pos[0], pos[1], pos[2], pos[3]);
                 }
                 other => {
                     println!(
@@ -427,6 +427,9 @@ fn main() {
         }
         "query" => {
             s3a_cli::first_run::handle_query(&args, verbose);
+        }
+        "graph" => {
+            s3a_cli::first_run::handle_graph(&args, verbose);
         }
         "ls" | "list" => {
             s3a_cli::first_run::handle_ls(&args, verbose);
@@ -4048,6 +4051,84 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
                     } else {
                         println!("--- S3A-QL FUSE COMPLETE (in {:?}) ---", elapsed);
                         println!("Fused archive tile count: {}", new_tile_count);
+                    }
+                }
+                QueryResult::GraphNeighbors { node, neighbors } => {
+                    if json_mode {
+                        println!(
+                            r#"{{"ok":true,"type":"graph_neighbors","node":"{}","count":{}}}"#,
+                            node,
+                            neighbors.len()
+                        );
+                    } else {
+                        println!(
+                            "--- S3A-QL NEIGHBORS [{}] ({} neighbors in {:?}) ---",
+                            node,
+                            neighbors.len(),
+                            elapsed
+                        );
+                        for e in neighbors {
+                            println!("  {} -[{}]-> {}", e.from, e.edge_type, e.to);
+                        }
+                    }
+                }
+                QueryResult::GraphTraverse {
+                    from,
+                    depth,
+                    visited_nodes,
+                    edges,
+                    ..
+                } => {
+                    if json_mode {
+                        println!(
+                            r#"{{"ok":true,"type":"graph_traverse","from":"{}","depth":{},"visited_count":{},"edge_count":{}}}"#,
+                            from,
+                            depth,
+                            visited_nodes.len(),
+                            edges.len()
+                        );
+                    } else {
+                        println!(
+                            "--- S3A-QL TRAVERSE [{}] (depth {}, {} edges in {:?}) ---",
+                            from,
+                            depth,
+                            edges.len(),
+                            elapsed
+                        );
+                        for e in edges {
+                            println!("  {} -[{}]-> {}", e.from, e.edge_type, e.to);
+                        }
+                    }
+                }
+                QueryResult::GraphPath {
+                    from,
+                    to,
+                    found,
+                    nodes,
+                    edges,
+                } => {
+                    if json_mode {
+                        println!(
+                            r#"{{"ok":true,"type":"graph_path","from":"{}","to":"{}","found":{},"length":{}}}"#,
+                            from,
+                            to,
+                            found,
+                            edges.len()
+                        );
+                    } else if !found {
+                        println!(
+                            "--- S3A-QL PATH: No path found between '{}' and '{}' (in {:?}) ---",
+                            from, to, elapsed
+                        );
+                    } else {
+                        println!(
+                            "--- S3A-QL PATH [{} -> {}] ({} hops in {:?}) ---",
+                            from,
+                            to,
+                            edges.len(),
+                            elapsed
+                        );
+                        println!("  {}", nodes.join(" -> "));
                     }
                 }
             }

@@ -766,6 +766,19 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 87: Core Generic Graph Edge Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::GRAPH_EDGE,
+        name: "graph_edge",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     Ok(())
 }
 

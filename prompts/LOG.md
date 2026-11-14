@@ -47,6 +47,7 @@ Tests:
     - rust-ci (run 43535029176): success (all 13 jobs green, including workspace tests on Linux, Windows, macOS)
     - cargo-deny (run 43535029260): success
     - S3A Research Agent Harness CI (run 43535029137): success (ubuntu-latest & windows-latest)
+    - wasm-dist (run 43535029201 rerun): success
 Notes:
   1. Ran `cargo fmt --all` across workspace in separate commit `4a9eada` and removed continue-on-error from the fmt job in `rust-ci.yml`.
   2. Implemented `crates/s3a-pack-tdp` maintaining core as database-only:
@@ -57,3 +58,27 @@ Notes:
   3. Integrated `s3a open <vault> <key>` to write payload to a temporary file and launch the OS default application (open/xdg-open/start with fallback).
   4. Integrated `s3a export <vault> <key> -o <path>` for file payload export with automatic extension deduction, and `--format csv|json` for assembly BOM export.
   5. Added real PDF and STEP fixtures in `crates/s3a-pack-tdp/tests/fixtures` marked `-text` in `.gitattributes`.
+
+---
+
+## 003-graph-queries, 2026-11-13 20:20
+Status: done
+Commit: HEAD
+Changed: crates/s3a-core/src/lib.rs, crates/s3a-core/src/registry.rs, crates/s3a-core/src/graph.rs, crates/s3a-engine/src/lib.rs, crates/s3a-engine/src/graph.rs, crates/s3a-engine/src/ql/ast.rs, crates/s3a-engine/src/ql/lexer.rs, crates/s3a-engine/src/ql/parser.rs, crates/s3a-engine/src/ql/executor.rs, crates/s3a-engine/tests/graph_queries_test.rs, crates/s3a-pack-scholar/src/lib.rs, crates/s3a-pack-scholar/src/records.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/tests/graph_cli_test.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-core: passed (34 tests)
+  - cargo test -p s3a-engine: passed (100 tests, including all 4 graph query & performance tests)
+  - cargo test -p s3a-pack-scholar: passed (40 tests, including Tile 13 graph extraction)
+  - cargo test -p s3a-cli: passed (36 tests, including graph_cli_test)
+  - cargo test --workspace: all passed across all crates
+Notes:
+  1. Kept core strictly generic: defined `TileType::GRAPH_EDGE = 87` (`0x0057`) in `s3a-core` with `GenericGraphEdge` and `GraphEdgeRecordHeader` (96 bytes, `Pod + Zeroable`, align 8).
+  2. Implemented `register_graph_tile_extractor` in `s3a-engine::graph` to keep graph code generic in `s3a-core`/`s3a-engine` with zero Scholar-specific code outside `s3a-pack-scholar`.
+  3. Mapped Scholar Tile 13 (`ResearchGraphEdgeRecord`) onto generic graph edges in `s3a-pack-scholar::register_ql_handlers()` without altering existing Tile 13 files.
+  4. Built in-memory `GraphIndex` rebuilt on open supporting `NEIGHBORS`, `TRAVERSE` (with optional `VIA` and `DEPTH`), and shortest `PATH`.
+  5. Implemented S3A-QL grammar and executor for `TRAVERSE`, `NEIGHBORS`, `PATH` with table output and `--json`.
+  6. Implemented CLI commands: `s3a graph neighbors`, `s3a graph path`, `s3a graph traverse`, `s3a graph add`.
+  7. Tested all 3 canonical use cases (assembly tree, citation graph with Tile 13 interop, agent grants) + 100k-edge performance benchmark (<1.5s build, <50ms query).
+

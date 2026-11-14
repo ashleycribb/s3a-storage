@@ -25,6 +25,7 @@ pub mod edge_view;
 pub mod elr;
 pub mod erasure;
 pub mod fsutil;
+pub mod graph;
 pub mod lakehouse;
 pub mod lrs_store;
 pub mod migrate;
@@ -56,6 +57,7 @@ pub use erasure::{
     load_shards_from_dir, save_shards_to_dir, ErasureError, ReedSolomonCodec, TileShard,
     TileShardHeader,
 };
+pub use graph::{append_edge, append_edges, GraphIndex, IndexedEdge};
 pub use lakehouse::{
     generate_delta_metadata, generate_iceberg_metadata, handle_snowflake_batch_request,
     project_columnar_to_arrow, project_telemetry_to_arrow, ArrowColumnVector, ArrowField,

@@ -403,6 +403,40 @@ impl ResearchGraphEdgeRecord {
     pub fn mark_tombstone(&mut self) {
         self.flags |= FLAG_TOMBSTONE;
     }
+
+    /// Maps this Scholar Tile 13 research graph edge onto a core `GenericGraphEdge`.
+    pub fn to_generic_edge(&self) -> s3a_core::graph::GenericGraphEdge {
+        let predicate_name = match self.predicate_id {
+            1 => "cites",
+            2 => "authored_by",
+            3 => "references",
+            4 => "derives_from",
+            _ => "related_to",
+        };
+        s3a_core::graph::GenericGraphEdge::new(
+            format!("0x{:016x}", self.subject_hash),
+            format!("0x{:016x}", self.object_hash),
+            predicate_name,
+            format!(
+                r#"{{"predicate_id":{},"weight":{},"hilbert":{}}}"#,
+                self.predicate_id, self.weight, self.hilbert_coord
+            ),
+            [0u8; 32],
+            self.timestamp_sec,
+        )
+    }
+}
+
+impl From<&ResearchGraphEdgeRecord> for s3a_core::graph::GenericGraphEdge {
+    fn from(r: &ResearchGraphEdgeRecord) -> Self {
+        r.to_generic_edge()
+    }
+}
+
+impl From<ResearchGraphEdgeRecord> for s3a_core::graph::GenericGraphEdge {
+    fn from(r: ResearchGraphEdgeRecord) -> Self {
+        r.to_generic_edge()
+    }
 }
 
 /// SCHOLAR RESEARCH SNAPSHOT (SRS) MANIFEST HEADER (512 bytes, exact sector-aligned, Pod/Zeroable).

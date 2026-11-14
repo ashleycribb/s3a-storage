@@ -165,6 +165,9 @@ impl Parser {
             Token::Delete => self.parse_delete(version)?,
             Token::Compact => self.parse_compact(version)?,
             Token::Fuse => self.parse_fuse(version)?,
+            Token::Traverse => self.parse_traverse(version)?,
+            Token::Neighbors => self.parse_neighbors(version)?,
+            Token::Path => self.parse_path(version)?,
             other => {
                 return Err(QlError::Parse {
                     message: format!("Unexpected query start token: {:?}", other),
@@ -617,6 +620,99 @@ impl Parser {
             resolve_versioned_updates,
             purge_tombstones,
             recalculate_simplex_hulls,
+            version,
+        }))
+    }
+
+    fn parse_string_or_ident(&mut self) -> Result<String, QlError> {
+        match self.peek().clone() {
+            Token::StringLiteral(s) | Token::Identifier(s) | Token::Coordinate(s) => {
+                self.advance();
+                Ok(s)
+            }
+            Token::Number(n) => {
+                self.advance();
+                Ok(n.to_string())
+            }
+            other => Err(QlError::Parse {
+                message: format!("Expected string or identifier, found {:?}", other),
+                line: 0,
+                col: 0,
+            }),
+        }
+    }
+
+    fn parse_traverse(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
+        self.expect(Token::Traverse)?;
+        self.expect(Token::From)?;
+        let from_node = self.parse_string_or_ident()?;
+
+        let via_edge_type = if self.peek() == &Token::Via {
+            self.advance();
+            Some(self.parse_string_or_ident()?)
+        } else {
+            None
+        };
+
+        self.expect(Token::Depth)?;
+        let depth = self.parse_u64()? as usize;
+
+        let mut archive_path = None;
+        if self.peek() == &Token::From || self.peek() == &Token::In {
+            self.advance();
+            archive_path = Some(self.parse_file_path()?);
+        }
+
+        Ok(S3AStatement::Traverse(TraverseStatement {
+            from_node,
+            via_edge_type,
+            depth,
+            archive_path,
+            version,
+        }))
+    }
+
+    fn parse_neighbors(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
+        self.expect(Token::Neighbors)?;
+        let node = self.parse_string_or_ident()?;
+
+        let mut archive_path = None;
+        if self.peek() == &Token::From || self.peek() == &Token::In {
+            self.advance();
+            archive_path = Some(self.parse_file_path()?);
+        }
+
+        Ok(S3AStatement::Neighbors(NeighborsStatement {
+            node,
+            archive_path,
+            version,
+        }))
+    }
+
+    fn parse_path(&mut self, version: Option<u32>) -> Result<S3AStatement, QlError> {
+        self.expect(Token::Path)?;
+        let from_node = self.parse_string_or_ident()?;
+        self.expect(Token::To)?;
+        let to_node = self.parse_string_or_ident()?;
+
+        let via_edge_type = if self.peek() == &Token::Via {
+            self.advance();
+            Some(self.parse_string_or_ident()?)
+        } else {
+            None
+        };
+
+        let mut archive_path = None;
+        if self.peek() == &Token::From || self.peek() == &Token::In {
+            self.advance();
+            archive_path = Some(self.parse_file_path()?);
+        }
+
+        Ok(S3AStatement::Path(PathStatement {
+            from_node,
+            to_node,
+            via_edge_type,
+            archive_path,
             version,
         }))
     }
