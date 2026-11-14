@@ -3268,3 +3268,191 @@ pub fn print_general_help() {
     println!();
     println!("Run 's3a help <command>' for copy-paste examples of any command.");
 }
+
+pub fn handle_trace_export(args: &[String], verbose: bool) {
+    use sha2::Digest;
+    let otlp_endpoint = extract_flag_value(args, "--otlp");
+    let endpoint = match otlp_endpoint {
+        Some(ep) => ep,
+        None => {
+            print_cli_error(
+                "missing required flag '--otlp <endpoint>'",
+                Some("usage: s3a trace export --otlp <endpoint> [vault_path]"),
+                verbose,
+                None,
+            );
+        }
+    };
+
+    let pos = extract_positional_args(args);
+    let vault_candidate = pos.iter().skip(2).find(|a| !a.starts_with('-'));
+    let vault_path = if let Some(p) = vault_candidate {
+        PathBuf::from(p)
+    } else {
+        resolve_vault_path(args)
+    };
+
+    if !vault_path.exists() {
+        print_cli_error(
+            &format!("vault file '{}' does not exist", vault_path.display()),
+            Some("run 's3a init' to create a new vault, or specify '--vault <path>'"),
+            verbose,
+            None,
+        );
+    }
+
+    let reader = match MmapReader::open(&vault_path) {
+        Ok(r) => r,
+        Err(e) => {
+            print_cli_error(
+                &format!("failed to open vault '{}': {}", vault_path.display(), e),
+                Some("verify vault file integrity"),
+                verbose,
+                Some(&e.to_string()),
+            );
+        }
+    };
+
+    let tile_count = reader.tile_count() as usize;
+    let mut spans = Vec::new();
+
+    for idx in 0..tile_count {
+        if let Some((hdr, payload)) = reader.get_tile(idx) {
+            let now_nano = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            if hdr.tile_type == 11 {
+                let rec_size = 64;
+                let count = payload.len() / rec_size;
+                for i in 0..count {
+                    let chunk = &payload[i * rec_size..(i + 1) * rec_size];
+                    let hash = hex::encode(sha2::Sha256::digest(chunk));
+                    let span_id = hex::encode(&chunk[..8]);
+                    let trace_id = format!("{:016x}{:016x}", idx, i);
+                    spans.push(serde_json::json!({
+                        "traceId": trace_id,
+                        "spanId": span_id,
+                        "name": "ai_trace:step",
+                        "kind": 1,
+                        "startTimeUnixNano": now_nano.to_string(),
+                        "endTimeUnixNano": now_nano.to_string(),
+                        "attributes": [
+                            { "key": "agent.id", "value": { "stringValue": format!("tile_11_entry_{}", i) } },
+                            { "key": "job.id", "value": { "stringValue": format!("vault_tile_{}", idx) } },
+                            { "key": "s3a.record_hash", "value": { "stringValue": hash } }
+                        ],
+                        "status": { "code": 1 }
+                    }));
+                }
+            } else if hdr.tile_type == TileType::DOCUMENT_STORE {
+                let header_size = std::mem::size_of::<DocumentRecordHeader>();
+                let mut offset = 0;
+                let mut doc_idx = 0;
+                while offset + header_size <= payload.len() {
+                    let doc_hdr: DocumentRecordHeader =
+                        bytemuck::pod_read_unaligned(&payload[offset..offset + header_size]);
+                    offset += header_size;
+                    let k_len = doc_hdr.key_len as usize;
+                    let c_len = doc_hdr.content_len as usize;
+                    if offset + k_len + c_len > payload.len() {
+                        break;
+                    }
+                    let k_bytes = &payload[offset..offset + k_len];
+                    offset += k_len;
+                    let c_bytes = &payload[offset..offset + c_len];
+                    offset += c_len;
+
+                    let key_str = String::from_utf8_lossy(k_bytes);
+                    let content_hash = hex::encode(sha2::Sha256::digest(c_bytes));
+                    let span_id = format!("{:016x}", doc_idx);
+                    let trace_id = format!("{:016x}{:016x}", idx, doc_idx);
+                    doc_idx += 1;
+
+                    spans.push(serde_json::json!({
+                        "traceId": trace_id,
+                        "spanId": span_id,
+                        "name": format!("vault_record:{}", key_str),
+                        "kind": 1,
+                        "startTimeUnixNano": now_nano.to_string(),
+                        "endTimeUnixNano": now_nano.to_string(),
+                        "attributes": [
+                            { "key": "agent.id", "value": { "stringValue": "s3a-vault" } },
+                            { "key": "job.id", "value": { "stringValue": key_str.to_string() } },
+                            { "key": "s3a.record_hash", "value": { "stringValue": content_hash } }
+                        ],
+                        "status": { "code": 1 }
+                    }));
+                }
+            } else if hdr.tile_type == 88 {
+                let hash = hex::encode(sha2::Sha256::digest(payload));
+                spans.push(serde_json::json!({
+                    "traceId": format!("{:032x}", idx),
+                    "spanId": format!("{:016x}", idx),
+                    "name": "sandbox_work_queue:batch",
+                    "kind": 1,
+                    "startTimeUnixNano": now_nano.to_string(),
+                    "endTimeUnixNano": now_nano.to_string(),
+                    "attributes": [
+                        { "key": "agent.id", "value": { "stringValue": "s3a-sandbox" } },
+                        { "key": "job.id", "value": { "stringValue": format!("tile_{}", idx) } },
+                        { "key": "s3a.record_hash", "value": { "stringValue": hash } }
+                    ],
+                    "status": { "code": 1 }
+                }));
+            }
+        }
+    }
+
+    let otlp_url = if endpoint.ends_with("/v1/traces") {
+        endpoint.clone()
+    } else {
+        format!("{}/v1/traces", endpoint.trim_end_matches('/'))
+    };
+
+    let otlp_payload = serde_json::json!({
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [
+                        { "key": "service.name", "value": { "stringValue": "s3a-trace-replay" } }
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "scope": { "name": "s3a-trace", "version": "0.1.0" },
+                        "spans": spans
+                    }
+                ]
+            }
+        ]
+    });
+
+    let resp = ureq::post(&otlp_url)
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(10))
+        .send_string(&otlp_payload.to_string());
+
+    match resp {
+        Ok(_) => {
+            println!(
+                "Successfully exported {} spans to OTLP endpoint '{}' from vault '{}'",
+                spans.len(),
+                endpoint,
+                vault_path.display()
+            );
+        }
+        Err(e) => {
+            print_cli_error(
+                &format!(
+                    "failed to export traces to OTLP endpoint '{}': {}",
+                    endpoint, e
+                ),
+                Some("ensure OTLP collector is running and accessible at the specified URL"),
+                verbose,
+                Some(&e.to_string()),
+            );
+        }
+    }
+}

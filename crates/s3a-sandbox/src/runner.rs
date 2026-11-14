@@ -64,7 +64,23 @@ pub fn execute_job_in_sandbox_with_proxy(
         && binary_path.exists();
 
     if !is_sandbox_bin {
-        return run_task(&req.kind, &req.inputs);
+        let res = run_task(&req.kind, &req.inputs);
+        #[cfg(feature = "otel")]
+        {
+            let job_hash = job.sha256_digest();
+            let mut span = crate::otel::Span::new(
+                format!("job:{}", job.kind),
+                hex::encode(job.requested_by),
+                hex::encode(job.id),
+                &job_hash,
+            )
+            .with_attribute("job.kind", &job.kind);
+            if let Err(ref e) = res {
+                span.status = crate::otel::SpanStatus::Error { message: e.clone() };
+            }
+            crate::otel::emit_span(span);
+        }
+        return res;
     }
 
     // Prepare command with scrubbed environment to ensure sandboxes never see vault keys
@@ -129,6 +145,27 @@ pub fn execute_job_in_sandbox_with_proxy(
         fs::read(&output_path).map_err(|e| format!("Failed to read sandbox output file: {}", e))?;
     let resp: TaskResponse = serde_json::from_slice(&out_bytes)
         .map_err(|e| format!("Failed to deserialize sandbox response: {}", e))?;
+
+    #[cfg(feature = "otel")]
+    {
+        let job_hash = job.sha256_digest();
+        let mut span = crate::otel::Span::new(
+            format!("job:{}", job.kind),
+            hex::encode(job.requested_by),
+            hex::encode(job.id),
+            &job_hash,
+        )
+        .with_attribute("job.kind", &job.kind);
+        if !resp.success {
+            span.status = crate::otel::SpanStatus::Error {
+                message: resp
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Sandbox failure".to_string()),
+            };
+        }
+        crate::otel::emit_span(span);
+    }
 
     if !resp.success {
         return Err(resp

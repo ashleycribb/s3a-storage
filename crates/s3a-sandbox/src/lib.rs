@@ -8,6 +8,9 @@ pub mod records;
 pub mod runner;
 pub mod worker;
 
+#[cfg(feature = "otel")]
+pub mod otel;
+
 pub use queue::{JobView, WorkQueue};
 pub use records::{
     compute_record_signature, decode_work_queue_records, JobPayload, JobRecord, JobState,

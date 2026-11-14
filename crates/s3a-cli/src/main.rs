@@ -1140,8 +1140,20 @@ fn main() {
             run_snowflake_server(port);
         }
         #[cfg(not(feature = "packs"))]
+        "trace" => {
+            if args.len() >= 3 && args[2] == "export" {
+                s3a_cli::first_run::handle_trace_export(&args, verbose);
+            } else {
+                s3a_cli::first_run::print_cli_error(
+                    "trace-session requires the 'packs' feature flag",
+                    Some("rebuild with '--features packs' or install the full s3a distribution"),
+                    verbose,
+                    None,
+                );
+            }
+        }
+        #[cfg(not(feature = "packs"))]
         "trace-session"
-        | "trace"
         | "snapshot"
         | "scholar"
         | "import-academic-bundle"
@@ -1158,11 +1170,14 @@ fn main() {
         }
         #[cfg(feature = "packs")]
         "trace-session" | "trace" => {
-            if args.len() < 4 {
+            if args.len() >= 3 && args[2] == "export" {
+                s3a_cli::first_run::handle_trace_export(&args, verbose);
+            } else if args.len() < 4 {
                 println!("Usage: s3a-cli trace-session <archive_file> <session_uuid>");
-                return;
+                println!("       s3a trace export --otlp <endpoint> [archive_file]");
+            } else {
+                run_trace_session(&args[2], &args[3]);
             }
-            run_trace_session(&args[2], &args[3]);
         }
         #[cfg(feature = "packs")]
         "snapshot" => {

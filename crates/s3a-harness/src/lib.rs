@@ -21,6 +21,9 @@ pub mod tools;
 pub mod trajectory;
 pub mod vcs;
 
+#[cfg(feature = "otel")]
+pub mod otel;
+
 pub use repair::{
     parse_structured_failures, run_repair_loop, run_repair_loop_with_consent, RepairAttemptResult,
     RepairLoopReport, RepairOutcome,

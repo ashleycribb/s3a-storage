@@ -193,3 +193,44 @@
    - `test_sandbox_env_contains_no_secrets`: ambient vault tokens and API keys are completely absent from sandbox child process environment.
    - `test_log_entry_written_and_never_contains_secret`: allowed connection writes signed audit record with valid Ed25519 signature and zero secret leakage.
    - `test_agent_config_toml_per_environment_allowlist`: multi-environment allowlist parsing in agent TOML.
+
+---
+
+## Prompt 006: OpenTelemetry Export
+
+- **Status**: ALL SUCCESS
+- **Local Verification**:
+  - `cargo fmt --all --check`: passed
+  - `cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings`: passed
+  - `cargo clippy -p s3a-harness -p s3a-sandbox --features otel --no-deps --all-targets -- -D warnings`: passed
+  - `cargo deny check`: passed (`advisories ok, bans ok, licenses ok, sources ok`)
+  - `cargo test --workspace`: passed (all 21 crates passed)
+  - `cargo test -p s3a-harness -p s3a-sandbox --features otel`: passed (all unit & integration tests including otel_tests and sandbox_otel_tests passed)
+  - `cargo test -p s3a-cli --test trace_export_cli_test`: passed
+- **Summary of Deliverables**:
+1. **Feature Gate & Isolation**:
+   - `otel` feature added to `crates/s3a-sandbox` and `crates/s3a-harness` only.
+   - Off by default (`default = []`). Core crates remain untouched and completely free of telemetry code.
+2. **OTel Span Model & Zero-Dependency OTLP Exporter (`otel.rs`)**:
+   - `s3a_sandbox::otel` and `s3a_harness::otel`: lightweight span models emitting traceId, spanId, name, startTimeUnixNano, endTimeUnixNano, status, and attributes.
+   - `InMemorySpanExporter`: thread-safe in-memory recorder for deterministic unit/integration testing.
+   - `OtlpHttpExporter`: specification-compliant OTLP/HTTP 1.0 JSON exporter to `/v1/traces` over `ureq`.
+3. **Span Emission with Provenance Linking**:
+   - Tool execution (`tool_call:<tool_name>`), delegation grant check (`grant_check:<tool_name>`), credential proxy request (`proxy_request:<conn>`), and sandbox job execution (`job:<kind>`) emit spans.
+   - Every span carries attributes:
+     - `agent.id`: executing agent identifier
+     - `job.id`: job / turn correlation identifier
+     - `s3a.record_hash`: SHA-256 digest matching the underlying S3A signed record
+4. **Zero-Secret Invariant**:
+   - Injected tokens, headers, API keys, passwords, and secrets are strictly stripped.
+   - Spans and signed records only retain cryptographic hashes and non-sensitive metadata.
+5. **Signed S3A Records as Source of Truth**:
+   - `SignedAuditLog` and `SignedRecord`: canonical Ed25519-signed log where records are hashed and signed before any span emission. OTel traces are purely an exported replica.
+6. **CLI Trace Export (`s3a trace export`)**:
+   - `s3a trace export --otlp <endpoint> [vault_path]`: re-reads existing records from any S3A vault archive and posts valid OTLP 1.0 JSON trace batches to the remote collector.
+7. **Verification & Tests**:
+   - `test_every_span_record_hash_matches_signed_log`: verifies all 4 span types match an Ed25519-signed record in `SignedAuditLog`, signatures verify, and zero secrets exist.
+   - `test_proxy_egress_span_never_leaks_secrets_or_injected_credentials`: validates bearer token elimination.
+   - `test_blocked_proxy_request_span_matches_signed_record`: validates rejected requests produce matching spans and signed audit records.
+   - `test_otlp_http_exporter_json_structure`: validates exact OTLP schema.
+   - `test_trace_export_otlp_replays_vault_records`: verifies CLI trace export end-to-end against local HTTP receiver.

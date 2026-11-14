@@ -1283,12 +1283,27 @@ impl ToolRegistry {
 
             let action_mask = s3a_vault::records::ACTION_READ | s3a_vault::records::ACTION_WRITE;
             let now = chrono_timestamp();
-            s3a_vault::evaluate_agent_action(grant, action_mask, tool_name, now, 0).map_err(
-                |e| ToolError::ExecutionFailed {
-                    tool: tool_name.to_string(),
-                    details: format!("Agent tool call denied: {}", e),
-                },
-            )?;
+            let eval_res = s3a_vault::evaluate_agent_action(grant, action_mask, tool_name, now, 0);
+
+            #[cfg(feature = "otel")]
+            {
+                let grant_bytes = bytemuck::bytes_of(grant);
+                let grant_hash = compute_sha256(grant_bytes);
+                let span = crate::otel::Span::new(
+                    format!("grant_check:{}", tool_name),
+                    format!("{:?}", ctx.agent_id),
+                    hex::encode(grant.grant_id),
+                    &grant_hash,
+                )
+                .with_attribute("tool.name", tool_name)
+                .with_attribute("grant.allowed", eval_res.is_ok().to_string());
+                crate::otel::emit_span(span);
+            }
+
+            eval_res.map_err(|e| ToolError::ExecutionFailed {
+                tool: tool_name.to_string(),
+                details: format!("Agent tool call denied: {}", e),
+            })?;
         }
 
         // 4. Lookup tool
@@ -1346,6 +1361,20 @@ impl ToolRegistry {
             }
         });
         let _ = ctx.store.record_xapi_statement(&stmt);
+
+        #[cfg(feature = "otel")]
+        {
+            let span = crate::otel::Span::new(
+                format!("tool_call:{}", tool_name),
+                format!("{:?}", ctx.agent_id),
+                session_str,
+                &result_hash,
+            )
+            .with_attribute("tool.name", tool_name)
+            .with_attribute("tool.inputs_hash", &inputs_hash)
+            .with_attribute("tool.execution_time_ms", execution_time_ms.to_string());
+            crate::otel::emit_span(span);
+        }
 
         Ok(ToolCallResult {
             tool_name: tool_name.to_string(),

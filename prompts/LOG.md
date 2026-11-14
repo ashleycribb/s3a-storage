@@ -150,3 +150,26 @@ Notes:
   6. Reused `s3a-sandbox`'s `env_clear()` runner and routed sandbox egress through the proxy via loopback server and `S3A_CREDENTIAL_PROXY` / `HTTP_PROXY`.
   7. Pre-built `s3a-sandbox` binary in `rust-ci.yml` and `harness.yml`, and added multi-directory fallback resolution in `find_sandbox_binary()`.
   8. All 4 required tests in `crates/s3a-harness/tests/proxy_tests.rs`: blocked host refused, sandbox env contains zero ambient secrets, signed log entry written without secrets, and multi-environment TOML parsing.
+
+---
+
+## 006-otel-export, 2026-11-14 10:25
+Status: done
+Commit: HEAD
+Changed: crates/s3a-sandbox/Cargo.toml, crates/s3a-sandbox/src/lib.rs, crates/s3a-sandbox/src/records.rs, crates/s3a-sandbox/src/runner.rs, crates/s3a-sandbox/src/otel.rs, crates/s3a-sandbox/tests/sandbox_otel_tests.rs, crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/proxy.rs, crates/s3a-harness/src/tools.rs, crates/s3a-harness/src/otel.rs, crates/s3a-harness/tests/otel_tests.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/tests/trace_export_cli_test.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings: passed
+  - cargo clippy -p s3a-harness -p s3a-sandbox --features otel --no-deps --all-targets -- -D warnings: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test --workspace: passed (all 21 crates passed)
+  - cargo test -p s3a-harness -p s3a-sandbox --features otel: passed (all unit & integration tests including otel_tests and sandbox_otel_tests passed)
+  - cargo test -p s3a-cli --test trace_export_cli_test: passed
+Notes:
+  1. Feature-gated `otel` in `s3a-harness` and `s3a-sandbox` only, off by default. Zero OTel changes in core crates.
+  2. Implemented standard OpenTelemetry span model and OTLP/HTTP 1.0 JSON format directly over existing ureq and serde_json (zero heavy grpc/proto dependencies, keeping cargo-deny completely clean).
+  3. Spans contain agent.id, job.id, and s3a.record_hash.
+  4. Spans never include secrets or injected proxy credentials.
+  5. Ed25519-signed S3A records remain the immutable source of truth; OTel is an exported copy.
+  6. Added `s3a trace export --otlp <endpoint> [vault_path]` to replay records from any vault into an OTLP endpoint as spans with matching record hashes.
+  7. Test suite verifies that every span's record hash matches an Ed25519-signed record in the audit log, signatures verify, and secrets are strictly excluded.

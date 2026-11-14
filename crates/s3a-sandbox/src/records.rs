@@ -102,6 +102,22 @@ pub struct JobRecord {
     pub signature: [u8; 64],
 }
 
+impl JobRecord {
+    pub fn sha256_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.id);
+        hasher.update(self.kind.as_bytes());
+        let inputs_bytes = serde_json::to_vec(&self.inputs).unwrap_or_default();
+        hasher.update(&inputs_bytes);
+        hasher.update(self.requested_by);
+        hasher.update(self.grant);
+        hasher.update(self.created_at.to_le_bytes());
+        hasher.update(self.signature);
+        hex::encode(hasher.finalize())
+    }
+}
+
 /// High-level Status update.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusRecord {
@@ -124,6 +140,21 @@ pub struct ResultRecord {
     pub success: bool,
     pub output: serde_json::Value,
     pub signature: [u8; 64],
+}
+
+impl ResultRecord {
+    pub fn sha256_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.job_id);
+        hasher.update(self.worker_id);
+        hasher.update(self.completed_at.to_le_bytes());
+        hasher.update([self.success as u8]);
+        let output_bytes = serde_json::to_vec(&self.output).unwrap_or_default();
+        hasher.update(&output_bytes);
+        hasher.update(self.signature);
+        hex::encode(hasher.finalize())
+    }
 }
 
 /// Enumeration of all work-queue record variants.

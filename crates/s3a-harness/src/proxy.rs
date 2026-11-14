@@ -390,6 +390,23 @@ impl EgressAuditRecord {
         .into_bytes()
     }
 
+    /// Cryptographic SHA-256 digest of this canonical signed record.
+    pub fn sha256_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let msg = Self::canonical_message(
+            &self.agent_id,
+            &self.connection,
+            &self.host,
+            &self.method,
+            &self.decision,
+            self.timestamp,
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(&msg);
+        hasher.update(self.signature);
+        hex::encode(hasher.finalize())
+    }
+
     /// Verifies cryptographic signature of the audit record using its verifying key.
     pub fn verify(&self) -> bool {
         let msg = Self::canonical_message(
@@ -443,6 +460,8 @@ pub struct CredentialProxy {
     secret_store: Arc<dyn SecretStore>,
     audit_log: RwLock<Vec<EgressAuditRecord>>,
     signing_key: SigningKey,
+    #[cfg(feature = "otel")]
+    exporter: Option<Arc<dyn crate::otel::SpanExporter>>,
 }
 
 impl CredentialProxy {
@@ -460,7 +479,15 @@ impl CredentialProxy {
             secret_store,
             audit_log: RwLock::new(Vec::new()),
             signing_key,
+            #[cfg(feature = "otel")]
+            exporter: None,
         }
+    }
+
+    #[cfg(feature = "otel")]
+    pub fn with_exporter(mut self, exporter: Arc<dyn crate::otel::SpanExporter>) -> Self {
+        self.exporter = Some(exporter);
+        self
     }
 
     pub fn with_signing_key(
@@ -476,6 +503,8 @@ impl CredentialProxy {
             secret_store,
             audit_log: RwLock::new(Vec::new()),
             signing_key,
+            #[cfg(feature = "otel")]
+            exporter: None,
         }
     }
 
@@ -520,13 +549,34 @@ impl CredentialProxy {
             connection: connection.to_string(),
             host: host.to_string(),
             method: method.to_string(),
-            decision,
+            decision: decision.clone(),
             timestamp,
             signature: signature.to_bytes(),
             verifying_key,
         };
 
         self.audit_log.write().unwrap().push(record.clone());
+
+        #[cfg(feature = "otel")]
+        {
+            let record_hash = record.sha256_digest();
+            let span = crate::otel::Span::new(
+                format!("proxy_request:{}", connection),
+                &record.agent_id,
+                &record.record_id,
+                &record_hash,
+            )
+            .with_attribute("proxy.connection", connection)
+            .with_attribute("proxy.host", host)
+            .with_attribute("proxy.method", method)
+            .with_attribute("proxy.decision", format!("{:?}", decision));
+            if let Some(ref exp) = self.exporter {
+                let _ = exp.export(&[span]);
+            } else {
+                crate::otel::emit_span(span);
+            }
+        }
+
         record
     }
 
