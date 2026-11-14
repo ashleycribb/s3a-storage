@@ -155,8 +155,8 @@ Notes:
 
 ## 006-otel-export, 2026-11-14 10:25
 Status: done
-Commit: HEAD
-Changed: crates/s3a-sandbox/Cargo.toml, crates/s3a-sandbox/src/lib.rs, crates/s3a-sandbox/src/records.rs, crates/s3a-sandbox/src/runner.rs, crates/s3a-sandbox/src/otel.rs, crates/s3a-sandbox/tests/sandbox_otel_tests.rs, crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/proxy.rs, crates/s3a-harness/src/tools.rs, crates/s3a-harness/src/otel.rs, crates/s3a-harness/tests/otel_tests.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/tests/trace_export_cli_test.rs, LOG.md, prompts/LOG.md
+Commit: cc62300
+Changed: crates/s3a-sandbox/Cargo.toml, crates/s3a-sandbox/src/lib.rs, crates/s3a-sandbox/src/records.rs, crates/s3a-sandbox/src/runner.rs, crates/s3a-sandbox/src/otel.rs, crates/s3a-sandbox/tests/sandbox_otel_tests.rs, crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/proxy.rs, crates/s3a-harness/src/tools.rs, crates/s3a-harness/src/otel.rs, crates/s3a-harness/tests/otel_tests.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/tests/trace_export_cli_test.rs, crates/s3a-engine/tests/crash_harness_kill.rs, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
   - cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings: passed
@@ -165,6 +165,11 @@ Tests:
   - cargo test --workspace: passed (all 21 crates passed)
   - cargo test -p s3a-harness -p s3a-sandbox --features otel: passed (all unit & integration tests including otel_tests and sandbox_otel_tests passed)
   - cargo test -p s3a-cli --test trace_export_cli_test: passed
+  - GitHub Actions runs on cc62300:
+    - rust-ci (run 43610391593): success (all 13/13 jobs passed)
+    - cargo-deny (run 43610391491): success
+    - S3A Research Agent Harness CI (run 43610391507): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43610391517): success
 Notes:
   1. Feature-gated `otel` in `s3a-harness` and `s3a-sandbox` only, off by default. Zero OTel changes in core crates.
   2. Implemented standard OpenTelemetry span model and OTLP/HTTP 1.0 JSON format directly over existing ureq and serde_json (zero heavy grpc/proto dependencies, keeping cargo-deny completely clean).

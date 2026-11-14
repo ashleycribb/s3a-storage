@@ -199,6 +199,14 @@
 ## Prompt 006: OpenTelemetry Export
 
 - **Status**: ALL SUCCESS
+- **Commits**:
+  - `a10afec`: `feat(otel): implement OpenTelemetry OTLP export, feature-gated in harness and sandbox (prompt 006)`
+  - `cc62300`: `fix(engine): flush stdout immediately on ACK in crash harness kill test`
+- **CI Verification on cc62300**:
+  - `rust-ci` (run 43610391593): **SUCCESS** (all 13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, engine tests on Windows, quickstart verifications across Ubuntu, Windows, macOS).
+  - `cargo-deny` (run 43610391491): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43610391507): **SUCCESS** (both Ubuntu and Windows jobs green).
+  - `wasm-dist` (run 43610391517): **SUCCESS** (snapshot build and smoke test green).
 - **Local Verification**:
   - `cargo fmt --all --check`: passed
   - `cargo clippy -p s3a-harness -p s3a-sandbox --no-deps --all-targets -- -D warnings`: passed
