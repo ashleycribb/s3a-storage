@@ -229,3 +229,28 @@ Notes:
   4. Missing fields report "Not recorded" instead of sample/mock placeholders.
   5. Added comprehensive anti-fabrication test suite asserting no hardcoded demo strings remain in viewer.rs and proving that two distinct vaults produce distinct properties.
   6. Preserved non-developer friendly summaries, the "Advanced Details" toggle, and read-only MCP tool behavior.
+
+---
+
+## 007-followup-status-badges, 2026-11-14 15:13
+Status: done
+Commit: 3150c5d
+Changed: crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo test -p s3a-harness --test viewer_mcp_tests: passed (12/12 tests passed)
+  - cargo test -p s3a-harness: passed (all 20 unit tests + 11 integration test suites passed)
+  - cargo test --workspace: passed
+  - GitHub Actions runs on 3150c5d:
+    - rust-ci (run 43636036410): success (all 13/13 jobs passed)
+    - cargo-deny (run 43636036345): success (advisories ok, bans ok, licenses ok, sources ok)
+    - S3A Research Agent Harness CI (run 43636036356): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43636068347): success
+Notes:
+  1. Implemented cryptographic seal and digital vault verification in `check_archive_verification(path)` in `crates/s3a-harness/src/viewer.rs` using `s3a_engine::verify_sealed_archive` and `s3a_vault::Vault::open` / `verify_records`.
+  2. "Verified" status badge is strictly conditioned on cryptographic verification; unverified or unsigned files display "Not verified".
+  3. "Researcher Approved" is strictly conditioned on latest human decision verb being an approval/include; rejections display "Researcher Excluded"; unrecorded decisions display "No researcher decision recorded".
+  4. Removed "Approved by Snapshot Sealer"; sealed archives display "Sealed (signature verified)" or "Sealed (signature not verified)".
+  5. Applied identical verification and approval status rules across `ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, and `ManifestFallbackViewPack`.
+  6. Added test coverage in `viewer_mcp_tests.rs`: `test_unsigned_vault_shows_not_verified`, `test_tampered_seal_shows_not_verified`, and `test_reject_decision_never_shows_approved`. All CI workflows green.

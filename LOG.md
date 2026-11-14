@@ -318,3 +318,36 @@
    - `cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings`: passed
    - `cargo test -p s3a-harness --test viewer_mcp_tests`: 9/9 tests passed
    - `cargo test --workspace`: all passed
+
+---
+
+## Prompt 007 Follow-Up: Cryptographic Seal Verification & Human Approval Status Badges
+
+- **Status**: ALL SUCCESS
+- **Commit**: `3150c5d`
+- **CI Verification on 3150c5d**:
+  - `rust-ci` (run 43636036410): **SUCCESS** (13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, Windows/macOS/Ubuntu runners, clippy, spec vectors, wasm snapshot).
+  - `cargo-deny` (run 43636036345): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43636036356): **SUCCESS** (both `windows-latest` and `ubuntu-latest` jobs passed).
+  - `wasm-dist` (run 43636068347): **SUCCESS** (build, test, publish, attestation green).
+- **Summary of Deliverables**:
+1. **Cryptographic Seal & Manifest Verification Helper**:
+   - Created `check_archive_verification(path: &Path) -> (bool, bool)` in `crates/s3a-harness/src/viewer.rs`.
+   - Inspects candidate endcaps (`SEALED_ENDCAP_MAGIC_V1`, `SEALED_ENDCAP_MAGIC_V2`, `S3AEND`).
+   - Uses `s3a_engine::verify_sealed_archive(path, None)` to verify seal hash, index integrity, and parity; flags any corruption or rebuilt directories.
+   - For unsealed digital vaults, validates signatures via `s3a_vault::Vault::open` and `vault.verify_records().all_ok()`.
+2. **Rule 1: "Verified" Only When Verified**:
+   - Status badge shows `"Verified"` strictly when manifest/seal cryptographic signature is verified; otherwise displays `"Not verified"`.
+3. **Rule 2: Accurate Human Decision & Exclusion Tracking**:
+   - Status badge and human approval show `"Researcher Approved"` strictly when the latest human decision record's verb is an approval/include (`VERB_ID_APPROVED`, `VERB_ID_TA_APPROVED_DRAFT`, `VERB_ID_ACCEPTED`, `VERB_ID_SAVED`, or decision score >= 0.70).
+   - Shows rejections as `"Researcher Excluded"` (`VERB_ID_REJECTED`, `VERB_ID_REMOVED`, `VERB_ID_CONSENT_DECLINED`, or decision score < 0.50).
+   - If no human decision is recorded, displays `"No researcher decision recorded"`.
+4. **Rule 3: Removed Bogus "Approved by Snapshot Sealer"**:
+   - Replaced with factual seal signature verification status: `"Sealed (signature verified)"` or `"Sealed (signature not verified)"`.
+5. **Rule 4: Multi-Pack Consistency across TDP and Aura**:
+   - Applied identical verification and approval rules to `TechnicalDataViewPack`, `AuraBackupViewPack`, and `ManifestFallbackViewPack`.
+   - `ViewerApprovalStatus` (`extract_approval`) enforces `is_approved = false` whenever tampered or rejected.
+6. **Rule 5: Verification & Anti-Fabrication Test Suite**:
+   - `test_unsigned_vault_shows_not_verified`: verifies an unsigned digital vault displays `status_badge: "Not verified"`, `human_approval: "No researcher decision recorded"`, and `is_approved: false`.
+   - `test_tampered_seal_shows_not_verified`: verifies clean sealed archive shows `"Verified"` and `"Sealed (signature verified)"`, and that tampering a byte causes it to show `status_badge: "Not verified"`, `human_approval: "Sealed (signature not verified)"`, and `is_approved: false`.
+   - `test_reject_decision_never_shows_approved`: verifies rejected decision (via `VERB_ID_REJECTED` and low decision score) displays `"Researcher Excluded"`, sets `is_approved: false`, and never contains `"Approved"`.
