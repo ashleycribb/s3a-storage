@@ -205,3 +205,22 @@ Notes:
   4. Built `RecordViewPack` trait and 4 auto-selecting domain packs: Scholar research (`s3a-pack-scholar`), technical data package (`s3a-pack-tdp`), backups/devices (Aura), and plain-text fallback manifest.
   5. Guaranteed non-developer accessibility: human summary strictly hides all CLI invocations, tile IDs, and S3A-QL queries; technical diagnostics are isolated behind an "Advanced" toggle.
   6. Used Vercel UI Web Components adapter tokens and WAI-ARIA keyboard/focus selection in tree view (`ArrowUp`, `ArrowDown`, `Enter`, `Space`, `aria-selected`, `aria-expanded`).
+
+---
+
+## 007-fix-real-data-viewer, 2026-11-14 14:25
+Status: done
+Commit: HEAD
+Changed: crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo test -p s3a-harness --test viewer_mcp_tests: passed (9/9 tests passed, including anti-fabrication tests)
+  - cargo test --workspace: passed
+Notes:
+  1. Removed all hardcoded mock content ("Multidimensional Spatial Hyper-Tile Architecture", "Dr. A. Cribb", "part_piston", "ASM-704", static SVGs, mock figures/tables, fake nodes) from crates/s3a-harness/src/viewer.rs.
+  2. Implemented dynamic extraction across all 4 domain packs: Scholar research decodes real hyper-tiles 10..=15, 20, 32; TDP decodes STEP AP242 models and PDF metadata; Aura decodes telemetry and wearable tiles; Manifest fallback inspects raw headers.
+  3. Dynamic node IDs come directly from file content (e.g. paper_170603762, asm_ASM-1000, part_SHAFT-001).
+  4. Missing fields report "Not recorded" instead of sample/mock placeholders.
+  5. Added comprehensive anti-fabrication test suite asserting no hardcoded demo strings remain in viewer.rs and proving that two distinct vaults produce distinct properties.
+  6. Preserved non-developer friendly summaries, the "Advanced Details" toggle, and read-only MCP tool behavior.

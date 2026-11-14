@@ -9,8 +9,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+use s3a_core::document::{DocumentRecordHeader, DOC_KIND_BINARY};
 use s3a_core::TileType;
 use s3a_engine::MmapReader;
+use s3a_pack_scholar::{
+    AcademicPaperRecord, AiTraceRecord, CitationFingerprintRecord, HumanLrsRecord,
+    ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType, SrsManifestHeader,
+    SrsWorkspaceRecord,
+};
+use s3a_pack_tdp::pdf::extract_pdf_metadata;
+use s3a_pack_tdp::step::{parse_step, StepAssemblyTree};
 use s3a_vcs::repo::VcsRepo;
 
 // =============================================================================
@@ -139,7 +147,7 @@ pub trait RecordViewPack: Send + Sync {
 // Common Helpers
 // -----------------------------------------------------------------------------
 
-fn compute_file_sha256(path: &Path) -> String {
+pub fn compute_file_sha256(path: &Path) -> String {
     if let Ok(bytes) = std::fs::read(path) {
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
@@ -149,7 +157,7 @@ fn compute_file_sha256(path: &Path) -> String {
     }
 }
 
-fn extract_vcs_history(path: &Path) -> ViewerHistory {
+pub fn extract_vcs_history(path: &Path) -> ViewerHistory {
     if let Ok(repo) = VcsRepo::open(path) {
         let branch = repo
             .get_ref("main")
@@ -161,13 +169,18 @@ fn extract_vcs_history(path: &Path) -> ViewerHistory {
             let entries = commits
                 .into_iter()
                 .map(|c| ViewerCommitEntry {
-                    commit_id: hex::encode(&c.commit_id[..8]),
+                    commit_id: hex::encode(&c.commit_id[..8.min(c.commit_id.len())]),
                     parent_id: if c.parent_count > 0 {
-                        Some(hex::encode(&c.parent_seal_hashes[0][..8]))
+                        Some(hex::encode(
+                            &c.parent_seal_hashes[0][..8.min(c.parent_seal_hashes[0].len())],
+                        ))
                     } else {
                         None
                     },
-                    author: format!("0x{}", hex::encode(&c.author_pubkey[..4])),
+                    author: format!(
+                        "0x{}",
+                        hex::encode(&c.author_pubkey[..4.min(c.author_pubkey.len())])
+                    ),
                     timestamp: c.committed_timestamp,
                     message: c.message().to_string(),
                 })
@@ -180,20 +193,11 @@ fn extract_vcs_history(path: &Path) -> ViewerHistory {
     }
     ViewerHistory {
         branch: "main".to_string(),
-        commits: vec![ViewerCommitEntry {
-            commit_id: "genesis".to_string(),
-            parent_id: None,
-            author: "S3A Storage System".to_string(),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            message: "Initial container seal".to_string(),
-        }],
+        commits: vec![],
     }
 }
 
-fn extract_common_advanced(reader: &MmapReader, path: &Path) -> ViewerAdvancedDetails {
+pub fn extract_common_advanced(reader: &MmapReader, path: &Path) -> ViewerAdvancedDetails {
     let tile_count = reader.tile_count() as usize;
     let mut tile_types = Vec::new();
     let mut coordinates = Vec::new();
@@ -240,13 +244,210 @@ fn extract_common_advanced(reader: &MmapReader, path: &Path) -> ViewerAdvancedDe
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ParsedDocRecord {
+    pub doc_kind: u32,
+    pub key: String,
+    pub content: Vec<u8>,
+    pub timestamp_ms: u64,
+}
+
+pub fn extract_document_records(reader: &MmapReader) -> Vec<ParsedDocRecord> {
+    let mut docs = Vec::new();
+    let tile_count = reader.tile_count() as usize;
+    for i in 0..tile_count {
+        if let Some((hdr, payload)) = reader.get_tile(i) {
+            let actual_len = (hdr.payload_bytes as usize).min(payload.len());
+            let tile_bytes = &payload[..actual_len];
+
+            if (hdr.tile_type == TileType::DOCUMENT_STORE
+                || hdr.tile_type == TileType::ATTACHMENT_BLOB)
+                && tile_bytes.len() >= 64
+            {
+                let doc_hdr: DocumentRecordHeader = *bytemuck::from_bytes(&tile_bytes[..64]);
+                let key_len = doc_hdr.key_len as usize;
+                let content_len = doc_hdr.content_len as usize;
+                if 64 + key_len <= tile_bytes.len() {
+                    let key = String::from_utf8_lossy(&tile_bytes[64..64 + key_len]).to_string();
+                    let content_end = (64 + key_len + content_len).min(tile_bytes.len());
+                    let content = tile_bytes[64 + key_len..content_end].to_vec();
+                    docs.push(ParsedDocRecord {
+                        doc_kind: doc_hdr.doc_kind,
+                        key,
+                        content,
+                        timestamp_ms: doc_hdr.timestamp_ms,
+                    });
+                    continue;
+                }
+            }
+
+            // Also check for raw STEP or PDF written directly into tile
+            if tile_bytes.starts_with(b"ISO-10303-21;") || tile_bytes.starts_with(b"/*") {
+                let s = String::from_utf8_lossy(tile_bytes);
+                if s.contains("ISO-10303-21;") {
+                    docs.push(ParsedDocRecord {
+                        doc_kind: DOC_KIND_BINARY,
+                        key: format!("step_model_{}.step", i),
+                        content: tile_bytes.to_vec(),
+                        timestamp_ms: 0,
+                    });
+                }
+            } else if tile_bytes.starts_with(b"%PDF") {
+                docs.push(ParsedDocRecord {
+                    doc_kind: DOC_KIND_BINARY,
+                    key: format!("drawing_{}.pdf", i),
+                    content: tile_bytes.to_vec(),
+                    timestamp_ms: 0,
+                });
+            }
+        }
+    }
+    docs
+}
+
 // =============================================================================
 // View Pack 1: Research View (s3a-pack-scholar)
 // =============================================================================
 
-const SVG_RESEARCH_FIG1: &str = r###"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300" width="100%" height="240"><rect width="100%" height="100%" fill="#0a0a0a" rx="8"/><circle cx="150" cy="150" r="80" fill="none" stroke="#0070f3" stroke-width="3"/><rect x="350" y="70" width="160" height="160" fill="none" stroke="#7928ca" stroke-width="3" rx="12"/><line x1="230" y1="150" x2="350" y2="150" stroke="#50e3c2" stroke-width="2" stroke-dasharray="6,6"/><text x="150" y="155" fill="#ffffff" font-family="sans-serif" font-size="14" text-anchor="middle">Hilbert L0 Space</text><text x="430" y="155" fill="#ffffff" font-family="sans-serif" font-size="14" text-anchor="middle">Hyper-Tile Mesh</text><text x="290" y="140" fill="#50e3c2" font-family="sans-serif" font-size="11" text-anchor="middle">O(1) Transform</text></svg>"###;
+#[derive(Default)]
+struct DecodedScholarData {
+    pub manifest: Option<SrsManifestHeader>,
+    pub workspace: Option<SrsWorkspaceRecord>,
+    pub papers: Vec<AcademicPaperRecord>,
+    pub edges: Vec<ResearchGraphEdgeRecord>,
+    pub claims: Vec<ScholarNoteClaimRecord>,
+    pub citations: Vec<CitationFingerprintRecord>,
+    pub human_decisions: Vec<HumanLrsRecord>,
+    pub ai_traces: Vec<AiTraceRecord>,
+    pub raw_json_tiles: Vec<(usize, serde_json::Value)>,
+    pub documents: Vec<ParsedDocRecord>,
+}
 
-const SVG_RESEARCH_FIG2: &str = r###"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300" width="100%" height="240"><rect width="100%" height="100%" fill="#0a0a0a" rx="8"/><path d="M 50 250 L 150 180 L 250 210 L 350 120 L 450 140 L 550 50" fill="none" stroke="#0070f3" stroke-width="3"/><path d="M 50 250 L 150 220 L 250 200 L 350 170 L 450 160 L 550 130" fill="none" stroke="#ff0080" stroke-width="2" stroke-dasharray="4,4"/><text x="80" y="40" fill="#ffffff" font-family="sans-serif" font-size="14">Throughput Scaling vs Data Density</text><text x="480" y="70" fill="#0070f3" font-family="sans-serif" font-size="12">S3A Engine</text><text x="480" y="145" fill="#ff0080" font-family="sans-serif" font-size="12">Traditional B-Tree</text></svg>"###;
+fn decode_scholar_data(reader: &MmapReader) -> DecodedScholarData {
+    let mut manifest = None;
+    let mut workspace = None;
+    let mut papers = Vec::new();
+    let mut edges = Vec::new();
+    let mut claims = Vec::new();
+    let mut citations = Vec::new();
+    let mut human_decisions = Vec::new();
+    let mut ai_traces = Vec::new();
+    let mut raw_json_tiles = Vec::new();
+
+    let tile_count = reader.tile_count() as usize;
+    for i in 0..tile_count {
+        if let Some((hdr, payload)) = reader.get_tile(i) {
+            let actual_bytes = (hdr.payload_bytes as usize).min(payload.len());
+            let tile_bytes = &payload[..actual_bytes];
+            match hdr.tile_type {
+                ScholarTileType::SRS_MANIFEST => {
+                    if let Ok(recs) = bytemuck::try_cast_slice::<u8, SrsManifestHeader>(tile_bytes)
+                    {
+                        if let Some(&m) = recs.first() {
+                            manifest = Some(m);
+                        }
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::SRS_WORKSPACE => {
+                    if let Ok(recs) = bytemuck::try_cast_slice::<u8, SrsWorkspaceRecord>(tile_bytes)
+                    {
+                        if let Some(&w) = recs.first() {
+                            workspace = Some(w);
+                        }
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::ACADEMIC_PAPERS => {
+                    if let Ok(recs) =
+                        bytemuck::try_cast_slice::<u8, AcademicPaperRecord>(tile_bytes)
+                    {
+                        papers.extend_from_slice(recs);
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::RESEARCH_GRAPH => {
+                    if let Ok(recs) =
+                        bytemuck::try_cast_slice::<u8, ResearchGraphEdgeRecord>(tile_bytes)
+                    {
+                        edges.extend_from_slice(recs);
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::NOTE_CLAIMS => {
+                    if let Ok(recs) =
+                        bytemuck::try_cast_slice::<u8, ScholarNoteClaimRecord>(tile_bytes)
+                    {
+                        claims.extend_from_slice(recs);
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::CITATION_FINGERPRINT => {
+                    if let Ok(recs) =
+                        bytemuck::try_cast_slice::<u8, CitationFingerprintRecord>(tile_bytes)
+                    {
+                        citations.extend_from_slice(recs);
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::HUMAN_LRS => {
+                    if !tile_bytes.starts_with(b"{") {
+                        if let Ok(recs) = bytemuck::try_cast_slice::<u8, HumanLrsRecord>(tile_bytes)
+                        {
+                            human_decisions.extend_from_slice(recs);
+                        }
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                ScholarTileType::AI_TRACE_LOG => {
+                    if !tile_bytes.starts_with(b"{") {
+                        if let Ok(recs) = bytemuck::try_cast_slice::<u8, AiTraceRecord>(tile_bytes)
+                        {
+                            ai_traces.extend_from_slice(recs);
+                        }
+                    } else if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes)
+                    {
+                        raw_json_tiles.push((i, val));
+                    }
+                }
+                _ => {
+                    if (10..=15).contains(&hdr.tile_type) {
+                        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes) {
+                            raw_json_tiles.push((i, val));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let documents = extract_document_records(reader);
+    DecodedScholarData {
+        manifest,
+        workspace,
+        papers,
+        edges,
+        claims,
+        citations,
+        human_decisions,
+        ai_traces,
+        raw_json_tiles,
+        documents,
+    }
+}
 
 pub struct ScholarResearchViewPack;
 
@@ -262,7 +463,10 @@ impl RecordViewPack for ScholarResearchViewPack {
     fn matches(&self, reader: &MmapReader) -> bool {
         for i in 0..reader.tile_count() as usize {
             if let Some((hdr, _)) = reader.get_tile(i) {
-                if (10..=15).contains(&hdr.tile_type) {
+                if (10..=15).contains(&hdr.tile_type)
+                    || hdr.tile_type == ScholarTileType::NOTE_CLAIMS
+                    || hdr.tile_type == ScholarTileType::CITATION_FINGERPRINT
+                {
                     return true;
                 }
             }
@@ -272,42 +476,124 @@ impl RecordViewPack for ScholarResearchViewPack {
 
     fn extract_summary(&self, reader: &MmapReader, path: &Path) -> Result<ViewerSummary, String> {
         let advanced = extract_common_advanced(reader, path);
-        let title = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-            .replace('_', " ");
-        let key_stats = vec![
+        let data = decode_scholar_data(reader);
+
+        let title = if let Some((_, ref val)) = data.raw_json_tiles.first() {
+            val.get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                        .replace('_', " ")
+                })
+        } else if let Some(p) = data.papers.first() {
+            if data.papers.len() == 1 {
+                format!("Academic Paper 0x{:016x}", p.paper_id)
+            } else {
+                format!("Scholar Literature Corpus ({} Papers)", data.papers.len())
+            }
+        } else {
+            path.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+                .replace('_', " ")
+        };
+
+        let title = if title.is_empty() {
+            "Not recorded".to_string()
+        } else {
+            title
+        };
+
+        let subtitle = if let Some(w) = data.workspace {
+            format!(
+                "Research Workspace Context (Project {:016x})",
+                w.project_uuid[0]
+            )
+        } else if let Some(m) = data.manifest {
+            format!("Research Snapshot (Lineage {:016x})", m.snapshot_uuid[0])
+        } else {
+            "Scholar Research & Epistemic Verification Container".to_string()
+        };
+
+        let description = if let Some((_, ref val)) = data.raw_json_tiles.first() {
+            val.get("abstract")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "Scholar container containing {} academic papers, {} evidence claims, {} graph edges, and {} human audit entries.",
+                        data.papers.len(),
+                        data.claims.len(),
+                        data.edges.len(),
+                        data.human_decisions.len()
+                    )
+                })
+        } else {
+            format!(
+                "Scholar container containing {} academic papers, {} evidence claims, {} graph edges, and {} human audit entries.",
+                data.papers.len(),
+                data.claims.len(),
+                data.edges.len(),
+                data.human_decisions.len()
+            )
+        };
+
+        let status_badge = if data.manifest.is_some() {
+            "Verified Research Snapshot".to_string()
+        } else if !data.human_decisions.is_empty() {
+            "Researcher Approved".to_string()
+        } else {
+            "Verified Research".to_string()
+        };
+
+        let human_approval = if let Some(h) = data.human_decisions.first() {
+            format!("Approved by Researcher 0x{:08x}", h.actor_hash & 0xFFFFFFFF)
+        } else if data.manifest.is_some() {
+            "Approved by Snapshot Sealer".to_string()
+        } else {
+            "Not recorded".to_string()
+        };
+
+        let mut key_stats = vec![
             (
-                "Document Type".to_string(),
-                "Academic Research Publication".to_string(),
+                "Academic Papers".to_string(),
+                format!("{} Works", data.papers.len()),
             ),
-            ("Sections".to_string(), "5 Structured Sections".to_string()),
             (
-                "Figures & Tables".to_string(),
-                "2 Figures, 1 Benchmark Table".to_string(),
+                "Research Claims".to_string(),
+                format!("{} Claims", data.claims.len()),
             ),
             (
-                "References".to_string(),
-                "18 Verified Citations".to_string(),
+                "Graph Relations".to_string(),
+                format!("{} Edges", data.edges.len()),
             ),
             (
-                "Completeness".to_string(),
-                "100% Artifact Replication".to_string(),
+                "Human Audit".to_string(),
+                format!("{} Statements", data.human_decisions.len()),
+            ),
+            (
+                "AI Trace Steps".to_string(),
+                format!("{} Steps", data.ai_traces.len()),
             ),
         ];
+        if let Some(m) = data.manifest {
+            key_stats.push((
+                "Container Lineage".to_string(),
+                format!("Total {} Records", m.total_records),
+            ));
+        }
 
         Ok(ViewerSummary {
-            title: if title.is_empty() {
-                "Academic Research Record".to_string()
-            } else {
-                title
-            },
-            subtitle: "Peer-Reviewed Study & Reproducible Synthesis Container".to_string(),
-            description: "Complete scholar research bundle containing paper manuscript, verified citation evidence graph, methodology specifications, and autonomous agent evaluation logs.".to_string(),
-            status_badge: "Verified Research".to_string(),
-            human_approval: "Approved by Principal Investigator".to_string(),
+            title,
+            subtitle,
+            description,
+            status_badge,
+            human_approval,
             view_pack_name: self.display_name().to_string(),
             key_stats,
             advanced,
@@ -316,238 +602,563 @@ impl RecordViewPack for ScholarResearchViewPack {
 
     fn extract_tree(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
     ) -> Result<Vec<ViewerTreeNode>, String> {
-        Ok(vec![
-            ViewerTreeNode {
-                id: "manuscript_root".to_string(),
-                label: "Research Manuscript".to_string(),
+        let data = decode_scholar_data(reader);
+        let mut root_children = Vec::new();
+
+        // 1. Papers
+        for p in &data.papers {
+            let paper_node_id = format!("paper_{}", p.paper_id);
+            let label = format!(
+                "Academic Paper 0x{:016x} (Year: {})",
+                p.paper_id,
+                if p.year > 0 {
+                    p.year.to_string()
+                } else {
+                    "Not recorded".to_string()
+                }
+            );
+            root_children.push(ViewerTreeNode {
+                id: paper_node_id,
+                label,
+                icon: "book".to_string(),
+                node_type: "paper".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        // 2. Claims
+        if !data.claims.is_empty() {
+            let mut claim_children = Vec::new();
+            for c in &data.claims {
+                claim_children.push(ViewerTreeNode {
+                    id: format!("claim_{}", c.claim_id),
+                    label: format!("Claim 0x{:08x} ({})", c.claim_id & 0xFFFFFFFF, c.kind_str()),
+                    icon: "shield-check".to_string(),
+                    node_type: "claim".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+            root_children.push(ViewerTreeNode {
+                id: "claims_group".to_string(),
+                label: format!("Empirical Claims & Evidence ({})", data.claims.len()),
+                icon: "check-circle".to_string(),
+                node_type: "group".to_string(),
+                has_preview: true,
+                children: claim_children,
+            });
+        }
+
+        // 3. Citations
+        if !data.citations.is_empty() {
+            let mut cit_children = Vec::new();
+            for cf in &data.citations {
+                cit_children.push(ViewerTreeNode {
+                    id: format!("citation_{}", cf.paper_id),
+                    label: format!(
+                        "Citation Fingerprint (Paper 0x{:08x})",
+                        cf.paper_id & 0xFFFFFFFF
+                    ),
+                    icon: "file-check".to_string(),
+                    node_type: "citation".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+            root_children.push(ViewerTreeNode {
+                id: "citations_group".to_string(),
+                label: format!("Citation Evidence Ledger ({})", data.citations.len()),
+                icon: "bookmark".to_string(),
+                node_type: "group".to_string(),
+                has_preview: true,
+                children: cit_children,
+            });
+        }
+
+        // 4. Raw JSON tiles (e.g. title, abstract, sections)
+        for (tile_idx, val) in &data.raw_json_tiles {
+            let title_str = val
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("Scholar Document");
+            let mut tile_children = Vec::new();
+            if let Some(obj) = val.as_object() {
+                for (k, v) in obj {
+                    let v_str = v.as_str().unwrap_or("");
+                    let label_preview = if v_str.len() > 30 {
+                        format!("{}: {}...", k, &v_str[..27])
+                    } else if !v_str.is_empty() {
+                        format!("{}: {}", k, v_str)
+                    } else {
+                        k.clone()
+                    };
+                    tile_children.push(ViewerTreeNode {
+                        id: format!("json_tile_{}_{}", tile_idx, k),
+                        label: label_preview,
+                        icon: "file-text".to_string(),
+                        node_type: "section".to_string(),
+                        has_preview: true,
+                        children: vec![],
+                    });
+                }
+            }
+            root_children.push(ViewerTreeNode {
+                id: format!("json_tile_{}", tile_idx),
+                label: title_str.to_string(),
                 icon: "book".to_string(),
                 node_type: "document".to_string(),
                 has_preview: true,
-                children: vec![
-                    ViewerTreeNode {
-                        id: "sec_abstract".to_string(),
-                        label: "Abstract".to_string(),
-                        icon: "file-text".to_string(),
-                        node_type: "section".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "sec_intro".to_string(),
-                        label: "1. Introduction & Problem Framing".to_string(),
-                        icon: "file-text".to_string(),
-                        node_type: "section".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "sec_method".to_string(),
-                        label: "2. Methodology & Spatial Geometry".to_string(),
-                        icon: "file-text".to_string(),
-                        node_type: "section".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "sec_results".to_string(),
-                        label: "3. Empirical Results & Synthesis Matrix".to_string(),
-                        icon: "file-text".to_string(),
-                        node_type: "section".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                ],
-            },
-            ViewerTreeNode {
-                id: "figures_root".to_string(),
-                label: "Figures & Visualizations".to_string(),
-                icon: "image".to_string(),
+                children: tile_children,
+            });
+        }
+
+        // 4. Graph relations
+        if !data.edges.is_empty() {
+            let mut edge_children = Vec::new();
+            for e in data.edges.iter().take(20) {
+                edge_children.push(ViewerTreeNode {
+                    id: format!("edge_{}_{}", e.subject_hash, e.object_hash),
+                    label: format!(
+                        "Relation: 0x{:08x} -> 0x{:08x}",
+                        e.subject_hash & 0xFFFFFFFF,
+                        e.object_hash & 0xFFFFFFFF
+                    ),
+                    icon: "link".to_string(),
+                    node_type: "relation".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+            root_children.push(ViewerTreeNode {
+                id: "graph_edges".to_string(),
+                label: format!("Research Knowledge Graph ({} relations)", data.edges.len()),
+                icon: "share-2".to_string(),
                 node_type: "group".to_string(),
                 has_preview: true,
-                children: vec![
-                    ViewerTreeNode {
-                        id: "fig_1".to_string(),
-                        label: "Figure 1: Multidimensional Spatial Architecture".to_string(),
-                        icon: "image".to_string(),
-                        node_type: "figure".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "fig_2".to_string(),
-                        label: "Figure 2: Hilbert Space-Filling Curve Benchmarks".to_string(),
-                        icon: "image".to_string(),
-                        node_type: "figure".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                ],
-            },
-            ViewerTreeNode {
-                id: "tables_root".to_string(),
-                label: "Tables & Citations".to_string(),
-                icon: "table".to_string(),
+                children: edge_children,
+            });
+        }
+
+        // 5. Human decisions
+        if !data.human_decisions.is_empty() {
+            let mut h_children = Vec::new();
+            for h in data.human_decisions.iter().take(20) {
+                h_children.push(ViewerTreeNode {
+                    id: format!("lrs_{}_{}", h.actor_hash, h.timestamp_sec),
+                    label: format!(
+                        "Human Decision: Actor 0x{:08x} (Verb: {})",
+                        h.actor_hash & 0xFFFFFFFF,
+                        h.verb_id
+                    ),
+                    icon: "user-check".to_string(),
+                    node_type: "lrs".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+            root_children.push(ViewerTreeNode {
+                id: "human_audit_group".to_string(),
+                label: format!(
+                    "Human Gating & Decision Ledger ({})",
+                    data.human_decisions.len()
+                ),
+                icon: "shield".to_string(),
                 node_type: "group".to_string(),
                 has_preview: true,
-                children: vec![
-                    ViewerTreeNode {
-                        id: "tab_1".to_string(),
-                        label: "Table 1: IOPS & Memory Bounds Across Frameworks".to_string(),
-                        icon: "table".to_string(),
-                        node_type: "table".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "citations".to_string(),
-                        label: "Bibliography & Evidence Ledger".to_string(),
-                        icon: "link".to_string(),
-                        node_type: "references".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                ],
-            },
-            ViewerTreeNode {
-                id: "provenance".to_string(),
-                label: "Audit Trail & LRS Provenance".to_string(),
-                icon: "shield-check".to_string(),
-                node_type: "provenance".to_string(),
+                children: h_children,
+            });
+        }
+
+        // 6. Stored documents
+        for d in &data.documents {
+            root_children.push(ViewerTreeNode {
+                id: format!("doc_{}", d.key),
+                label: d.key.clone(),
+                icon: "file".to_string(),
+                node_type: "document".to_string(),
                 has_preview: true,
                 children: vec![],
-            },
-        ])
+            });
+        }
+
+        if root_children.is_empty() {
+            root_children.push(ViewerTreeNode {
+                id: "scholar_root".to_string(),
+                label: "Scholar Research Container".to_string(),
+                icon: "book".to_string(),
+                node_type: "document".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        Ok(root_children)
     }
 
     fn extract_properties(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerProperties, String> {
-        let (label, props, adv) = match node_id {
-            "sec_abstract" | "manuscript_root" => (
-                "Manuscript Overview",
-                vec![
-                    (
-                        "Title".to_string(),
-                        "Multidimensional Spatial Hyper-Tile Architecture".to_string(),
-                    ),
-                    ("Lead Author".to_string(), "Dr. A. Cribb et al.".to_string()),
-                    ("Publication Year".to_string(), "2026".to_string()),
-                    (
-                        "Venue".to_string(),
-                        "ACM Transactions on Storage Systems (TOS)".to_string(),
-                    ),
-                    ("License".to_string(), "Open Access (CC-BY-4.0)".to_string()),
-                ],
-                vec![
-                    (
-                        "Tile Allocation".to_string(),
-                        "Tiles 10..=15 (Scholar Pack)".to_string(),
-                    ),
-                    (
-                        "Encoding".to_string(),
-                        "UTF-8 Normalized Markdown / LaTeX".to_string(),
-                    ),
-                ],
-            ),
-            "fig_1" | "fig_2" => (
-                "Figure Specification",
-                vec![
-                    (
-                        "Type".to_string(),
-                        "Scalable Vector Graphics (SVG)".to_string(),
-                    ),
-                    (
-                        "Color Space".to_string(),
-                        "sRGB Accessible High-Contrast".to_string(),
-                    ),
-                    (
-                        "Resolution".to_string(),
-                        "Vector (Infinite DPI)".to_string(),
-                    ),
-                ],
-                vec![
-                    (
-                        "Tile Type".to_string(),
-                        "Tile 24 (Attachment Blob)".to_string(),
-                    ),
-                    (
-                        "Compression".to_string(),
-                        "Raw Uncompressed SVG".to_string(),
-                    ),
-                ],
-            ),
-            "tab_1" => (
-                "Benchmark Data Table",
-                vec![
-                    (
-                        "Columns".to_string(),
-                        "System, Read IOPS, Write IOPS, p99 Latency".to_string(),
-                    ),
-                    ("Sample Count".to_string(), "1,000,000 queries".to_string()),
-                ],
-                vec![(
-                    "Tile Type".to_string(),
-                    "Tile 65 (Columnar Format)".to_string(),
-                )],
-            ),
-            _ => (
-                "Scholar Node Details",
-                vec![
-                    (
-                        "Item Type".to_string(),
-                        "Academic Research Node".to_string(),
-                    ),
-                    (
-                        "Integrity".to_string(),
-                        "Cryptographically Verified".to_string(),
-                    ),
-                ],
-                vec![("Internal Identifier".to_string(), node_id.to_string())],
-            ),
-        };
+        let data = decode_scholar_data(reader);
 
+        // 1. Paper lookup
+        if let Some(rest) = node_id.strip_prefix("paper_") {
+            let pid_u64 = rest.parse::<u64>().ok().or_else(|| {
+                rest.strip_prefix("0x")
+                    .and_then(|s| u64::from_str_radix(s, 16).ok())
+            });
+            if let Some(target_pid) = pid_u64 {
+                if let Some(p) = data.papers.iter().find(|p| p.paper_id == target_pid) {
+                    return Ok(ViewerProperties {
+                        node_id: node_id.to_string(),
+                        label: format!("Paper 0x{:016x}", p.paper_id),
+                        properties: vec![
+                            ("Paper ID".to_string(), format!("0x{:016x}", p.paper_id)),
+                            (
+                                "Publication Year".to_string(),
+                                if p.year > 0 {
+                                    p.year.to_string()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                            ("Citation Count".to_string(), p.citation_count.to_string()),
+                            (
+                                "Open Access".to_string(),
+                                if p.open_access_flag == 1 {
+                                    "Yes".to_string()
+                                } else if p.open_access_flag == 0 {
+                                    "No".to_string()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                            (
+                                "Venue ID".to_string(),
+                                if p.venue_id > 0 {
+                                    p.venue_id.to_string()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                            (
+                                "Provenance Warnings".to_string(),
+                                p.warning_count.to_string(),
+                            ),
+                        ],
+                        advanced_properties: vec![
+                            (
+                                "Hilbert Curve Index".to_string(),
+                                format!("0x{:016x}", p.hilbert_index),
+                            ),
+                            (
+                                "Topic Coordinates (X, Y, Z)".to_string(),
+                                format!("({:.4}, {:.4}, {:.4})", p.topic_x, p.topic_y, p.topic_z),
+                            ),
+                            (
+                                "DOI Prefix Hash".to_string(),
+                                if p.doi_prefix_hash > 0 {
+                                    format!("0x{:016x}", p.doi_prefix_hash)
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                            ("Record Flags".to_string(), format!("0x{:016x}", p.flags)),
+                        ],
+                    });
+                }
+            }
+        }
+
+        // 2. Claim lookup
+        if let Some(rest) = node_id.strip_prefix("claim_") {
+            if let Ok(cid) = rest.parse::<u64>() {
+                if let Some(c) = data.claims.iter().find(|c| c.claim_id == cid) {
+                    return Ok(ViewerProperties {
+                        node_id: node_id.to_string(),
+                        label: format!("Evidence Claim 0x{:016x}", c.claim_id),
+                        properties: vec![
+                            ("Claim ID".to_string(), format!("0x{:016x}", c.claim_id)),
+                            ("Claim Kind".to_string(), c.kind_str().to_string()),
+                            (
+                                "Confidence Score".to_string(),
+                                format!("{:.2}", c.confidence),
+                            ),
+                            (
+                                "Author Hash".to_string(),
+                                format!("0x{:016x}", c.author_hash),
+                            ),
+                            (
+                                "Source Page".to_string(),
+                                if c.passage_page > 0 {
+                                    c.passage_page.to_string()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                        ],
+                        advanced_properties: vec![
+                            (
+                                "Quoted Passage Hash".to_string(),
+                                if c.quote_sha256 != [0u8; 32] {
+                                    c.quote_sha256_hex()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                            (
+                                "Keyword Bloom".to_string(),
+                                format!("0x{:08x}", c.keyword_bloom),
+                            ),
+                            ("Text Hash".to_string(), format!("0x{:08x}", c.text_hash)),
+                        ],
+                    });
+                }
+            }
+        }
+
+        // 3. Citation lookup
+        if let Some(rest) = node_id.strip_prefix("citation_") {
+            if let Ok(pid) = rest.parse::<u64>() {
+                if let Some(cf) = data.citations.iter().find(|cf| cf.paper_id == pid) {
+                    return Ok(ViewerProperties {
+                        node_id: node_id.to_string(),
+                        label: format!("Citation Fingerprint 0x{:016x}", cf.paper_id),
+                        properties: vec![
+                            (
+                                "Target Paper ID".to_string(),
+                                format!("0x{:016x}", cf.paper_id),
+                            ),
+                            ("DOI Hash".to_string(), format!("0x{:016x}", cf.doi_hash)),
+                            (
+                                "Content SHA-256".to_string(),
+                                hex::encode(cf.content_sha256),
+                            ),
+                            (
+                                "Fetched Timestamp".to_string(),
+                                if cf.fetched_at > 0 {
+                                    cf.fetched_at.to_string()
+                                } else {
+                                    "Not recorded".to_string()
+                                },
+                            ),
+                        ],
+                        advanced_properties: vec![
+                            (
+                                "Source URL Hash".to_string(),
+                                format!("0x{:016x}", cf.source_url_hash),
+                            ),
+                            ("Flags".to_string(), format!("0x{:016x}", cf.flags)),
+                        ],
+                    });
+                }
+            }
+        }
+
+        // 4. JSON tile lookup
+        if let Some(rest) = node_id.strip_prefix("json_tile_") {
+            let parts: Vec<&str> = rest.split('_').collect();
+            if let Ok(tile_idx) = parts[0].parse::<usize>() {
+                if let Some((_, val)) = data.raw_json_tiles.iter().find(|(idx, _)| *idx == tile_idx)
+                {
+                    if parts.len() > 1 {
+                        let field_key = parts[1..].join("_");
+                        let field_val = val
+                            .get(&field_key)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Not recorded");
+                        return Ok(ViewerProperties {
+                            node_id: node_id.to_string(),
+                            label: format!("Field: {}", field_key),
+                            properties: vec![
+                                ("Field Name".to_string(), field_key),
+                                ("Content".to_string(), field_val.to_string()),
+                            ],
+                            advanced_properties: vec![(
+                                "Tile Index".to_string(),
+                                tile_idx.to_string(),
+                            )],
+                        });
+                    } else if let Some(obj) = val.as_object() {
+                        let mut props = Vec::new();
+                        for (k, v) in obj {
+                            props.push((
+                                k.clone(),
+                                v.as_str().unwrap_or("Not recorded").to_string(),
+                            ));
+                        }
+                        return Ok(ViewerProperties {
+                            node_id: node_id.to_string(),
+                            label: format!("JSON Tile {}", tile_idx),
+                            properties: props,
+                            advanced_properties: vec![(
+                                "Tile Index".to_string(),
+                                tile_idx.to_string(),
+                            )],
+                        });
+                    }
+                }
+            }
+        }
+
+        // 4. Human Decision lookup
+        if node_id.starts_with("lrs_") {
+            if let Some(h) = data.human_decisions.first() {
+                return Ok(ViewerProperties {
+                    node_id: node_id.to_string(),
+                    label: format!("Human Decision (Actor 0x{:08x})", h.actor_hash & 0xFFFFFFFF),
+                    properties: vec![
+                        ("Actor Hash".to_string(), format!("0x{:016x}", h.actor_hash)),
+                        ("Verb ID".to_string(), h.verb_id.to_string()),
+                        (
+                            "Decision Score".to_string(),
+                            format!("{:.2}", h.decision_score),
+                        ),
+                        (
+                            "Timestamp".to_string(),
+                            if h.timestamp_sec > 0 {
+                                h.timestamp_sec.to_string()
+                            } else {
+                                "Not recorded".to_string()
+                            },
+                        ),
+                    ],
+                    advanced_properties: vec![
+                        (
+                            "Target Object Hash".to_string(),
+                            format!("0x{:08x}", h.object_hash),
+                        ),
+                        ("Flags".to_string(), format!("0x{:08x}", h.flags)),
+                    ],
+                });
+            }
+        }
+
+        // 5. Fallback properties
         Ok(ViewerProperties {
             node_id: node_id.to_string(),
-            label: label.to_string(),
-            properties: props,
-            advanced_properties: adv,
+            label: "Scholar Research Node".to_string(),
+            properties: vec![
+                (
+                    "Document Type".to_string(),
+                    "Scholar Research Corpus".to_string(),
+                ),
+                ("Papers Stored".to_string(), data.papers.len().to_string()),
+                ("Claims Stored".to_string(), data.claims.len().to_string()),
+                ("Relations Stored".to_string(), data.edges.len().to_string()),
+            ],
+            advanced_properties: vec![("Selected Node ID".to_string(), node_id.to_string())],
         })
     }
 
     fn extract_preview(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerPreview, String> {
-        match node_id {
-            "fig_1" => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "image/svg+xml".to_string(),
-                content: SVG_RESEARCH_FIG1.to_string(),
-            }),
-            "fig_2" => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "image/svg+xml".to_string(),
-                content: SVG_RESEARCH_FIG2.to_string(),
-            }),
-            "tab_1" => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "text/plain".to_string(),
-                content: "System             | Read IOPS  | Write IOPS | p99 Latency\n-------------------+------------+------------+------------\nS3A Hyper-Tile     | 1,420,000  | 890,000    | 12.4 us\nRocksDB LevelDB    |   410,000  | 320,000    | 88.1 us\nSQLite WAL         |   180,000  | 140,000    | 145.0 us\nParquet Flat File  |    95,000  |  12,000    | 850.0 us\n".to_string(),
-            }),
-            _ => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "text/plain".to_string(),
-                content: "ABSTRACT:\nWe present S3A, a spatial multidimensional hyper-tile storage engine designed for autonomous agent swarms and reproducible scientific workflows. By mapping high-dimensional state vectors directly to Skilling-transformed Hilbert curve indices, S3A achieves O(1) coordinate lookups while maintaining mathematical tamper evidence across zero-copy mmap partitions.\n\nEmpirical benchmarks across 21 test environments demonstrate up to 3.4x higher read throughput compared to conventional LSM trees without sacrificing byte-for-byte reproducibility.\n".to_string(),
-            }),
+        let data = decode_scholar_data(reader);
+
+        // 1. Paper preview
+        if let Some(rest) = node_id.strip_prefix("paper_") {
+            let pid_u64 = rest.parse::<u64>().ok().or_else(|| {
+                rest.strip_prefix("0x")
+                    .and_then(|s| u64::from_str_radix(s, 16).ok())
+            });
+            if let Some(target_pid) = pid_u64 {
+                if let Some(p) = data.papers.iter().find(|p| p.paper_id == target_pid) {
+                    let content = format!(
+                        "ACADEMIC PAPER RECORD\nPaper ID: {} (0x{:016x})\nPublication Year: {}\nCitation Count: {}\nOpen Access: {}\nVenue ID: {}\nTopic Centroid: ({:.4}, {:.4}, {:.4})\nHilbert Curve Index: 0x{:016x}\nFlags: 0x{:016x}\n",
+                        p.paper_id,
+                        p.paper_id,
+                        if p.year > 0 {
+                            p.year.to_string()
+                        } else {
+                            "Not recorded".to_string()
+                        },
+                        p.citation_count,
+                        if p.open_access_flag == 1 {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        if p.venue_id > 0 {
+                            p.venue_id.to_string()
+                        } else {
+                            "Not recorded".to_string()
+                        },
+                        p.topic_x,
+                        p.topic_y,
+                        p.topic_z,
+                        p.hilbert_index,
+                        p.flags
+                    );
+                    return Ok(ViewerPreview {
+                        node_id: node_id.to_string(),
+                        mime_type: "text/plain".to_string(),
+                        content,
+                    });
+                }
+            }
         }
+
+        // 2. JSON tile preview
+        if let Some(rest) = node_id.strip_prefix("json_tile_") {
+            let parts: Vec<&str> = rest.split('_').collect();
+            if let Ok(tile_idx) = parts[0].parse::<usize>() {
+                if let Some((_, val)) = data.raw_json_tiles.iter().find(|(idx, _)| *idx == tile_idx)
+                {
+                    if parts.len() > 1 {
+                        let field_key = parts[1..].join("_");
+                        let text = val
+                            .get(&field_key)
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Not recorded");
+                        return Ok(ViewerPreview {
+                            node_id: node_id.to_string(),
+                            mime_type: "text/plain".to_string(),
+                            content: text.to_string(),
+                        });
+                    } else {
+                        return Ok(ViewerPreview {
+                            node_id: node_id.to_string(),
+                            mime_type: "application/json".to_string(),
+                            content: serde_json::to_string_pretty(val).unwrap_or_default(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 3. Fallback preview
+        let summary_text = if let Some((_, ref val)) = data.raw_json_tiles.first() {
+            serde_json::to_string_pretty(val).unwrap_or_default()
+        } else if let Some(p) = data.papers.first() {
+            format!(
+                "Academic Paper Corpus\nPrimary Paper ID: 0x{:016x}\nYear: {}\nTotal Papers: {}\n",
+                p.paper_id,
+                if p.year > 0 {
+                    p.year.to_string()
+                } else {
+                    "Not recorded".to_string()
+                },
+                data.papers.len()
+            )
+        } else {
+            "Scholar research container. Select a record node on the left to inspect.".to_string()
+        };
+
+        Ok(ViewerPreview {
+            node_id: node_id.to_string(),
+            mime_type: "text/plain".to_string(),
+            content: summary_text,
+        })
     }
 
     fn extract_history(&self, _reader: &MmapReader, path: &Path) -> Result<ViewerHistory, String> {
@@ -556,17 +1167,49 @@ impl RecordViewPack for ScholarResearchViewPack {
 
     fn extract_approval(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         path: &Path,
     ) -> Result<ViewerApprovalStatus, String> {
-        Ok(ViewerApprovalStatus {
-            is_approved: true,
-            approved_by: Some("Dr. Jane Doe (Lead Reviewer)".to_string()),
-            approval_timestamp: Some(1794669000),
-            signature: Some("ed25519:7a8b9c...f0e1d2".to_string()),
-            fingerprint: compute_file_sha256(path),
-            requires_human_decision: false,
-        })
+        let data = decode_scholar_data(reader);
+        if let Some(h) = data.human_decisions.first() {
+            Ok(ViewerApprovalStatus {
+                is_approved: true,
+                approved_by: Some(format!("Human Researcher (Actor 0x{:016x})", h.actor_hash)),
+                approval_timestamp: if h.timestamp_sec > 0 {
+                    Some(h.timestamp_sec)
+                } else {
+                    None
+                },
+                signature: None,
+                fingerprint: compute_file_sha256(path),
+                requires_human_decision: false,
+            })
+        } else if let Some(m) = data.manifest {
+            Ok(ViewerApprovalStatus {
+                is_approved: true,
+                approved_by: Some(format!(
+                    "Snapshot Authority (UUID {:016x})",
+                    m.snapshot_uuid[0]
+                )),
+                approval_timestamp: if m.created_at_sec > 0 {
+                    Some(m.created_at_sec)
+                } else {
+                    None
+                },
+                signature: None,
+                fingerprint: compute_file_sha256(path),
+                requires_human_decision: false,
+            })
+        } else {
+            Ok(ViewerApprovalStatus {
+                is_approved: false,
+                approved_by: None,
+                approval_timestamp: None,
+                signature: None,
+                fingerprint: compute_file_sha256(path),
+                requires_human_decision: true,
+            })
+        }
     }
 }
 
@@ -574,7 +1217,44 @@ impl RecordViewPack for ScholarResearchViewPack {
 // View Pack 2: Technical Data Package (s3a-pack-tdp)
 // =============================================================================
 
-const SVG_TDP_PISTON: &str = r###"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300" width="100%" height="240"><rect width="100%" height="100%" fill="#0d1117" rx="8"/><path d="M 200 80 L 400 80 L 380 220 L 220 220 Z" fill="none" stroke="#58a6ff" stroke-width="3"/><line x1="200" y1="110" x2="400" y2="110" stroke="#388bfd" stroke-width="1.5"/><line x1="205" y1="130" x2="395" y2="130" stroke="#388bfd" stroke-width="1.5"/><line x1="210" y1="150" x2="390" y2="150" stroke="#388bfd" stroke-width="1.5"/><circle cx="300" cy="180" r="28" fill="none" stroke="#79c0ff" stroke-width="2"/><text x="300" y="55" fill="#f0f6fc" font-family="sans-serif" font-size="14" text-anchor="middle">Forged Piston 704-02-A (Isometric Profile)</text><text x="300" y="185" fill="#79c0ff" font-family="sans-serif" font-size="11" text-anchor="middle">Wrist Pin Bore</text><text x="300" y="260" fill="#8b949e" font-family="sans-serif" font-size="12" text-anchor="middle">CAD AP242 Model Geometry</text></svg>"###;
+struct DecodedTdpData {
+    pub step_trees: Vec<(String, StepAssemblyTree)>,
+    pub pdf_docs: Vec<s3a_pack_tdp::pdf::PdfMetadata>,
+    pub _raw_docs: Vec<ParsedDocRecord>,
+}
+
+fn decode_tdp_data(reader: &MmapReader) -> DecodedTdpData {
+    let docs = extract_document_records(reader);
+    let mut step_trees = Vec::new();
+    let mut pdf_docs = Vec::new();
+
+    for d in &docs {
+        if d.key.ends_with(".step")
+            || d.key.ends_with(".stp")
+            || d.content.starts_with(b"ISO-10303-21;")
+            || d.content.starts_with(b"/*")
+        {
+            let s = String::from_utf8_lossy(&d.content);
+            if s.contains("ISO-10303-21;") {
+                if let Ok(tree) = parse_step(&d.content) {
+                    step_trees.push((d.key.clone(), tree));
+                    continue;
+                }
+            }
+        }
+        if d.key.ends_with(".pdf") || d.content.starts_with(b"%PDF") {
+            if let Ok(meta) = extract_pdf_metadata(&d.key, &d.content) {
+                pdf_docs.push(meta);
+            }
+        }
+    }
+
+    DecodedTdpData {
+        step_trees,
+        pdf_docs,
+        _raw_docs: docs,
+    }
+}
 
 pub struct TechnicalDataViewPack;
 
@@ -608,42 +1288,121 @@ impl RecordViewPack for TechnicalDataViewPack {
 
     fn extract_summary(&self, reader: &MmapReader, path: &Path) -> Result<ViewerSummary, String> {
         let advanced = extract_common_advanced(reader, path);
-        let title = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-            .replace('_', " ");
+        let data = decode_tdp_data(reader);
+
+        let (title, subtitle, author, org, system, auth, part_count) =
+            if let Some((_, ref tree)) = data.step_trees.first() {
+                let title = tree
+                    .header
+                    .file_name
+                    .clone()
+                    .or_else(|| tree.root_part_number.clone())
+                    .unwrap_or_else(|| {
+                        path.file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                            .replace('_', " ")
+                    });
+                let subtitle = format!(
+                    "ISO 10303 AP242 STEP Assembly ({} components)",
+                    tree.parts.len()
+                );
+                let author = tree
+                    .header
+                    .author
+                    .clone()
+                    .unwrap_or_else(|| "Not recorded".to_string());
+                let org = tree
+                    .header
+                    .organization
+                    .clone()
+                    .unwrap_or_else(|| "Not recorded".to_string());
+                let system = tree
+                    .header
+                    .originating_system
+                    .clone()
+                    .unwrap_or_else(|| "Not recorded".to_string());
+                let auth = tree
+                    .header
+                    .authorization
+                    .clone()
+                    .unwrap_or_else(|| "Not recorded".to_string());
+                let part_count = tree.parts.len();
+                (title, subtitle, author, org, system, auth, part_count)
+            } else if let Some(pdf) = data.pdf_docs.first() {
+                let title = pdf.title.clone().unwrap_or_else(|| pdf.key.clone());
+                let subtitle = format!("Engineering Drawing Package ({} pages)", pdf.page_count);
+                (
+                    title,
+                    subtitle,
+                    "Not recorded".to_string(),
+                    "Not recorded".to_string(),
+                    "PDF Engine".to_string(),
+                    "Not recorded".to_string(),
+                    0,
+                )
+            } else {
+                (
+                    path.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                        .replace('_', " "),
+                    "Technical Data Package".to_string(),
+                    "Not recorded".to_string(),
+                    "Not recorded".to_string(),
+                    "Not recorded".to_string(),
+                    "Not recorded".to_string(),
+                    0,
+                )
+            };
+
+        let title = if title.is_empty() {
+            "Technical Data Package".to_string()
+        } else {
+            title
+        };
+
+        let description = format!(
+            "Authorized engineering technical data package containing {} CAD parts and {} PDF drawings.",
+            part_count,
+            data.pdf_docs.len()
+        );
+
+        let status_badge =
+            if auth != "Not recorded" || !data.step_trees.is_empty() || !data.pdf_docs.is_empty() {
+                "Engineering Released".to_string()
+            } else {
+                "Technical Package".to_string()
+            };
+
+        let human_approval = if auth != "Not recorded" {
+            format!("Approved: {}", auth)
+        } else {
+            "Not recorded".to_string()
+        };
+
         let key_stats = vec![
             (
-                "Document Type".to_string(),
-                "ISO 10303 AP242 Engineering Assembly".to_string(),
-            ),
-            ("Components".to_string(), "14 Physical Parts".to_string()),
-            (
-                "Subassemblies".to_string(),
-                "3 Functional Groups".to_string(),
+                "Components".to_string(),
+                format!("{} Physical Parts", part_count),
             ),
             (
-                "Drawings".to_string(),
-                "2 Dimensioned CAD Drawings (PDF)".to_string(),
+                "CAD Drawings".to_string(),
+                format!("{} Drawings", data.pdf_docs.len()),
             ),
-            (
-                "BOM Status".to_string(),
-                "Fully Resolved Multi-Level BOM".to_string(),
-            ),
+            ("Originating System".to_string(), system),
+            ("Organization".to_string(), org),
+            ("Author".to_string(), author),
         ];
 
         Ok(ViewerSummary {
-            title: if title.is_empty() {
-                "Technical Data Package".to_string()
-            } else {
-                title
-            },
-            subtitle: "AP242 STEP 3D Model, Bill of Materials & Technical Drawings".to_string(),
-            description: "Authorized engineering package containing master geometry, manufacturing tolerances, inspection requirements, and supply-chain bill of materials.".to_string(),
-            status_badge: "Engineering Released".to_string(),
-            human_approval: "Approved by Chief Mechanical Engineer".to_string(),
+            title,
+            subtitle,
+            description,
+            status_badge,
+            human_approval,
             view_pack_name: self.display_name().to_string(),
             key_stats,
             advanced,
@@ -652,234 +1411,418 @@ impl RecordViewPack for TechnicalDataViewPack {
 
     fn extract_tree(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
     ) -> Result<Vec<ViewerTreeNode>, String> {
-        Ok(vec![
-            ViewerTreeNode {
-                id: "asm_root".to_string(),
-                label: "Main Engine Assembly (REV C)".to_string(),
-                icon: "box".to_string(),
-                node_type: "assembly".to_string(),
-                has_preview: true,
-                children: vec![
-                    ViewerTreeNode {
-                        id: "sub_cyl_block".to_string(),
-                        label: "Cylinder Block Group [ASM-0100]".to_string(),
-                        icon: "layers".to_string(),
-                        node_type: "subassembly".to_string(),
-                        has_preview: true,
-                        children: vec![
-                            ViewerTreeNode {
-                                id: "part_cyl_head".to_string(),
-                                label: "Cylinder Head Cast [P/N: 704-01-A]".to_string(),
-                                icon: "cpu".to_string(),
-                                node_type: "part".to_string(),
-                                has_preview: true,
-                                children: vec![],
-                            },
-                            ViewerTreeNode {
-                                id: "part_gasket".to_string(),
-                                label: "Multi-Layer Steel Gasket [P/N: 704-01-B]".to_string(),
-                                icon: "disc".to_string(),
-                                node_type: "part".to_string(),
-                                has_preview: true,
-                                children: vec![],
-                            },
-                        ],
-                    },
-                    ViewerTreeNode {
-                        id: "sub_piston_group".to_string(),
-                        label: "Piston & Connecting Rod Group [ASM-0200]".to_string(),
-                        icon: "layers".to_string(),
-                        node_type: "subassembly".to_string(),
-                        has_preview: true,
-                        children: vec![
-                            ViewerTreeNode {
-                                id: "part_piston".to_string(),
-                                label: "Forged Aluminum Piston [P/N: 704-02-A]".to_string(),
-                                icon: "cpu".to_string(),
-                                node_type: "part".to_string(),
-                                has_preview: true,
-                                children: vec![],
-                            },
-                            ViewerTreeNode {
-                                id: "part_rod".to_string(),
-                                label: "Titanium Connecting Rod [P/N: 704-02-B]".to_string(),
-                                icon: "cpu".to_string(),
-                                node_type: "part".to_string(),
-                                has_preview: true,
-                                children: vec![],
-                            },
-                        ],
-                    },
-                ],
-            },
-            ViewerTreeNode {
-                id: "drawings_root".to_string(),
-                label: "Technical Drawings (2D/PDF)".to_string(),
-                icon: "file-text".to_string(),
-                node_type: "group".to_string(),
-                has_preview: true,
-                children: vec![
-                    ViewerTreeNode {
-                        id: "dwg_01".to_string(),
-                        label: "DWG-704-0100: Cylinder Block Tolerances".to_string(),
-                        icon: "file".to_string(),
-                        node_type: "drawing".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                    ViewerTreeNode {
-                        id: "dwg_02".to_string(),
-                        label: "DWG-704-0200: Piston Dynamic Clearance".to_string(),
-                        icon: "file".to_string(),
-                        node_type: "drawing".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    },
-                ],
-            },
-            ViewerTreeNode {
-                id: "bom_root".to_string(),
-                label: "Engineering Bill of Materials (BOM)".to_string(),
+        let data = decode_tdp_data(reader);
+        let mut root_nodes = Vec::new();
+
+        // 1. STEP Assemblies
+        for (key, tree) in &data.step_trees {
+            let asm_id = format!("asm_{}", tree.root_part_number.as_deref().unwrap_or(key));
+            let mut part_children = Vec::new();
+
+            for p in &tree.parts {
+                part_children.push(ViewerTreeNode {
+                    id: format!("part_{}", p.part_number),
+                    label: format!(
+                        "{}: {} (Qty: {})",
+                        p.part_number,
+                        if !p.name.is_empty() { &p.name } else { "Part" },
+                        p.quantity
+                    ),
+                    icon: "cpu".to_string(),
+                    node_type: "part".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+
+            // BOM node
+            part_children.push(ViewerTreeNode {
+                id: format!("bom_{}", tree.root_part_number.as_deref().unwrap_or(key)),
+                label: "Bill of Materials (BOM)".to_string(),
                 icon: "list".to_string(),
                 node_type: "bom".to_string(),
                 has_preview: true,
                 children: vec![],
-            },
-        ])
+            });
+
+            root_nodes.push(ViewerTreeNode {
+                id: asm_id,
+                label: format!(
+                    "Assembly: {} ({} components)",
+                    tree.root_part_number.as_deref().unwrap_or(key),
+                    tree.parts.len()
+                ),
+                icon: "box".to_string(),
+                node_type: "assembly".to_string(),
+                has_preview: true,
+                children: part_children,
+            });
+        }
+
+        // 2. PDF Drawings
+        if !data.pdf_docs.is_empty() {
+            let mut pdf_children = Vec::new();
+            for pdf in &data.pdf_docs {
+                pdf_children.push(ViewerTreeNode {
+                    id: format!("pdf_{}", pdf.key),
+                    label: format!(
+                        "Drawing: {} ({} pages)",
+                        pdf.title.as_deref().unwrap_or(&pdf.key),
+                        pdf.page_count
+                    ),
+                    icon: "file-text".to_string(),
+                    node_type: "drawing".to_string(),
+                    has_preview: true,
+                    children: vec![],
+                });
+            }
+            root_nodes.push(ViewerTreeNode {
+                id: "drawings_group".to_string(),
+                label: format!("Technical Drawings ({} PDFs)", data.pdf_docs.len()),
+                icon: "folder".to_string(),
+                node_type: "group".to_string(),
+                has_preview: true,
+                children: pdf_children,
+            });
+        }
+
+        if root_nodes.is_empty() {
+            root_nodes.push(ViewerTreeNode {
+                id: "tdp_root".to_string(),
+                label: "Technical Data Package".to_string(),
+                icon: "box".to_string(),
+                node_type: "assembly".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        Ok(root_nodes)
     }
 
     fn extract_properties(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerProperties, String> {
-        let (label, props, adv) = match node_id {
-            "asm_root" | "root" => (
-                "TDP Assembly Root",
-                vec![
-                    ("Part Number".to_string(), "ASM-704".to_string()),
-                    (
-                        "Assembly Type".to_string(),
-                        "AP242 STEP Mechanical Assembly".to_string(),
-                    ),
-                    ("Status".to_string(), "Released for Production".to_string()),
-                ],
-                vec![("Units".to_string(), "Millimeters (mm)".to_string())],
-            ),
-            "part_piston" => (
-                "Piston Component Properties",
-                vec![
-                    ("Part Number".to_string(), "704-02-A".to_string()),
-                    (
-                        "Material".to_string(),
-                        "Forged 2618-T6 Aluminum Alloy".to_string(),
-                    ),
-                    ("Weight / Mass".to_string(), "420.5 grams".to_string()),
-                    (
-                        "Nominal Bore".to_string(),
-                        "85.000 mm (+0.015 / -0.000)".to_string(),
-                    ),
-                    (
-                        "Surface Treatment".to_string(),
-                        "Moly-Coated Skirt, Anodized Crown".to_string(),
-                    ),
-                    ("Revision".to_string(), "REV C (2026-11)".to_string()),
-                ],
-                vec![
-                    (
-                        "STEP Entity ID".to_string(),
-                        "#4412 (PRODUCT_DEFINITION)".to_string(),
-                    ),
-                    (
-                        "Bounding Box".to_string(),
-                        "X: [-42.5, 42.5], Y: [-42.5, 42.5], Z: [0, 52.0]".to_string(),
-                    ),
-                ],
-            ),
-            "part_rod" => (
-                "Connecting Rod Properties",
-                vec![
-                    ("Part Number".to_string(), "704-02-B".to_string()),
-                    (
-                        "Material".to_string(),
-                        "Ti-6Al-4V Grade 5 Titanium".to_string(),
-                    ),
-                    ("Weight / Mass".to_string(), "310.2 grams".to_string()),
-                    ("Center-to-Center".to_string(), "144.00 mm".to_string()),
-                    (
-                        "Fastener Spec".to_string(),
-                        "ARP 2000 Custom Age 625+".to_string(),
-                    ),
-                ],
-                vec![(
-                    "STEP Entity ID".to_string(),
-                    "#4890 (PRODUCT_DEFINITION)".to_string(),
-                )],
-            ),
-            "bom_root" => (
-                "BOM Rollup Properties",
-                vec![
-                    ("Total Line Items".to_string(), "14 components".to_string()),
-                    (
-                        "Standard Fasteners".to_string(),
-                        "8 items (ISO 4762 Grade 12.9)".to_string(),
-                    ),
-                    ("Engineered Parts".to_string(), "6 items".to_string()),
-                    ("Total Assembly Mass".to_string(), "18.42 kg".to_string()),
-                ],
-                vec![(
-                    "BOM Format".to_string(),
-                    "Hierarchical Tree (s3a-pack-tdp)".to_string(),
-                )],
-            ),
-            _ => (
-                "Assembly Item Properties",
-                vec![
-                    (
-                        "Type".to_string(),
-                        "AP242 Engineering CAD Group".to_string(),
-                    ),
-                    ("Status".to_string(), "Approved for Fabrication".to_string()),
-                ],
-                vec![("Node Key".to_string(), node_id.to_string())],
-            ),
-        };
+        let data = decode_tdp_data(reader);
 
+        // Assembly root or generic root
+        if node_id == "root" || node_id == "asm_root" || node_id.starts_with("asm_") {
+            if let Some((_, tree)) = data.step_trees.first() {
+                return Ok(ViewerProperties {
+                    node_id: node_id.to_string(),
+                    label: format!(
+                        "Assembly {}",
+                        tree.root_part_number.as_deref().unwrap_or("Root")
+                    ),
+                    properties: vec![
+                        (
+                            "Part Number".to_string(),
+                            tree.root_part_number
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        ("Components Count".to_string(), tree.parts.len().to_string()),
+                        (
+                            "Author".to_string(),
+                            tree.header
+                                .author
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Originating System".to_string(),
+                            tree.header
+                                .originating_system
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Organization".to_string(),
+                            tree.header
+                                .organization
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                    ],
+                    advanced_properties: vec![
+                        (
+                            "Authorization".to_string(),
+                            tree.header
+                                .authorization
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Schemas".to_string(),
+                            if !tree.header.schemas.is_empty() {
+                                tree.header.schemas.join(", ")
+                            } else {
+                                "Not recorded".to_string()
+                            },
+                        ),
+                    ],
+                });
+            }
+        }
+
+        // BOM lookup
+        if node_id == "bom" || node_id == "bom_root" || node_id.starts_with("bom_") {
+            if let Some((_, tree)) = data.step_trees.first() {
+                return Ok(ViewerProperties {
+                    node_id: node_id.to_string(),
+                    label: "Bill of Materials (BOM)".to_string(),
+                    properties: vec![
+                        (
+                            "Total Line Items".to_string(),
+                            format!("{} components", tree.parts.len()),
+                        ),
+                        (
+                            "Root Part".to_string(),
+                            tree.root_part_number
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Originating System".to_string(),
+                            tree.header
+                                .originating_system
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Organization".to_string(),
+                            tree.header
+                                .organization
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                    ],
+                    advanced_properties: vec![(
+                        "Schemas".to_string(),
+                        if !tree.header.schemas.is_empty() {
+                            tree.header.schemas.join(", ")
+                        } else {
+                            "Not recorded".to_string()
+                        },
+                    )],
+                });
+            }
+        }
+
+        // Part lookup
+        let clean_pn = node_id.strip_prefix("part_").unwrap_or(node_id);
+        for (_, tree) in &data.step_trees {
+            if let Some(p) = tree
+                .parts
+                .iter()
+                .find(|p| p.part_number == clean_pn || p.part_number == node_id)
+            {
+                return Ok(ViewerProperties {
+                    node_id: node_id.to_string(),
+                    label: format!("Component {}", p.part_number),
+                    properties: vec![
+                        ("Part Number".to_string(), p.part_number.clone()),
+                        (
+                            "Part Name".to_string(),
+                            if !p.name.is_empty() {
+                                p.name.clone()
+                            } else {
+                                "Not recorded".to_string()
+                            },
+                        ),
+                        (
+                            "Parent Assembly".to_string(),
+                            p.parent
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        ("Quantity".to_string(), p.quantity.to_string()),
+                    ],
+                    advanced_properties: vec![
+                        (
+                            "Author".to_string(),
+                            tree.header
+                                .author
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Originating System".to_string(),
+                            tree.header
+                                .originating_system
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Organization".to_string(),
+                            tree.header
+                                .organization
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                        (
+                            "Authorization".to_string(),
+                            tree.header
+                                .authorization
+                                .clone()
+                                .unwrap_or_else(|| "Not recorded".to_string()),
+                        ),
+                    ],
+                });
+            }
+        }
+
+        // PDF lookup
+        let clean_pdf_key = node_id.strip_prefix("pdf_").unwrap_or(node_id);
+        if let Some(pdf) = data
+            .pdf_docs
+            .iter()
+            .find(|pdf| pdf.key == clean_pdf_key || pdf.key == node_id)
+        {
+            return Ok(ViewerProperties {
+                node_id: node_id.to_string(),
+                label: format!("Drawing {}", pdf.title.as_deref().unwrap_or(&pdf.key)),
+                properties: vec![
+                    ("Document Key".to_string(), pdf.key.clone()),
+                    (
+                        "Title".to_string(),
+                        pdf.title
+                            .clone()
+                            .unwrap_or_else(|| "Not recorded".to_string()),
+                    ),
+                    ("Page Count".to_string(), pdf.page_count.to_string()),
+                    ("File Size".to_string(), format!("{} bytes", pdf.size_bytes)),
+                ],
+                advanced_properties: vec![
+                    ("SHA-256 Checksum".to_string(), pdf.sha256.clone()),
+                    ("MIME Type".to_string(), pdf.mime_type.clone()),
+                ],
+            });
+        }
+
+        // Fallback properties
         Ok(ViewerProperties {
             node_id: node_id.to_string(),
-            label: label.to_string(),
-            properties: props,
-            advanced_properties: adv,
+            label: "Technical Data Package Node".to_string(),
+            properties: vec![
+                (
+                    "Document Type".to_string(),
+                    "Technical Data Package".to_string(),
+                ),
+                (
+                    "Components".to_string(),
+                    data.step_trees
+                        .iter()
+                        .map(|(_, t)| t.parts.len())
+                        .sum::<usize>()
+                        .to_string(),
+                ),
+                ("Drawings".to_string(), data.pdf_docs.len().to_string()),
+            ],
+            advanced_properties: vec![("Node ID".to_string(), node_id.to_string())],
         })
     }
 
     fn extract_preview(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerPreview, String> {
-        match node_id {
-            "part_piston" | "asm_root" | "root" => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "image/svg+xml".to_string(),
-                content: SVG_TDP_PISTON.to_string(),
-            }),
-            "bom_root" => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "text/plain".to_string(),
-                content: "ITEM | PART NUMBER | DESCRIPTION                  | QTY | MATERIAL         | REVISION\n-----+-------------+------------------------------+-----+------------------+---------\n001  | 704-01-A    | Cylinder Head Cast           | 1   | A356-T6 Aluminum | REV C   \n002  | 704-01-B    | Multi-Layer Steel Gasket     | 1   | 301 Full Hard SS | REV B   \n003  | 704-02-A    | Forged Aluminum Piston       | 4   | 2618-T6 Alum     | REV C   \n004  | 704-02-B    | Titanium Connecting Rod      | 4   | Ti-6Al-4V Gr 5   | REV A   \n005  | ISO4762-M10 | Socket Head Cap Screw M10x50 | 8   | Steel Gr 12.9    | STD     \n".to_string(),
-            }),
-            _ => Ok(ViewerPreview {
-                node_id: node_id.to_string(),
-                mime_type: "text/plain".to_string(),
-                content: "DRAWING SPECIFICATION:\nDrawing No: DWG-704-0100\nTitle: Cylinder Block Production Tolerances\nSheet: 1 of 2\nProjection: Third Angle\nDimensions: Metric (mm)\nGeneral Tolerances: ISO 2768-mK\nCritical Features: Surface finish Ra 0.4 um on cylinder bore walls.\n".to_string(),
-            }),
+        let data = decode_tdp_data(reader);
+
+        // BOM preview (CSV table)
+        if node_id == "bom" || node_id == "bom_root" || node_id.starts_with("bom_") {
+            if let Some((_, tree)) = data.step_trees.first() {
+                return Ok(ViewerPreview {
+                    node_id: node_id.to_string(),
+                    mime_type: "text/plain".to_string(),
+                    content: tree.to_bom_csv(),
+                });
+            }
         }
+
+        // Part preview (dynamic SVG generated with actual part number and name)
+        let clean_pn = node_id.strip_prefix("part_").unwrap_or(node_id);
+        for (_, tree) in &data.step_trees {
+            if let Some(p) = tree
+                .parts
+                .iter()
+                .find(|p| p.part_number == clean_pn || p.part_number == node_id)
+            {
+                let svg = format!(
+                    r###"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300" width="100%" height="240"><rect width="100%" height="100%" fill="#0d1117" rx="8"/><rect x="180" y="70" width="240" height="150" fill="none" stroke="#58a6ff" stroke-width="2" rx="8"/><circle cx="300" cy="140" r="30" fill="none" stroke="#79c0ff" stroke-width="2"/><text x="300" y="45" fill="#f0f6fc" font-family="sans-serif" font-size="16" text-anchor="middle" font-weight="bold">Part: {}</text><text x="300" y="145" fill="#79c0ff" font-family="sans-serif" font-size="12" text-anchor="middle">Qty: {}</text><text x="300" y="250" fill="#8b949e" font-family="sans-serif" font-size="12" text-anchor="middle">Name: {} &bull; Parent: {}</text></svg>"###,
+                    p.part_number,
+                    p.quantity,
+                    if !p.name.is_empty() {
+                        &p.name
+                    } else {
+                        "Component"
+                    },
+                    p.parent.as_deref().unwrap_or("Root")
+                );
+                return Ok(ViewerPreview {
+                    node_id: node_id.to_string(),
+                    mime_type: "image/svg+xml".to_string(),
+                    content: svg,
+                });
+            }
+        }
+
+        // Assembly root preview
+        if node_id == "root" || node_id == "asm_root" || node_id.starts_with("asm_") {
+            if let Some((_, tree)) = data.step_trees.first() {
+                let svg = format!(
+                    r###"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 300" width="100%" height="240"><rect width="100%" height="100%" fill="#0d1117" rx="8"/><circle cx="300" cy="140" r="60" fill="none" stroke="#58a6ff" stroke-width="3"/><text x="300" y="50" fill="#f0f6fc" font-family="sans-serif" font-size="16" text-anchor="middle" font-weight="bold">Assembly: {}</text><text x="300" y="145" fill="#79c0ff" font-family="sans-serif" font-size="13" text-anchor="middle">{} Components</text><text x="300" y="240" fill="#8b949e" font-family="sans-serif" font-size="12" text-anchor="middle">Author: {}</text><text x="300" y="265" fill="#58a6ff" font-family="sans-serif" font-size="11" text-anchor="middle">System: {}</text></svg>"###,
+                    tree.root_part_number.as_deref().unwrap_or("Assembly Root"),
+                    tree.parts.len(),
+                    tree.header.author.as_deref().unwrap_or("Not recorded"),
+                    tree.header
+                        .originating_system
+                        .as_deref()
+                        .unwrap_or("Not recorded")
+                );
+                return Ok(ViewerPreview {
+                    node_id: node_id.to_string(),
+                    mime_type: "image/svg+xml".to_string(),
+                    content: svg,
+                });
+            }
+        }
+
+        // PDF preview
+        let clean_pdf_key = node_id.strip_prefix("pdf_").unwrap_or(node_id);
+        if let Some(pdf) = data
+            .pdf_docs
+            .iter()
+            .find(|pdf| pdf.key == clean_pdf_key || pdf.key == node_id)
+        {
+            let content = format!(
+                "ENGINEERING DRAWING SPECIFICATION:\nKey: {}\nTitle: {}\nPage Count: {}\nSHA-256: {}\nFile Size: {} bytes\n",
+                pdf.key,
+                pdf.title.as_deref().unwrap_or("Not recorded"),
+                pdf.page_count,
+                pdf.sha256,
+                pdf.size_bytes
+            );
+            return Ok(ViewerPreview {
+                node_id: node_id.to_string(),
+                mime_type: "text/plain".to_string(),
+                content,
+            });
+        }
+
+        Ok(ViewerPreview {
+            node_id: node_id.to_string(),
+            mime_type: "text/plain".to_string(),
+            content: "Technical Data Package record opened. Select a part or drawing on the left to inspect.".to_string(),
+        })
     }
 
     fn extract_history(&self, _reader: &MmapReader, path: &Path) -> Result<ViewerHistory, String> {
@@ -888,16 +1831,29 @@ impl RecordViewPack for TechnicalDataViewPack {
 
     fn extract_approval(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         path: &Path,
     ) -> Result<ViewerApprovalStatus, String> {
+        let data = decode_tdp_data(reader);
+        if let Some((_, tree)) = data.step_trees.first() {
+            if let Some(ref auth) = tree.header.authorization {
+                return Ok(ViewerApprovalStatus {
+                    is_approved: true,
+                    approved_by: Some(auth.clone()),
+                    approval_timestamp: None,
+                    signature: None,
+                    fingerprint: compute_file_sha256(path),
+                    requires_human_decision: false,
+                });
+            }
+        }
         Ok(ViewerApprovalStatus {
-            is_approved: true,
-            approved_by: Some("Chief Mechanical Engineer (Sign-Off ID: CME-409)".to_string()),
-            approval_timestamp: Some(1794669200),
-            signature: Some("ed25519:e5f6a7...112233".to_string()),
+            is_approved: false,
+            approved_by: None,
+            approval_timestamp: None,
+            signature: None,
             fingerprint: compute_file_sha256(path),
-            requires_human_decision: false,
+            requires_human_decision: true,
         })
     }
 }
@@ -905,6 +1861,73 @@ impl RecordViewPack for TechnicalDataViewPack {
 // =============================================================================
 // View Pack 3: Backups & Devices View (Aura)
 // =============================================================================
+
+struct DecodedAuraData {
+    pub device_id: Option<String>,
+    pub snapshot: Option<String>,
+    pub os_version: Option<String>,
+    pub telem_tile_count: usize,
+    pub raw_json_payloads: Vec<serde_json::Value>,
+    pub telem_records: Vec<(u64, u32, u32, f64)>,
+}
+
+fn decode_aura_data(reader: &MmapReader) -> DecodedAuraData {
+    let mut device_id = None;
+    let mut snapshot = None;
+    let mut os_version = None;
+    let mut telem_tile_count = 0;
+    let mut raw_json_payloads = Vec::new();
+    let mut telem_records = Vec::new();
+
+    let tile_count = reader.tile_count() as usize;
+    for i in 0..tile_count {
+        if let Some((hdr, payload)) = reader.get_tile(i) {
+            if hdr.tile_type == TileType::TELEMETRY || hdr.tile_type == 3 {
+                telem_tile_count += 1;
+                let actual_bytes = (hdr.payload_bytes as usize).min(payload.len());
+                let tile_bytes = &payload[..actual_bytes];
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(tile_bytes) {
+                    if let Some(did) = val.get("device_id").and_then(|v| v.as_str()) {
+                        device_id = Some(did.to_string());
+                    }
+                    if let Some(snap) = val.get("snapshot").and_then(|v| v.as_str()) {
+                        snapshot = Some(snap.to_string());
+                    }
+                    if let Some(os) = val.get("os").and_then(|v| v.as_str()) {
+                        os_version = Some(os.to_string());
+                    }
+                    raw_json_payloads.push(val);
+                } else if tile_bytes.len() >= 32 {
+                    let count = tile_bytes.len() / 32;
+                    for r in 0..count {
+                        let offset = r * 32;
+                        let ts =
+                            u64::from_le_bytes(tile_bytes[offset..offset + 8].try_into().unwrap());
+                        let sensor_id = u32::from_le_bytes(
+                            tile_bytes[offset + 8..offset + 12].try_into().unwrap(),
+                        );
+                        let metric_id = u32::from_le_bytes(
+                            tile_bytes[offset + 12..offset + 16].try_into().unwrap(),
+                        );
+                        let val = f64::from_le_bytes(
+                            tile_bytes[offset + 16..offset + 24].try_into().unwrap(),
+                        );
+                        telem_records.push((ts, sensor_id, metric_id, val));
+                    }
+                }
+            }
+        }
+    }
+
+    DecodedAuraData {
+        device_id,
+        snapshot,
+        os_version,
+        telem_tile_count,
+        raw_json_payloads,
+        telem_records,
+    }
+}
 
 pub struct AuraBackupViewPack;
 
@@ -933,45 +1956,64 @@ impl RecordViewPack for AuraBackupViewPack {
 
     fn extract_summary(&self, reader: &MmapReader, path: &Path) -> Result<ViewerSummary, String> {
         let advanced = extract_common_advanced(reader, path);
-        let title = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-            .replace('_', " ");
+        let data = decode_aura_data(reader);
+
+        let title = if let Some(ref did) = data.device_id {
+            format!("Aura Device Backup - {}", did)
+        } else {
+            path.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+                .replace('_', " ")
+        };
+
+        let title = if title.is_empty() {
+            "Aura Device Backup".to_string()
+        } else {
+            title
+        };
+
+        let subtitle = "Autonomous Edge Device Snapshot & Sensor Event Stream".to_string();
+        let description = format!(
+            "Device backup capturing telemetry across {} sensor tiles and {} recorded readings.",
+            data.telem_tile_count,
+            data.telem_records.len()
+        );
+
+        let status_badge = "Device Healthy".to_string();
+        let human_approval = "Not recorded".to_string();
+
         let key_stats = vec![
             (
-                "Device Node".to_string(),
-                "Aura Edge Sentinel #42".to_string(),
+                "Device ID".to_string(),
+                data.device_id.unwrap_or_else(|| "Not recorded".to_string()),
             ),
             (
-                "Firmware Version".to_string(),
-                "Aura OS v2.4.1 (LTS)".to_string(),
+                "Firmware / OS".to_string(),
+                data.os_version
+                    .unwrap_or_else(|| "Not recorded".to_string()),
             ),
             (
-                "Snapshots".to_string(),
-                "3 Immutable State Snapshots".to_string(),
+                "Snapshot Time".to_string(),
+                data.snapshot.unwrap_or_else(|| "Not recorded".to_string()),
             ),
             (
-                "Telemetry Events".to_string(),
-                "24,800 Logged Sensor Events".to_string(),
+                "Telemetry Tiles".to_string(),
+                data.telem_tile_count.to_string(),
             ),
             (
-                "Battery & Health".to_string(),
-                "98% Capacity • Hardware Healthy".to_string(),
+                "Sensor Events".to_string(),
+                data.telem_records.len().to_string(),
             ),
         ];
 
         Ok(ViewerSummary {
-            title: if title.is_empty() {
-                "Aura Device Backup".to_string()
-            } else {
-                title
-            },
-            subtitle: "Autonomous Edge Device Snapshot & Sensor Event Stream".to_string(),
-            description: "Encrypted device state backup capturing sensor telemetry, system configuration, firmware calibration tables, and operational audit trail.".to_string(),
-            status_badge: "Device Healthy".to_string(),
-            human_approval: "Approved by Fleet Operations Admin".to_string(),
+            title,
+            subtitle,
+            description,
+            status_badge,
+            human_approval,
             view_pack_name: self.display_name().to_string(),
             key_stats,
             advanced,
@@ -980,166 +2022,162 @@ impl RecordViewPack for AuraBackupViewPack {
 
     fn extract_tree(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
     ) -> Result<Vec<ViewerTreeNode>, String> {
+        let data = decode_aura_data(reader);
+        let mut children = Vec::new();
+
+        if let Some(ref snap) = data.snapshot {
+            children.push(ViewerTreeNode {
+                id: "snapshot_state".to_string(),
+                label: format!("Snapshot ({})", snap),
+                icon: "clock".to_string(),
+                node_type: "snapshot".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        for idx in 0..data.telem_tile_count {
+            children.push(ViewerTreeNode {
+                id: format!("stream_{}", idx),
+                label: format!("Telemetry Stream #{}", idx + 1),
+                icon: "activity".to_string(),
+                node_type: "stream".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        for r in data.telem_records.iter().take(10) {
+            children.push(ViewerTreeNode {
+                id: format!("sensor_{}_{}", r.1, r.2),
+                label: format!("Sensor {} (Metric: {}, Value: {:.2})", r.1, r.2, r.3),
+                icon: "zap".to_string(),
+                node_type: "events".to_string(),
+                has_preview: true,
+                children: vec![],
+            });
+        }
+
+        let dev_id = data.device_id.as_deref().unwrap_or("node");
         Ok(vec![ViewerTreeNode {
-            id: "device_root".to_string(),
-            label: "Aura Edge Sentinel #42".to_string(),
+            id: format!("device_{}", dev_id),
+            label: format!("Aura Device ({})", dev_id),
             icon: "hard-drive".to_string(),
             node_type: "device".to_string(),
             has_preview: true,
-            children: vec![
-                ViewerTreeNode {
-                    id: "snapshots_group".to_string(),
-                    label: "System Snapshots".to_string(),
-                    icon: "archive".to_string(),
-                    node_type: "group".to_string(),
-                    has_preview: true,
-                    children: vec![
-                        ViewerTreeNode {
-                            id: "snap_latest".to_string(),
-                            label: "Snapshot @ 2026-11-14 10:00:00 (vcs: main)".to_string(),
-                            icon: "clock".to_string(),
-                            node_type: "snapshot".to_string(),
-                            has_preview: true,
-                            children: vec![],
-                        },
-                        ViewerTreeNode {
-                            id: "snap_baseline".to_string(),
-                            label: "Snapshot @ 2026-11-13 18:00:00 (baseline)".to_string(),
-                            icon: "clock".to_string(),
-                            node_type: "snapshot".to_string(),
-                            has_preview: true,
-                            children: vec![],
-                        },
-                    ],
-                },
-                ViewerTreeNode {
-                    id: "files_group".to_string(),
-                    label: "Protected Filesystem Archive".to_string(),
-                    icon: "folder".to_string(),
-                    node_type: "group".to_string(),
-                    has_preview: true,
-                    children: vec![
-                        ViewerTreeNode {
-                            id: "file_config".to_string(),
-                            label: "/etc/aura/device_config.json".to_string(),
-                            icon: "file-code".to_string(),
-                            node_type: "file".to_string(),
-                            has_preview: true,
-                            children: vec![],
-                        },
-                        ViewerTreeNode {
-                            id: "file_calib".to_string(),
-                            label: "/var/calibration/imu_matrix.bin".to_string(),
-                            icon: "file".to_string(),
-                            node_type: "file".to_string(),
-                            has_preview: true,
-                            children: vec![],
-                        },
-                    ],
-                },
-                ViewerTreeNode {
-                    id: "telemetry_group".to_string(),
-                    label: "Telemetry & Operational Logs".to_string(),
-                    icon: "activity".to_string(),
-                    node_type: "group".to_string(),
-                    has_preview: true,
-                    children: vec![ViewerTreeNode {
-                        id: "events_stream".to_string(),
-                        label: "Sensor Readings & Battery Stream".to_string(),
-                        icon: "zap".to_string(),
-                        node_type: "events".to_string(),
-                        has_preview: true,
-                        children: vec![],
-                    }],
-                },
-            ],
+            children,
         }])
     }
 
     fn extract_properties(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerProperties, String> {
-        let (label, props, adv) = match node_id {
-            "snap_latest" | "device_root" => (
-                "Device State Profile",
-                vec![
-                    ("Device ID".to_string(), "aura-node-0x0042".to_string()),
-                    ("MAC Address".to_string(), "00:1A:2B:3C:4D:5E".to_string()),
+        let data = decode_aura_data(reader);
+
+        if node_id.starts_with("device_") || node_id == "root" {
+            return Ok(ViewerProperties {
+                node_id: node_id.to_string(),
+                label: "Device State Profile".to_string(),
+                properties: vec![
                     (
-                        "Battery Level".to_string(),
-                        "98% (Solar Charging Active)".to_string(),
-                    ),
-                    ("Operating Temp".to_string(), "31.4 deg C".to_string()),
-                    ("Uptime".to_string(), "42 days, 14 hours".to_string()),
-                ],
-                vec![
-                    (
-                        "Kernel Version".to_string(),
-                        "Linux 6.6.21-aura-rt #1 SMP PREEMPT".to_string(),
+                        "Device ID".to_string(),
+                        data.device_id.unwrap_or_else(|| "Not recorded".to_string()),
                     ),
                     (
-                        "Tile Allocation".to_string(),
-                        "Tile 0 (Telemetry), Tile 80 (VCS)".to_string(),
+                        "Firmware / OS".to_string(),
+                        data.os_version
+                            .unwrap_or_else(|| "Not recorded".to_string()),
                     ),
-                ],
-            ),
-            "file_config" => (
-                "Configuration Parameters",
-                vec![
-                    ("Format".to_string(), "JSON Configuration".to_string()),
-                    ("Sampling Rate".to_string(), "100 Hz Continuous".to_string()),
-                    ("Cloud Sync Interval".to_string(), "300 seconds".to_string()),
-                ],
-                vec![(
-                    "File Permissions".to_string(),
-                    "0600 (Root / Daemon Only)".to_string(),
-                )],
-            ),
-            _ => (
-                "Aura Stream Details",
-                vec![
                     (
-                        "Channel".to_string(),
-                        "Sensor Bus A (I2C / SPI)".to_string(),
+                        "Snapshot State".to_string(),
+                        data.snapshot.unwrap_or_else(|| "Not recorded".to_string()),
                     ),
-                    ("Status".to_string(), "Streaming Normal".to_string()),
+                    (
+                        "Telemetry Tiles".to_string(),
+                        data.telem_tile_count.to_string(),
+                    ),
+                    (
+                        "Recorded Sensor Events".to_string(),
+                        data.telem_records.len().to_string(),
+                    ),
                 ],
-                vec![("Node ID".to_string(), node_id.to_string())],
-            ),
-        };
+                advanced_properties: vec![("Node ID".to_string(), node_id.to_string())],
+            });
+        }
+
+        if let Some(rest) = node_id.strip_prefix("sensor_") {
+            let parts: Vec<&str> = rest.split('_').collect();
+            if parts.len() >= 2 {
+                let sid = parts[0];
+                let mid = parts[1];
+                return Ok(ViewerProperties {
+                    node_id: node_id.to_string(),
+                    label: format!("Sensor Reading {}", sid),
+                    properties: vec![
+                        ("Sensor ID".to_string(), sid.to_string()),
+                        ("Metric ID".to_string(), mid.to_string()),
+                    ],
+                    advanced_properties: vec![("Node ID".to_string(), node_id.to_string())],
+                });
+            }
+        }
 
         Ok(ViewerProperties {
             node_id: node_id.to_string(),
-            label: label.to_string(),
-            properties: props,
-            advanced_properties: adv,
+            label: "Aura Stream Details".to_string(),
+            properties: vec![
+                ("Status".to_string(), "Streaming Normal".to_string()),
+                (
+                    "Telemetry Tiles".to_string(),
+                    data.telem_tile_count.to_string(),
+                ),
+            ],
+            advanced_properties: vec![("Node ID".to_string(), node_id.to_string())],
         })
     }
 
     fn extract_preview(
         &self,
-        _reader: &MmapReader,
+        reader: &MmapReader,
         _path: &Path,
         node_id: &str,
     ) -> Result<ViewerPreview, String> {
-        match node_id {
-            "file_config" => Ok(ViewerPreview {
+        let data = decode_aura_data(reader);
+
+        if let Some(ref val) = data.raw_json_payloads.first() {
+            return Ok(ViewerPreview {
                 node_id: node_id.to_string(),
                 mime_type: "application/json".to_string(),
-                content: "{\n  \"device_id\": \"aura-node-0x0042\",\n  \"firmware\": \"2.4.1\",\n  \"telemetry\": {\n    \"sample_rate_hz\": 100,\n    \"imu_enabled\": true,\n    \"temp_threshold_c\": 65.0\n  },\n  \"network\": {\n    \"sync_mode\": \"s3a-vault\",\n    \"gateway\": \"192.168.1.1\"\n  }\n}".to_string(),
-            }),
-            _ => Ok(ViewerPreview {
+                content: serde_json::to_string_pretty(val).unwrap_or_default(),
+            });
+        }
+
+        if !data.telem_records.is_empty() {
+            let mut table = String::from("TIMESTAMP (UTC)       | SENSOR ID  | METRIC ID  | VALUE\n----------------------+------------+------------+----------\n");
+            for r in data.telem_records.iter().take(20) {
+                table.push_str(&format!(
+                    "{:<22}| {:<11}| {:<11}| {:.2}\n",
+                    r.0, r.1, r.2, r.3
+                ));
+            }
+            return Ok(ViewerPreview {
                 node_id: node_id.to_string(),
                 mime_type: "text/plain".to_string(),
-                content: "TIMESTAMP (UTC)       | SENSOR ID | METRIC ID | VALUE | UNIT | STATUS\n----------------------+-----------+-----------+-------+------+-------\n2026-11-14T10:00:00Z  | 0042      | BATT_V    | 4.12  | V    | NORMAL\n2026-11-14T10:00:01Z  | 0042      | TEMP_C    | 31.40 | C    | NORMAL\n2026-11-14T10:00:02Z  | 0042      | ACCEL_Z   | 9.81  | m/s2 | NORMAL\n2026-11-14T10:00:03Z  | 0042      | SOLAR_MA  | 142.0 | mA   | NORMAL\n2026-11-14T10:00:04Z  | 0042      | SYNC_ACK  | 1.00  | bool | OK    \n".to_string(),
-            }),
+                content: table,
+            });
         }
+
+        Ok(ViewerPreview {
+            node_id: node_id.to_string(),
+            mime_type: "text/plain".to_string(),
+            content: "Aura telemetry event stream.".to_string(),
+        })
     }
 
     fn extract_history(&self, _reader: &MmapReader, path: &Path) -> Result<ViewerHistory, String> {
@@ -1152,12 +2190,12 @@ impl RecordViewPack for AuraBackupViewPack {
         path: &Path,
     ) -> Result<ViewerApprovalStatus, String> {
         Ok(ViewerApprovalStatus {
-            is_approved: true,
-            approved_by: Some("Aura Fleet Security Daemon (Auto-attested)".to_string()),
-            approval_timestamp: Some(1794669100),
-            signature: Some("ed25519:112233...445566".to_string()),
+            is_approved: false,
+            approved_by: None,
+            approval_timestamp: None,
+            signature: None,
             fingerprint: compute_file_sha256(path),
-            requires_human_decision: false,
+            requires_human_decision: true,
         })
     }
 }
@@ -1212,9 +2250,12 @@ impl RecordViewPack for ManifestFallbackViewPack {
                 title
             },
             subtitle: "Self-Describing Spatial Hyper-Tile Container".to_string(),
-            description: "General S3A container. Displays record manifest and storage properties with accessible tree navigation.".to_string(),
+            description: format!(
+                "General S3A container. Displays record manifest and storage properties with {} hyper-tiles.",
+                tile_count
+            ),
             status_badge: "Verified Archive".to_string(),
-            human_approval: "Ready for Inspection".to_string(),
+            human_approval: "Not recorded".to_string(),
             view_pack_name: self.display_name().to_string(),
             key_stats,
             advanced,
@@ -1229,18 +2270,14 @@ impl RecordViewPack for ManifestFallbackViewPack {
         let mut children = Vec::new();
         for i in 0..reader.tile_count() as usize {
             if let Some((hdr, _)) = reader.get_tile(i) {
-                let friendly_name = match hdr.tile_type {
-                    0 => "Telemetry Record Stream",
-                    1 => "High-Dimension Embedding Vector",
-                    23 => "Document Key-Value Item",
-                    24 => "Binary Attachment Blob",
-                    77 => "Embedded Schema Registry",
-                    78 => "UTF-8 Manifest Text",
-                    _ => "Domain Data Block",
-                };
                 children.push(ViewerTreeNode {
                     id: format!("record_{}", i),
-                    label: format!("Record {}: {}", i + 1, friendly_name),
+                    label: format!(
+                        "Record {}: Tile {} ({} bytes)",
+                        i + 1,
+                        hdr.tile_type,
+                        hdr.payload_bytes
+                    ),
                     icon: "file".to_string(),
                     node_type: "record".to_string(),
                     has_preview: true,
@@ -1289,10 +2326,7 @@ impl RecordViewPack for ManifestFallbackViewPack {
                             "Allocated Size".to_string(),
                             format!("{} bytes", hdr.payload_bytes),
                         ),
-                        (
-                            "Record Type".to_string(),
-                            "Standard Storage Record".to_string(),
-                        ),
+                        ("Record Count".to_string(), hdr.record_count.to_string()),
                     ],
                     advanced_properties: vec![
                         ("Raw Tile Type".to_string(), hdr.tile_type.to_string()),
@@ -1301,6 +2335,7 @@ impl RecordViewPack for ManifestFallbackViewPack {
                             format!("0x{:08x}", hdr.data_crc32),
                         ),
                         ("S3A Coordinate".to_string(), format!("L0:T{}:R0", idx)),
+                        ("Generation".to_string(), hdr.generation.to_string()),
                     ],
                 });
             }
@@ -1365,12 +2400,12 @@ impl RecordViewPack for ManifestFallbackViewPack {
         path: &Path,
     ) -> Result<ViewerApprovalStatus, String> {
         Ok(ViewerApprovalStatus {
-            is_approved: true,
-            approved_by: Some("Container Owner".to_string()),
-            approval_timestamp: Some(1794669000),
+            is_approved: false,
+            approved_by: None,
+            approval_timestamp: None,
             signature: None,
             fingerprint: compute_file_sha256(path),
-            requires_human_decision: false,
+            requires_human_decision: true,
         })
     }
 }
@@ -1437,6 +2472,20 @@ impl ViewerRegistry {
             history,
             approval,
         })
+    }
+
+    pub fn get_properties(&self, path: &Path, node_id: &str) -> Result<ViewerProperties, String> {
+        let reader =
+            MmapReader::open(path).map_err(|e| format!("Failed to open archive: {}", e))?;
+        let pack = self.resolve_pack(&reader);
+        pack.extract_properties(&reader, path, node_id)
+    }
+
+    pub fn get_preview(&self, path: &Path, node_id: &str) -> Result<ViewerPreview, String> {
+        let reader =
+            MmapReader::open(path).map_err(|e| format!("Failed to open archive: {}", e))?;
+        let pack = self.resolve_pack(&reader);
+        pack.extract_preview(&reader, path, node_id)
     }
 }
 
@@ -1623,27 +2672,6 @@ const HTML_SHELL_TEMPLATE: &str = r###"<!DOCTYPE html>
       align-items: center;
       justify-content: flex-start;
     }
-    .preview-box {
-      width: 100%;
-      max-width: 800px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      white-space: pre-wrap;
-      overflow-x: auto;
-      line-height: 1.6;
-    }
-    .preview-media {
-      width: 100%;
-      max-width: 800px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow: hidden;
-    }
-
     .summary-card {
       width: 100%;
       max-width: 800px;
@@ -1668,6 +2696,27 @@ const HTML_SHELL_TEMPLATE: &str = r###"<!DOCTYPE html>
     }
     .stat-k { font-size: 11px; text-transform: uppercase; color: var(--text-muted); }
     .stat-v { font-size: 14px; font-weight: 600; color: #fff; }
+
+    .preview-box {
+      width: 100%;
+      max-width: 800px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      line-height: 1.6;
+    }
+    .preview-media {
+      width: 100%;
+      max-width: 800px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
 
     .advanced-section {
       width: 100%;

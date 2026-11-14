@@ -287,3 +287,29 @@
    - Validated all 4 domain view packs against realistic sample `.s3a` archives.
    - Validated strict exclusion of developer jargon from human-facing strings and verified the Advanced toggle.
    - Validated Vercel UI design system tokens and keyboard accessibility attributes.
+
+---
+
+## Prompt 007 Fix: Real Data Rendering in S3A Record Viewer & Anti-Fabrication Guarantees
+
+- **Status**: ALL SUCCESS
+- **Commit**: HEAD
+- **Summary of Deliverables**:
+1. **Complete Removal of Hardcoded Mock Content**:
+   - Eliminated all static mock data, hardcoded sample manuscripts ("Multidimensional Spatial Hyper-Tile Architecture", "Dr. A. Cribb"), static SVG templates, and mock parts ("part_piston", "ASM-704", "704-02-A", "704-01-A", "Cylinder Block", "aura-node-0x0042", "Linux 6.6.21-aura-rt", "Dr. Jane Doe", "Chief Mechanical Engineer", "Aura Fleet Security Daemon") from `crates/s3a-harness/src/viewer.rs`.
+2. **Real Archive Inspection Across Domain Packs**:
+   - `ScholarResearchViewPack`: parses actual hyper-tiles 10..=15, 20, and 32 via `s3a-pack-scholar`, extracting `AcademicPaperRecord` (IDs, year, citation count, open-access status, topic centroid, flags), `HumanLrsRecord` (researcher approval, actor hash, timestamp, decision score), `ResearchGraphEdgeRecord`, `ScholarNoteClaimRecord`, `CitationFingerprintRecord`, and workspace context.
+   - `TechnicalDataViewPack`: parses stored STEP AP242 models via `s3a_pack_tdp::step::parse_step` and technical drawings via `s3a_pack_tdp::pdf::extract_pdf_metadata`. Generates dynamic SVG previews rendered with actual part numbers, quantities, names, author, and system, and dynamic CSV Bill of Materials tables.
+   - `AuraBackupViewPack`: inspects telemetry hyper-tiles (0 & 3) decoding real telemetry/wearable records and JSON device states, plus commit histories from `s3a-vcs`.
+   - `ManifestFallbackViewPack`: inspects container headers and hyper-tiles dynamically, extracting real record counts and sizes.
+3. **Dynamic Node IDs and "Not recorded" Fallbacks**:
+   - Node IDs strictly originate from the underlying archive (e.g. `paper_170603762`, `asm_ASM-1000`, `part_SHAFT-001`, `pdf_drawings/gearbox.pdf`).
+   - When metadata fields are not present in the file, "Not recorded" is displayed instead of fallback sample strings.
+4. **Anti-Fabrication Test Suite**:
+   - `test_anti_fabrication_no_hardcoded_demo_strings`: greps `viewer.rs` source to guarantee zero hardcoded demo strings remain.
+   - `test_anti_fabrication_distinct_vaults_produce_different_properties`: constructs two distinct vaults with different real records (e.g. "Attention Is All You Need" vs "Deep Residual Learning") and asserts that the viewer returns exact distinct properties and approvals.
+5. **Local Verification**:
+   - `cargo fmt --all --check`: passed
+   - `cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings`: passed
+   - `cargo test -p s3a-harness --test viewer_mcp_tests`: 9/9 tests passed
+   - `cargo test --workspace`: all passed
