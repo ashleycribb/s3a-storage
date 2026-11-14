@@ -10,6 +10,6 @@ pub use bom::{
     export_bom_csv, export_bom_csv_from_bytes, export_bom_json, export_bom_json_from_bytes,
 };
 pub use mime::detect_mime_and_ext;
-pub use pdf::{compute_sha256, extract_pdf_metadata, PdfMetadata};
+pub use pdf::{compute_sha256, create_test_pdf, extract_pdf_metadata, PdfMetadata};
 pub use step::{parse_step, StepAssemblyPartRecord, StepAssemblyTree, StepHeader};
 pub use store::{store_pdf, store_step, write_document_record};

@@ -2115,6 +2115,7 @@ dependencies = [
  "s3a-engine",
  "s3a-pack-ontology",
  "s3a-pack-scholar",
+ "s3a-sandbox",
  "s3a-simd",
  "s3a-vault",
  "s3a-vcs",
@@ -2272,6 +2273,27 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "s3a-sandbox"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "crc32c",
+ "crc32fast",
+ "ed25519-dalek",
+ "fs2",
+ "hex",
+ "lopdf",
+ "rand_core 0.6.4",
+ "s3a-core",
+ "s3a-engine",
+ "s3a-pack-tdp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

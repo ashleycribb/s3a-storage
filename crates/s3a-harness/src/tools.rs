@@ -873,6 +873,243 @@ impl Tool for SandboxBuildTool {
 }
 
 // =============================================================================
+// Sandboxed Work-Queue Tools (Prompt 004)
+// =============================================================================
+
+fn enqueue_and_wait_sandbox_job(
+    kind: &str,
+    inputs: Value,
+    args: &Value,
+    ctx: &ToolExecutionContext,
+) -> Result<Value, ToolError> {
+    let vault_path = if let Some(vp) = args.get("vault_path").and_then(|v| v.as_str()) {
+        std::path::PathBuf::from(vp)
+    } else {
+        ctx.sandbox.root().join("work_queue.s3a")
+    };
+
+    let queue = s3a_sandbox::WorkQueue::new(&vault_path);
+
+    let job_id = *uuid::Uuid::now_v7().as_bytes();
+
+    let mut requested_by = [0u8; 16];
+    let agent_bytes = ctx.agent_id.as_bytes();
+    let copy_len = agent_bytes.len().min(16);
+    requested_by[..copy_len].copy_from_slice(&agent_bytes[..copy_len]);
+
+    let grant_id = ctx
+        .grant_record
+        .as_ref()
+        .map(|g| g.grant_id)
+        .unwrap_or([0u8; 16]);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut job = s3a_sandbox::JobRecord {
+        id: job_id,
+        kind: kind.to_string(),
+        inputs,
+        requested_by,
+        grant: grant_id,
+        created_at: now,
+        signature: [0u8; 64],
+    };
+    job.signature = s3a_sandbox::compute_record_signature(
+        s3a_sandbox::RECORD_TYPE_JOB,
+        &job_id,
+        &serde_json::to_vec(&job.inputs).unwrap_or_default(),
+        &requested_by,
+    );
+
+    queue
+        .enqueue(&job)
+        .map_err(|e| ToolError::ExecutionFailed {
+            tool: kind.to_string(),
+            details: format!("Failed to enqueue sandbox job: {}", e),
+        })?;
+
+    let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !wait {
+        return Ok(json!({
+            "status": "enqueued",
+            "job_id": hex::encode(job_id),
+            "vault": vault_path.to_string_lossy(),
+        }));
+    }
+
+    let worker = s3a_sandbox::SandboxWorker::new(queue.clone());
+    let start = Instant::now();
+    loop {
+        if let Ok(Some(view)) = queue.get_job(&job_id) {
+            if let Some(res) = view.result {
+                if res.success {
+                    return Ok(res.output);
+                } else {
+                    return Err(ToolError::ExecutionFailed {
+                        tool: kind.to_string(),
+                        details: format!("Sandbox task failed: {:?}", res.output),
+                    });
+                }
+            }
+        }
+
+        let _ = worker.poll_and_run_once();
+
+        if start.elapsed().as_secs() >= 5 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    if let Ok(Some(view)) = queue.get_job(&job_id) {
+        if let Some(res) = view.result {
+            if res.success {
+                return Ok(res.output);
+            } else {
+                return Err(ToolError::ExecutionFailed {
+                    tool: kind.to_string(),
+                    details: format!("Sandbox task failed: {:?}", res.output),
+                });
+            }
+        }
+    }
+
+    Ok(json!({
+        "status": "pending",
+        "job_id": hex::encode(job_id),
+        "vault": vault_path.to_string_lossy(),
+    }))
+}
+
+/// 9. Render STEP Preview Tool: Enqueues STEP AP242 parsing & glTF/PNG generation to the vault work queue
+pub struct RenderStepPreviewTool;
+
+impl Tool for RenderStepPreviewTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        crate::permissions::SideEffects::ReadOnly
+    }
+
+    fn name(&self) -> &str {
+        "render_step_preview"
+    }
+
+    fn description(&self) -> &str {
+        "Enqueues a STEP AP242 3D model parsing task to the isolated vault work-queue sandbox to generate glTF 2.0 or PNG preview."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "step_path": { "type": "string", "description": "Path to AP242 STEP file" },
+                "step_content": { "type": "string", "description": "Raw STEP content string" },
+                "format": { "type": "string", "enum": ["gltf", "png"], "description": "Output preview format" },
+                "vault_path": { "type": "string", "description": "Optional custom vault archive path" },
+                "wait": { "type": "boolean", "description": "Whether to wait synchronously for sandbox execution" }
+            }
+        })
+    }
+
+    fn execute(&self, args: &Value, ctx: &ToolExecutionContext) -> Result<Value, ToolError> {
+        let mut inputs = json!({});
+        if let Some(p) = args.get("step_path") {
+            inputs["step_path"] = p.clone();
+        }
+        if let Some(c) = args.get("step_content") {
+            inputs["step_content"] = c.clone();
+        }
+        if let Some(f) = args.get("format") {
+            inputs["format"] = f.clone();
+        }
+        enqueue_and_wait_sandbox_job("render_step_preview", inputs, args, ctx)
+    }
+}
+
+/// 10. Extract PDF Text Tool: Enqueues PDF text extraction to the vault work queue
+pub struct ExtractPdfTextTool;
+
+impl Tool for ExtractPdfTextTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        crate::permissions::SideEffects::ReadOnly
+    }
+
+    fn name(&self) -> &str {
+        "extract_pdf_text"
+    }
+
+    fn description(&self) -> &str {
+        "Enqueues a PDF text extraction task to the isolated vault work-queue sandbox."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pdf_path": { "type": "string", "description": "Path to PDF file" },
+                "pdf_content": { "type": "string", "description": "Raw PDF content" },
+                "vault_path": { "type": "string", "description": "Optional custom vault archive path" },
+                "wait": { "type": "boolean", "description": "Whether to wait synchronously for sandbox execution" }
+            }
+        })
+    }
+
+    fn execute(&self, args: &Value, ctx: &ToolExecutionContext) -> Result<Value, ToolError> {
+        let mut inputs = json!({});
+        if let Some(p) = args.get("pdf_path") {
+            inputs["pdf_path"] = p.clone();
+        }
+        if let Some(c) = args.get("pdf_content") {
+            inputs["pdf_content"] = c.clone();
+        }
+        enqueue_and_wait_sandbox_job("extract_pdf_text", inputs, args, ctx)
+    }
+}
+
+/// 11. Generic Sandbox Work-Queue Enqueue Tool
+pub struct SandboxJobTool;
+
+impl Tool for SandboxJobTool {
+    fn side_effects(&self) -> crate::permissions::SideEffects {
+        crate::permissions::SideEffects::Mutating
+    }
+
+    fn name(&self) -> &str {
+        "sandbox_job"
+    }
+
+    fn description(&self) -> &str {
+        "Enqueues an arbitrary job to the S3A Vault work queue for isolated sandbox execution."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "description": "Job kind identifier (e.g. render_step_preview, extract_pdf_text)" },
+                "inputs": { "type": "object", "description": "Job input parameters" },
+                "vault_path": { "type": "string", "description": "Optional custom vault archive path" },
+                "wait": { "type": "boolean", "description": "Whether to wait synchronously for sandbox execution" }
+            },
+            "required": ["kind", "inputs"]
+        })
+    }
+
+    fn execute(&self, args: &Value, ctx: &ToolExecutionContext) -> Result<Value, ToolError> {
+        let kind = args.get("kind").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
+                tool: "sandbox_job".to_string(),
+                details: "Missing required field 'kind'".to_string(),
+            }
+        })?;
+        let inputs = args.get("inputs").cloned().unwrap_or(json!({}));
+        enqueue_and_wait_sandbox_job(kind, inputs, args, ctx)
+    }
+}
+
+// =============================================================================
 // Tool Registry
 // =============================================================================
 
@@ -914,6 +1151,9 @@ impl ToolRegistry {
         registry.register(Arc::new(RetractionWatchCheckTool));
         registry.register(Arc::new(PreflightCheckTool));
         registry.register(Arc::new(SandboxBuildTool::new()));
+        registry.register(Arc::new(RenderStepPreviewTool));
+        registry.register(Arc::new(ExtractPdfTextTool));
+        registry.register(Arc::new(SandboxJobTool));
         registry
     }
 

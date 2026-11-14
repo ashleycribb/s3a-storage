@@ -102,3 +102,43 @@
      3. Agent grants (agent -> acts_for -> person authorization chain)
    - 100,000-edge performance benchmark: index rebuilt in <1.5s, graph queries in <50ms.
    - End-to-end CLI integration test in `crates/s3a-cli/tests/graph_cli_test.rs`.
+
+
+---
+
+## Prompt 004: s3a-sandbox Work-Queue Sandboxes
+
+- **Status**: ALL SUCCESS
+- **Commit**: HEAD
+- **CI Verification**:
+  - `cargo fmt --all --check`: passed
+  - `cargo deny check`: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - `cargo test -p s3a-sandbox`: passed (7 tests in `work_queue_tests`)
+  - `cargo test -p s3a-harness`: passed (all 89 unit & integration tests)
+  - `cargo test -p s3a-pack-tdp`: passed (all 7 tests)
+- **Summary of Deliverables**:
+1. **New Crate `s3a-sandbox` (`crates/s3a-sandbox`)**:
+   - Defined pack tile `TILE_SANDBOX_WORK_QUEUE = 88` kept strictly in pack crate, not core.
+   - Binary record header `WorkQueueRecordHeader` (168 bytes, 8-byte aligned, Pod + Zeroable) with CRC32-C integrity and Ed25519/HMAC signature fields.
+   - Data structures for `JobRecord`, `StatusRecord`, and `ResultRecord` with binary hyper-tile encoding/decoding.
+2. **Vault Work Queue (`WorkQueue`)**:
+   - Atomic lease claim (`claim_next`) under OS file lock (`fs2`) preventing double-claim across concurrent workers.
+   - Automatic lease expiry retry logic for dropped or crashed workers.
+   - Job completion and failure handling with full execution audit logging.
+3. **Isolated Process Execution & Security (`execute_job_in_sandbox`)**:
+   - Executes tasks in dedicated temporary directories.
+   - Uses `env_clear()` to scrub all ambient environment variables, guaranteeing sandbox worker subprocesses never see vault keys or credentials.
+   - Implemented `render_step_preview` (AP242 STEP to glTF 2.0 or PNG) and `extract_pdf_text` (PDF text extraction via `lopdf`).
+4. **Autonomous Worker (`SandboxWorker`)**:
+   - Polls the vault work queue via outbound storage access without requiring inbound network ports.
+   - Standalone CLI `s3a-sandbox` supporting `exec`, `worker`, `enqueue`, and `status`.
+5. **Harness Integration (`crates/s3a-harness`)**:
+   - Added `RenderStepPreviewTool`, `ExtractPdfTextTool`, and `SandboxJobTool` in `s3a_harness::tools`.
+   - Enqueues jobs into vault work queue instead of running heavy tools directly inside the harness.
+6. **Tests (`crates/s3a-sandbox/tests/work_queue_tests.rs`)**:
+   - `test_claim_lease_expiry`: single claim during lease, re-claim on expiry.
+   - `test_crash_mid_job`: recovery of crashed worker upon lease expiry.
+   - `test_two_workers_no_double_claim`: barrier-synchronized concurrent workers claim race.
+   - `test_render_step_preview_e2e` & `test_render_step_preview_png`: glTF 2.0 and PNG validation.
+   - `test_extract_pdf_text_e2e`: PDF text extraction.
+   - `test_sandboxes_never_see_vault_keys`: ambient secret isolation verification.

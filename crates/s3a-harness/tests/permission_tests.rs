@@ -410,7 +410,7 @@ fn read_only_looking_name_declared_mutating_is_denied() {
 fn builtin_tools_declare_side_effects_and_names_agree_or_are_listed() {
     // Lint: flag built-ins whose name heuristic disagrees with their declaration. The
     // declaration wins; disagreements must be listed here on purpose.
-    let expected_disagreements: &[&str] = &[];
+    let expected_disagreements: &[&str] = &["extract_pdf_text", "render_step_preview"];
     let r = ToolRegistry::new_default();
     let mut disagreements = Vec::new();
     for info in r.list_tools(None) {

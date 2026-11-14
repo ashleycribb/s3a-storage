@@ -1,0 +1,31 @@
+[package]
+name = "s3a-sandbox"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Work-queue sandboxes and isolated task runners for S3A"
+
+[[bin]]
+name = "s3a-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-pack-tdp = { path = "../s3a-pack-tdp" }
+bytemuck = { workspace = true }
+crc32c = { workspace = true }
+crc32fast = "1.4"
+fs2 = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tempfile = "3"
+lopdf = { version = "0.47.0", default-features = false }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"

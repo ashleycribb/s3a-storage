@@ -87,3 +87,33 @@ Notes:
   6. Implemented CLI commands: `s3a graph neighbors`, `s3a graph path`, `s3a graph traverse`, `s3a graph add`.
   7. Tested all 3 canonical use cases (assembly tree, citation graph with Tile 13 interop, agent grants) + 100k-edge performance benchmark (<1.5s build, <50ms query).
 
+---
+
+## 004-sandbox-work-queue, 2026-11-13 20:52
+Status: done
+Commit: HEAD
+Changed: Cargo.toml, Cargo.lock, crates/s3a-sandbox/**, crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/tools.rs, crates/s3a-harness/tests/tool_registry_tests.rs, crates/s3a-harness/tests/permission_tests.rs, crates/s3a-pack-tdp/src/lib.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-sandbox: passed (7 passed in work_queue_tests)
+  - cargo test -p s3a-harness: passed (89 passed: 18 unittests, 1 e2e, 9 enforcement, 7 operability, 13 permissions, 14 protocol/sandbox, 11 runtime_core, 9 tool_registry, 7 training_and_eval)
+  - cargo test -p s3a-pack-tdp: passed (7 passed)
+Notes:
+  1. Kept as a pack crate, not core: created `crates/s3a-sandbox` with pack tile `TILE_SANDBOX_WORK_QUEUE = 88`.
+  2. Work queue signed records: `WorkQueueRecordHeader` (168 bytes, 8-byte aligned, Pod + Zeroable) supporting `JobRecord` (id, kind, inputs, requested_by, grant, signature), `StatusRecord` (state, worker_id, claimed_at, lease_expires_at, retry_count, error, signature), and `ResultRecord` (success, output, signature).
+  3. Work queue state machine (`WorkQueue`): atomic lease claim under exclusive OS file lock preventing double-claim across competing concurrent workers, lease expiry retries, heartbeat, complete, and fail.
+  4. Autonomous worker (`SandboxWorker`): polls the vault work queue via outbound file/storage access without requiring any inbound open ports.
+  5. Process isolation (`execute_job_in_sandbox`): creates restricted temp directory, wipes ambient environment variables with `env_clear()` so sandboxes never see vault keys or credentials, executes isolated subprocess, reads outputs, and writes signed results back to the vault.
+  6. Implemented job kinds:
+     - `render_step_preview`: parses AP242 STEP assembly and exports canonical glTF 2.0 scene graph or PNG preview.
+     - `extract_pdf_text`: extracts text from PDF pages using pure-Rust `lopdf`.
+  7. Harness integration: added `RenderStepPreviewTool`, `ExtractPdfTextTool`, and `SandboxJobTool` in `s3a-harness::tools` to enqueue jobs into the vault queue rather than running heavy tasks directly inside the agent harness.
+  8. Tests in `crates/s3a-sandbox/tests/work_queue_tests.rs`:
+     - `test_claim_lease_expiry`: verifies worker claims, prevents concurrent claim during lease, and re-claims after lease expiry.
+     - `test_crash_mid_job`: verifies mid-job worker crash recovery upon lease expiry.
+     - `test_two_workers_no_double_claim`: concurrent barrier test ensuring exactly one worker claims.
+     - `test_render_step_preview_e2e` & `test_render_step_preview_png`: STEP to glTF 2.0 and PNG.
+     - `test_extract_pdf_text_e2e`: PDF text extraction.
+     - `test_sandboxes_never_see_vault_keys`: verifies ambient vault keys are completely stripped from sandbox subprocess.
+

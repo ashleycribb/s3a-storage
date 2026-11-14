@@ -335,3 +335,36 @@ fn test_agent_runtime_executes_tools_and_populates_provenance() {
         assert_eq!(prov.result_hash.len(), 64);
     }
 }
+
+#[test]
+fn test_harness_enqueues_sandbox_jobs() {
+    let tmp = TempDirGuard::new("s3a_harness_sandbox_enqueue");
+    let sandbox = Sandbox::new(&tmp.path, false).expect("sandbox");
+    let store = Arc::new(LocalStore::new(sandbox.root(), false));
+    let ctx = ToolExecutionContext {
+        agent_id: "test_engineer".to_string(),
+        session_uuid: [11, 22],
+        sandbox,
+        store,
+        grant_record: None,
+    };
+
+    let registry = ToolRegistry::new_default();
+    let mut config = create_test_config();
+    config.allowed_tools.push("render_step_preview".to_string());
+    config.allowed_tools.push("extract_pdf_text".to_string());
+
+    let step_args = json!({
+        "step_content": "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('test.stp','2026-11-13',('Author'),('Org'),'','','');\nFILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));\nENDSEC;\nDATA;\n#10=PRODUCT('PRT-001','Bracket','',(#11));\n#11=PRODUCT_CONTEXT('',#12,'mechanical');\n#12=APPLICATION_CONTEXT('core data');\nENDSEC;\nEND-ISO-10303-21;\n",
+        "format": "gltf",
+        "wait": true
+    });
+
+    let res = registry
+        .call_tool(&config, "render_step_preview", &step_args, &ctx)
+        .expect("Call render_step_preview tool");
+
+    assert_eq!(res.tool_name, "render_step_preview");
+    assert_eq!(res.output["format"], "gltf");
+    assert_eq!(res.output["part_count"], 1);
+}
