@@ -538,11 +538,7 @@ mod tests {
             assert!(!list.contains(w), "{} must not be listed read-only", w);
         }
         #[allow(unused_mut)]
-        let mut expected_reads = vec![
-            "s3a_query",
-            "s3a_fetch_coordinate",
-            "s3a_inspect_archive",
-        ];
+        let mut expected_reads = vec!["s3a_query", "s3a_fetch_coordinate", "s3a_inspect_archive"];
         #[cfg(feature = "packs")]
         expected_reads.extend_from_slice(&[
             "s3a_search_library",

@@ -7,18 +7,46 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use s3a_core::document::{
-    compute_key_hash, DocumentRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_IS_JSON,
-    DOC_KIND_GENERIC_KV, DOC_KIND_JSON,
+    compute_key_hash, DocumentRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_IS_JSON, DOC_KIND_GENERIC_KV,
+    DOC_KIND_JSON,
 };
 use s3a_core::{HyperTileHeader, TileType, HYPER_TILE_PAYLOAD_SIZE};
 use s3a_engine::{execute_query, MmapReader, QueryResult, TelemetryRecord, TileWriter};
 
 /// Canonical list of recognized CLI commands for 'did you mean' suggestions.
 pub const KNOWN_COMMANDS: &[&str] = &[
-    "init", "put", "get", "import", "export", "query", "ls", "list", "info", "tour", "demo",
-    "help", "seal", "verify", "inspect", "status", "doctor", "recover",
-    "compact", "fuse", "flatten", "unflatten", "prove", "verify-proof",
-    "vcs", "gate", "vault", "mcp-server", "serve", "serve-tcp", "shell", "telemetry"
+    "init",
+    "put",
+    "get",
+    "import",
+    "export",
+    "query",
+    "ls",
+    "list",
+    "info",
+    "tour",
+    "demo",
+    "help",
+    "seal",
+    "verify",
+    "inspect",
+    "status",
+    "doctor",
+    "recover",
+    "compact",
+    "fuse",
+    "flatten",
+    "unflatten",
+    "prove",
+    "verify-proof",
+    "vcs",
+    "gate",
+    "vault",
+    "mcp-server",
+    "serve",
+    "serve-tcp",
+    "shell",
+    "telemetry",
 ];
 
 /// Canonical list of core and standard tile type names for 'did you mean' suggestions.
@@ -61,7 +89,11 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
 
     for i in 1..=a_chars.len() {
         for j in 1..=b_chars.len() {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             dp[i][j] = (dp[i - 1][j] + 1)
                 .min(dp[i][j - 1] + 1)
                 .min(dp[i - 1][j - 1] + cost);
@@ -71,7 +103,11 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
 }
 
 /// Finds the closest matching candidate from a dictionary if within distance threshold.
-pub fn find_best_suggestion<'a>(input: &str, candidates: &'a [&'a str], max_distance: usize) -> Option<&'a str> {
+pub fn find_best_suggestion<'a>(
+    input: &str,
+    candidates: &'a [&'a str],
+    max_distance: usize,
+) -> Option<&'a str> {
     let lower = input.to_lowercase();
     let mut best_match = None;
     let mut min_dist = max_distance + 1;
@@ -251,7 +287,6 @@ pub fn format_ascii_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 // Core Document Storage Helpers (Tile 23)
 // =========================================================================
 
-
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -263,7 +298,10 @@ pub fn format_timestamp_iso(ms: u64) -> String {
     let secs = ms / 1000;
     // Format human-friendly UTC timestamp
     if let Some(dt) = std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs)) {
-        let dur = dt.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let dur = dt
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let days = dur / 86400;
         let rem = dur % 86400;
         let hours = rem / 3600;
@@ -284,7 +322,18 @@ pub fn format_timestamp_iso(ms: u64) -> String {
         }
         let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
         let month_days = [
-            31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+            31,
+            if leap { 29 } else { 28 },
+            31,
+            30,
+            31,
+            30,
+            31,
+            31,
+            30,
+            31,
+            30,
+            31,
         ];
         let mut month = 1;
         for &md in &month_days {
@@ -296,7 +345,10 @@ pub fn format_timestamp_iso(ms: u64) -> String {
             }
         }
         let day = day_count + 1;
-        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month, day, hours, mins, s)
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+            year, month, day, hours, mins, s
+        )
     } else {
         format!("{} ms", ms)
     }
@@ -346,8 +398,13 @@ pub fn write_document_record(path: &Path, key: &str, content: &[u8]) -> Result<(
     tile_hdr.payload_bytes = tile_payload.len() as u32;
     tile_hdr.data_crc32 = crc32c::crc32c(&tile_payload);
 
-    let mut writer = TileWriter::open_append(path)
-        .map_err(|e| format!("Failed to open vault '{}' for writing: {}", path.display(), e))?;
+    let mut writer = TileWriter::open_append(path).map_err(|e| {
+        format!(
+            "Failed to open vault '{}' for writing: {}",
+            path.display(),
+            e
+        )
+    })?;
 
     writer
         .write_raw_hyper_tile(&tile_hdr, &tile_payload)
@@ -384,7 +441,9 @@ pub fn read_document_record(path: &Path, key: &str) -> Result<Option<Vec<u8>>, S
                     let c_bytes = &payload[offset..offset + c_len];
                     offset += c_len;
 
-                    if doc_hdr.key_hash == compute_key_hash(doc_hdr.doc_kind, key) && k_bytes == key.as_bytes() {
+                    if doc_hdr.key_hash == compute_key_hash(doc_hdr.doc_kind, key)
+                        && k_bytes == key.as_bytes()
+                    {
                         matches.push((doc_hdr, c_bytes.to_vec()));
                     }
                 }
@@ -520,7 +579,9 @@ pub fn handle_init(args: &[String], verbose: bool) {
 
 pub fn handle_put(args: &[String], verbose: bool) {
     let pos = extract_positional_args(args);
-    let has_explicit_vault = args.iter().any(|a| a == "--vault" || a.starts_with("--vault="));
+    let has_explicit_vault = args
+        .iter()
+        .any(|a| a == "--vault" || a.starts_with("--vault="));
 
     let (vault_path, key, val_arg) = if !has_explicit_vault && pos.len() >= 3 {
         (PathBuf::from(pos[0]), pos[1].as_str(), pos[2].as_str())
@@ -553,7 +614,11 @@ pub fn handle_put(args: &[String], verbose: bool) {
     if !vault_path.exists() {
         if let Err(e) = TileWriter::create(&vault_path) {
             print_cli_error(
-                &format!("failed to create vault at '{}': {}", vault_path.display(), e),
+                &format!(
+                    "failed to create vault at '{}': {}",
+                    vault_path.display(),
+                    e
+                ),
                 Some("check write permissions in the directory"),
                 verbose,
                 Some(&e.to_string()),
@@ -571,7 +636,12 @@ pub fn handle_put(args: &[String], verbose: bool) {
         );
     }
 
-    println!("OK: stored '{}' ({} bytes) in {}", key, content.len(), vault_path.display());
+    println!(
+        "OK: stored '{}' ({} bytes) in {}",
+        key,
+        content.len(),
+        vault_path.display()
+    );
 }
 
 pub fn handle_get(args: &[String], verbose: bool) {
@@ -585,7 +655,9 @@ pub fn handle_get(args: &[String], verbose: bool) {
         );
     }
 
-    let has_explicit_vault = args.iter().any(|a| a == "--vault" || a.starts_with("--vault="));
+    let has_explicit_vault = args
+        .iter()
+        .any(|a| a == "--vault" || a.starts_with("--vault="));
     let (vault_path, key) = if !has_explicit_vault && pos.len() >= 2 {
         (PathBuf::from(pos[0]), pos[1].as_str())
     } else {
@@ -614,7 +686,11 @@ pub fn handle_get(args: &[String], verbose: bool) {
         }
         Ok(None) => {
             print_cli_error(
-                &format!("key '{}' not found in vault '{}'", key, vault_path.display()),
+                &format!(
+                    "key '{}' not found in vault '{}'",
+                    key,
+                    vault_path.display()
+                ),
                 Some("use 's3a ls' to list stored keys, or 's3a put <key> <value>' to store it"),
                 verbose,
                 None,
@@ -656,7 +732,11 @@ pub fn handle_import(args: &[String], verbose: bool) {
     if !vault_path.exists() {
         if let Err(e) = TileWriter::create(&vault_path) {
             print_cli_error(
-                &format!("failed to initialize vault at '{}': {}", vault_path.display(), e),
+                &format!(
+                    "failed to initialize vault at '{}': {}",
+                    vault_path.display(),
+                    e
+                ),
                 Some("verify write permissions"),
                 verbose,
                 Some(&e.to_string()),
@@ -675,9 +755,14 @@ pub fn handle_import(args: &[String], verbose: bool) {
         ),
     };
 
-    let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("data");
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("data");
     let is_csv = filename.ends_with(".csv")
-        || (!filename.ends_with(".json") && file_bytes.iter().any(|&b| b == b',') && file_bytes.iter().any(|&b| b == b'\n'));
+        || (!filename.ends_with(".json")
+            && file_bytes.iter().any(|&b| b == b',')
+            && file_bytes.iter().any(|&b| b == b'\n'));
 
     if is_csv {
         import_csv(&file_bytes, &vault_path, filename, verbose);
@@ -708,12 +793,21 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
         ),
     };
 
-    let headers: Vec<String> = parse_csv_line(header_line).into_iter().map(|s| s.trim().to_lowercase()).collect();
+    let headers: Vec<String> = parse_csv_line(header_line)
+        .into_iter()
+        .map(|s| s.trim().to_lowercase())
+        .collect();
 
     // Check if CSV matches Telemetry format (timestamp, sensor_id, metric_id, value)
-    let ts_idx = headers.iter().position(|h| h == "timestamp" || h == "time" || h == "ts");
-    let sensor_idx = headers.iter().position(|h| h == "sensor_id" || h == "sensor");
-    let metric_idx = headers.iter().position(|h| h == "metric_id" || h == "metric");
+    let ts_idx = headers
+        .iter()
+        .position(|h| h == "timestamp" || h == "time" || h == "ts");
+    let sensor_idx = headers
+        .iter()
+        .position(|h| h == "sensor_id" || h == "sensor");
+    let metric_idx = headers
+        .iter()
+        .position(|h| h == "metric_id" || h == "metric");
     let value_idx = headers.iter().position(|h| h == "value" || h == "val");
 
     if let (Some(ti), Some(si), Some(mi), Some(vi)) = (ts_idx, sensor_idx, metric_idx, value_idx) {
@@ -727,7 +821,10 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
             }
             let fields = parse_csv_line(line);
             if fields.len() > ti.max(si).max(mi).max(vi) {
-                let ts = fields[ti].trim().parse::<u64>().unwrap_or_else(|_| now_ms() / 1000);
+                let ts = fields[ti]
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap_or_else(|_| now_ms() / 1000);
                 let sensor = fields[si].trim().parse::<u32>().unwrap_or(0);
                 let metric = fields[mi].trim().parse::<u32>().unwrap_or(0);
                 let value = fields[vi].trim().parse::<f64>().unwrap_or(0.0);
@@ -755,8 +852,13 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
 
         let tile_rec_cap = HYPER_TILE_PAYLOAD_SIZE / std::mem::size_of::<TelemetryRecord>();
         let mut tiles_written = 0;
-        for (rec_chunk, ts_chunk) in records.chunks(tile_rec_cap).zip(timestamps.chunks(tile_rec_cap)) {
-            if let Err(e) = writer.write_hyper_tile(TileType::TELEMETRY, rec_chunk, Some(ts_chunk), None) {
+        for (rec_chunk, ts_chunk) in records
+            .chunks(tile_rec_cap)
+            .zip(timestamps.chunks(tile_rec_cap))
+        {
+            if let Err(e) =
+                writer.write_hyper_tile(TileType::TELEMETRY, rec_chunk, Some(ts_chunk), None)
+            {
                 print_cli_error(
                     &format!("failed to write telemetry tile: {}", e),
                     Some("run 's3a doctor' to check archive health"),
@@ -777,8 +879,13 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
         );
     } else {
         // Generic CSV: store each row as a structured document
-        let stem = Path::new(filename).file_stem().and_then(|s| s.to_str()).unwrap_or("row");
-        let id_idx = headers.iter().position(|h| h == "id" || h == "key" || h == "name");
+        let stem = Path::new(filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("row");
+        let id_idx = headers
+            .iter()
+            .position(|h| h == "id" || h == "key" || h == "name");
         let mut count = 0;
         let mut tiles_written = 0;
 
@@ -824,7 +931,10 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
             }
 
             let key = if let Some(idx) = id_idx {
-                fields.get(idx).map(|s| s.trim().to_string()).unwrap_or_else(|| format!("{}:{}", stem, row_num + 1))
+                fields
+                    .get(idx)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| format!("{}:{}", stem, row_num + 1))
             } else {
                 format!("{}:{}", stem, row_num + 1)
             };
@@ -842,9 +952,14 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
             doc_hdr.content_len = content_bytes.len() as u32;
             doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
 
-            let rec_size = std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len() + content_bytes.len();
+            let rec_size =
+                std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len() + content_bytes.len();
             if current_tile_payload.len() + rec_size > HYPER_TILE_PAYLOAD_SIZE {
-                flush_tile(&mut current_tile_payload, &mut current_rec_count, &mut tiles_written);
+                flush_tile(
+                    &mut current_tile_payload,
+                    &mut current_rec_count,
+                    &mut tiles_written,
+                );
             }
 
             current_tile_payload.extend_from_slice(bytemuck::bytes_of(&doc_hdr));
@@ -854,7 +969,11 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
             count += 1;
         }
 
-        flush_tile(&mut current_tile_payload, &mut current_rec_count, &mut tiles_written);
+        flush_tile(
+            &mut current_tile_payload,
+            &mut current_rec_count,
+            &mut tiles_written,
+        );
 
         println!(
             "Imported {} records from {} into {} ({} tile{} written)",
@@ -878,7 +997,10 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
         ),
     };
 
-    let stem = Path::new(filename).file_stem().and_then(|s| s.to_str()).unwrap_or("record");
+    let stem = Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("record");
     let mut count = 0;
     let mut tiles_written = 0;
     let mut current_tile_payload = Vec::new();
@@ -906,7 +1028,12 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
                 let key = item
                     .get("id")
                     .or_else(|| item.get("key"))
-                    .and_then(|v| v.as_str().or_else(|| v.as_i64().map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)))
+                    .and_then(|v| {
+                        v.as_str().or_else(|| {
+                            v.as_i64()
+                                .map(|n| Box::leak(n.to_string().into_boxed_str()) as &str)
+                        })
+                    })
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("{}:{}", stem, idx + 1));
 
@@ -923,9 +1050,15 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
                 doc_hdr.content_len = content_bytes.len() as u32;
                 doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
 
-                let rec_size = std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len() + content_bytes.len();
+                let rec_size = std::mem::size_of::<DocumentRecordHeader>()
+                    + key_bytes.len()
+                    + content_bytes.len();
                 if current_tile_payload.len() + rec_size > HYPER_TILE_PAYLOAD_SIZE {
-                    flush_tile(&mut current_tile_payload, &mut current_rec_count, &mut tiles_written);
+                    flush_tile(
+                        &mut current_tile_payload,
+                        &mut current_rec_count,
+                        &mut tiles_written,
+                    );
                 }
 
                 current_tile_payload.extend_from_slice(bytemuck::bytes_of(&doc_hdr));
@@ -955,9 +1088,15 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
                 doc_hdr.content_len = content_bytes.len() as u32;
                 doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
 
-                let rec_size = std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len() + content_bytes.len();
+                let rec_size = std::mem::size_of::<DocumentRecordHeader>()
+                    + key_bytes.len()
+                    + content_bytes.len();
                 if current_tile_payload.len() + rec_size > HYPER_TILE_PAYLOAD_SIZE {
-                    flush_tile(&mut current_tile_payload, &mut current_rec_count, &mut tiles_written);
+                    flush_tile(
+                        &mut current_tile_payload,
+                        &mut current_rec_count,
+                        &mut tiles_written,
+                    );
                 }
 
                 current_tile_payload.extend_from_slice(bytemuck::bytes_of(&doc_hdr));
@@ -977,7 +1116,11 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
         }
     }
 
-    flush_tile(&mut current_tile_payload, &mut current_rec_count, &mut tiles_written);
+    flush_tile(
+        &mut current_tile_payload,
+        &mut current_rec_count,
+        &mut tiles_written,
+    );
 
     println!(
         "Imported {} records from {} into {} ({} tile{} written)",
@@ -1058,7 +1201,12 @@ pub fn handle_export(args: &[String], verbose: bool) {
                     Some(&e.to_string()),
                 );
             }
-            println!("Exported {} records from {} to {}", json_array.len(), vault_path.display(), out_path.display());
+            println!(
+                "Exported {} records from {} to {}",
+                json_array.len(),
+                vault_path.display(),
+                out_path.display()
+            );
             return;
         } else {
             // CSV export
@@ -1091,7 +1239,10 @@ pub fn handle_export(args: &[String], verbose: bool) {
                                 map.get(h)
                                     .map(|val| match val {
                                         serde_json::Value::String(s) => {
-                                            if s.contains(',') || s.contains('"') || s.contains('\n') {
+                                            if s.contains(',')
+                                                || s.contains('"')
+                                                || s.contains('\n')
+                                            {
                                                 format!("\"{}\"", s.replace('"', "\"\""))
                                             } else {
                                                 s.clone()
@@ -1100,7 +1251,10 @@ pub fn handle_export(args: &[String], verbose: bool) {
                                         serde_json::Value::Number(n) => n.to_string(),
                                         serde_json::Value::Bool(b) => b.to_string(),
                                         serde_json::Value::Null => String::new(),
-                                        other => format!("\"{}\"", other.to_string().replace('"', "\"\"")),
+                                        other => format!(
+                                            "\"{}\"",
+                                            other.to_string().replace('"', "\"\"")
+                                        ),
                                     })
                                     .unwrap_or_default()
                             })
@@ -1123,7 +1277,12 @@ pub fn handle_export(args: &[String], verbose: bool) {
                     Some(&e.to_string()),
                 );
             }
-            println!("Exported {} records from {} to {}", count, vault_path.display(), out_path.display());
+            println!(
+                "Exported {} records from {} to {}",
+                count,
+                vault_path.display(),
+                out_path.display()
+            );
             return;
         }
     }
@@ -1138,8 +1297,9 @@ pub fn handle_export(args: &[String], verbose: bool) {
                     let count = hdr.record_count as usize;
                     for i in 0..count {
                         if (i + 1) * rec_size <= payload.len() {
-                            let rec: TelemetryRecord =
-                                bytemuck::pod_read_unaligned(&payload[i * rec_size..(i + 1) * rec_size]);
+                            let rec: TelemetryRecord = bytemuck::pod_read_unaligned(
+                                &payload[i * rec_size..(i + 1) * rec_size],
+                            );
                             telemetry_records.push(rec);
                         }
                     }
@@ -1173,7 +1333,10 @@ pub fn handle_export(args: &[String], verbose: bool) {
             } else {
                 let mut csv_out = String::from("timestamp,sensor_id,metric_id,value\n");
                 for r in &telemetry_records {
-                    csv_out.push_str(&format!("{},{},{},{}\n", r.timestamp, r.sensor_id, r.metric_id, r.value));
+                    csv_out.push_str(&format!(
+                        "{},{},{},{}\n",
+                        r.timestamp, r.sensor_id, r.metric_id, r.value
+                    ));
                 }
                 if let Err(e) = fs::write(out_path, csv_out) {
                     print_cli_error(
@@ -1184,12 +1347,21 @@ pub fn handle_export(args: &[String], verbose: bool) {
                     );
                 }
             }
-            println!("Exported {} telemetry records from {} to {}", count, vault_path.display(), out_path.display());
+            println!(
+                "Exported {} telemetry records from {} to {}",
+                count,
+                vault_path.display(),
+                out_path.display()
+            );
             return;
         }
     }
 
-    println!("Exported 0 records from {} to {}", vault_path.display(), out_path.display());
+    println!(
+        "Exported 0 records from {} to {}",
+        vault_path.display(),
+        out_path.display()
+    );
 }
 
 fn parse_csv_line(line: &str) -> Vec<String> {
@@ -1282,7 +1454,8 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             rec.value
                         );
                     } else {
-                        let headers = ["Coordinate", "Timestamp", "Sensor ID", "Metric ID", "Value"];
+                        let headers =
+                            ["Coordinate", "Timestamp", "Sensor ID", "Metric ID", "Value"];
                         let rows = vec![vec![
                             "L0:T0:R0".to_string(),
                             rec.timestamp.to_string(),
@@ -1316,7 +1489,8 @@ pub fn handle_query(args: &[String], verbose: bool) {
                         if list.is_empty() {
                             println!("(0 rows returned in {:?})", elapsed);
                         } else {
-                            let headers = ["Coordinate", "Timestamp", "Sensor ID", "Metric ID", "Value"];
+                            let headers =
+                                ["Coordinate", "Timestamp", "Sensor ID", "Metric ID", "Value"];
                             let rows: Vec<Vec<String>> = list
                                 .iter()
                                 .map(|(r, c)| {
@@ -1330,7 +1504,12 @@ pub fn handle_query(args: &[String], verbose: bool) {
                                 })
                                 .collect();
                             print!("{}", format_ascii_table(&headers, &rows));
-                            println!("({} row{} in {:?})", list.len(), if list.len() == 1 { "" } else { "s" }, elapsed);
+                            println!(
+                                "({} row{} in {:?})",
+                                list.len(),
+                                if list.len() == 1 { "" } else { "s" },
+                                elapsed
+                            );
                         }
                     }
                 }
@@ -1356,7 +1535,8 @@ pub fn handle_query(args: &[String], verbose: bool) {
                         if list.is_empty() {
                             println!("(0 matches returned in {:?})", elapsed);
                         } else {
-                            let headers = ["Coordinate", "Record ID", "Timestamp", "Similarity Score"];
+                            let headers =
+                                ["Coordinate", "Record ID", "Timestamp", "Similarity Score"];
                             let rows: Vec<Vec<String>> = list
                                 .iter()
                                 .map(|(r, score, c)| {
@@ -1369,7 +1549,12 @@ pub fn handle_query(args: &[String], verbose: bool) {
                                 })
                                 .collect();
                             print!("{}", format_ascii_table(&headers, &rows));
-                            println!("({} match{} in {:?})", list.len(), if list.len() == 1 { "" } else { "es" }, elapsed);
+                            println!(
+                                "({} match{} in {:?})",
+                                list.len(),
+                                if list.len() == 1 { "" } else { "es" },
+                                elapsed
+                            );
                         }
                     }
                 }
@@ -1395,7 +1580,14 @@ pub fn handle_query(args: &[String], verbose: bool) {
                         if list.is_empty() {
                             println!("(0 activities returned in {:?})", elapsed);
                         } else {
-                            let headers = ["Coordinate", "Actor ID", "Verb ID", "Object ID", "Score", "Duration"];
+                            let headers = [
+                                "Coordinate",
+                                "Actor ID",
+                                "Verb ID",
+                                "Object ID",
+                                "Score",
+                                "Duration",
+                            ];
                             let rows: Vec<Vec<String>> = list
                                 .iter()
                                 .map(|(r, c)| {
@@ -1410,7 +1602,12 @@ pub fn handle_query(args: &[String], verbose: bool) {
                                 })
                                 .collect();
                             print!("{}", format_ascii_table(&headers, &rows));
-                            println!("({} row{} in {:?})", list.len(), if list.len() == 1 { "" } else { "s" }, elapsed);
+                            println!(
+                                "({} row{} in {:?})",
+                                list.len(),
+                                if list.len() == 1 { "" } else { "s" },
+                                elapsed
+                            );
                         }
                     }
                 }
@@ -1434,7 +1631,12 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             payload_frag
                         );
                     } else {
-                        println!("--- S3A-QL SIFT PACK [{}] ({} records in {:?}) ---", domain.as_str(), count, elapsed);
+                        println!(
+                            "--- S3A-QL SIFT PACK [{}] ({} records in {:?}) ---",
+                            domain.as_str(),
+                            count,
+                            elapsed
+                        );
                         println!("{}", summary);
                     }
                 }
@@ -1446,7 +1648,10 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             coordinate
                         );
                     } else {
-                        println!("Record stored at coordinate: {} (in {:?})", coordinate, elapsed);
+                        println!(
+                            "Record stored at coordinate: {} (in {:?})",
+                            coordinate, elapsed
+                        );
                     }
                 }
                 QueryResult::Deleted { success } => {
@@ -1457,7 +1662,11 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             success
                         );
                     } else {
-                        println!("Delete operation status: {} (in {:?})", if success { "success" } else { "failed" }, elapsed);
+                        println!(
+                            "Delete operation status: {} (in {:?})",
+                            if success { "success" } else { "failed" },
+                            elapsed
+                        );
                     }
                 }
                 QueryResult::Compacted { new_tile_count } => {
@@ -1468,7 +1677,10 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             new_tile_count
                         );
                     } else {
-                        println!("Compaction finished: {} active tiles in vault (in {:?})", new_tile_count, elapsed);
+                        println!(
+                            "Compaction finished: {} active tiles in vault (in {:?})",
+                            new_tile_count, elapsed
+                        );
                     }
                 }
                 QueryResult::Fused { new_tile_count } => {
@@ -1479,7 +1691,10 @@ pub fn handle_query(args: &[String], verbose: bool) {
                             new_tile_count
                         );
                     } else {
-                        println!("Fusion finished: {} tiles consolidated (in {:?})", new_tile_count, elapsed);
+                        println!(
+                            "Fusion finished: {} tiles consolidated (in {:?})",
+                            new_tile_count, elapsed
+                        );
                     }
                 }
             }
@@ -1520,7 +1735,11 @@ pub fn handle_query(args: &[String], verbose: bool) {
 fn contains_case_insensitive_word(text: &str, word: &str) -> bool {
     let target = word.to_uppercase();
     for token in text.split_whitespace() {
-        if token.trim_matches(|c: char| !c.is_alphanumeric()).to_uppercase() == target {
+        if token
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_uppercase()
+            == target
+        {
             return true;
         }
     }
@@ -1542,7 +1761,12 @@ pub fn handle_ls(args: &[String], verbose: bool) {
 
     let docs = match list_all_documents(&vault_path) {
         Ok(d) => d,
-        Err(e) => print_cli_error(&e, Some("run 's3a doctor' to inspect archive integrity"), verbose, None),
+        Err(e) => print_cli_error(
+            &e,
+            Some("run 's3a doctor' to inspect archive integrity"),
+            verbose,
+            None,
+        ),
     };
 
     // Also inspect telemetry tiles for summary
@@ -1602,10 +1826,18 @@ pub fn handle_ls(args: &[String], verbose: bool) {
 
         let mut summary_parts = Vec::new();
         if !docs.is_empty() {
-            summary_parts.push(format!("{} document{}", docs.len(), if docs.len() == 1 { "" } else { "s" }));
+            summary_parts.push(format!(
+                "{} document{}",
+                docs.len(),
+                if docs.len() == 1 { "" } else { "s" }
+            ));
         }
         if telemetry_count > 0 {
-            summary_parts.push(format!("{} telemetry record{}", telemetry_count, if telemetry_count == 1 { "" } else { "s" }));
+            summary_parts.push(format!(
+                "{} telemetry record{}",
+                telemetry_count,
+                if telemetry_count == 1 { "" } else { "s" }
+            ));
         }
         println!("Total: {}", summary_parts.join(", "));
     }
@@ -1669,7 +1901,10 @@ pub fn handle_info(args: &[String], verbose: bool) {
                     .get(*t)
                     .map(|d| d.name)
                     .unwrap_or("unknown");
-                format!(r#"{{"type_id":{},"name":"{}","tiles":{},"records":{}}}"#, t, name, tiles, recs)
+                format!(
+                    r#"{{"type_id":{},"name":"{}","tiles":{},"records":{}}}"#,
+                    t, name, tiles, recs
+                )
             })
             .collect::<Vec<_>>()
             .join(",");
@@ -1728,7 +1963,11 @@ pub fn handle_info(args: &[String], verbose: bool) {
         println!();
         println!("Version Control (VCS):");
         if let Some((cid, msg, ts)) = last_commit_info {
-            println!("  - Last Commit:    {} ({} UTC)", &cid[..8.min(cid.len())], format_timestamp_iso(ts * 1000));
+            println!(
+                "  - Last Commit:    {} ({} UTC)",
+                &cid[..8.min(cid.len())],
+                format_timestamp_iso(ts * 1000)
+            );
             println!("  - Message:        {}", msg);
         } else {
             println!("  - Last Commit:    none (uncommitted snapshot)");
@@ -1751,7 +1990,11 @@ pub fn handle_demo(args: &[String], verbose: bool) {
 
     if let Err(e) = TileWriter::create(&demo_path) {
         print_cli_error(
-            &format!("failed to create demo vault at '{}': {}", demo_path.display(), e),
+            &format!(
+                "failed to create demo vault at '{}': {}",
+                demo_path.display(),
+                e
+            ),
             Some("verify write permissions in the directory"),
             verbose,
             Some(&e.to_string()),
@@ -1760,9 +2003,18 @@ pub fn handle_demo(args: &[String], verbose: bool) {
 
     // 1. Add Books (Documents)
     let books = [
-        ("book:1", r#"{"id":1,"title":"The Rust Programming Language","author":"Steve Klabnik & Carol Nichols","year":2018,"rating":4.9}"#),
-        ("book:2", r#"{"id":2,"title":"Designing Data-Intensive Applications","author":"Martin Kleppmann","year":2017,"rating":4.9}"#),
-        ("book:3", r#"{"id":3,"title":"Structure and Interpretation of Computer Programs","author":"Harold Abelson","year":1985,"rating":4.8}"#),
+        (
+            "book:1",
+            r#"{"id":1,"title":"The Rust Programming Language","author":"Steve Klabnik & Carol Nichols","year":2018,"rating":4.9}"#,
+        ),
+        (
+            "book:2",
+            r#"{"id":2,"title":"Designing Data-Intensive Applications","author":"Martin Kleppmann","year":2017,"rating":4.9}"#,
+        ),
+        (
+            "book:3",
+            r#"{"id":3,"title":"Structure and Interpretation of Computer Programs","author":"Harold Abelson","year":1985,"rating":4.8}"#,
+        ),
     ];
     for (k, v) in &books {
         let _ = write_document_record(&demo_path, k, v.as_bytes());
@@ -1784,12 +2036,23 @@ pub fn handle_demo(args: &[String], verbose: bool) {
         TelemetryRecord::new(now - 40, 42, 1, 1013.40),
     ];
     let timestamps: Vec<u64> = telemetry_recs.iter().map(|r| r.timestamp).collect();
-    let _ = writer.write_hyper_tile(TileType::TELEMETRY, &telemetry_recs, Some(&timestamps), None);
+    let _ = writer.write_hyper_tile(
+        TileType::TELEMETRY,
+        &telemetry_recs,
+        Some(&timestamps),
+        None,
+    );
 
     // 3. Add Events (Documents)
     let events = [
-        ("event:boot", r#"{"event":"system_boot","node":"node-alpha","status":"ok","timestamp":1700000000}"#),
-        ("event:backup", r#"{"event":"snapshot_sealed","status":"verified","tiles":2,"timestamp":1700003600}"#),
+        (
+            "event:boot",
+            r#"{"event":"system_boot","node":"node-alpha","status":"ok","timestamp":1700000000}"#,
+        ),
+        (
+            "event:backup",
+            r#"{"event":"snapshot_sealed","status":"verified","tiles":2,"timestamp":1700003600}"#,
+        ),
     ];
     for (k, v) in &events {
         let _ = write_document_record(&demo_path, k, v.as_bytes());
@@ -1799,10 +2062,18 @@ pub fn handle_demo(args: &[String], verbose: bool) {
     let _ = s3a_vcs::VcsRepo::init(&demo_path);
     if let Ok(repo) = s3a_vcs::VcsRepo::open(&demo_path) {
         let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
-        let _ = repo.commit("Initial demo dataset (books, devices, events)", "main", &signing_key, None);
+        let _ = repo.commit(
+            "Initial demo dataset (books, devices, events)",
+            "main",
+            &signing_key,
+            None,
+        );
     }
 
-    println!("Created demo vault at {} (sample data loaded)", demo_path.display());
+    println!(
+        "Created demo vault at {} (sample data loaded)",
+        demo_path.display()
+    );
     println!();
     println!("Sample records created:");
     println!("  - Books:   3 documents (book:1, book:2, book:3)");
@@ -1814,7 +2085,10 @@ pub fn handle_demo(args: &[String], verbose: bool) {
     println!("  s3a ls --vault {}", demo_path.display());
     println!("  s3a info --vault {}", demo_path.display());
     println!("  s3a tour {}", demo_path.display());
-    println!("  s3a query \"SIFT TELEMETRY FROM \\\"{}\\\" WHERE SENSOR_ID = 42\"", demo_path.display());
+    println!(
+        "  s3a query \"SIFT TELEMETRY FROM \\\"{}\\\" WHERE SENSOR_ID = 42\"",
+        demo_path.display()
+    );
 }
 
 // =========================================================================
@@ -1822,7 +2096,11 @@ pub fn handle_demo(args: &[String], verbose: bool) {
 // =========================================================================
 
 pub fn handle_help(args: &[String]) {
-    let subcmd = args.iter().skip(2).find(|a| !a.starts_with('-')).map(|s| s.as_str());
+    let subcmd = args
+        .iter()
+        .skip(2)
+        .find(|a| !a.starts_with('-'))
+        .map(|s| s.as_str());
 
     match subcmd {
         Some("init") => {
@@ -1995,7 +2273,9 @@ pub fn handle_help(args: &[String]) {
             println!();
             println!("Usage:");
             println!("  s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
-            println!("  s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
+            println!(
+                "  s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>"
+            );
             println!("  s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
             println!();
             println!("Examples:");
@@ -2027,7 +2307,9 @@ pub fn print_general_help() {
     println!("  s3a get <key>                    Retrieve a value by key");
     println!("  s3a import <data.csv|data.json>  Import records from CSV or JSON");
     println!("  s3a export <data.csv|data.json>  Export records to CSV or JSON");
-    println!("  s3a query \"<QL>\" [--json]        Execute native S3A-QL statement with table output");
+    println!(
+        "  s3a query \"<QL>\" [--json]        Execute native S3A-QL statement with table output"
+    );
     println!("  s3a ls [--json]                  List stored keys and records");
     println!("  s3a info [--json]                Vault summary (tiles, types, size, last commit)");
     println!("  s3a tour [--json] [archive]      Interactive building & floor tour");
@@ -2035,7 +2317,9 @@ pub fn print_general_help() {
     println!("  s3a help [command]               Show detailed help and copy-paste examples");
     println!();
     println!("STABLE CORE OPS & MAINTENANCE:");
-    println!("  s3a-cli flatten [--zstd] <in.s3a> <out.s3af>    Zero-run-elided flat transport copy");
+    println!(
+        "  s3a-cli flatten [--zstd] <in.s3a> <out.s3af>    Zero-run-elided flat transport copy"
+    );
     println!("  s3a-cli unflatten <in.s3af> <out.s3a>           Rebuild byte-identical original");
     println!("  s3a-cli inspect [--json] <archive>              Inspect Hyper-Tile layout, headers, and metadata");
     println!("  s3a-cli seal <in_file> <out_file>               Seal cold archive with Reed-Solomon parity");
@@ -2045,14 +2329,20 @@ pub fn print_general_help() {
     println!("  s3a-cli recover <archive>                       Crash recovery: truncate torn bytes, harden A/B slots");
     println!("  s3a-cli compact <out_file> <in1> [in2...]       Compact files into stratified Hyper-Tiles");
     println!("  s3a-cli fuse <out_file> <in1> [in2...]          Consolidate multi-tile archives");
-    println!("  s3a-cli query [--json] \"<S3A_QL_STATEMENT>\"     Execute versioned S3A-QL v1 statement");
-    println!("  s3a telemetry get <file> <sensor> <metric> <min> <max>  Query raw telemetry records");
+    println!(
+        "  s3a-cli query [--json] \"<S3A_QL_STATEMENT>\"     Execute versioned S3A-QL v1 statement"
+    );
+    println!(
+        "  s3a telemetry get <file> <sensor> <metric> <min> <max>  Query raw telemetry records"
+    );
     println!();
     println!("DEVELOPER REPL, WIRE SERVER & PROTOCOLS:");
     println!("  s3a-cli shell                                   Interactive SQL-style REPL shell");
     println!("  s3a-cli serve [port]                            Web dashboard & function calling server (default: 8080)");
     println!("  s3a-cli serve-tcp [host:port]                   Low-latency binary wire protocol server (default: 9333)");
-    println!("  s3a-cli mcp-server [archive] [--allow-writes]   Model Context Protocol (MCP) server");
+    println!(
+        "  s3a-cli mcp-server [archive] [--allow-writes]   Model Context Protocol (MCP) server"
+    );
     println!();
     println!("DOMAIN PACK & LAKEHOUSE INTEGRATIONS:");
     println!("  s3a-cli scholar ingest <json_dir> <out.s3a>     Ingest academic literature into Scholar Hyper-Tiles");

@@ -199,7 +199,6 @@ impl StatementBlobHeader {
     }
 }
 
-
 /// EXACT 64-BYTE ATTACHMENT BLOB HEADER (8-byte aligned, Pod/Zeroable).
 ///
 /// Precedes binary attachment blobs in `TileType::ATTACHMENT_BLOB` (Tile 24),

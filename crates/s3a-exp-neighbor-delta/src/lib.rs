@@ -54,7 +54,9 @@ pub enum Error {
     BadField(&'static str),
     Codec(String),
     /// Per-tile CRC32C of the decoded tile did not match the stored one.
-    ChecksumMismatch { tile: usize },
+    ChecksumMismatch {
+        tile: usize,
+    },
 }
 
 impl Predictor {
@@ -69,7 +71,10 @@ impl Predictor {
         self as u8
     }
     fn from_id(v: u8) -> Result<Self, Error> {
-        Self::ALL.get(v as usize).copied().ok_or(Error::BadField("predictor"))
+        Self::ALL
+            .get(v as usize)
+            .copied()
+            .ok_or(Error::BadField("predictor"))
     }
 }
 impl Elem {
@@ -139,7 +144,14 @@ fn add(e: Elem, r: u32, p: u32) -> u32 {
 
 /// Prediction for element `i` of tile `t`, given fully-decoded tiles `prev`
 /// (t-1, t-2) and the already-decoded prefix of the current tile.
-fn predict(p: Predictor, e: Elem, reference: Option<&[u8]>, prev: &[&[u8]], cur: &[u8], i: usize) -> u32 {
+fn predict(
+    p: Predictor,
+    e: Elem,
+    reference: Option<&[u8]>,
+    prev: &[&[u8]],
+    cur: &[u8],
+    i: usize,
+) -> u32 {
     match p {
         Predictor::ReferenceTile => reference.map_or(0, |r| get(r, e, i)),
         Predictor::None => 0,
@@ -211,23 +223,38 @@ pub fn decode(buf: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     if tile_len.checked_mul(count) != Some(raw_len) {
         return Err(Error::BadField("length"));
     }
-    let crc_end = count.checked_mul(4).and_then(|c| c.checked_add(HDR)).ok_or(Error::BadField("count"))?;
+    let crc_end = count
+        .checked_mul(4)
+        .and_then(|c| c.checked_add(HDR))
+        .ok_or(Error::BadField("count"))?;
     if buf.len() < crc_end {
         return Err(Error::Truncated);
     }
     let crcs = &buf[HDR..crc_end];
-    let resid = zstd::bulk::decompress(&buf[crc_end..], raw_len).map_err(|x| Error::Codec(x.to_string()))?;
+    let resid = zstd::bulk::decompress(&buf[crc_end..], raw_len)
+        .map_err(|x| Error::Codec(x.to_string()))?;
     if resid.len() != raw_len {
         return Err(Error::Truncated);
     }
-    let n = if tile_len == 0 { 0 } else { tile_len / e.width() };
+    let n = if tile_len == 0 {
+        0
+    } else {
+        tile_len / e.width()
+    };
     let mut tiles: Vec<Vec<u8>> = Vec::with_capacity(count);
     for t in 0..count {
         let mut cur = resid[t * tile_len..(t + 1) * tile_len].to_vec();
         for i in 0..n {
             let pr = {
-                let prev: Vec<&[u8]> = (1..=2).filter(|k| t >= *k).map(|k| tiles[t - k].as_slice()).collect();
-                let reference = if t > 0 { Some(tiles[0].as_slice()) } else { None };
+                let prev: Vec<&[u8]> = (1..=2)
+                    .filter(|k| t >= *k)
+                    .map(|k| tiles[t - k].as_slice())
+                    .collect();
+                let reference = if t > 0 {
+                    Some(tiles[0].as_slice())
+                } else {
+                    None
+                };
                 predict(p, e, reference, &prev, &cur, i)
             };
             let v = add(e, get(&cur, e, i), pr);

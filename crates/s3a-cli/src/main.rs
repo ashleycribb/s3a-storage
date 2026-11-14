@@ -364,14 +364,20 @@ fn main() {
         "telemetry" => {
             if args.len() < 3 {
                 println!("Usage: s3a telemetry <get|insert|delete> [args...]");
-                println!("  s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
+                println!(
+                    "  s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>"
+                );
                 println!("  s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
                 println!("  s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
                 return;
             }
             match args[2].as_str() {
                 "get" => {
-                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    let pos: Vec<&String> = args
+                        .iter()
+                        .skip(3)
+                        .filter(|a| !a.starts_with("--"))
+                        .collect();
                     if pos.len() < 5 {
                         println!("Usage: s3a telemetry get <file_path> <sensor_id> <metric_id> <min_ts> <max_ts>");
                         return;
@@ -379,7 +385,11 @@ fn main() {
                     get_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
                 }
                 "insert" => {
-                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    let pos: Vec<&String> = args
+                        .iter()
+                        .skip(3)
+                        .filter(|a| !a.starts_with("--"))
+                        .collect();
                     if pos.len() < 5 {
                         println!("Usage: s3a telemetry insert <file_path> <timestamp> <sensor_id> <metric_id> <value>");
                         return;
@@ -387,7 +397,11 @@ fn main() {
                     insert_telemetry(&pos[0], &pos[1], &pos[2], &pos[3], &pos[4]);
                 }
                 "delete" => {
-                    let pos: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--")).collect();
+                    let pos: Vec<&String> = args
+                        .iter()
+                        .skip(3)
+                        .filter(|a| !a.starts_with("--"))
+                        .collect();
                     if pos.len() < 4 {
                         println!("Usage: s3a telemetry delete <file_path> <sensor_id> <metric_id> <timestamp>");
                         return;
@@ -395,7 +409,10 @@ fn main() {
                     delete_telemetry(&pos[0], &pos[1], &pos[2], &pos[3]);
                 }
                 other => {
-                    println!("Unknown telemetry subcommand '{}'. Expected 'get', 'insert', or 'delete'.", other);
+                    println!(
+                        "Unknown telemetry subcommand '{}'. Expected 'get', 'insert', or 'delete'.",
+                        other
+                    );
                 }
             }
         }
@@ -606,7 +623,10 @@ fn main() {
                                 Ok(report) => tour::print_tour_report(&report, json_mode),
                                 Err(e) => {
                                     if json_mode {
-                                        println!(r#"{{"ok":false,"file":"{}","error":"{}"}}"#, f, e);
+                                        println!(
+                                            r#"{{"ok":false,"file":"{}","error":"{}"}}"#,
+                                            f, e
+                                        );
                                     } else {
                                         eprintln!("Tour error: {}", e);
                                     }
@@ -1114,7 +1134,15 @@ fn main() {
             run_snowflake_server(port);
         }
         #[cfg(not(feature = "packs"))]
-        "trace-session" | "trace" | "snapshot" | "scholar" | "import-academic-bundle" | "import-academic" | "snapshot-export" | "snapshot-intake" | "snapshot-inspect" => {
+        "trace-session"
+        | "trace"
+        | "snapshot"
+        | "scholar"
+        | "import-academic-bundle"
+        | "import-academic"
+        | "snapshot-export"
+        | "snapshot-intake"
+        | "snapshot-inspect" => {
             s3a_cli::first_run::print_cli_error(
                 "this command requires the 'packs' feature flag",
                 Some("rebuild with '--features packs' or install the full s3a distribution"),
@@ -4495,20 +4523,20 @@ fn handle_connection(stream: &mut TcpStream) {
         };
 
         let is_edu = engine.is_addon_active(s3a_core::ADDON_EDU);
-    #[cfg(feature = "packs")]
-    let (human_count, ai_count) = {
-        let reader = MmapReader::open(&target_db).ok();
-        if let Some(ref r) = reader {
-            let sieve = QuerySieve::new(r);
-            let h = sieve.query_human_lrs(None, None, 0, u64::MAX);
-            let a = sieve.query_ai_traces(None, None, 0, u64::MAX);
-            (h.len(), a.len())
-        } else {
-            (0, 0)
-        }
-    };
-    #[cfg(not(feature = "packs"))]
-    let (human_count, ai_count) = (0, 0);
+        #[cfg(feature = "packs")]
+        let (human_count, ai_count) = {
+            let reader = MmapReader::open(&target_db).ok();
+            if let Some(ref r) = reader {
+                let sieve = QuerySieve::new(r);
+                let h = sieve.query_human_lrs(None, None, 0, u64::MAX);
+                let a = sieve.query_ai_traces(None, None, 0, u64::MAX);
+                (h.len(), a.len())
+            } else {
+                (0, 0)
+            }
+        };
+        #[cfg(not(feature = "packs"))]
+        let (human_count, ai_count) = (0, 0);
 
         let resp = format!(
             "{{\"target_db\":\"{}\",\"addon_active\":{},\"human_records_count\":{},\"ai_traces_count\":{}}}",

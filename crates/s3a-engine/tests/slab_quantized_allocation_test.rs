@@ -10,9 +10,8 @@
 //! 7. LRU File Descriptor pool bounds and eviction.
 
 use s3a_core::{
-    select_size_class, size_class_bytes, TileAddress, TileAddressError,
-    MAX_SIZE_CLASS_ID, MAX_SLAB_EXTENT_ID, MAX_SLOT_INDEX, NUM_SLAB_CLASSES,
-    SLAB_SIZE_CLASSES,
+    select_size_class, size_class_bytes, TileAddress, TileAddressError, MAX_SIZE_CLASS_ID,
+    MAX_SLAB_EXTENT_ID, MAX_SLOT_INDEX, NUM_SLAB_CLASSES, SLAB_SIZE_CLASSES,
 };
 use s3a_engine::slab::{QuantizedSlabManager, SLAB_MAGIC};
 use std::fs;
@@ -57,7 +56,8 @@ fn test_address_round_trip_and_limits() {
     for class_id in 0..=MAX_SIZE_CLASS_ID {
         for extent_id in [0, 1, 42, 1000, 0x0123_4567] {
             for slot_index in [0, 1, 100, 0x0012_3456] {
-                let addr = TileAddress::new(class_id, extent_id, slot_index).expect("valid address");
+                let addr =
+                    TileAddress::new(class_id, extent_id, slot_index).expect("valid address");
                 assert_eq!(addr.size_class_id(), class_id);
                 assert_eq!(addr.extent_id(), extent_id);
                 assert_eq!(addr.slot_index(), slot_index);
@@ -241,7 +241,9 @@ fn test_allocate_free_reuse() {
     assert_eq!(a_reused.slot_index(), 1); // Slot 1 reused!
 
     let reused_data = b"Overwritten slot 1 fresh content!";
-    manager.write_slot(a_reused, reused_data).expect("write reused");
+    manager
+        .write_slot(a_reused, reused_data)
+        .expect("write reused");
     manager.read_slot(a_reused, &mut buf).expect("read reused");
     assert_eq!(&buf[..reused_data.len()], reused_data);
 }
@@ -292,7 +294,9 @@ fn test_extent_rollover_when_full() {
     let data_ext0 = b"Payload in extent 0 slot 3";
     let data_ext1 = b"Payload in extent 1 slot 0";
     manager.write_slot(addrs[3], data_ext0).expect("write ext0");
-    manager.write_slot(a_rollover, data_ext1).expect("write ext1");
+    manager
+        .write_slot(a_rollover, data_ext1)
+        .expect("write ext1");
 
     let mut buf = [0u8; 64];
     manager.read_slot(addrs[3], &mut buf).expect("read ext0");
@@ -319,9 +323,15 @@ fn test_fd_pool_lru_eviction() {
     assert_eq!(a2.size_class_id(), 2);
 
     // Write to all three (tests transparent opening, eviction, and re-opening)
-    manager.write_slot(a0, b"class 0 payload").expect("write a0");
-    manager.write_slot(a1, b"class 1 payload").expect("write a1");
-    manager.write_slot(a2, b"class 2 payload").expect("write a2");
+    manager
+        .write_slot(a0, b"class 0 payload")
+        .expect("write a0");
+    manager
+        .write_slot(a1, b"class 1 payload")
+        .expect("write a1");
+    manager
+        .write_slot(a2, b"class 2 payload")
+        .expect("write a2");
 
     // Read back all three
     let mut buf = [0u8; 32];

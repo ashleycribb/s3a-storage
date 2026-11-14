@@ -390,7 +390,6 @@ mod about_tests {
     }
 }
 
-
 // -----------------------------------------------------------------------------
 // Quantized Slab Size Classes & Addressing
 // -----------------------------------------------------------------------------
@@ -457,12 +456,20 @@ pub enum TileAddressError {
 impl core::fmt::Display for TileAddressError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidSizeClass(c) => write!(f, "Invalid size class ID {c} (max {MAX_SIZE_CLASS_ID})"),
+            Self::InvalidSizeClass(c) => {
+                write!(f, "Invalid size class ID {c} (max {MAX_SIZE_CLASS_ID})")
+            }
             Self::ExtentIdOverflow(e) => {
-                write!(f, "Extent ID {e:#x} overflows 28 bits (max {MAX_SLAB_EXTENT_ID:#x})")
+                write!(
+                    f,
+                    "Extent ID {e:#x} overflows 28 bits (max {MAX_SLAB_EXTENT_ID:#x})"
+                )
             }
             Self::SlotIndexOverflow(s) => {
-                write!(f, "Slot index {s:#x} overflows 24 bits (max {MAX_SLOT_INDEX:#x})")
+                write!(
+                    f,
+                    "Slot index {s:#x} overflows 24 bits (max {MAX_SLOT_INDEX:#x})"
+                )
             }
             Self::ReservedNonZero(r) => write!(f, "Reserved field must be 0, got {r:#x}"),
         }
@@ -485,7 +492,11 @@ impl TileAddress {
     pub const NULL: Self = Self(0);
 
     /// Packs size class ID, extent ID, and slot index into a TileAddress with bounds checking.
-    pub fn new(size_class_id: u8, extent_id: u32, slot_index: u32) -> Result<Self, TileAddressError> {
+    pub fn new(
+        size_class_id: u8,
+        extent_id: u32,
+        slot_index: u32,
+    ) -> Result<Self, TileAddressError> {
         if size_class_id > MAX_SIZE_CLASS_ID {
             return Err(TileAddressError::InvalidSizeClass(size_class_id));
         }

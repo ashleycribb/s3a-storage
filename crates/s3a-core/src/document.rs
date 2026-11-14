@@ -51,14 +51,14 @@ pub fn compute_key_hash(doc_kind: u32, key: &str) -> u64 {
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
 pub struct DocumentRecordHeader {
-    pub doc_kind: u32,       // Document kind (16 = KV, 17 = JSON, 18 = BINARY, etc.) (offset 0..4)
-    pub flags: u32,          // DOC_FLAG_ACTIVE, DOC_FLAG_DELETED, etc. (offset 4..8)
-    pub key_hash: u64,       // 64-bit hash of compound key for fast O(1) lookup (offset 8..16)
+    pub doc_kind: u32, // Document kind (16 = KV, 17 = JSON, 18 = BINARY, etc.) (offset 0..4)
+    pub flags: u32,    // DOC_FLAG_ACTIVE, DOC_FLAG_DELETED, etc. (offset 4..8)
+    pub key_hash: u64, // 64-bit hash of compound key for fast O(1) lookup (offset 8..16)
     pub etag_hash: [u8; 16], // 128-bit hash representing document ETag or version (offset 16..32)
-    pub timestamp_ms: u64,   // Last-Modified timestamp in epoch ms (offset 32..40)
-    pub content_len: u32,    // Byte length of document payload (offset 40..44)
-    pub key_len: u32,        // Byte length of UTF-8 key string (offset 44..48)
-    pub content_crc32: u32,  // CRC32C of document content payload (offset 48..52)
+    pub timestamp_ms: u64, // Last-Modified timestamp in epoch ms (offset 32..40)
+    pub content_len: u32, // Byte length of document payload (offset 40..44)
+    pub key_len: u32,  // Byte length of UTF-8 key string (offset 44..48)
+    pub content_crc32: u32, // CRC32C of document content payload (offset 48..52)
     pub _reserved: [u32; 3], // Zero-padded alignment to 64 bytes (offset 52..64)
 }
 

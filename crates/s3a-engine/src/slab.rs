@@ -10,8 +10,8 @@
 
 use bytemuck::{bytes_of, bytes_of_mut, Pod, Zeroable};
 use s3a_core::{
-    select_size_class, size_class_bytes, MAX_SIZE_CLASS_ID, NUM_SLAB_CLASSES,
-    MAX_SLAB_PAYLOAD_SIZE, TileAddress, TileAddressError,
+    select_size_class, size_class_bytes, TileAddress, TileAddressError, MAX_SIZE_CLASS_ID,
+    MAX_SLAB_PAYLOAD_SIZE, NUM_SLAB_CLASSES,
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -43,10 +43,19 @@ pub enum SlabError {
     InvalidMagic,
     InvalidSizeClass(u8),
     InvalidSlotCount(u32),
-    SlotIndexOutOfBounds { slot_index: u32, slot_count: u32 },
+    SlotIndexOutOfBounds {
+        slot_index: u32,
+        slot_count: u32,
+    },
     SlotNotAllocated(u32),
-    PayloadTooLarge { payload_len: usize, max_capacity: usize },
-    DataExceedsSlotSize { data_len: usize, slot_size: usize },
+    PayloadTooLarge {
+        payload_len: usize,
+        max_capacity: usize,
+    },
+    DataExceedsSlotSize {
+        data_len: usize,
+        slot_size: usize,
+    },
     Address(TileAddressError),
     Io(io::Error),
 }
@@ -54,27 +63,38 @@ pub enum SlabError {
 impl core::fmt::Display for SlabError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidMagic => write!(f, "Invalid slab extent file magic (expected b\"S3ASLAB1\")"),
+            Self::InvalidMagic => {
+                write!(f, "Invalid slab extent file magic (expected b\"S3ASLAB1\")")
+            }
             Self::InvalidSizeClass(c) => write!(f, "Invalid size class ID {c}"),
             Self::InvalidSlotCount(c) => write!(f, "Invalid slot count {c}"),
             Self::SlotIndexOutOfBounds {
                 slot_index,
                 slot_count,
             } => {
-                write!(f, "Slot index {slot_index} out of bounds for extent with {slot_count} slots")
+                write!(
+                    f,
+                    "Slot index {slot_index} out of bounds for extent with {slot_count} slots"
+                )
             }
             Self::SlotNotAllocated(s) => write!(f, "Slot {s} is not currently allocated"),
             Self::PayloadTooLarge {
                 payload_len,
                 max_capacity,
             } => {
-                write!(f, "Payload length {payload_len} exceeds maximum slab capacity {max_capacity}")
+                write!(
+                    f,
+                    "Payload length {payload_len} exceeds maximum slab capacity {max_capacity}"
+                )
             }
             Self::DataExceedsSlotSize {
                 data_len,
                 slot_size,
             } => {
-                write!(f, "Data length {data_len} exceeds slot capacity {slot_size}")
+                write!(
+                    f,
+                    "Data length {data_len} exceeds slot capacity {slot_size}"
+                )
             }
             Self::Address(e) => write!(f, "TileAddress error: {e}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
@@ -128,8 +148,8 @@ impl SlabExtentHeader {
         if size_class_id > MAX_SIZE_CLASS_ID {
             return Err(SlabError::InvalidSizeClass(size_class_id));
         }
-        let slot_size_bytes = size_class_bytes(size_class_id)
-            .ok_or(SlabError::InvalidSizeClass(size_class_id))?;
+        let slot_size_bytes =
+            size_class_bytes(size_class_id).ok_or(SlabError::InvalidSizeClass(size_class_id))?;
         if slot_count == 0 || slot_count > MAX_SLOTS_PER_EXTENT {
             return Err(SlabError::InvalidSlotCount(slot_count));
         }
@@ -159,7 +179,11 @@ impl SlabExtentHeader {
     }
 
     /// Sets or clears the allocation bit for a slot index.
-    pub fn set_slot_allocated(&mut self, slot_index: u32, allocated: bool) -> Result<(), SlabError> {
+    pub fn set_slot_allocated(
+        &mut self,
+        slot_index: u32,
+        allocated: bool,
+    ) -> Result<(), SlabError> {
         if slot_index >= self.slot_count {
             return Err(SlabError::SlotIndexOutOfBounds {
                 slot_index,
@@ -493,7 +517,8 @@ impl QuantizedSlabManager {
     /// Writes raw payload bytes directly into the specified physical slot.
     pub fn write_slot(&mut self, address: TileAddress, data: &[u8]) -> Result<(), SlabError> {
         let class_id = address.size_class_id();
-        let slot_size = size_class_bytes(class_id).ok_or(SlabError::InvalidSizeClass(class_id))? as usize;
+        let slot_size =
+            size_class_bytes(class_id).ok_or(SlabError::InvalidSizeClass(class_id))? as usize;
         if data.len() > slot_size {
             return Err(SlabError::DataExceedsSlotSize {
                 data_len: data.len(),
@@ -520,7 +545,8 @@ impl QuantizedSlabManager {
     /// Returns the number of bytes read (bounded by slot size, file length, and `out.len()`).
     pub fn read_slot(&mut self, address: TileAddress, out: &mut [u8]) -> Result<usize, SlabError> {
         let class_id = address.size_class_id();
-        let slot_size = size_class_bytes(class_id).ok_or(SlabError::InvalidSizeClass(class_id))? as usize;
+        let slot_size =
+            size_class_bytes(class_id).ok_or(SlabError::InvalidSizeClass(class_id))? as usize;
         let to_read = slot_size.min(out.len());
 
         let offset = address.physical_offset()?;
@@ -544,7 +570,11 @@ impl QuantizedSlabManager {
     }
 
     /// Reads and returns the header of an extent file.
-    pub fn read_header(&mut self, class_id: u8, extent_id: u32) -> Result<SlabExtentHeader, SlabError> {
+    pub fn read_header(
+        &mut self,
+        class_id: u8,
+        extent_id: u32,
+    ) -> Result<SlabExtentHeader, SlabError> {
         let path = self.extent_path(class_id, extent_id);
         let key = ExtentKey {
             size_class_id: class_id,

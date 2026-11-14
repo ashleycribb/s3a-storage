@@ -39,7 +39,11 @@ fn test_quickstart_full_flow() {
 
     // Step 2: s3a put
     let put_out = Command::new(&bin)
-        .args(["put", "user:101", r#"{"name":"Alice","role":"engineer","active":true}"#])
+        .args([
+            "put",
+            "user:101",
+            r#"{"name":"Alice","role":"engineer","active":true}"#,
+        ])
         .current_dir(&temp_dir)
         .output()
         .expect("s3a put failed to run");
@@ -106,7 +110,10 @@ fn test_quickstart_full_flow() {
         .current_dir(&temp_dir)
         .output()
         .expect("s3a query --json failed to run");
-    assert!(query_json_out.status.success(), "s3a query --json must succeed");
+    assert!(
+        query_json_out.status.success(),
+        "s3a query --json must succeed"
+    );
     let query_json_str = String::from_utf8_lossy(&query_json_out.stdout);
     assert!(
         query_json_str.contains(r#""ok":true"#),
@@ -196,7 +203,10 @@ fn test_errors_and_suggestions() {
         .current_dir(&temp_dir)
         .output()
         .expect("command execution");
-    assert!(!typo_out.status.success(), "typo command must exit with failure");
+    assert!(
+        !typo_out.status.success(),
+        "typo command must exit with failure"
+    );
     let typo_err = String::from_utf8_lossy(&typo_out.stderr);
     assert!(
         typo_err.contains("Did you mean 'init'?"),
@@ -219,7 +229,10 @@ fn test_errors_and_suggestions() {
     );
 
     // Key not found error says what went wrong and how to fix:
-    let _ = Command::new(&bin).arg("init").current_dir(&temp_dir).output();
+    let _ = Command::new(&bin)
+        .arg("init")
+        .current_dir(&temp_dir)
+        .output();
     let not_found_out = Command::new(&bin)
         .args(["get", "nonexistent_key_12345"])
         .current_dir(&temp_dir)
@@ -309,7 +322,11 @@ fn test_put_get_hash_agreement_and_lrs_interop() {
     let temp_dir = std::env::temp_dir().join(format!("s3a_hash_agree_{}", uuid_simple()));
     fs::create_dir_all(&temp_dir).expect("failed to create temp dir");
 
-    let _ = Command::new(&bin).arg("init").current_dir(&temp_dir).output().expect("init");
+    let _ = Command::new(&bin)
+        .arg("init")
+        .current_dir(&temp_dir)
+        .output()
+        .expect("init");
 
     // Put a document
     let put_out = Command::new(&bin)
@@ -333,23 +350,35 @@ fn test_put_get_hash_agreement_and_lrs_interop() {
     let vault_path = temp_dir.join("my.s3a");
     let key = "config:main";
     let core_hash = s3a_core::document::compute_key_hash(s3a_core::document::DOC_KIND_JSON, key);
-    let engine_hash = s3a_engine::LrsStore::document_key_hash(s3a_core::document::DOC_KIND_JSON, key);
-    assert_eq!(core_hash, engine_hash, "Core and engine document key hashes must be identical");
+    let engine_hash =
+        s3a_engine::LrsStore::document_key_hash(s3a_core::document::DOC_KIND_JSON, key);
+    assert_eq!(
+        core_hash, engine_hash,
+        "Core and engine document key hashes must be identical"
+    );
 
     // Verify engine LrsStore can open the vault and retrieve the document using that exact hash
     let store = s3a_engine::LrsStore::open_or_create(&vault_path).expect("engine store open");
     let retrieved = store.get_document(s3a_core::document::DOC_KIND_JSON, key);
-    assert!(retrieved.is_some(), "Engine LrsStore must find document written by 's3a put'");
+    assert!(
+        retrieved.is_some(),
+        "Engine LrsStore must find document written by 's3a put'"
+    );
     let (hdr, content, k) = retrieved.unwrap();
     assert_eq!(hdr.key_hash, core_hash);
     assert_eq!(k, key);
-    assert_eq!(String::from_utf8_lossy(&content), r#"{"threads":8,"cluster":"prod"}"#);
+    assert_eq!(
+        String::from_utf8_lossy(&content),
+        r#"{"threads":8,"cluster":"prod"}"#
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
 fn uuid_simple() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     ((d.as_secs() as u128) << 64) | (d.subsec_nanos() as u128)
 }

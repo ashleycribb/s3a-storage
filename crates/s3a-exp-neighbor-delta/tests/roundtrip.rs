@@ -49,10 +49,22 @@ fn single_tile() {
 #[test]
 fn special_floats_bit_exact() {
     let vals = [
-        f32::NAN, -f32::NAN, f32::from_bits(0x7fc0_1234), f32::INFINITY, f32::NEG_INFINITY,
-        0.0, -0.0, f32::MIN_POSITIVE, f32::from_bits(1), f32::MAX, f32::MIN,
+        f32::NAN,
+        -f32::NAN,
+        f32::from_bits(0x7fc0_1234),
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        -0.0,
+        f32::MIN_POSITIVE,
+        f32::from_bits(1),
+        f32::MAX,
+        f32::MIN,
     ];
-    let t: Vec<u8> = vals.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
+    let t: Vec<u8> = vals
+        .iter()
+        .flat_map(|v| v.to_bits().to_le_bytes())
+        .collect();
     let mut t2 = t.clone();
     t2.reverse();
     rt(&[t.clone(), t2, t]);
@@ -60,8 +72,14 @@ fn special_floats_bit_exact() {
 
 #[test]
 fn integer_wraparound() {
-    let a: Vec<u8> = [0u32, u32::MAX, 1, u32::MAX - 1].iter().flat_map(|v| v.to_le_bytes()).collect();
-    let b: Vec<u8> = [u32::MAX, 0, u32::MAX, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let a: Vec<u8> = [0u32, u32::MAX, 1, u32::MAX - 1]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let b: Vec<u8> = [u32::MAX, 0, u32::MAX, 0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     rt(&[a.clone(), b.clone(), a, b]);
 }
 
@@ -80,9 +98,15 @@ fn rejects_corrupt_streams() {
 
 #[test]
 fn real_fixture_roundtrip_read_only() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../s3a-engine/tests/fixtures/legacy_v1_0_telemetry.s3a");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../s3a-engine/tests/fixtures/legacy_v1_0_telemetry.s3a"
+    );
     let file = std::fs::read(path).unwrap();
-    let tiles: Vec<Vec<u8>> = hyper_tile_payloads(&file).into_iter().map(|t| t.to_vec()).collect();
+    let tiles: Vec<Vec<u8>> = hyper_tile_payloads(&file)
+        .into_iter()
+        .map(|t| t.to_vec())
+        .collect();
     assert!(!tiles.is_empty());
     rt(&tiles);
 }
@@ -111,17 +135,27 @@ fn originals_never_mutated() {
 
 #[test]
 fn reference_tile_beats_baseline_on_variants() {
-    let reference: Vec<u8> = (0..4096u32).flat_map(|v| v.wrapping_mul(2654435761).to_le_bytes()).collect();
-    let tiles: Vec<Vec<u8>> = (0..8).map(|k| {
-        // every element differs slightly from the reference ("variants"),
-        // so plain LZ matching cannot reuse the reference bytes
-        reference.chunks(4).enumerate().flat_map(|(i, c)| {
-            let v = u32::from_le_bytes(c.try_into().unwrap());
-            v.wrapping_add(((i * 7 + k) % 3) as u32).to_le_bytes()
-        }).collect()
-    }).collect();
+    let reference: Vec<u8> = (0..4096u32)
+        .flat_map(|v| v.wrapping_mul(2654435761).to_le_bytes())
+        .collect();
+    let tiles: Vec<Vec<u8>> = (0..8)
+        .map(|k| {
+            // every element differs slightly from the reference ("variants"),
+            // so plain LZ matching cannot reuse the reference bytes
+            reference
+                .chunks(4)
+                .enumerate()
+                .flat_map(|(i, c)| {
+                    let v = u32::from_le_bytes(c.try_into().unwrap());
+                    v.wrapping_add(((i * 7 + k) % 3) as u32).to_le_bytes()
+                })
+                .collect()
+        })
+        .collect();
     let refs: Vec<&[u8]> = tiles.iter().map(|t| t.as_slice()).collect();
     let base = encode(&refs, Predictor::None, Elem::U32, 3).unwrap().len();
-    let rf = encode(&refs, Predictor::ReferenceTile, Elem::U32, 3).unwrap().len();
+    let rf = encode(&refs, Predictor::ReferenceTile, Elem::U32, 3)
+        .unwrap()
+        .len();
     assert!(rf <= base, "{rf} > {base}");
 }

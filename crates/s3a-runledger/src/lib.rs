@@ -11,8 +11,17 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Record {
-    Plan { plan_id: String, hypothesis: String, plan_hash: String },
-    Amendment { plan_id: String, prior_seq: u64, reason: String, new_plan_hash: String },
+    Plan {
+        plan_id: String,
+        hypothesis: String,
+        plan_hash: String,
+    },
+    Amendment {
+        plan_id: String,
+        prior_seq: u64,
+        reason: String,
+        new_plan_hash: String,
+    },
     Run {
         plan_id: String,
         input_hashes: Vec<String>,
@@ -71,14 +80,25 @@ pub struct RunReport {
 impl Ledger {
     pub fn append(&mut self, key: &SigningKey, record: Record) -> Result<&Entry, LedgerError> {
         let seq = self.entries.len() as u64;
-        let prev = self.entries.last().map(|e| e.hash.clone()).unwrap_or_else(|| GENESIS.into());
+        let prev = self
+            .entries
+            .last()
+            .map(|e| e.hash.clone())
+            .unwrap_or_else(|| GENESIS.into());
         // validate references before writing
         let mut probe = self.clone();
         let signer = hex::encode(key.verifying_key().to_bytes());
         let b = body(seq, &prev, &record, &signer);
         let sig = key.sign(&b);
         let hash = hex::encode(Sha256::digest([b.as_slice(), &sig.to_bytes()].concat()));
-        probe.entries.push(Entry { seq, prev_hash: prev, record, signer, signature: hex::encode(sig.to_bytes()), hash });
+        probe.entries.push(Entry {
+            seq,
+            prev_hash: prev,
+            record,
+            signer,
+            signature: hex::encode(sig.to_bytes()),
+            hash,
+        });
         probe.verify()?;
         *self = probe;
         Ok(self.entries.last().unwrap())
@@ -89,29 +109,49 @@ impl Ledger {
         let mut plans: HashMap<String, u64> = HashMap::new(); // plan_id -> latest seq
         for (i, e) in self.entries.iter().enumerate() {
             let i = i as u64;
-            if e.seq != i { return Err(LedgerError::BadSeq(i)); }
-            if e.prev_hash != prev { return Err(LedgerError::BadPrev(i)); }
+            if e.seq != i {
+                return Err(LedgerError::BadSeq(i));
+            }
+            if e.prev_hash != prev {
+                return Err(LedgerError::BadPrev(i));
+            }
             let b = body(e.seq, &e.prev_hash, &e.record, &e.signer);
-            let sig_bytes: [u8; 64] = hex::decode(&e.signature).ok().and_then(|v| v.try_into().ok()).ok_or(LedgerError::BadSig(i))?;
-            let pk: [u8; 32] = hex::decode(&e.signer).ok().and_then(|v| v.try_into().ok()).ok_or(LedgerError::BadSig(i))?;
+            let sig_bytes: [u8; 64] = hex::decode(&e.signature)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .ok_or(LedgerError::BadSig(i))?;
+            let pk: [u8; 32] = hex::decode(&e.signer)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .ok_or(LedgerError::BadSig(i))?;
             let vk = VerifyingKey::from_bytes(&pk).map_err(|_| LedgerError::BadSig(i))?;
             let sig = Signature::from_bytes(&sig_bytes);
             vk.verify(&b, &sig).map_err(|_| LedgerError::BadSig(i))?;
             let h = hex::encode(Sha256::digest([b.as_slice(), &sig_bytes].concat()));
-            if h != e.hash { return Err(LedgerError::BadHash(i)); }
+            if h != e.hash {
+                return Err(LedgerError::BadHash(i));
+            }
             match &e.record {
                 Record::Plan { plan_id, .. } => {
-                    if plans.insert(plan_id.clone(), i).is_some() { return Err(LedgerError::DuplicatePlan(i, plan_id.clone())); }
-                }
-                Record::Amendment { plan_id, prior_seq, .. } => {
-                    match plans.get(plan_id) {
-                        None => return Err(LedgerError::UnknownPlan(i, plan_id.clone())),
-                        Some(latest) if latest != prior_seq => return Err(LedgerError::BadAmendmentRef(i)),
-                        _ => { plans.insert(plan_id.clone(), i); }
+                    if plans.insert(plan_id.clone(), i).is_some() {
+                        return Err(LedgerError::DuplicatePlan(i, plan_id.clone()));
                     }
                 }
+                Record::Amendment {
+                    plan_id, prior_seq, ..
+                } => match plans.get(plan_id) {
+                    None => return Err(LedgerError::UnknownPlan(i, plan_id.clone())),
+                    Some(latest) if latest != prior_seq => {
+                        return Err(LedgerError::BadAmendmentRef(i))
+                    }
+                    _ => {
+                        plans.insert(plan_id.clone(), i);
+                    }
+                },
                 Record::Run { plan_id, .. } => {
-                    if !plans.contains_key(plan_id) { return Err(LedgerError::UnknownPlan(i, plan_id.clone())); }
+                    if !plans.contains_key(plan_id) {
+                        return Err(LedgerError::UnknownPlan(i, plan_id.clone()));
+                    }
                 }
             }
             prev = e.hash.clone();
@@ -127,14 +167,34 @@ impl Ledger {
         let mut out = vec![];
         for e in &self.entries {
             match &e.record {
-                Record::Plan { plan_id, plan_hash, .. } => { ver.insert(plan_id.clone(), (0, plan_hash.clone())); }
-                Record::Amendment { plan_id, new_plan_hash, .. } => {
-                    if let Some(v) = ver.get_mut(plan_id) { v.0 += 1; v.1 = new_plan_hash.clone(); }
+                Record::Plan {
+                    plan_id, plan_hash, ..
+                } => {
+                    ver.insert(plan_id.clone(), (0, plan_hash.clone()));
                 }
-                Record::Run { plan_id, outcome, .. } => {
+                Record::Amendment {
+                    plan_id,
+                    new_plan_hash,
+                    ..
+                } => {
+                    if let Some(v) = ver.get_mut(plan_id) {
+                        v.0 += 1;
+                        v.1 = new_plan_hash.clone();
+                    }
+                }
+                Record::Run {
+                    plan_id, outcome, ..
+                } => {
                     let (v, h) = ver.get(plan_id).cloned().unwrap_or((0, String::new()));
                     let f = *first_ver.entry(plan_id.clone()).or_insert(v);
-                    out.push(RunReport { run_seq: e.seq, plan_id: plan_id.clone(), plan_version: v, plan_hash: h, switched: v != f, outcome: outcome.clone() });
+                    out.push(RunReport {
+                        run_seq: e.seq,
+                        plan_id: plan_id.clone(),
+                        plan_version: v,
+                        plan_hash: h,
+                        switched: v != f,
+                        outcome: outcome.clone(),
+                    });
                 }
             }
         }
@@ -142,12 +202,17 @@ impl Ledger {
     }
 
     pub fn to_jsonl(&self) -> String {
-        self.entries.iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect()
+        self.entries
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap() + "\n")
+            .collect()
     }
 
     /// Parses and verifies.
     pub fn from_jsonl(s: &str) -> Result<Self, LedgerError> {
-        let entries = s.lines().filter(|l| !l.trim().is_empty())
+        let entries = s
+            .lines()
+            .filter(|l| !l.trim().is_empty())
             .map(|l| serde_json::from_str(l).map_err(|e| LedgerError::Parse(e.to_string())))
             .collect::<Result<Vec<Entry>, _>>()?;
         let l = Ledger { entries };
