@@ -109,8 +109,13 @@
 ## Prompt 004: s3a-sandbox Work-Queue Sandboxes
 
 - **Status**: ALL SUCCESS
-- **Commit**: HEAD
-- **CI Verification**:
+- **Commit**: `92c214c`
+- **CI Verification on 92c214c**:
+  - `rust-ci` (run 43543153112): **SUCCESS** (all 13/13 jobs passed)
+  - `cargo-deny` (run 43543152884): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`)
+  - `S3A Research Agent Harness CI` (run 43543152896): **SUCCESS** (both Ubuntu and Windows jobs green)
+  - `wasm-dist` (run 43543152876): **SUCCESS** (build, test, publish passed)
+- **Local Verification**:
   - `cargo fmt --all --check`: passed
   - `cargo deny check`: passed (advisories ok, bans ok, licenses ok, sources ok)
   - `cargo test -p s3a-sandbox`: passed (7 tests in `work_queue_tests`)

@@ -91,7 +91,7 @@ Notes:
 
 ## 004-sandbox-work-queue, 2026-11-13 20:52
 Status: done
-Commit: HEAD
+Commit: 92c214c
 Changed: Cargo.toml, Cargo.lock, crates/s3a-sandbox/**, crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/tools.rs, crates/s3a-harness/tests/tool_registry_tests.rs, crates/s3a-harness/tests/permission_tests.rs, crates/s3a-pack-tdp/src/lib.rs, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
@@ -99,6 +99,11 @@ Tests:
   - cargo test -p s3a-sandbox: passed (7 passed in work_queue_tests)
   - cargo test -p s3a-harness: passed (89 passed: 18 unittests, 1 e2e, 9 enforcement, 7 operability, 13 permissions, 14 protocol/sandbox, 11 runtime_core, 9 tool_registry, 7 training_and_eval)
   - cargo test -p s3a-pack-tdp: passed (7 passed)
+  - GitHub Actions runs on 92c214c:
+    - rust-ci (run 43543153112): success (all 13 jobs green)
+    - cargo-deny (run 43543152884): success
+    - S3A Research Agent Harness CI (run 43543152896): success (both Ubuntu and Windows jobs green)
+    - wasm-dist (run 43543152876): success
 Notes:
   1. Kept as a pack crate, not core: created `crates/s3a-sandbox` with pack tile `TILE_SANDBOX_WORK_QUEUE = 88`.
   2. Work queue signed records: `WorkQueueRecordHeader` (168 bytes, 8-byte aligned, Pod + Zeroable) supporting `JobRecord` (id, kind, inputs, requested_by, grant, signature), `StatusRecord` (state, worker_id, claimed_at, lease_expires_at, retry_count, error, signature), and `ResultRecord` (success, output, signature).
