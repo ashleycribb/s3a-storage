@@ -367,6 +367,150 @@ impl ToolSchema for RecordAiStepArgs {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerOpenArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+}
+
+impl ToolSchema for ViewerOpenArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_open"
+    }
+    fn description() -> &'static str {
+        "Open an S3A archive in the MCP Record Viewer, auto-detect domain view pack, and return full structured state"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" }
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerGetTreeArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+}
+
+impl ToolSchema for ViewerGetTreeArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_get_tree"
+    }
+    fn description() -> &'static str {
+        "Get hierarchical record navigation tree for an S3A archive"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" }
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerGetPropertiesArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+    pub node_id: String,
+}
+
+impl ToolSchema for ViewerGetPropertiesArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_get_properties"
+    }
+    fn description() -> &'static str {
+        "Get item metadata, domain properties, and advanced developer diagnostics for a tree node"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" },
+                "node_id": { "type": "string", "description": "Tree node identifier" }
+            },
+            "required": ["node_id"]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerGetPreviewArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+    pub node_id: String,
+}
+
+impl ToolSchema for ViewerGetPreviewArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_get_preview"
+    }
+    fn description() -> &'static str {
+        "Get document preview (PDF text, SVG image, or formatted text) for a tree node"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" },
+                "node_id": { "type": "string", "description": "Tree node identifier" }
+            },
+            "required": ["node_id"]
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerGetHistoryArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+}
+
+impl ToolSchema for ViewerGetHistoryArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_get_history"
+    }
+    fn description() -> &'static str {
+        "Get version control commit history and branch timeline from s3a-vcs"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" }
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewerGetApprovalStatusArgs {
+    #[serde(default, alias = "file_path", alias = "path")]
+    pub file: Option<String>,
+}
+
+impl ToolSchema for ViewerGetApprovalStatusArgs {
+    fn tool_name() -> &'static str {
+        "s3a_viewer_get_approval_status"
+    }
+    fn description() -> &'static str {
+        "Get cryptographic signature, SHA-256 fingerprint, and human approval status"
+    }
+    fn input_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Optional path to .s3a archive" }
+            }
+        })
+    }
+}
+
 // =============================================================================
 // MCP Dispatcher Implementation
 // =============================================================================
@@ -528,7 +672,8 @@ impl S3AMcpDispatcher {
                     "result": {
                         "protocolVersion": negotiated,
                         "capabilities": {
-                            "tools": {}
+                            "tools": {},
+                            "resources": {}
                         },
                         "serverInfo": {
                             "name": "s3a-academic-harness",
@@ -545,6 +690,189 @@ impl S3AMcpDispatcher {
                     "result": {}
                 });
                 Some(serde_json::to_string(&resp).unwrap())
+            }
+            "resources/list" => {
+                let resp = json!({
+                    "jsonrpc": "2.0",
+                    "id": id_val,
+                    "result": {
+                        "resources": [
+                            {
+                                "uri": "ui://viewer",
+                                "name": "S3A Record Viewer",
+                                "description": "Interactive Multi-View S3A Record Viewer (Scholar Research, Technical Data / TDP, Aura Backups & Devices, Manifest)",
+                                "mimeType": "text/html;profile=mcp-app"
+                            },
+                            {
+                                "uri": "ui://record-viewer",
+                                "name": "S3A Record Viewer (Alias)",
+                                "description": "Interactive Multi-View S3A Record Viewer (Scholar Research, Technical Data / TDP, Aura Backups & Devices, Manifest)",
+                                "mimeType": "text/html;profile=mcp-app"
+                            }
+                        ]
+                    }
+                });
+                Some(serde_json::to_string(&resp).unwrap())
+            }
+            "resources/read" => {
+                let uri = match params.get("uri").and_then(|v| v.as_str()) {
+                    Some(u) => u,
+                    None => {
+                        let resp = json!({
+                            "jsonrpc": "2.0",
+                            "id": id_val,
+                            "error": {
+                                "code": -32602,
+                                "message": "Invalid params: 'uri' is required"
+                            }
+                        });
+                        return Some(serde_json::to_string(&resp).unwrap());
+                    }
+                };
+
+                if uri.starts_with("ui://viewer") || uri.starts_with("ui://record-viewer") {
+                    let mut target_path = self.sandbox.default_db().to_path_buf();
+                    if let Some(idx) = uri.find("file=") {
+                        let path_str = &uri[idx + 5..];
+                        let clean = path_str.split('&').next().unwrap_or(path_str);
+                        target_path = PathBuf::from(clean);
+                    } else if let Some(idx) = uri.find("path=") {
+                        let path_str = &uri[idx + 5..];
+                        let clean = path_str.split('&').next().unwrap_or(path_str);
+                        target_path = PathBuf::from(clean);
+                    }
+                    let db_path = target_path.as_path();
+                    let reg = crate::viewer::ViewerRegistry::new();
+                    let state = if db_path.exists() {
+                        reg.load_archive(db_path).unwrap_or_else(|_| {
+                            let fallback_summary = crate::viewer::ViewerSummary {
+                                title: "S3A Record Viewer".to_string(),
+                                subtitle: "Interactive Record Explorer".to_string(),
+                                description: "Ready to inspect S3A record files.".to_string(),
+                                status_badge: "Ready".to_string(),
+                                human_approval: "Ready".to_string(),
+                                view_pack_name: "Generic Shell".to_string(),
+                                key_stats: vec![("Status".to_string(), "Active".to_string())],
+                                advanced: crate::viewer::ViewerAdvancedDetails {
+                                    tile_count: 0,
+                                    active_generation: 0,
+                                    tile_types: vec![],
+                                    crc_status: "No file loaded".to_string(),
+                                    merkle_root: "None".to_string(),
+                                    record_hash: "None".to_string(),
+                                    s3a_ql: "SIFT".to_string(),
+                                    coordinates: vec![],
+                                },
+                            };
+                            crate::viewer::ViewerFullState {
+                                file_path: db_path.to_string_lossy().to_string(),
+                                view_pack_id: "shell".to_string(),
+                                summary: fallback_summary,
+                                tree: vec![],
+                                selected_node_id: "root".to_string(),
+                                properties: crate::viewer::ViewerProperties {
+                                    node_id: "root".to_string(),
+                                    label: "Overview".to_string(),
+                                    properties: vec![],
+                                    advanced_properties: vec![],
+                                },
+                                preview: crate::viewer::ViewerPreview {
+                                    node_id: "root".to_string(),
+                                    mime_type: "text/plain".to_string(),
+                                    content: "No active record selected.".to_string(),
+                                },
+                                history: crate::viewer::ViewerHistory {
+                                    branch: "main".to_string(),
+                                    commits: vec![],
+                                },
+                                approval: crate::viewer::ViewerApprovalStatus {
+                                    is_approved: true,
+                                    approved_by: None,
+                                    approval_timestamp: None,
+                                    signature: None,
+                                    fingerprint: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                                    requires_human_decision: false,
+                                },
+                            }
+                        })
+                    } else {
+                        let fallback_summary = crate::viewer::ViewerSummary {
+                            title: "S3A Record Viewer".to_string(),
+                            subtitle: "Interactive Record Explorer".to_string(),
+                            description: "Ready to inspect S3A record files.".to_string(),
+                            status_badge: "Ready".to_string(),
+                            human_approval: "Ready".to_string(),
+                            view_pack_name: "Generic Shell".to_string(),
+                            key_stats: vec![("Status".to_string(), "Active".to_string())],
+                            advanced: crate::viewer::ViewerAdvancedDetails {
+                                tile_count: 0,
+                                active_generation: 0,
+                                tile_types: vec![],
+                                crc_status: "No file loaded".to_string(),
+                                merkle_root: "None".to_string(),
+                                record_hash: "None".to_string(),
+                                s3a_ql: "SIFT".to_string(),
+                                coordinates: vec![],
+                            },
+                        };
+                        crate::viewer::ViewerFullState {
+                            file_path: db_path.to_string_lossy().to_string(),
+                            view_pack_id: "shell".to_string(),
+                            summary: fallback_summary,
+                            tree: vec![],
+                            selected_node_id: "root".to_string(),
+                            properties: crate::viewer::ViewerProperties {
+                                node_id: "root".to_string(),
+                                label: "Overview".to_string(),
+                                properties: vec![],
+                                advanced_properties: vec![],
+                            },
+                            preview: crate::viewer::ViewerPreview {
+                                node_id: "root".to_string(),
+                                mime_type: "text/plain".to_string(),
+                                content: "No active record selected.".to_string(),
+                            },
+                            history: crate::viewer::ViewerHistory {
+                                branch: "main".to_string(),
+                                commits: vec![],
+                            },
+                            approval: crate::viewer::ViewerApprovalStatus {
+                                is_approved: true,
+                                approved_by: None,
+                                approval_timestamp: None,
+                                signature: None,
+                                fingerprint: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                                requires_human_decision: false,
+                            },
+                        }
+                    };
+
+                    let html = crate::viewer::generate_viewer_html(&state);
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": id_val,
+                        "result": {
+                            "contents": [
+                                {
+                                    "uri": uri,
+                                    "mimeType": "text/html;profile=mcp-app",
+                                    "text": html
+                                }
+                            ]
+                        }
+                    });
+                    Some(serde_json::to_string(&resp).unwrap())
+                } else {
+                    let resp = json!({
+                        "jsonrpc": "2.0",
+                        "id": id_val,
+                        "error": {
+                            "code": -32602,
+                            "message": format!("Resource not found: {}", uri)
+                        }
+                    });
+                    Some(serde_json::to_string(&resp).unwrap())
+                }
             }
             "tools/list" => {
                 let tools = self.list_tools();
@@ -695,6 +1023,36 @@ impl S3AMcpDispatcher {
                 "name": RecordAiStepArgs::tool_name(),
                 "description": RecordAiStepArgs::description(),
                 "inputSchema": RecordAiStepArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerOpenArgs::tool_name(),
+                "description": ViewerOpenArgs::description(),
+                "inputSchema": ViewerOpenArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerGetTreeArgs::tool_name(),
+                "description": ViewerGetTreeArgs::description(),
+                "inputSchema": ViewerGetTreeArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerGetPropertiesArgs::tool_name(),
+                "description": ViewerGetPropertiesArgs::description(),
+                "inputSchema": ViewerGetPropertiesArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerGetPreviewArgs::tool_name(),
+                "description": ViewerGetPreviewArgs::description(),
+                "inputSchema": ViewerGetPreviewArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerGetHistoryArgs::tool_name(),
+                "description": ViewerGetHistoryArgs::description(),
+                "inputSchema": ViewerGetHistoryArgs::input_schema()
+            }),
+            json!({
+                "name": ViewerGetApprovalStatusArgs::tool_name(),
+                "description": ViewerGetApprovalStatusArgs::description(),
+                "inputSchema": ViewerGetApprovalStatusArgs::input_schema()
             }),
         ]
     }
@@ -1112,6 +1470,102 @@ impl S3AMcpDispatcher {
                     Err(e) => Ok((format!("Engine error: {}", e), true)),
                 }
             }
+            "s3a_viewer_open" => {
+                let parsed: ViewerOpenArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reg = crate::viewer::ViewerRegistry::new();
+                match reg.load_archive(&file_path) {
+                    Ok(state) => Ok((serde_json::to_string_pretty(&state).unwrap(), false)),
+                    Err(e) => Ok((format!("Error opening archive: {}", e), true)),
+                }
+            }
+            "s3a_viewer_get_tree" => {
+                let parsed: ViewerGetTreeArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reg = crate::viewer::ViewerRegistry::new();
+                match reg.load_archive(&file_path) {
+                    Ok(state) => Ok((serde_json::to_string_pretty(&state.tree).unwrap(), false)),
+                    Err(e) => Ok((format!("Error loading tree: {}", e), true)),
+                }
+            }
+            "s3a_viewer_get_properties" => {
+                let parsed: ViewerGetPropertiesArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reader = MmapReader::open(&file_path)
+                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                let reg = crate::viewer::ViewerRegistry::new();
+                let pack = reg.resolve_pack(&reader);
+                match pack.extract_properties(&reader, &file_path, &parsed.node_id) {
+                    Ok(props) => Ok((serde_json::to_string_pretty(&props).unwrap(), false)),
+                    Err(e) => Ok((format!("Error getting properties: {}", e), true)),
+                }
+            }
+            "s3a_viewer_get_preview" => {
+                let parsed: ViewerGetPreviewArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reader = MmapReader::open(&file_path)
+                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                let reg = crate::viewer::ViewerRegistry::new();
+                let pack = reg.resolve_pack(&reader);
+                match pack.extract_preview(&reader, &file_path, &parsed.node_id) {
+                    Ok(prev) => Ok((serde_json::to_string_pretty(&prev).unwrap(), false)),
+                    Err(e) => Ok((format!("Error getting preview: {}", e), true)),
+                }
+            }
+            "s3a_viewer_get_history" => {
+                let parsed: ViewerGetHistoryArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reader = MmapReader::open(&file_path)
+                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                let reg = crate::viewer::ViewerRegistry::new();
+                let pack = reg.resolve_pack(&reader);
+                match pack.extract_history(&reader, &file_path) {
+                    Ok(hist) => Ok((serde_json::to_string_pretty(&hist).unwrap(), false)),
+                    Err(e) => Ok((format!("Error getting history: {}", e), true)),
+                }
+            }
+            "s3a_viewer_get_approval_status" => {
+                let parsed: ViewerGetApprovalStatusArgs = serde_json::from_value(args.clone()).map_err(
+                    |e| json!({ "code": -32602, "message": format!("Invalid arguments: {}", e) }),
+                )?;
+                let file_path = match parsed.file {
+                    Some(ref f) => PathBuf::from(f),
+                    None => self.sandbox.default_db().to_path_buf(),
+                };
+                let reader = MmapReader::open(&file_path)
+                    .map_err(|e| json!({ "code": -32603, "message": e.to_string() }))?;
+                let reg = crate::viewer::ViewerRegistry::new();
+                let pack = reg.resolve_pack(&reader);
+                match pack.extract_approval(&reader, &file_path) {
+                    Ok(appr) => Ok((serde_json::to_string_pretty(&appr).unwrap(), false)),
+                    Err(e) => Ok((format!("Error getting approval status: {}", e), true)),
+                }
+            }
             _ => Err(json!({
                 "code": -32601,
                 "message": format!("Unknown tool: {}", name)
@@ -1153,6 +1607,12 @@ pub const MCP_TOOL_SIDE_EFFECTS: &[(&str, crate::permissions::SideEffects)] = {
         ("request_human_gate", ReadOnly),
         ("record_human_decision", Mutating),
         ("record_ai_step", Mutating),
+        ("s3a_viewer_open", ReadOnly),
+        ("s3a_viewer_get_tree", ReadOnly),
+        ("s3a_viewer_get_properties", ReadOnly),
+        ("s3a_viewer_get_preview", ReadOnly),
+        ("s3a_viewer_get_history", ReadOnly),
+        ("s3a_viewer_get_approval_status", ReadOnly),
     ]
 };
 
@@ -1184,6 +1644,12 @@ mod side_effect_decl_tests {
             RequestHumanGateArgs::tool_name(),
             RecordHumanDecisionArgs::tool_name(),
             RecordAiStepArgs::tool_name(),
+            ViewerOpenArgs::tool_name(),
+            ViewerGetTreeArgs::tool_name(),
+            ViewerGetPropertiesArgs::tool_name(),
+            ViewerGetPreviewArgs::tool_name(),
+            ViewerGetHistoryArgs::tool_name(),
+            ViewerGetApprovalStatusArgs::tool_name(),
         ];
         assert_eq!(names.len(), MCP_TOOL_SIDE_EFFECTS.len());
         for n in names {

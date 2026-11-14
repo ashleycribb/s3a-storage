@@ -20,6 +20,7 @@ pub mod store;
 pub mod tools;
 pub mod trajectory;
 pub mod vcs;
+pub mod viewer;
 
 #[cfg(feature = "otel")]
 pub mod otel;

@@ -1,6 +1,6 @@
 # Roadmap: all green
 
-Goal: a self-hosted version of the Claude Managed Agents topology (client apps, agent server, sandboxes pulling a work queue, state store, MCP tools, observability, model calls) with S3A as the signed state store. The DAF SBIR technical-data viewer is the demo that exercises every piece.
+Goal: a self-hosted version of the Claude Managed Agents topology (client apps, agent server, sandboxes pulling a work queue, state store, MCP tools, observability, model calls) with S3A as the signed state store. The general S3A record viewer is the demo that exercises every piece.
 
 | # | Item | Was | Prompt |
 |---|------|-----|--------|
@@ -8,7 +8,7 @@ Goal: a self-hosted version of the Claude Managed Agents topology (client apps, 
 | 5 | One-command self-hosted stack | yellow | 008 |
 | 6 | Sandboxes pulling a work queue | red | 004 |
 | 7 | Credential proxy + host allowlist | red | 005 |
-| 8 | MCP App (TDP viewer) | red | 007 |
+| 8 | MCP App (S3A record viewer) | red | 007 |
 | 9 | OpenTelemetry export | red | 006 |
 | 10 | Reproducible research records | yellow | 009 |
 

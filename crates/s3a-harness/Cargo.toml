@@ -24,6 +24,7 @@ s3a-pack-ontology = { path = "../s3a-pack-ontology" }
 s3a-vault = { path = "../s3a-vault" }
 s3a-vcs = { path = "../s3a-vcs" }
 s3a-sandbox = { path = "../s3a-sandbox" }
+s3a-pack-tdp = { path = "../s3a-pack-tdp" }
 memmap2 = { workspace = true }
 crc32c = { workspace = true }
 bytemuck = { workspace = true }

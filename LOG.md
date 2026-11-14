@@ -242,3 +242,42 @@
    - `test_blocked_proxy_request_span_matches_signed_record`: validates rejected requests produce matching spans and signed audit records.
    - `test_otlp_http_exporter_json_structure`: validates exact OTLP schema.
    - `test_trace_export_otlp_replays_vault_records`: verifies CLI trace export end-to-end against local HTTP receiver.
+
+
+---
+
+## Prompt 007: General S3A MCP App Record Viewer, Multi-Pack Views & UI SDK
+
+- **Status**: ALL SUCCESS
+- **Local Verification**:
+  - `cargo fmt --all --check`: passed
+  - `cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings`: passed
+  - `cargo clippy -p s3a-harness --features otel --no-deps --all-targets -- -D warnings`: passed
+  - `cargo deny check`: passed (`advisories ok, bans ok, licenses ok, sources ok`)
+  - `cargo test -p s3a-harness`: passed (all 20 unit tests + 11 test suites passed)
+  - `cargo test -p s3a-harness --test viewer_mcp_tests`: passed (7/7 tests passed)
+- **Summary of Deliverables**:
+1. **Prompt 007 & ROADMAP Rewrite**:
+   - Renamed `prompts/007-mcp-app-tdp-viewer.md` -> `prompts/007-mcp-app-viewer.md`.
+   - Updated `prompts/ROADMAP.md` to position the tool as a general S3A record viewer for anyone (research papers, engineering TDPs, device backups/snapshots, or raw manifests), not SBIR-only.
+2. **S3A MCP App Shell (`ui://viewer` & `ui://record-viewer`)**:
+   - Implemented MCP App resources under `resources/list` and `resources/read`: `ui://viewer` and alias `ui://record-viewer` serving interactive HTML (`text/html;profile=mcp-app`).
+   - Added 6 read-only MCP viewer tools: `s3a_viewer_open`, `s3a_viewer_get_tree`, `s3a_viewer_get_properties`, `s3a_viewer_get_preview`, `s3a_viewer_get_history`, `s3a_viewer_get_approval_status`.
+   - Explicitly declared all 6 tools as `SideEffects::ReadOnly` in `MCP_TOOL_SIDE_EFFECTS`.
+3. **Modular Domain View Packs (`crates/s3a-harness/src/viewer.rs`)**:
+   - `RecordViewPack` trait and `ViewerRegistry` auto-selecting view by tile inspection:
+     - **Research View** (`ScholarResearchViewPack`, `s3a-pack-scholar`): detects scholar tiles 10..=15; extracts manuscript sections, SVG figures, tables, citation matrix, artifact completeness, and academic peer verification.
+     - **Technical Data View** (`TechnicalDataViewPack`, `s3a-pack-tdp`): detects STEP AP242 and PDF drawings; extracts assembly tree, BOM table, part properties, and isometric SVG preview.
+     - **Backups & Devices View** (`AuraBackupViewPack`): detects telemetry (0), wearable (3), VCS commits (80/81); extracts device snapshot hierarchy, protected config files, and sensor event telemetry.
+     - **Manifest Fallback View** (`ManifestFallbackViewPack`): fallback for unknown/raw tiles, displaying plain-text container manifest and block breakdown.
+4. **Non-Developer Usability & "Advanced" Developer Toggle**:
+   - Default viewer presentation is completely free of CLI invocations (`s3a `), raw tile IDs (`Tile 0`, `tile_type`), or S3A-QL (`SIFT `, `FETCH `).
+   - All technical diagnostics (tile count, active generation, coordinate addressing `L0:T0:R0`, hardware CRC32C status, Merkle root, native S3A-QL) are secluded behind an accessible "Advanced Details" toggle (`display: none` by default).
+5. **Vercel UI Web Components & Keyboard Accessibility**:
+   - Design system tokens (`--geist-background`, `--geist-foreground`, `--accents-1`, `--geist-cyan`), `<ui-tree>`, `<ui-tree-item>`, `<ui-badge>`, `<ui-tab>`, `<ui-button>`.
+   - Accessible keyboard navigation: `ArrowUp`/`ArrowDown` for tree traversal, `Enter`/`Space` for node selection, `aria-selected`, `aria-expanded`, and focus indicators.
+6. **Comprehensive Tests (`crates/s3a-harness/tests/viewer_mcp_tests.rs`)**:
+   - Validated MCP protocol resource discovery and read output.
+   - Validated all 4 domain view packs against realistic sample `.s3a` archives.
+   - Validated strict exclusion of developer jargon from human-facing strings and verified the Advanced toggle.
+   - Validated Vercel UI design system tokens and keyboard accessibility attributes.

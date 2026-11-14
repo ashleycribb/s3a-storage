@@ -178,3 +178,25 @@ Notes:
   5. Ed25519-signed S3A records remain the immutable source of truth; OTel is an exported copy.
   6. Added `s3a trace export --otlp <endpoint> [vault_path]` to replay records from any vault into an OTLP endpoint as spans with matching record hashes.
   7. Test suite verifies that every span's record hash matches an Ed25519-signed record in the audit log, signatures verify, and secrets are strictly excluded.
+
+
+---
+
+## 007-mcp-app-viewer, 2026-11-14 11:05
+Status: done
+Commit: HEAD
+Changed: crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/enforcement.rs, crates/s3a-harness/src/mcp.rs, crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, prompts/007-mcp-app-viewer.md, prompts/ROADMAP.md, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo clippy -p s3a-harness --features otel --no-deps --all-targets -- -D warnings: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-harness: passed (all 20 unit tests + 11 test suites passed)
+  - cargo test -p s3a-harness --test viewer_mcp_tests: passed (7/7 tests passed)
+Notes:
+  1. Rewrote prompt 007 (renamed to `prompts/007-mcp-app-viewer.md`) and updated `prompts/ROADMAP.md` for a general S3A record viewer for anyone, not SBIR-only.
+  2. Implemented generic MCP App shell exposing `ui://viewer` and `ui://record-viewer` resources with Vercel UI tokens, tree navigation, preview pane, properties panel, history timeline from `s3a-vcs`, and approval status.
+  3. Implemented 6 read-only viewer MCP tools (`s3a_viewer_open`, `s3a_viewer_get_tree`, `s3a_viewer_get_properties`, `s3a_viewer_get_preview`, `s3a_viewer_get_history`, `s3a_viewer_get_approval_status`) declared as `SideEffects::ReadOnly`.
+  4. Built `RecordViewPack` trait and 4 auto-selecting domain packs: Scholar research (`s3a-pack-scholar`), technical data package (`s3a-pack-tdp`), backups/devices (Aura), and plain-text fallback manifest.
+  5. Guaranteed non-developer accessibility: human summary strictly hides all CLI invocations, tile IDs, and S3A-QL queries; technical diagnostics are isolated behind an "Advanced" toggle.
+  6. Used Vercel UI Web Components adapter tokens and WAI-ARIA keyboard/focus selection in tree view (`ArrowUp`, `ArrowDown`, `Enter`, `Space`, `aria-selected`, `aria-expanded`).

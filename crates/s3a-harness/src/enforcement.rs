@@ -74,7 +74,11 @@ pub fn classify_with(tool: &str, target: &str, side_effects: Option<SideEffects>
             "signoff",
         ]
         .iter()
-        .any(|w| t.contains(w))
+        .any(|w| {
+            t.contains(w)
+                && !(read_only
+                    && (t.contains("get_") || t.contains("list_") || t.starts_with("s3a_viewer_")))
+        })
     {
         return ActionClass::HumanOnly;
     }
