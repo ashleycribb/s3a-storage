@@ -20,6 +20,7 @@ s3a-pack-robotics = { path = "../s3a-pack-robotics", optional = true }
 s3a-pack-gis = { path = "../s3a-pack-gis", optional = true }
 s3a-pack-da = { path = "../s3a-pack-da", optional = true }
 s3a-pack-ontology = { path = "../s3a-pack-ontology", optional = true }
+s3a-pack-tdp = { path = "../s3a-pack-tdp", optional = true }
 s3a-vault = { path = "../s3a-vault" }
 s3a-vcs = { path = "../s3a-vcs" }
 s3a-pack-clean = { path = "../s3a-pack-clean", optional = true }
@@ -46,6 +47,7 @@ packs = [
     "dep:s3a-pack-da",
     "dep:s3a-pack-ontology",
     "dep:s3a-pack-clean",
+    "dep:s3a-pack-tdp",
 ]
 
 [lib]

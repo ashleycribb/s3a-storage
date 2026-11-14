@@ -1306,10 +1306,9 @@ fn execute_array_slice<R: Read + Seek>(
 
         // Bounding box overlap test
         let mut overlaps = true;
-        for a in 0..ndim {
+        for (a, &(req_start, req_end)) in ranges.iter().enumerate().take(ndim) {
             let chunk_start = hdr.chunk_coords[a];
             let chunk_end = chunk_start + hdr.shape[a];
-            let (req_start, req_end) = ranges[a];
             if req_end <= chunk_start || req_start >= chunk_end {
                 overlaps = false;
                 break;

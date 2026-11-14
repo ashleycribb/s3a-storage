@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use s3a_core::document::{
-    compute_key_hash, DocumentRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_IS_JSON, DOC_KIND_GENERIC_KV,
-    DOC_KIND_JSON,
+    compute_key_hash, DocumentRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_IS_JSON, DOC_KIND_BINARY,
+    DOC_KIND_GENERIC_KV, DOC_KIND_JSON,
 };
 use s3a_core::{HyperTileHeader, TileType, HYPER_TILE_PAYLOAD_SIZE};
 use s3a_engine::{execute_query, MmapReader, QueryResult, TelemetryRecord, TileWriter};
@@ -18,6 +18,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "init",
     "put",
     "get",
+    "open",
     "import",
     "export",
     "query",
@@ -80,11 +81,11 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let b_chars: Vec<char> = b.chars().collect();
     let mut dp = vec![vec![0; b_chars.len() + 1]; a_chars.len() + 1];
 
-    for i in 0..=a_chars.len() {
-        dp[i][0] = i;
+    for (i, row) in dp.iter_mut().enumerate().take(a_chars.len() + 1) {
+        row[0] = i;
     }
-    for j in 0..=b_chars.len() {
-        dp[0][j] = j;
+    for (j, cell) in dp[0].iter_mut().enumerate().take(b_chars.len() + 1) {
+        *cell = j;
     }
 
     for i in 1..=a_chars.len() {
@@ -196,12 +197,38 @@ pub fn resolve_vault_path(args: &[String]) -> PathBuf {
     default_path
 }
 
+pub fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == flag {
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                return Some(args[i + 1].clone());
+            }
+        } else if let Some(stripped) = args[i].strip_prefix(flag) {
+            if let Some(val) = stripped.strip_prefix('=') {
+                return Some(val.to_string());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 pub fn extract_positional_args(args: &[String]) -> Vec<&String> {
     let mut pos = Vec::new();
     let mut i = 2;
     while i < args.len() {
-        if args[i] == "--vault" {
+        if args[i] == "--vault" || args[i] == "-o" || args[i] == "--output" || args[i] == "--format"
+        {
             i += 2;
+            continue;
+        }
+        if args[i].starts_with("--vault=")
+            || args[i].starts_with("-o=")
+            || args[i].starts_with("--output=")
+            || args[i].starts_with("--format=")
+        {
+            i += 1;
             continue;
         }
         if args[i].starts_with('-') {
@@ -265,10 +292,9 @@ pub fn format_ascii_table(headers: &[&str], rows: &[Vec<String>]) -> String {
     // Rows
     for row in rows {
         out.push('|');
-        for i in 0..headers.len() {
+        for (i, width) in col_widths.iter().enumerate().take(headers.len()) {
             let cell = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            let width = col_widths[i];
-            out.push_str(&format!(" {:<width$} |", cell, width = width));
+            out.push_str(&format!(" {:<width$} |", cell, width = *width));
         }
         out.push('\n');
     }
@@ -358,8 +384,11 @@ pub fn write_document_record(path: &Path, key: &str, content: &[u8]) -> Result<(
     let key_bytes = key.as_bytes();
     let content_crc = crc32c::crc32c(content);
     let is_json = serde_json::from_slice::<serde_json::Value>(content).is_ok();
+    let is_binary = !is_json && std::str::from_utf8(content).is_err();
     let doc_kind = if is_json {
         DOC_KIND_JSON
+    } else if is_binary {
+        DOC_KIND_BINARY
     } else {
         DOC_KIND_GENERIC_KV
     };
@@ -368,14 +397,16 @@ pub fn write_document_record(path: &Path, key: &str, content: &[u8]) -> Result<(
         flags |= DOC_FLAG_IS_JSON;
     }
 
-    let mut doc_hdr = DocumentRecordHeader::default();
-    doc_hdr.doc_kind = doc_kind;
-    doc_hdr.flags = flags;
-    doc_hdr.key_hash = compute_key_hash(doc_kind, key);
-    doc_hdr.timestamp_ms = now_ms();
-    doc_hdr.key_len = key_bytes.len() as u32;
-    doc_hdr.content_len = content.len() as u32;
-    doc_hdr.content_crc32 = content_crc;
+    let doc_hdr = DocumentRecordHeader {
+        doc_kind,
+        flags,
+        key_hash: compute_key_hash(doc_kind, key),
+        timestamp_ms: now_ms(),
+        key_len: key_bytes.len() as u32,
+        content_len: content.len() as u32,
+        content_crc32: content_crc,
+        ..Default::default()
+    };
 
     let header_size = std::mem::size_of::<DocumentRecordHeader>();
     let total_record_size = header_size + key_bytes.len() + content.len();
@@ -627,6 +658,63 @@ pub fn handle_put(args: &[String], verbose: bool) {
         let _ = s3a_vcs::VcsRepo::init(&vault_path);
     }
 
+    let is_pdf =
+        content.starts_with(b"%PDF-") || key.ends_with(".pdf") || val_arg.ends_with(".pdf");
+    #[cfg(feature = "packs")]
+    if is_pdf {
+        match s3a_pack_tdp::store_pdf(&vault_path, key, &content) {
+            Ok(meta) => {
+                println!(
+                    "OK: stored PDF '{}' ({} bytes, {} pages) and metadata '{}.meta' in {}",
+                    key,
+                    content.len(),
+                    meta.page_count,
+                    key,
+                    vault_path.display()
+                );
+                return;
+            }
+            Err(e) => {
+                print_cli_error(
+                    &format!("failed to store PDF '{}': {}", key, e),
+                    Some("verify the PDF file is valid"),
+                    verbose,
+                    Some(&e),
+                );
+            }
+        }
+    }
+
+    let is_step = content.starts_with(b"ISO-10303-21")
+        || key.ends_with(".step")
+        || key.ends_with(".stp")
+        || val_arg.ends_with(".step")
+        || val_arg.ends_with(".stp");
+    #[cfg(feature = "packs")]
+    if is_step {
+        match s3a_pack_tdp::store_step(&vault_path, key, &content) {
+            Ok(tree) => {
+                println!(
+                    "OK: stored STEP '{}' ({} bytes, {} parts) and assembly '{}.assembly' in {}",
+                    key,
+                    content.len(),
+                    tree.parts.len(),
+                    key,
+                    vault_path.display()
+                );
+                return;
+            }
+            Err(e) => {
+                print_cli_error(
+                    &format!("failed to store STEP '{}': {}", key, e),
+                    Some("verify the STEP AP242 model is valid"),
+                    verbose,
+                    Some(&e),
+                );
+            }
+        }
+    }
+
     if let Err(e) = write_document_record(&vault_path, key, &content) {
         print_cli_error(
             &e,
@@ -707,6 +795,158 @@ pub fn handle_get(args: &[String], verbose: bool) {
     }
 }
 
+pub fn handle_open(args: &[String], verbose: bool) {
+    let pos = extract_positional_args(args);
+    if pos.is_empty() {
+        print_cli_error(
+            "missing argument: 's3a open' requires <key>",
+            Some("usage: s3a open [vault] <key> [--vault <path>]"),
+            verbose,
+            None,
+        );
+    }
+
+    let has_explicit_vault = args
+        .iter()
+        .any(|a| a == "--vault" || a.starts_with("--vault="));
+    let (vault_path, key) = if !has_explicit_vault && pos.len() >= 2 {
+        (PathBuf::from(pos[0]), pos[1].as_str())
+    } else {
+        (resolve_vault_path(args), pos[0].as_str())
+    };
+
+    if !vault_path.exists() {
+        print_cli_error(
+            &format!("vault file '{}' does not exist", vault_path.display()),
+            Some("run 's3a init' to create a new vault, or specify '--vault <path>'"),
+            verbose,
+            None,
+        );
+    }
+
+    let bytes = match read_document_record(&vault_path, key) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            print_cli_error(
+                &format!(
+                    "key '{}' not found in vault '{}'",
+                    key,
+                    vault_path.display()
+                ),
+                Some("use 's3a ls' to list stored keys"),
+                verbose,
+                None,
+            );
+        }
+        Err(e) => {
+            print_cli_error(
+                &e,
+                Some("run 's3a doctor' to diagnose archive integrity"),
+                verbose,
+                None,
+            );
+        }
+    };
+
+    // Detect file type / extension
+    let mut ext = "bin";
+
+    // 1. Check sidecar metadata (<key>.meta) if present
+    let sidecar_key = format!("{}.meta", key);
+    if let Ok(Some(meta_bytes)) = read_document_record(&vault_path, &sidecar_key) {
+        if let Ok(meta_json) = serde_json::from_slice::<serde_json::Value>(&meta_bytes) {
+            if let Some(mime) = meta_json.get("mime_type").and_then(|v| v.as_str()) {
+                match mime {
+                    "application/pdf" => ext = "pdf",
+                    "application/step" => ext = "step",
+                    "application/json" => ext = "json",
+                    "text/csv" => ext = "csv",
+                    "image/png" => ext = "png",
+                    "image/jpeg" => ext = "jpg",
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 2. Check if key itself has an extension
+    if ext == "bin" {
+        if let Some(dot_idx) = key.rfind('.') {
+            let possible_ext = &key[dot_idx + 1..];
+            if !possible_ext.is_empty()
+                && possible_ext.len() <= 5
+                && possible_ext.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                ext = possible_ext;
+            }
+        }
+    }
+
+    // 3. Fallback to magic bytes detection
+    if ext == "bin" {
+        #[cfg(feature = "packs")]
+        {
+            let (_, detected_ext) = s3a_pack_tdp::detect_mime_and_ext(&bytes);
+            ext = detected_ext;
+        }
+        #[cfg(not(feature = "packs"))]
+        {
+            if bytes.starts_with(b"%PDF-") {
+                ext = "pdf";
+            } else if bytes.starts_with(b"ISO-10303-21") {
+                ext = "step";
+            }
+        }
+    }
+
+    let sanitized_key = key.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+    let temp_file = std::env::temp_dir().join(format!("s3a_{}.{}", sanitized_key, ext));
+
+    if let Err(e) = fs::write(&temp_file, &bytes) {
+        print_cli_error(
+            &format!("failed to write temp file '{}': {}", temp_file.display(), e),
+            Some("check permissions on system temp directory"),
+            verbose,
+            Some(&e.to_string()),
+        );
+    }
+
+    // Launch OS default app
+    let open_res = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &temp_file.to_string_lossy()])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&temp_file).spawn()
+    } else {
+        std::process::Command::new("xdg-open")
+            .arg(&temp_file)
+            .spawn()
+    };
+
+    match open_res {
+        Ok(_) => {
+            println!(
+                "OK: opened '{}' ({} bytes, {}) in default viewer via {}",
+                key,
+                bytes.len(),
+                ext,
+                temp_file.display()
+            );
+        }
+        Err(e) => {
+            println!(
+                "OK: wrote '{}' ({} bytes, {}) to {} (could not launch default viewer: {})",
+                key,
+                bytes.len(),
+                ext,
+                temp_file.display(),
+                e
+            );
+        }
+    }
+}
+
 pub fn handle_import(args: &[String], verbose: bool) {
     let pos = extract_positional_args(args);
     if pos.is_empty() {
@@ -761,8 +1001,8 @@ pub fn handle_import(args: &[String], verbose: bool) {
         .unwrap_or("data");
     let is_csv = filename.ends_with(".csv")
         || (!filename.ends_with(".json")
-            && file_bytes.iter().any(|&b| b == b',')
-            && file_bytes.iter().any(|&b| b == b'\n'));
+            && file_bytes.contains(&b',')
+            && file_bytes.contains(&b'\n'));
 
     if is_csv {
         import_csv(&file_bytes, &vault_path, filename, verbose);
@@ -943,14 +1183,16 @@ fn import_csv(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
             let key_bytes = key.as_bytes();
             let content_bytes = json_str.as_bytes();
 
-            let mut doc_hdr = DocumentRecordHeader::default();
-            doc_hdr.doc_kind = DOC_KIND_JSON;
-            doc_hdr.flags = DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON;
-            doc_hdr.key_hash = compute_key_hash(DOC_KIND_JSON, &key);
-            doc_hdr.timestamp_ms = now_ms();
-            doc_hdr.key_len = key_bytes.len() as u32;
-            doc_hdr.content_len = content_bytes.len() as u32;
-            doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
+            let doc_hdr = DocumentRecordHeader {
+                doc_kind: DOC_KIND_JSON,
+                flags: DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON,
+                key_hash: compute_key_hash(DOC_KIND_JSON, &key),
+                timestamp_ms: now_ms(),
+                key_len: key_bytes.len() as u32,
+                content_len: content_bytes.len() as u32,
+                content_crc32: crc32c::crc32c(content_bytes),
+                ..Default::default()
+            };
 
             let rec_size =
                 std::mem::size_of::<DocumentRecordHeader>() + key_bytes.len() + content_bytes.len();
@@ -1041,14 +1283,16 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
                 let key_bytes = key.as_bytes();
                 let content_bytes = val_str.as_bytes();
 
-                let mut doc_hdr = DocumentRecordHeader::default();
-                doc_hdr.doc_kind = DOC_KIND_JSON;
-                doc_hdr.flags = DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON;
-                doc_hdr.key_hash = compute_key_hash(DOC_KIND_JSON, &key);
-                doc_hdr.timestamp_ms = now_ms();
-                doc_hdr.key_len = key_bytes.len() as u32;
-                doc_hdr.content_len = content_bytes.len() as u32;
-                doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
+                let doc_hdr = DocumentRecordHeader {
+                    doc_kind: DOC_KIND_JSON,
+                    flags: DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON,
+                    key_hash: compute_key_hash(DOC_KIND_JSON, &key),
+                    timestamp_ms: now_ms(),
+                    key_len: key_bytes.len() as u32,
+                    content_len: content_bytes.len() as u32,
+                    content_crc32: crc32c::crc32c(content_bytes),
+                    ..Default::default()
+                };
 
                 let rec_size = std::mem::size_of::<DocumentRecordHeader>()
                     + key_bytes.len()
@@ -1079,14 +1323,16 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
                 let key_bytes = k.as_bytes();
                 let content_bytes = val_str.as_bytes();
 
-                let mut doc_hdr = DocumentRecordHeader::default();
-                doc_hdr.doc_kind = DOC_KIND_JSON;
-                doc_hdr.flags = DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON;
-                doc_hdr.key_hash = compute_key_hash(DOC_KIND_JSON, &k);
-                doc_hdr.timestamp_ms = now_ms();
-                doc_hdr.key_len = key_bytes.len() as u32;
-                doc_hdr.content_len = content_bytes.len() as u32;
-                doc_hdr.content_crc32 = crc32c::crc32c(content_bytes);
+                let doc_hdr = DocumentRecordHeader {
+                    doc_kind: DOC_KIND_JSON,
+                    flags: DOC_FLAG_ACTIVE | DOC_FLAG_IS_JSON,
+                    key_hash: compute_key_hash(DOC_KIND_JSON, &k),
+                    timestamp_ms: now_ms(),
+                    key_len: key_bytes.len() as u32,
+                    content_len: content_bytes.len() as u32,
+                    content_crc32: crc32c::crc32c(content_bytes),
+                    ..Default::default()
+                };
 
                 let rec_size = std::mem::size_of::<DocumentRecordHeader>()
                     + key_bytes.len()
@@ -1134,6 +1380,150 @@ fn import_json(bytes: &[u8], vault_path: &Path, filename: &str, verbose: bool) {
 
 pub fn handle_export(args: &[String], verbose: bool) {
     let pos = extract_positional_args(args);
+    let out_opt = extract_flag_value(args, "-o").or_else(|| extract_flag_value(args, "--output"));
+    let format_opt = extract_flag_value(args, "--format");
+    let has_explicit_vault = args
+        .iter()
+        .any(|a| a == "--vault" || a.starts_with("--vault="));
+
+    // A single-item or BOM export is triggered if -o or --format is supplied,
+    // or if 2 positional args are provided,
+    // or if 1 positional arg does not end in .csv or .json
+    let is_key_export = out_opt.is_some()
+        || format_opt.is_some()
+        || pos.len() >= 2
+        || (pos.len() == 1 && !pos[0].ends_with(".csv") && !pos[0].ends_with(".json"));
+
+    if is_key_export {
+        let (vault_path, key) = if !has_explicit_vault && pos.len() >= 2 {
+            (PathBuf::from(pos[0]), pos[1].as_str())
+        } else if !pos.is_empty() {
+            (resolve_vault_path(args), pos[0].as_str())
+        } else {
+            print_cli_error(
+                "missing argument: 's3a export <key>' requires a key",
+                Some("usage: s3a export [vault] <key> [-o <path>] [--format csv|json]"),
+                verbose,
+                None,
+            );
+        };
+
+        if !vault_path.exists() {
+            print_cli_error(
+                &format!("vault file '{}' does not exist", vault_path.display()),
+                Some("run 's3a init' to create a new vault, or specify '--vault <path>'"),
+                verbose,
+                None,
+            );
+        }
+
+        let key_content = match read_document_record(&vault_path, key) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                print_cli_error(
+                    &format!(
+                        "key '{}' not found in vault '{}'",
+                        key,
+                        vault_path.display()
+                    ),
+                    Some("use 's3a ls' to inspect available stored documents"),
+                    verbose,
+                    None,
+                );
+            }
+            Err(e) => {
+                print_cli_error(&e, Some("run 's3a doctor' to check archive"), verbose, None);
+            }
+        };
+
+        let assembly_key = format!("{}.assembly", key);
+        let stored_assembly = read_document_record(&vault_path, &assembly_key)
+            .ok()
+            .flatten();
+        let is_step = key_content.starts_with(b"ISO-10303-21")
+            || key.ends_with(".step")
+            || key.ends_with(".stp");
+
+        let requested_format = format_opt.as_deref().unwrap_or("");
+        let is_bom_target = requested_format == "csv"
+            || requested_format == "json"
+            || (stored_assembly.is_some()
+                && (out_opt.as_deref().unwrap_or("").ends_with(".csv")
+                    || out_opt.as_deref().unwrap_or("").ends_with(".json")));
+
+        if is_bom_target {
+            #[cfg(feature = "packs")]
+            {
+                let tree_res = if let Some(ref asm_bytes) = stored_assembly {
+                    serde_json::from_slice::<s3a_pack_tdp::StepAssemblyTree>(asm_bytes)
+                        .map_err(|e| e.to_string())
+                } else if is_step {
+                    s3a_pack_tdp::parse_step(&key_content)
+                } else {
+                    Err("Specified key is not an assembly or STEP model".to_string())
+                };
+
+                match tree_res {
+                    Ok(tree) => {
+                        let out_str = if requested_format == "json"
+                            || out_opt.as_deref().unwrap_or("").ends_with(".json")
+                        {
+                            s3a_pack_tdp::export_bom_json(&tree).unwrap_or_default()
+                        } else {
+                            s3a_pack_tdp::export_bom_csv(&tree)
+                        };
+
+                        if let Some(ref out_file) = out_opt {
+                            if let Err(e) = fs::write(out_file, &out_str) {
+                                print_cli_error(
+                                    &format!("failed to write BOM to '{}': {}", out_file, e),
+                                    Some("check output directory write permissions"),
+                                    verbose,
+                                    Some(&e.to_string()),
+                                );
+                            }
+                            println!("OK: exported assembly BOM for '{}' to {}", key, out_file);
+                        } else {
+                            print!("{}", out_str);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        print_cli_error(
+                            &format!("cannot export BOM for '{}': {}", key, e),
+                            Some("BOM export requires an AP242 STEP assembly record"),
+                            verbose,
+                            Some(&e),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Export document or binary payload to file
+        if let Some(ref out_file) = out_opt {
+            let out_path = Path::new(out_file);
+            if let Err(e) = fs::write(out_path, &key_content) {
+                print_cli_error(
+                    &format!("failed to write export to '{}': {}", out_path.display(), e),
+                    Some("check destination write permissions"),
+                    verbose,
+                    Some(&e.to_string()),
+                );
+            }
+            println!(
+                "OK: exported '{}' ({} bytes) to {}",
+                key,
+                key_content.len(),
+                out_path.display()
+            );
+        } else {
+            // Write to stdout
+            let _ = io::stdout().write_all(&key_content);
+        }
+        return;
+    }
+
     if pos.is_empty() {
         print_cli_error(
             "missing argument: 's3a export' requires an output file path",
@@ -2148,6 +2538,23 @@ pub fn handle_help(args: &[String]) {
             println!("  s3a get my.s3a greeting");
             println!("  s3a get production.s3a schema:v1 > exported_schema.json");
         }
+        Some("open") => {
+            println!("s3a open - Open stored document with OS default application");
+            println!();
+            println!("Usage:");
+            println!("  s3a open <key> [--vault <path>]");
+            println!("  s3a open <vault> <key>");
+            println!();
+            println!("Description:");
+            println!("  Retrieves stored document payload (e.g. PDF, STEP, JSON, image), detects");
+            println!("  file type from metadata or magic bytes, writes to a temporary file, and");
+            println!("  launches the default system viewer.");
+            println!();
+            println!("Examples:");
+            println!("  s3a open drawings/turbine.pdf");
+            println!("  s3a open my.s3a cad/gearbox.step");
+            println!("  s3a open docs/readme.txt --vault production.s3a");
+        }
         Some("import") => {
             println!("s3a import - Import records from CSV or JSON into the vault");
             println!();
@@ -2165,18 +2572,22 @@ pub fn handle_help(args: &[String]) {
             println!("  s3a import telemetry_batch.csv --vault production.s3a");
         }
         Some("export") => {
-            println!("s3a export - Export vault records to CSV or JSON");
+            println!("s3a export - Export stored documents, payloads, or assembly BOMs");
             println!();
             println!("Usage:");
             println!("  s3a export <out.csv|out.json> [--json] [--vault <path>]");
+            println!("  s3a export [vault] <key> -o <path>");
+            println!("  s3a export [vault] <key> --format csv|json [-o <path>]");
             println!();
             println!("Description:");
-            println!("  Exports stored documents or telemetry records from the vault to a CSV or JSON file.");
+            println!("  Exports stored vault records, single document payloads, or AP242 assembly");
+            println!("  Bill of Materials (BOM) to CSV, JSON, or raw binary format.");
             println!();
             println!("Examples:");
-            println!("  s3a export data.csv");
-            println!("  s3a export backup.json");
-            println!("  s3a export telemetry.csv --vault production.s3a");
+            println!("  s3a export backup.csv");
+            println!("  s3a export my.s3a drawings/turbine.pdf -o turbine.pdf");
+            println!("  s3a export cad/gearbox.step --format csv");
+            println!("  s3a export cad/gearbox.step --format json -o bom.json");
         }
         Some("query") => {
             println!("s3a query - Execute native S3A-QL query statement");
@@ -2305,8 +2716,9 @@ pub fn print_general_help() {
     println!("  s3a init [path]                  Create a new vault (default: ./my.s3a)");
     println!("  s3a put <key> <value|@file>      Store a key-value record in the vault");
     println!("  s3a get <key>                    Retrieve a value by key");
+    println!("  s3a open <key>                   Open stored document in OS default application");
     println!("  s3a import <data.csv|data.json>  Import records from CSV or JSON");
-    println!("  s3a export <data.csv|data.json>  Export records to CSV or JSON");
+    println!("  s3a export <out|key> [-o path]   Export vault records, document payload, or BOM");
     println!(
         "  s3a query \"<QL>\" [--json]        Execute native S3A-QL statement with table output"
     );

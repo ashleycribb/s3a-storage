@@ -361,6 +361,9 @@ fn main() {
         "get" => {
             s3a_cli::first_run::handle_get(&args, verbose);
         }
+        "open" => {
+            s3a_cli::first_run::handle_open(&args, verbose);
+        }
         "telemetry" => {
             if args.len() < 3 {
                 println!("Usage: s3a telemetry <get|insert|delete> [args...]");

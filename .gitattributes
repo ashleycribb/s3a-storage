@@ -7,6 +7,10 @@
 *.tsr binary
 *.s3a binary
 *.header binary
+*.pdf binary -text
+*.step binary -text
+*.stp binary -text
 tests/fixtures/** binary
-**/tests/fixtures/** binary
+**/tests/fixtures/** binary -text
+crates/s3a-pack-tdp/tests/fixtures/** -text
 conformance/** binary

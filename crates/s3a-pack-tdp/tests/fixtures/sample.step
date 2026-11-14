@@ -1,0 +1,39 @@
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('AP242 STEP Technical Data Package Assembly Model'), '2;1');
+FILE_NAME('gearbox_asm.stp', '2026-03-01T12:00:00', ('Ashley C.'), ('S3A Storage Project'), 'PTC Creo 10.0', 'Creo Parametric', 'Approved');
+FILE_SCHEMA(('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF'));
+ENDSEC;
+DATA;
+/* Top-level Gearbox Assembly */
+#10=PRODUCT('ASM-1000', 'Main Gearbox Assembly', '', (#11));
+#11=PRODUCT_CONTEXT('', #12, 'mechanical');
+#12=APPLICATION_CONTEXT('core data for automotive mechanical design processes');
+#20=PRODUCT_DEFINITION_FORMATION('1', '', #10);
+#30=PRODUCT_DEFINITION('design', '', #20, #31);
+#31=PRODUCT_DEFINITION_CONTEXT('part definition', #12, 'design');
+
+/* Component 1: Input Drive Shaft */
+#40=PRODUCT('SHAFT-001', 'Input Drive Shaft', '', (#11));
+#41=PRODUCT_DEFINITION_FORMATION('1', '', #40);
+#42=PRODUCT_DEFINITION('design', '', #41, #31);
+
+/* Component 2: Ball Bearing 6205 */
+#50=PRODUCT('BRG-6205', 'Deep Groove Ball Bearing', '', (#11));
+#51=PRODUCT_DEFINITION_FORMATION('1', '', #50);
+#52=PRODUCT_DEFINITION('design', '', #51, #31);
+
+/* Component 3: Seal Ring */
+#55=PRODUCT('SEAL-35X50', 'Radial Shaft Seal Ring', '', (#11));
+#56=PRODUCT_DEFINITION_FORMATION('1', '', #55);
+#57=PRODUCT_DEFINITION('design', '', #56, #31);
+
+/* Usages / Assembly Structure */
+#60=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO1', 'Shaft In Gearbox', '', #30, #42, $);
+#70=QUANTIFIED_ASSEMBLY_COMPONENT_USAGE('QACU1', 'Bearings In Gearbox', '', #30, #52, $, #71);
+#71=MEASURE_WITH_UNIT(COUNT_MEASURE(2.0), #72);
+#72=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.01), #73, 'accuracy', 'distance');
+#73=( CONVERSION_BASED_UNIT('MILLIMETRE', #74) LENGTH_UNIT() NAMED_UNIT(#75) );
+#80=NEXT_ASSEMBLY_USAGE_OCCURRENCE('NAUO2', 'Seal In Gearbox', '', #30, #57, $);
+ENDSEC;
+END-ISO-10303-21;
