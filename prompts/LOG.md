@@ -184,7 +184,7 @@ Notes:
 
 ## 007-mcp-app-viewer, 2026-11-14 11:05
 Status: done
-Commit: HEAD
+Commit: 521ceea
 Changed: crates/s3a-harness/Cargo.toml, crates/s3a-harness/src/lib.rs, crates/s3a-harness/src/enforcement.rs, crates/s3a-harness/src/mcp.rs, crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, prompts/007-mcp-app-viewer.md, prompts/ROADMAP.md, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
@@ -193,6 +193,11 @@ Tests:
   - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
   - cargo test -p s3a-harness: passed (all 20 unit tests + 11 test suites passed)
   - cargo test -p s3a-harness --test viewer_mcp_tests: passed (7/7 tests passed)
+  - GitHub Actions runs on 521ceea:
+    - rust-ci (run 43613880750): success (all 13/13 jobs passed)
+    - cargo-deny (run 43613880866): success
+    - S3A Research Agent Harness CI (run 43613880755): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43613881015): success
 Notes:
   1. Rewrote prompt 007 (renamed to `prompts/007-mcp-app-viewer.md`) and updated `prompts/ROADMAP.md` for a general S3A record viewer for anyone, not SBIR-only.
   2. Implemented generic MCP App shell exposing `ui://viewer` and `ui://record-viewer` resources with Vercel UI tokens, tree navigation, preview pane, properties panel, history timeline from `s3a-vcs`, and approval status.
