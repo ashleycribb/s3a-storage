@@ -12,7 +12,7 @@
   "dependencies": {
     "@cloudflare/puppeteer": "^1.4.0",
     "@cloudflare/sandbox": "0.12.10",
-    "isomorphic-git": "^1.44.4"
+    "isomorphic-git": "^1.44.12"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261024.1",
