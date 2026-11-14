@@ -63,7 +63,7 @@ Notes:
 
 ## 003-graph-queries, 2026-11-13 20:20
 Status: done
-Commit: HEAD
+Commit: d016bbf
 Changed: crates/s3a-core/src/lib.rs, crates/s3a-core/src/registry.rs, crates/s3a-core/src/graph.rs, crates/s3a-engine/src/lib.rs, crates/s3a-engine/src/graph.rs, crates/s3a-engine/src/ql/ast.rs, crates/s3a-engine/src/ql/lexer.rs, crates/s3a-engine/src/ql/parser.rs, crates/s3a-engine/src/ql/executor.rs, crates/s3a-engine/tests/graph_queries_test.rs, crates/s3a-pack-scholar/src/lib.rs, crates/s3a-pack-scholar/src/records.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/tests/graph_cli_test.rs, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
@@ -73,6 +73,11 @@ Tests:
   - cargo test -p s3a-pack-scholar: passed (40 tests, including Tile 13 graph extraction)
   - cargo test -p s3a-cli: passed (36 tests, including graph_cli_test)
   - cargo test --workspace: all passed across all crates
+  - GitHub Actions runs on d016bbf:
+    - rust-ci (run 43540067096): success (all 13 jobs green)
+    - cargo-deny (run 43540067125): success
+    - S3A Research Agent Harness CI (run 43540067084): success
+    - wasm-dist (run 43540067097): success
 Notes:
   1. Kept core strictly generic: defined `TileType::GRAPH_EDGE = 87` (`0x0057`) in `s3a-core` with `GenericGraphEdge` and `GraphEdgeRecordHeader` (96 bytes, `Pod + Zeroable`, align 8).
   2. Implemented `register_graph_tile_extractor` in `s3a-engine::graph` to keep graph code generic in `s3a-core`/`s3a-engine` with zero Scholar-specific code outside `s3a-pack-scholar`.
