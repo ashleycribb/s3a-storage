@@ -121,6 +121,13 @@ fn test_sandbox_env_contains_no_secrets() {
 
     let server_handle = Arc::clone(&proxy).start_loopback_server().unwrap();
 
+    // Ensure s3a-sandbox binary is built if running in isolated test environment
+    if !s3a_sandbox::runner::find_sandbox_binary().exists() {
+        let _ = std::process::Command::new("cargo")
+            .args(["build", "-p", "s3a-sandbox", "--bin", "s3a-sandbox"])
+            .status();
+    }
+
     let job = JobRecord {
         id: [0x55; 16],
         kind: "sandbox_proxy_egress".to_string(),

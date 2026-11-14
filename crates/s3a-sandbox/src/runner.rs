@@ -54,29 +54,7 @@ pub fn execute_job_in_sandbox_with_proxy(
         .map_err(|e| format!("Failed to write task input file: {}", e))?;
 
     // Determine path to s3a-sandbox binary
-    let binary_path = if let Some(bin) = option_env!("CARGO_BIN_EXE_s3a-sandbox") {
-        PathBuf::from(bin)
-    } else {
-        let current = std::env::current_exe()
-            .map_err(|e| format!("Failed to determine current binary: {}", e))?;
-        let mut resolved = current.clone();
-        if let Some(parent) = current.parent() {
-            if parent.file_name().and_then(|n| n.to_str()) == Some("deps") {
-                if let Some(target_dir) = parent.parent() {
-                    let exe_name = if cfg!(windows) {
-                        "s3a-sandbox.exe"
-                    } else {
-                        "s3a-sandbox"
-                    };
-                    let sibling = target_dir.join(exe_name);
-                    if sibling.exists() {
-                        resolved = sibling;
-                    }
-                }
-            }
-        }
-        resolved
-    };
+    let binary_path = find_sandbox_binary();
 
     // If sandbox binary does not exist, execute in-process task fallback
     let is_sandbox_bin = binary_path
@@ -469,4 +447,54 @@ fn run_extract_pdf_text(inputs: &Value) -> Result<Value, String> {
         "text": full_text,
         "pages": page_texts,
     }))
+}
+
+/// Locates the `s3a-sandbox` binary across target directories or cargo workspace layout.
+pub fn find_sandbox_binary() -> PathBuf {
+    if let Some(bin) = option_env!("CARGO_BIN_EXE_s3a-sandbox") {
+        let p = PathBuf::from(bin);
+        if p.exists() {
+            return p;
+        }
+    }
+
+    let exe_name = if cfg!(windows) {
+        "s3a-sandbox.exe"
+    } else {
+        "s3a-sandbox"
+    };
+
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(target_dir) = cur.parent().and_then(|p| p.parent()) {
+            let candidate = target_dir.join(exe_name);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for rel in &["../../target/debug", "../target/debug", "target/debug"] {
+        let cand = manifest_dir.join(rel).join(exe_name);
+        if cand.exists() {
+            return cand;
+        }
+    }
+
+    if let Ok(current) = std::env::current_exe() {
+        let mut cur = current.parent();
+        while let Some(dir) = cur {
+            let direct = dir.join(exe_name);
+            if direct.exists() {
+                return direct;
+            }
+            let in_debug = dir.join("target/debug").join(exe_name);
+            if in_debug.exists() {
+                return in_debug;
+            }
+            cur = dir.parent();
+        }
+    }
+
+    PathBuf::from(exe_name)
 }
