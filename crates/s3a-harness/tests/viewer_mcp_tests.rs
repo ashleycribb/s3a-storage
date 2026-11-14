@@ -878,3 +878,160 @@ fn test_anti_fabrication_distinct_vaults_produce_different_properties() {
     assert_eq!(cit2.1, "180000");
     assert_ne!(cit1.1, cit2.1);
 }
+
+#[test]
+fn test_unsigned_vault_shows_not_verified() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+    let vault_path = tmp.path().join("unsigned.vault.s3a");
+    let mut ks = s3a_vault::keystore::MemoryKeyStore::new();
+    s3a_vault::Vault::create(
+        &vault_path,
+        "Unsigned Vault",
+        s3a_vault::VaultOwnerKind::Person,
+        &mut ks,
+    )
+    .expect("create unsigned vault");
+
+    let state = reg.load_archive(&vault_path).expect("load unsigned vault");
+    assert_eq!(state.summary.status_badge, "Not verified");
+    assert_eq!(
+        state.summary.human_approval,
+        "No researcher decision recorded"
+    );
+    assert!(!state.approval.is_approved);
+    assert!(state.approval.requires_human_decision);
+}
+
+#[test]
+fn test_tampered_seal_shows_not_verified() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+    let raw_path = tmp.path().join("raw.s3a");
+    let sealed_path = tmp.path().join("sealed.s3a");
+
+    let mut writer = TileWriter::create(&raw_path).expect("create raw archive");
+    writer.enable_addon(0xFFFF_FFFF).expect("enable addons");
+    let payload = b"critical telemetry telemetry packet for seal testing";
+    let mut hdr = HyperTileHeader::new(0, TileType::TELEMETRY);
+    hdr.record_count = 1;
+    hdr.payload_bytes = payload.len() as u32;
+    hdr.data_crc32 = crc32c::crc32c(payload);
+    writer
+        .write_raw_hyper_tile(&hdr, payload)
+        .expect("write tile");
+    drop(writer);
+
+    let opts = s3a_engine::SealOptionsV2::default();
+    s3a_engine::seal_archive_v2(&raw_path, &sealed_path, &opts).expect("seal archive");
+
+    // Clean sealed file verification check
+    let clean_state = reg.load_archive(&sealed_path).expect("load clean seal");
+    assert_eq!(clean_state.summary.status_badge, "Verified");
+    assert_eq!(
+        clean_state.summary.human_approval,
+        "Sealed (signature verified)"
+    );
+    assert!(clean_state.approval.is_approved);
+
+    // Tamper the seal endcap index hash byte
+    let mut bytes = std::fs::read(&sealed_path).expect("read sealed file");
+    let len = bytes.len();
+    assert!(len > s3a_core::SEALED_ENDCAP_SIZE);
+    bytes[len - s3a_core::SEALED_ENDCAP_SIZE + 10] ^= 0xFF;
+    std::fs::write(&sealed_path, &bytes).expect("write tampered file");
+
+    // Tampered seal must show not verified
+    let tampered_state = reg.load_archive(&sealed_path).expect("load tampered seal");
+    assert_eq!(tampered_state.summary.status_badge, "Not verified");
+    assert_eq!(
+        tampered_state.summary.human_approval,
+        "Sealed (signature not verified)"
+    );
+    assert!(!tampered_state.approval.is_approved);
+    assert!(tampered_state.approval.requires_human_decision);
+}
+
+#[test]
+fn test_reject_decision_never_shows_approved() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+
+    // 1. Explicit VERB_ID_REJECTED
+    let rej_path = tmp.path().join("rejected.s3a");
+    {
+        let mut writer = TileWriter::create(&rej_path).expect("create rej archive");
+        writer.enable_addon(0xFFFF_FFFF).expect("enable addons");
+
+        let human = HumanLrsRecord::new(
+            [1, 2],
+            1700000000,
+            0xDEAD,
+            s3a_pack_scholar::xapi::VERB_ID_REJECTED,
+            0.0,
+            S3ACoordinate::default(),
+            0xCAFE,
+        );
+        let human_bytes = bytemuck::bytes_of(&human);
+        let mut hdr = HyperTileHeader::new(0, ScholarTileType::HUMAN_LRS);
+        hdr.record_count = 1;
+        hdr.payload_bytes = human_bytes.len() as u32;
+        hdr.data_crc32 = crc32c::crc32c(human_bytes);
+        writer
+            .write_raw_hyper_tile(&hdr, human_bytes)
+            .expect("write rej tile");
+    }
+
+    let state = reg.load_archive(&rej_path).expect("load rejected archive");
+    assert_eq!(state.summary.status_badge, "Researcher Excluded");
+    assert_eq!(
+        state.summary.human_approval,
+        "Researcher Excluded (0x0000dead)"
+    );
+    assert!(!state.approval.is_approved);
+    assert!(
+        !state.summary.status_badge.contains("Approved"),
+        "status_badge must never contain 'Approved' for rejection"
+    );
+    assert!(
+        !state.summary.human_approval.contains("Approved"),
+        "human_approval must never contain 'Approved' for rejection"
+    );
+
+    // 2. Low decision score (< 0.50) without explicit approval verb
+    let low_score_path = tmp.path().join("low_score.s3a");
+    {
+        let mut writer = TileWriter::create(&low_score_path).expect("create low score archive");
+        writer.enable_addon(0xFFFF_FFFF).expect("enable addons");
+
+        let human = HumanLrsRecord::new(
+            [1, 2],
+            1700000000,
+            0xBAD0,
+            1, // Experienced / generic verb
+            0.25,
+            S3ACoordinate::default(),
+            0xCAFE,
+        );
+        let human_bytes = bytemuck::bytes_of(&human);
+        let mut hdr = HyperTileHeader::new(0, ScholarTileType::HUMAN_LRS);
+        hdr.record_count = 1;
+        hdr.payload_bytes = human_bytes.len() as u32;
+        hdr.data_crc32 = crc32c::crc32c(human_bytes);
+        writer
+            .write_raw_hyper_tile(&hdr, human_bytes)
+            .expect("write low score tile");
+    }
+
+    let low_state = reg
+        .load_archive(&low_score_path)
+        .expect("load low score archive");
+    assert_eq!(low_state.summary.status_badge, "Researcher Excluded");
+    assert_eq!(
+        low_state.summary.human_approval,
+        "Researcher Excluded (0x0000bad0)"
+    );
+    assert!(!low_state.approval.is_approved);
+    assert!(!low_state.summary.status_badge.contains("Approved"));
+    assert!(!low_state.summary.human_approval.contains("Approved"));
+}
