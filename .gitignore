@@ -22,3 +22,5 @@ crates/s3a-harness/agents/
 
 # Conformance vectors are committed on purpose
 !conformance/vectors-*/files/*.s3a
+!crates/s3a-wasm-snapshot/tests/fixtures/*.s3a
+!crates/s3a-wasm-snapshot/tests/fixtures/acceptance_009/*.s3a

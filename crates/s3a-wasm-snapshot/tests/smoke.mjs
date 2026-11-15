@@ -1,6 +1,6 @@
 // Full smoke test for a built s3a-wasm-snapshot pkg: consent, committee decisions, byte-identical round-trip.
 // Usage: node crates/s3a-wasm-snapshot/tests/smoke.mjs <pkg-dir>
-import fs from 'fs'; import crypto from 'crypto'; import path from 'path'; import { pathToFileURL } from 'url';
+import fs from 'fs'; import crypto from 'crypto'; import path from 'path'; import { pathToFileURL, fileURLToPath } from 'url';
 const dir = path.resolve(process.argv[2] || 'pkg');
 const m = await import(pathToFileURL(path.join(dir, 's3a_wasm_snapshot.js')).href);
 await m.default({ module_or_path: fs.readFileSync(path.join(dir, 's3a_wasm_snapshot_bg.wasm')) });
@@ -45,16 +45,21 @@ const paperJson = JSON.stringify({
   year: 2017,
   language: "en",
   license: "CC-BY-4.0",
-  source_url: "https://arxiv.org/abs/1706.03762"
+  source_url: "https://arxiv.org/abs/1706.03762",
+  published_date: "2017-06-12T00:00:00Z"
 });
 const b3 = m.put_paper(new Uint8Array(0), paperJson);
 ok(b3.length > 0, 'put_paper created archive with hyper-tile');
 const fetched = m.get_paper(b3, "10.1234/test.paper");
 ok(fetched && fetched.title === "Attention Is All You Need" && fetched.authors[0].name === "Ashish Vaswani", 'get_paper retrieved paper record');
 
-// Also test put_paper appending into an existing archive
-const b3_appended = m.put_paper(b3, paperJson);
-ok(b3_appended.length > b3.length, 'put_paper appended to existing archive');
+// Restore a put_paper into a real exported snapshot in smoke.mjs
+const b_snap_paper = m.put_paper(b1, paperJson);
+ok(b_snap_paper.length > 0, 'put_paper appended into real exported snapshot bytes');
+const restored_snap = S.from_bytes(b_snap_paper);
+ok(restored_snap.consent_state() === 'granted', 'restored snapshot from put_paper bytes retains consent granted');
+const paper_from_snap = m.get_paper(b_snap_paper, "10.1234/test.paper");
+ok(paper_from_snap && paper_from_snap.title === "Attention Is All You Need", 'get_paper successfully retrieves paper from restored snapshot');
 
 // Test add_edge and list_edges with retraction
 const edge1 = JSON.stringify({
@@ -83,8 +88,37 @@ const b5 = m.add_edge(b4, retractEdge);
 const edgesAfter = m.list_edges(b5, "paper-A", "cites");
 ok(Array.isArray(edgesAfter) && edgesAfter.length === 0, 'list_edges resolved retraction append-only');
 
-// Test read_embedded_registry
-const regInfo = m.read_embedded_registry(b5);
-ok(regInfo && regInfo.spec_version && Array.isArray(regInfo.types) && regInfo.types.length > 0, 'read_embedded_registry returned spec_version and types');
+// Test read_embedded_registry: both cases
+// Case 1: unsealed archive without schema tile throws "not embedded"
+const errNoSchema = throws(() => m.read_embedded_registry(b5));
+ok(errNoSchema && errNoSchema.includes('not embedded'), 'read_embedded_registry on unsealed archive throws "not embedded": ' + errNoSchema);
+
+// Case 2: sealed archive with embedded schema returns spec_version and types
+const fixturesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
+const sealedWithSchema = fs.readFileSync(path.join(fixturesDir, 'sealed_with_schema.s3a'));
+const regInfo = m.read_embedded_registry(sealedWithSchema);
+ok(regInfo && typeof regInfo.spec_version === 'string' && Array.isArray(regInfo.types) && regInfo.types.some(t => t.type_id === 12) && regInfo.types.some(t => t.type_id === 13), 'read_embedded_registry on sealed archive returns spec_version and the scholar tile types');
+
+// acceptance_009 WASM parity block. Paste verbatim into crates/s3a-wasm-snapshot/tests/smoke.mjs
+// immediately before the final `console.log(`SMOKE PASS ...`)` line. Do not edit.
+// Uses `m`, `ok`, `throws`, `fs`, `path` already defined at the top of smoke.mjs.
+{
+  const fx = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'fixtures', 'acceptance_009');
+  const rd = f => new Uint8Array(fs.readFileSync(path.join(fx, f)));
+  const same = (a, b) => a.length === b.length && Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
+  const base = rd('base.s3a');
+  const paperJson = fs.readFileSync(path.join(fx, 'paper.json'), 'utf8');
+  const edgeJson = fs.readFileSync(path.join(fx, 'edge.json'), 'utf8');
+  const wPaper = m.put_paper(base, paperJson);
+  ok(same(wPaper, rd('expected_put_paper.s3a')), 'acceptance_009: WASM put_paper bytes == native fixture');
+  const wEdge = m.add_edge(wPaper, edgeJson);
+  ok(same(wEdge, rd('expected_add_edge.s3a')), 'acceptance_009: WASM add_edge bytes == native fixture');
+  const got = m.get_paper(wEdge, 'arxiv:1706.03762');
+  ok(got && got.published_date === '2017-06-12T00:00:00Z', 'acceptance_009: WASM get_paper reads the paper back');
+  const bad = JSON.parse(paperJson); bad.published_date = '2017-06-12T00:00:00+02:00';
+  ok(throws(() => m.put_paper(base, JSON.stringify(bad))), 'acceptance_009: WASM rejects a non-UTC date');
+  const noReg = throws(() => m.read_embedded_registry(wEdge));
+  ok(noReg && noReg.includes('not embedded'), 'acceptance_009: WASM read_embedded_registry on unsealed bytes says not embedded: ' + noReg);
+}
 
 console.log(`SMOKE PASS ${n}/${n}`);
