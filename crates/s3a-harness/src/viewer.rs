@@ -197,21 +197,29 @@ pub fn check_archive_verification(path: &Path) -> ArchiveVerification {
     }
 
     let mut signature_verified = false;
-    if let Ok(vault) = s3a_vault::Vault::open(path) {
-        let rep = vault.verify_records();
-        let has_signed_grants = !vault.grants().is_empty() && rep.grants.iter().all(|g| g.ok);
-        let has_signed_transfers =
-            !vault.transfers().is_empty() && rep.transfers.iter().all(|t| t.ok);
+    // CRITICAL: If the file claims to be sealed and integrity check failed,
+    // signature_verified MUST be false! A failed check overrides every positive label.
+    if !claims_sealed || integrity_ok {
+        if let Ok(vault) = s3a_vault::Vault::open(path) {
+            let rep = vault.verify_records();
+            let has_signed_grants = !vault.grants().is_empty() && rep.grants.iter().all(|g| g.ok);
+            let has_signed_transfers =
+                !vault.transfers().is_empty() && rep.transfers.iter().all(|t| t.ok);
 
-        if (has_signed_grants || has_signed_transfers) && rep.all_ok() {
-            if let Some(sh) = seal_hash_opt {
-                if vault.items().contains_key(&sh) || vault.transfers().contains_key(&sh) {
+            if (has_signed_grants || has_signed_transfers) && rep.all_ok() {
+                if let Some(sh) = seal_hash_opt {
+                    if vault.items().contains_key(&sh) || vault.transfers().contains_key(&sh) {
+                        signature_verified = true;
+                    }
+                } else if !claims_sealed {
                     signature_verified = true;
                 }
-            } else {
-                signature_verified = true;
             }
         }
+    }
+
+    if claims_sealed && !integrity_ok {
+        signature_verified = false;
     }
 
     ArchiveVerification {
@@ -638,7 +646,6 @@ impl RecordViewPack for ScholarResearchViewPack {
         };
 
         let verif = check_archive_verification(path);
-        let has_manifest = data.manifest.is_some() || verif.is_sealed;
 
         let latest_human = data
             .human_decisions
@@ -646,60 +653,64 @@ impl RecordViewPack for ScholarResearchViewPack {
             .max_by_key(|h| h.timestamp_sec)
             .or_else(|| data.human_decisions.last());
 
-        let status_badge = if has_manifest {
+        let (status_badge, human_approval) = if verif.is_sealed && !verif.integrity_ok {
+            (
+                "Not verified".to_string(),
+                "Sealed (integrity check failed)".to_string(),
+            )
+        } else if verif.is_sealed {
             if verif.signature_verified {
-                "Signature verified".to_string()
+                (
+                    "Signature verified".to_string(),
+                    "Sealed (signature verified)".to_string(),
+                )
             } else if verif.integrity_ok {
-                "Integrity verified".to_string()
+                (
+                    "Integrity verified".to_string(),
+                    "Sealed (integrity verified)".to_string(),
+                )
             } else {
-                "Not verified".to_string()
+                (
+                    "Not verified".to_string(),
+                    "Sealed (integrity check failed)".to_string(),
+                )
             }
         } else if let Some(h) = latest_human {
             if is_human_decision_approved(h.verb_id) {
-                "Researcher Approved".to_string()
-            } else if is_human_decision_rejected(h.verb_id) {
-                "Researcher Excluded".to_string()
-            } else {
-                "Not verified".to_string()
-            }
-        } else {
-            "Not verified".to_string()
-        };
-
-        let human_approval = if let Some(h) = latest_human {
-            if is_human_decision_approved(h.verb_id) {
-                if h.actor_hash != 0 {
+                let approval_str = if h.actor_hash != 0 {
                     format!("Researcher Approved (0x{:08x})", h.actor_hash & 0xFFFFFFFF)
                 } else {
                     "Researcher Approved".to_string()
-                }
+                };
+                ("Researcher Approved".to_string(), approval_str)
             } else if is_human_decision_rejected(h.verb_id) {
-                if h.actor_hash != 0 {
+                let rejection_str = if h.actor_hash != 0 {
                     format!("Researcher Excluded (0x{:08x})", h.actor_hash & 0xFFFFFFFF)
                 } else {
                     "Researcher Excluded".to_string()
-                }
-            } else if has_manifest {
-                if verif.signature_verified {
-                    "Sealed (signature verified)".to_string()
-                } else if verif.integrity_ok {
-                    "Sealed (integrity verified)".to_string()
-                } else {
-                    "Sealed (integrity check failed)".to_string()
-                }
+                };
+                ("Researcher Excluded".to_string(), rejection_str)
+            } else if verif.signature_verified {
+                (
+                    "Signature verified".to_string(),
+                    "No researcher decision recorded".to_string(),
+                )
             } else {
-                "No researcher decision recorded".to_string()
+                (
+                    "Not verified".to_string(),
+                    "No researcher decision recorded".to_string(),
+                )
             }
-        } else if has_manifest {
-            if verif.signature_verified {
-                "Sealed (signature verified)".to_string()
-            } else if verif.integrity_ok {
-                "Sealed (integrity verified)".to_string()
-            } else {
-                "Sealed (integrity check failed)".to_string()
-            }
+        } else if verif.signature_verified {
+            (
+                "Signature verified".to_string(),
+                "No researcher decision recorded".to_string(),
+            )
         } else {
-            "No researcher decision recorded".to_string()
+            (
+                "Not verified".to_string(),
+                "No researcher decision recorded".to_string(),
+            )
         };
 
         let mut key_stats = vec![
@@ -1314,6 +1325,16 @@ impl RecordViewPack for ScholarResearchViewPack {
         path: &Path,
     ) -> Result<ViewerApprovalStatus, String> {
         let verif = check_archive_verification(path);
+        if verif.is_sealed && !verif.integrity_ok {
+            return Ok(ViewerApprovalStatus {
+                is_approved: false,
+                approved_by: None,
+                approval_timestamp: None,
+                signature: None,
+                fingerprint: compute_file_sha256(path),
+                requires_human_decision: true,
+            });
+        }
         let data = decode_scholar_data(reader);
         let has_manifest = data.manifest.is_some() || verif.is_sealed;
 
@@ -1598,33 +1619,48 @@ impl RecordViewPack for TechnicalDataViewPack {
 
         let verif = check_archive_verification(path);
 
-        let status_badge = if verif.is_sealed {
+        let (status_badge, human_approval) = if verif.is_sealed && !verif.integrity_ok {
+            (
+                "Not verified".to_string(),
+                "Sealed (integrity check failed)".to_string(),
+            )
+        } else if verif.is_sealed {
             if verif.signature_verified {
-                "Signature verified".to_string()
+                (
+                    "Signature verified".to_string(),
+                    "Sealed (signature verified)".to_string(),
+                )
             } else if verif.integrity_ok {
-                "Integrity verified".to_string()
+                (
+                    "Integrity verified".to_string(),
+                    "Sealed (integrity verified)".to_string(),
+                )
             } else {
-                "Not verified".to_string()
-            }
-        } else if auth != "Not recorded" || !data.step_trees.is_empty() || !data.pdf_docs.is_empty()
-        {
-            "Engineering Released".to_string()
-        } else {
-            "Technical Package".to_string()
-        };
-
-        let human_approval = if verif.is_sealed {
-            if verif.signature_verified {
-                "Sealed (signature verified)".to_string()
-            } else if verif.integrity_ok {
-                "Sealed (integrity verified)".to_string()
-            } else {
-                "Sealed (integrity check failed)".to_string()
+                (
+                    "Not verified".to_string(),
+                    "Sealed (integrity check failed)".to_string(),
+                )
             }
         } else if auth != "Not recorded" {
-            format!("Approved: {}", auth)
+            (
+                "Engineering Released".to_string(),
+                format!("Approved: {}", auth),
+            )
+        } else if !data.step_trees.is_empty() || !data.pdf_docs.is_empty() {
+            (
+                "Technical Package".to_string(),
+                "No engineering approval recorded".to_string(),
+            )
+        } else if verif.signature_verified {
+            (
+                "Signature verified".to_string(),
+                "No engineering approval recorded".to_string(),
+            )
         } else {
-            "No engineering approval recorded".to_string()
+            (
+                "Technical Package".to_string(),
+                "No engineering approval recorded".to_string(),
+            )
         };
 
         let key_stats = vec![
@@ -2257,28 +2293,38 @@ impl RecordViewPack for AuraBackupViewPack {
 
         let verif = check_archive_verification(path);
 
-        let status_badge = if verif.is_sealed {
+        let (status_badge, human_approval) = if verif.is_sealed && !verif.integrity_ok {
+            (
+                "Not verified".to_string(),
+                "Sealed (integrity check failed)".to_string(),
+            )
+        } else if verif.is_sealed {
             if verif.signature_verified {
-                "Signature verified".to_string()
+                (
+                    "Signature verified".to_string(),
+                    "Sealed (signature verified)".to_string(),
+                )
             } else if verif.integrity_ok {
-                "Integrity verified".to_string()
+                (
+                    "Integrity verified".to_string(),
+                    "Sealed (integrity verified)".to_string(),
+                )
             } else {
-                "Not verified".to_string()
+                (
+                    "Not verified".to_string(),
+                    "Sealed (integrity check failed)".to_string(),
+                )
             }
+        } else if verif.signature_verified {
+            (
+                "Signature verified".to_string(),
+                "No device approval recorded".to_string(),
+            )
         } else {
-            "Device Healthy".to_string()
-        };
-
-        let human_approval = if verif.is_sealed {
-            if verif.signature_verified {
-                "Sealed (signature verified)".to_string()
-            } else if verif.integrity_ok {
-                "Sealed (integrity verified)".to_string()
-            } else {
-                "Sealed (integrity check failed)".to_string()
-            }
-        } else {
-            "No device approval recorded".to_string()
+            (
+                "Device Healthy".to_string(),
+                "No device approval recorded".to_string(),
+            )
         };
 
         let key_stats = vec![
@@ -2563,30 +2609,38 @@ impl RecordViewPack for ManifestFallbackViewPack {
 
         let verif = check_archive_verification(path);
 
-        let status_badge = if verif.is_sealed {
+        let (status_badge, human_approval) = if verif.is_sealed && !verif.integrity_ok {
+            (
+                "Not verified".to_string(),
+                "Sealed (integrity check failed)".to_string(),
+            )
+        } else if verif.is_sealed {
             if verif.signature_verified {
-                "Signature verified".to_string()
+                (
+                    "Signature verified".to_string(),
+                    "Sealed (signature verified)".to_string(),
+                )
             } else if verif.integrity_ok {
-                "Integrity verified".to_string()
+                (
+                    "Integrity verified".to_string(),
+                    "Sealed (integrity verified)".to_string(),
+                )
             } else {
-                "Not verified".to_string()
+                (
+                    "Not verified".to_string(),
+                    "Sealed (integrity check failed)".to_string(),
+                )
             }
         } else if verif.signature_verified {
-            "Signature verified".to_string()
+            (
+                "Signature verified".to_string(),
+                "No researcher decision recorded".to_string(),
+            )
         } else {
-            "Not verified".to_string()
-        };
-
-        let human_approval = if verif.is_sealed {
-            if verif.signature_verified {
-                "Sealed (signature verified)".to_string()
-            } else if verif.integrity_ok {
-                "Sealed (integrity verified)".to_string()
-            } else {
-                "Sealed (integrity check failed)".to_string()
-            }
-        } else {
-            "No researcher decision recorded".to_string()
+            (
+                "Not verified".to_string(),
+                "No researcher decision recorded".to_string(),
+            )
         };
 
         Ok(ViewerSummary {

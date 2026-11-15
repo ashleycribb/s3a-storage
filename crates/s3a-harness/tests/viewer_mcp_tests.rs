@@ -1150,12 +1150,126 @@ fn test_ed25519_signed_vault_verifies_signature() {
     let tmp = tempdir().unwrap();
     let reg = ViewerRegistry::new();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let vector_path = manifest_dir.join("../s3a-vault/tests/vectors/vault_transfer_chain.s3a");
-    if vector_path.exists() {
-        let vault_copy = tmp.path().join("signed_vault.s3a");
-        std::fs::copy(&vector_path, &vault_copy).expect("copy test vector");
+    let vector_path =
+        manifest_dir.join("../../conformance/vectors-1.0/files/vault_transfer_chain.s3a");
+    assert!(
+        vector_path.exists(),
+        "vault_transfer_chain.s3a vector must exist at {:?}",
+        vector_path
+    );
+    let vault_copy = tmp.path().join("signed_vault.s3a");
+    std::fs::copy(&vector_path, &vault_copy).expect("copy test vector");
 
-        let state = reg.load_archive(&vault_copy).expect("load signed vault");
-        assert_eq!(state.summary.status_badge, "Signature verified");
+    let state = reg.load_archive(&vault_copy).expect("load signed vault");
+    assert_eq!(state.summary.status_badge, "Signature verified");
+}
+
+#[test]
+fn test_tampered_sealed_archive_with_signed_grants_fails_all_verified_labels() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vector_path =
+        manifest_dir.join("../../conformance/vectors-1.0/files/vault_delegation_governance.s3a");
+    assert!(
+        vector_path.exists(),
+        "vault_delegation_governance.s3a vector must exist at {:?}",
+        vector_path
+    );
+
+    // 1. Verify source vault has validly signed grants
+    let raw_vault = s3a_vault::Vault::open(&vector_path).expect("open raw vault");
+    assert!(
+        !raw_vault.grants().is_empty(),
+        "source vault must have signed grants"
+    );
+    assert!(
+        raw_vault.verify_records().all_ok(),
+        "source vault grants must be cryptographically valid"
+    );
+
+    // 2. Seal the archive
+    let raw_copy = tmp.path().join("vault_grants_raw.s3a");
+    std::fs::copy(&vector_path, &raw_copy).expect("copy vector file");
+    let sealed_path = tmp.path().join("vault_grants_sealed.s3a");
+    s3a_engine::seal_archive_v2(
+        &raw_copy,
+        &sealed_path,
+        &s3a_engine::SealOptionsV2::default(),
+    )
+    .expect("seal archive");
+
+    // 3. Clean sealed archive check
+    let clean_verif = s3a_harness::viewer::check_archive_verification(&sealed_path);
+    assert!(clean_verif.is_sealed);
+    assert!(clean_verif.integrity_ok);
+
+    // 4. Tamper the seal endcap index hash byte
+    let mut bytes = std::fs::read(&sealed_path).expect("read sealed file");
+    let len = bytes.len();
+    assert!(len > s3a_core::SEALED_ENDCAP_SIZE);
+    bytes[len - s3a_core::SEALED_ENDCAP_SIZE + 10] ^= 0xFF;
+    std::fs::write(&sealed_path, &bytes).expect("write tampered file");
+
+    // 5. Verification check: failed integrity MUST force signature_verified = false
+    let tampered_verif = s3a_harness::viewer::check_archive_verification(&sealed_path);
+    assert!(tampered_verif.is_sealed);
+    assert!(!tampered_verif.integrity_ok);
+    assert!(
+        !tampered_verif.signature_verified,
+        "failed integrity check must override signature_verified even with signed grants"
+    );
+
+    // 6. Viewer state: every pack must show "Not verified" / "Sealed (integrity check failed)"
+    let state = reg
+        .load_archive(&sealed_path)
+        .expect("load tampered sealed archive");
+    assert_eq!(state.summary.status_badge, "Not verified");
+    assert_eq!(
+        state.summary.human_approval,
+        "Sealed (integrity check failed)"
+    );
+    assert!(!state.approval.is_approved);
+    assert!(state.approval.requires_human_decision);
+    assert!(state.approval.signature.is_none());
+
+    // 7. Assert no badge or label says "verified" except "integrity check failed"
+    let check_strings = [
+        &state.summary.status_badge,
+        &state.summary.human_approval,
+        state.approval.approved_by.as_deref().unwrap_or(""),
+    ];
+    for text in check_strings {
+        let lower = text.to_lowercase();
+        if lower.contains("verified") {
+            assert!(
+                lower.contains("not verified") || lower.contains("integrity check failed"),
+                "badge or label '{text}' said 'verified' without 'integrity check failed' or 'not verified'"
+            );
+        }
     }
+
+    assert!(!state
+        .summary
+        .status_badge
+        .to_lowercase()
+        .contains("signature"));
+    assert!(!state
+        .summary
+        .status_badge
+        .to_lowercase()
+        .contains("integrity verified"));
+    assert!(!state
+        .summary
+        .human_approval
+        .to_lowercase()
+        .contains("signature"));
+    assert!(!state
+        .summary
+        .human_approval
+        .to_lowercase()
+        .contains("integrity verified"));
+    assert_ne!(state.summary.status_badge, "Verified");
+    assert_ne!(state.summary.status_badge, "Signature verified");
+    assert_ne!(state.summary.status_badge, "Integrity verified");
 }
