@@ -5,7 +5,7 @@
 //! 3. Non-developer accessibility guarantee: no CLI, tile IDs, or QL visible in human summaries; technical details strictly isolated behind "Advanced".
 //! 4. Vercel UI web components adapter & keyboard accessibility tokens.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -92,12 +92,12 @@ fn create_scholar_research_archive(path: &Path) {
         .write_raw_hyper_tile(&hdr, paper_bytes)
         .expect("write paper tile");
 
-    // 2. Human LRS record (actor: 0xBEEF)
+    // 2. Human LRS record (actor: 0xBEEF, verb: APPROVED)
     let human = HumanLrsRecord::new(
         [1, 2],
         1700000000,
         0xBEEF,
-        1,
+        s3a_pack_scholar::xapi::VERB_ID_APPROVED,
         0.95,
         S3ACoordinate::default(),
         0xCAFE,
@@ -775,7 +775,7 @@ fn test_anti_fabrication_distinct_vaults_produce_different_properties() {
             [1, 1],
             1700000000,
             0xBEEF,
-            1,
+            s3a_pack_scholar::xapi::VERB_ID_APPROVED,
             0.99,
             S3ACoordinate::default(),
             0x1706,
@@ -808,7 +808,7 @@ fn test_anti_fabrication_distinct_vaults_produce_different_properties() {
             [2, 2],
             1710000000,
             0xCAFE,
-            2,
+            s3a_pack_scholar::xapi::VERB_ID_ACCEPTED,
             0.88,
             S3ACoordinate::default(),
             0x1512,
@@ -927,10 +927,10 @@ fn test_tampered_seal_shows_not_verified() {
 
     // Clean sealed file verification check
     let clean_state = reg.load_archive(&sealed_path).expect("load clean seal");
-    assert_eq!(clean_state.summary.status_badge, "Verified");
+    assert_eq!(clean_state.summary.status_badge, "Integrity verified");
     assert_eq!(
         clean_state.summary.human_approval,
-        "Sealed (signature verified)"
+        "Sealed (integrity verified)"
     );
     assert!(clean_state.approval.is_approved);
 
@@ -946,7 +946,7 @@ fn test_tampered_seal_shows_not_verified() {
     assert_eq!(tampered_state.summary.status_badge, "Not verified");
     assert_eq!(
         tampered_state.summary.human_approval,
-        "Sealed (signature not verified)"
+        "Sealed (integrity check failed)"
     );
     assert!(!tampered_state.approval.is_approved);
     assert!(tampered_state.approval.requires_human_decision);
@@ -998,18 +998,18 @@ fn test_reject_decision_never_shows_approved() {
         "human_approval must never contain 'Approved' for rejection"
     );
 
-    // 2. Low decision score (< 0.50) without explicit approval verb
-    let low_score_path = tmp.path().join("low_score.s3a");
+    // 2. Explicit VERB_ID_FLAGGED_HALLUCINATION (another rejection verb)
+    let hall_path = tmp.path().join("flagged_hallucination.s3a");
     {
-        let mut writer = TileWriter::create(&low_score_path).expect("create low score archive");
+        let mut writer = TileWriter::create(&hall_path).expect("create flagged archive");
         writer.enable_addon(0xFFFF_FFFF).expect("enable addons");
 
         let human = HumanLrsRecord::new(
             [1, 2],
             1700000000,
             0xBAD0,
-            1, // Experienced / generic verb
-            0.25,
+            s3a_pack_scholar::xapi::VERB_ID_FLAGGED_HALLUCINATION,
+            0.0,
             S3ACoordinate::default(),
             0xCAFE,
         );
@@ -1020,18 +1020,142 @@ fn test_reject_decision_never_shows_approved() {
         hdr.data_crc32 = crc32c::crc32c(human_bytes);
         writer
             .write_raw_hyper_tile(&hdr, human_bytes)
-            .expect("write low score tile");
+            .expect("write flagged tile");
     }
 
-    let low_state = reg
-        .load_archive(&low_score_path)
-        .expect("load low score archive");
-    assert_eq!(low_state.summary.status_badge, "Researcher Excluded");
+    let hall_state = reg.load_archive(&hall_path).expect("load flagged archive");
+    assert_eq!(hall_state.summary.status_badge, "Researcher Excluded");
     assert_eq!(
-        low_state.summary.human_approval,
+        hall_state.summary.human_approval,
         "Researcher Excluded (0x0000bad0)"
     );
-    assert!(!low_state.approval.is_approved);
-    assert!(!low_state.summary.status_badge.contains("Approved"));
-    assert!(!low_state.summary.human_approval.contains("Approved"));
+    assert!(!hall_state.approval.is_approved);
+    assert!(!hall_state.summary.status_badge.contains("Approved"));
+    assert!(!hall_state.summary.human_approval.contains("Approved"));
+}
+
+#[test]
+fn test_high_score_record_with_non_decision_verb_shows_no_decision() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+    let path = tmp.path().join("high_score_generic_verb.s3a");
+
+    {
+        let mut writer = TileWriter::create(&path).expect("create archive");
+        writer.enable_addon(0xFFFF_FFFF).expect("enable addons");
+
+        // verb_id: 1 (generic/experienced) with score: 0.99
+        let human = HumanLrsRecord::new(
+            [1, 2],
+            1700000000,
+            0xFEED,
+            1,    // Non-decision verb
+            0.99, // High score never implies approval
+            S3ACoordinate::default(),
+            0xCAFE,
+        );
+        let human_bytes = bytemuck::bytes_of(&human);
+        let mut hdr = HyperTileHeader::new(0, ScholarTileType::HUMAN_LRS);
+        hdr.record_count = 1;
+        hdr.payload_bytes = human_bytes.len() as u32;
+        hdr.data_crc32 = crc32c::crc32c(human_bytes);
+        writer
+            .write_raw_hyper_tile(&hdr, human_bytes)
+            .expect("write human tile");
+    }
+
+    let state = reg.load_archive(&path).expect("load archive");
+    assert_eq!(state.summary.status_badge, "Not verified");
+    assert_eq!(
+        state.summary.human_approval,
+        "No researcher decision recorded"
+    );
+    assert!(!state.approval.is_approved);
+    assert!(state.approval.requires_human_decision);
+}
+
+#[test]
+fn test_hash_only_sealed_archive_never_contains_word_signature_unless_verified() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+
+    // Test across packs: scholar, tdp, aura
+    let scholar_raw = tmp.path().join("scholar_raw.s3a");
+    let scholar_sealed = tmp.path().join("scholar_sealed.s3a");
+    create_scholar_research_archive(&scholar_raw);
+    s3a_engine::seal_archive_v2(
+        &scholar_raw,
+        &scholar_sealed,
+        &s3a_engine::SealOptionsV2::default(),
+    )
+    .expect("seal scholar");
+
+    let tdp_raw = tmp.path().join("tdp_raw.s3a");
+    let tdp_sealed = tmp.path().join("tdp_sealed.s3a");
+    create_tdp_technical_data_archive(&tdp_raw);
+    s3a_engine::seal_archive_v2(&tdp_raw, &tdp_sealed, &s3a_engine::SealOptionsV2::default())
+        .expect("seal tdp");
+
+    let aura_raw = tmp.path().join("aura_raw.s3a");
+    let aura_sealed = tmp.path().join("aura_sealed.s3a");
+    create_aura_backup_archive(&aura_raw);
+    s3a_engine::seal_archive_v2(
+        &aura_raw,
+        &aura_sealed,
+        &s3a_engine::SealOptionsV2::default(),
+    )
+    .expect("seal aura");
+
+    for sealed_file in [&scholar_sealed, &tdp_sealed, &aura_sealed] {
+        let state = reg.load_archive(sealed_file).expect("load sealed archive");
+
+        // Hash-only sealed archives must never contain the word "signature"
+        assert!(
+            !state
+                .summary
+                .status_badge
+                .to_lowercase()
+                .contains("signature"),
+            "status_badge '{}' must not contain 'signature' for hash-only seal",
+            state.summary.status_badge
+        );
+        assert!(
+            !state
+                .summary
+                .human_approval
+                .to_lowercase()
+                .contains("signature"),
+            "human_approval '{}' must not contain 'signature' for hash-only seal",
+            state.summary.human_approval
+        );
+        assert!(
+            state.approval.signature.is_none(),
+            "approval.signature must be None for hash-only seal"
+        );
+        assert!(
+            !state
+                .approval
+                .approved_by
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("signature"),
+            "approved_by must not contain 'signature' for hash-only seal"
+        );
+    }
+}
+
+#[test]
+fn test_ed25519_signed_vault_verifies_signature() {
+    let tmp = tempdir().unwrap();
+    let reg = ViewerRegistry::new();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let vector_path = manifest_dir.join("../s3a-vault/tests/vectors/vault_transfer_chain.s3a");
+    if vector_path.exists() {
+        let vault_copy = tmp.path().join("signed_vault.s3a");
+        std::fs::copy(&vector_path, &vault_copy).expect("copy test vector");
+
+        let state = reg.load_archive(&vault_copy).expect("load signed vault");
+        assert_eq!(state.summary.status_badge, "Signature verified");
+    }
 }
