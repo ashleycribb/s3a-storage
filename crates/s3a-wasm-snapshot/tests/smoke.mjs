@@ -62,7 +62,8 @@ const edge1 = JSON.stringify({
   target_key: "paper-B",
   edge_type: "cites",
   provenance_actor: "researcher-1",
-  provenance_timestamp: "2026-11-15T12:00:00Z"
+  provenance_timestamp: "2026-11-15T12:00:00Z",
+  schema_version: 2
 });
 const b4 = m.add_edge(b3, edge1);
 ok(b4.length > b3.length, 'add_edge appended edge tile');
@@ -75,6 +76,7 @@ const retractEdge = JSON.stringify({
   edge_type: "cites",
   provenance_actor: "researcher-1",
   provenance_timestamp: "2026-11-15T13:00:00Z",
+  schema_version: 2,
   is_retraction: true
 });
 const b5 = m.add_edge(b4, retractEdge);

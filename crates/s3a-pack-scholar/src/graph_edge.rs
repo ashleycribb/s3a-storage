@@ -33,6 +33,10 @@ impl Default for ScholarEdgeBlobHeader {
     }
 }
 
+fn default_edge_schema_version() -> u32 {
+    2
+}
+
 /// Rich knowledge graph edge representation with full provenance and append-only retraction support.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScholarGraphEdge {
@@ -41,6 +45,7 @@ pub struct ScholarGraphEdge {
     pub edge_type: String, // "cites", "cited-by", "alias-of", or registered extension
     pub provenance_actor: String,
     pub provenance_timestamp: String, // UTC ISO-8601
+    #[serde(default = "default_edge_schema_version")]
     pub schema_version: u32,
     #[serde(default)]
     pub is_retraction: bool,
