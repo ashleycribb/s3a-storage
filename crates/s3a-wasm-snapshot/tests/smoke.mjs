@@ -47,10 +47,14 @@ const paperJson = JSON.stringify({
   license: "CC-BY-4.0",
   source_url: "https://arxiv.org/abs/1706.03762"
 });
-const b3 = m.put_paper(b1, paperJson);
-ok(b3.length > b1.length, 'put_paper appended hyper-tile');
+const b3 = m.put_paper(new Uint8Array(0), paperJson);
+ok(b3.length > 0, 'put_paper created archive with hyper-tile');
 const fetched = m.get_paper(b3, "10.1234/test.paper");
 ok(fetched && fetched.title === "Attention Is All You Need" && fetched.authors[0].name === "Ashish Vaswani", 'get_paper retrieved paper record');
+
+// Also test put_paper appending into an existing archive
+const b3_appended = m.put_paper(b3, paperJson);
+ok(b3_appended.length > b3.length, 'put_paper appended to existing archive');
 
 // Test add_edge and list_edges with retraction
 const edge1 = JSON.stringify({
@@ -61,6 +65,7 @@ const edge1 = JSON.stringify({
   provenance_timestamp: "2026-11-15T12:00:00Z"
 });
 const b4 = m.add_edge(b3, edge1);
+ok(b4.length > b3.length, 'add_edge appended edge tile');
 const edgesBefore = m.list_edges(b4, "paper-A", "cites");
 ok(Array.isArray(edgesBefore) && edgesBefore.length === 1, 'list_edges returned 1 citation edge');
 
