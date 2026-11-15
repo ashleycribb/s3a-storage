@@ -916,21 +916,25 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
         };
     }
 
-    // 2. OTel Collector probe (OTLP or HTTP health endpoint)
+    // 2. OTel Collector probe (OTLP endpoint: POST /v1/traces)
     if kind == ServiceKind::Otel {
-        let url = format!("http://{}:{}/", host, port);
-        return match ureq::get(&url).timeout(Duration::from_millis(1000)).call() {
+        let url = format!("http://{}:{}/v1/traces", host, port);
+        return match ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .timeout(Duration::from_millis(1500))
+            .send_bytes(b"{}")
+        {
             Ok(resp) => {
                 let status = resp.status();
                 let elapsed = start.elapsed().as_millis() as u64;
-                if status == 200 || status == 204 {
+                if status == 200 || status == 202 || status == 204 {
                     ServiceStatus {
                         service: "otel".to_string(),
                         enabled: true,
                         port: Some(port),
                         state: HealthState::Up,
                         latency_ms: Some(elapsed),
-                        detail: format!("OTel HTTP response {} ({}ms)", status, elapsed),
+                        detail: format!("OTel OTLP/HTTP response {} ({}ms)", status, elapsed),
                         pid: None,
                     }
                 } else {
@@ -947,14 +951,31 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
             }
             Err(ureq::Error::Status(status, _)) => {
                 let elapsed = start.elapsed().as_millis() as u64;
-                ServiceStatus {
-                    service: "otel".to_string(),
-                    enabled: true,
-                    port: Some(port),
-                    state: HealthState::Unhealthy,
-                    latency_ms: Some(elapsed),
-                    detail: format!("OTel HTTP error status {}", status),
-                    pid: None,
+                // `{}` is a valid (empty) OTLP/JSON export request, so a real receiver accepts it.
+                // Any error status (including 400) is not proof of an OTLP receiver.
+                if status == 200 || status == 202 || status == 204 {
+                    ServiceStatus {
+                        service: "otel".to_string(),
+                        enabled: true,
+                        port: Some(port),
+                        state: HealthState::Up,
+                        latency_ms: Some(elapsed),
+                        detail: format!(
+                            "OTel OTLP endpoint active (status {}) ({}ms)",
+                            status, elapsed
+                        ),
+                        pid: None,
+                    }
+                } else {
+                    ServiceStatus {
+                        service: "otel".to_string(),
+                        enabled: true,
+                        port: Some(port),
+                        state: HealthState::Unhealthy,
+                        latency_ms: Some(elapsed),
+                        detail: format!("OTel HTTP error status {}", status),
+                        pid: None,
+                    }
                 }
             }
             Err(e) => ServiceStatus {
@@ -1387,6 +1408,9 @@ impl StackManager {
                 "-a",
                 &config.services.lrs.archive,
             ];
+            // Dev mode off: no --insecure-dev and no credentials on the command line. The LRS
+            // reads them from the file named by S3A_LRS_CREDENTIALS_FILE, which the child
+            // inherits from this process's environment; without it the LRS refuses to start.
             if config.stack.is_dev() {
                 lrs_args.push("--insecure-dev");
             }

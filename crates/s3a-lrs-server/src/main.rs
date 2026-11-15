@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
@@ -31,6 +31,64 @@ pub struct AuthCredential {
     pub scopes: Vec<String>,
     #[serde(default)]
     pub archive: Option<String>,
+}
+
+/// Reads credentials from a file: either a JSON array of `AuthCredential`, or one
+/// `user:password[:scopes[:archive]]` per line (`#` comments and blank lines ignored; scopes
+/// comma-separated, default `all`). An unreadable file or malformed line is an error.
+pub fn load_credentials_file(path: &Path) -> Result<Vec<AuthCredential>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read credentials file {}: {e}", path.display()))?;
+    let check_archive = |a: &str| -> Result<(), String> {
+        if is_valid_archive_name(a) {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid archive name '{a}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$"
+            ))
+        }
+    };
+    if let Ok(creds) = serde_json::from_str::<Vec<AuthCredential>>(&content) {
+        for c in &creds {
+            if let Some(a) = &c.archive {
+                check_archive(a)?;
+            }
+        }
+        return Ok(creds);
+    }
+    let mut out = Vec::new();
+    for (n, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(format!(
+                "line {}: expected user:password[:scopes[:archive]]",
+                n + 1
+            ));
+        }
+        let scopes = if parts.len() >= 3 && !parts[2].trim().is_empty() {
+            parts[2].split(',').map(|s| s.trim().to_string()).collect()
+        } else {
+            vec!["all".to_string()]
+        };
+        let archive = if parts.len() >= 4 && !parts[3].trim().is_empty() {
+            let a = parts[3].trim().to_string();
+            check_archive(&a)?;
+            Some(a)
+        } else {
+            None
+        };
+        out.push(AuthCredential {
+            user: parts[0].to_string(),
+            pass: parts[1].to_string(),
+            scopes,
+            archive,
+        });
+    }
+    Ok(out)
 }
 
 impl AuthCredential {
@@ -707,50 +765,11 @@ fn main() {
             }
             "--auth-config" => {
                 if i + 1 < args.len() {
-                    let path = PathBuf::from(&args[i + 1]);
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(creds) = serde_json::from_str::<Vec<AuthCredential>>(&content) {
-                            for cred in creds {
-                                if let Some(ref a) = cred.archive {
-                                    if !is_valid_archive_name(a) {
-                                        eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
-                                        std::process::exit(1);
-                                    }
-                                }
-                                config.credentials.push(cred);
-                            }
-                        } else {
-                            for line in content.lines() {
-                                let line = line.trim();
-                                if line.is_empty() || line.starts_with('#') {
-                                    continue;
-                                }
-                                let parts: Vec<&str> = line.split(':').collect();
-                                if parts.len() >= 2 {
-                                    let scopes = if parts.len() >= 3 {
-                                        parts[2].split(',').map(|s| s.trim().to_string()).collect()
-                                    } else {
-                                        vec!["all".to_string()]
-                                    };
-                                    let archive = if parts.len() >= 4 && !parts[3].trim().is_empty()
-                                    {
-                                        let a = parts[3].trim().to_string();
-                                        if !is_valid_archive_name(&a) {
-                                            eprintln!("[s3a-lrs-server] ERROR: Invalid archive name '{}' in credentials: must be a bare filename matching ^[A-Za-z0-9_.-]+\\.s3a$", a);
-                                            std::process::exit(1);
-                                        }
-                                        Some(a)
-                                    } else {
-                                        None
-                                    };
-                                    config.credentials.push(AuthCredential {
-                                        user: parts[0].to_string(),
-                                        pass: parts[1].to_string(),
-                                        scopes,
-                                        archive,
-                                    });
-                                }
-                            }
+                    match load_credentials_file(Path::new(&args[i + 1])) {
+                        Ok(creds) => config.credentials.extend(creds),
+                        Err(e) => {
+                            eprintln!("[s3a-lrs-server] ERROR: --auth-config: {e}");
+                            std::process::exit(1);
                         }
                     }
                     i += 1;
@@ -816,6 +835,18 @@ fn main() {
         i += 1;
     }
 
+    // Credentials file named by the environment (used by `s3a stack` with dev mode off), so
+    // secrets never appear on the command line or in stack.toml.
+    if let Some(path) = std::env::var_os("S3A_LRS_CREDENTIALS_FILE") {
+        match load_credentials_file(Path::new(&path)) {
+            Ok(creds) => config.credentials.extend(creds),
+            Err(e) => {
+                eprintln!("[s3a-lrs-server] ERROR: S3A_LRS_CREDENTIALS_FILE: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let (Some(u), Some(p)) = (cli_user, cli_pass) {
         config.credentials.push(AuthCredential {
             user: u,
@@ -871,7 +902,7 @@ fn main() {
 
     // Auth fails closed: server refuses to start without credentials unless --insecure-dev is passed
     if !config.insecure_dev && config.credentials.is_empty() {
-        eprintln!("[s3a-lrs-server] ERROR: Server refused to start: no credentials configured. Pass credentials via --auth-user / --auth-pass or --auth-config, or pass --insecure-dev.");
+        eprintln!("[s3a-lrs-server] ERROR: Server refused to start: no credentials configured. Pass credentials via S3A_LRS_CREDENTIALS_FILE, --auth-config or --auth-user / --auth-pass, or pass --insecure-dev.");
         std::process::exit(1);
     }
 
@@ -1056,10 +1087,7 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
                     .as_nanos()
             ));
             match std::fs::write(&test_file, b"ok") {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&test_file);
-                    true
-                }
+                Ok(()) => std::fs::remove_file(&test_file).is_ok(),
                 Err(_) => false,
             }
         };
