@@ -1471,6 +1471,9 @@ fn main() {
                 );
             }
         }
+        "stack" => {
+            s3a_cli::stack_cli::handle_stack_command(&args, verbose);
+        }
         _ => {
             let hint = match s3a_cli::first_run::suggest_command(&args[1]) {
                 Some(s) => format!(" Did you mean '{}'?", s),

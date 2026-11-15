@@ -5,7 +5,7 @@ Goal: a self-hosted version of the Claude Managed Agents topology (client apps, 
 | # | Item | Was | Prompt |
 |---|------|-----|--------|
 | 3 | Graph as shared memory | yellow | 003 |
-| 5 | One-command self-hosted stack | yellow | 008 |
+| 5 | One-command self-hosted stack | green | 008 |
 | 6 | Sandboxes pulling a work queue | red | 004 |
 | 7 | Credential proxy + host allowlist | red | 005 |
 | 8 | MCP App (S3A record viewer) | red | 007 |

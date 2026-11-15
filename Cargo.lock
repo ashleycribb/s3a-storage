@@ -2009,6 +2009,7 @@ dependencies = [
  "s3a-edge",
  "s3a-engine",
  "s3a-flat",
+ "s3a-harness",
  "s3a-pack-clean",
  "s3a-pack-da",
  "s3a-pack-gis",

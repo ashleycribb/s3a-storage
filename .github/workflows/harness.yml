@@ -6,6 +6,7 @@ on:
     branches: [ "main", "master" ]
     paths:
       - "crates/s3a-harness/**"
+      - "crates/s3a-cli/**"
       - "crates/s3a-core/**"
       - "crates/s3a-engine/**"
       - "crates/s3a-pack-scholar/**"
@@ -14,6 +15,7 @@ on:
     branches: [ "main", "master" ]
     paths:
       - "crates/s3a-harness/**"
+      - "crates/s3a-cli/**"
       - "crates/s3a-core/**"
       - "crates/s3a-engine/**"
       - "crates/s3a-pack-scholar/**"
@@ -50,3 +52,6 @@ jobs:
 
       - name: Run Harness Tests
         run: cargo test -p s3a-harness --all-targets
+
+      - name: Self-Hosted Stack & 007 Viewer Demo Test
+        run: cargo test -p s3a-harness --test stack_tests -- test_stack_up_and_007_viewer_demo --nocapture

@@ -48,6 +48,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "serve",
     "serve-tcp",
     "shell",
+    "stack",
     "telemetry",
 ];
 

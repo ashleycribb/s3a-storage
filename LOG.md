@@ -416,3 +416,39 @@
      - Asserts the viewer returns `status_badge: "Not verified"`, `human_approval: "Sealed (integrity check failed)"`, `is_approved: false`, and `signature: None`.
      - Asserts that no badge or label says "verified" except "integrity check failed" (and "not verified").
      - Asserts that neither badge nor label says "Signature verified", "Integrity verified", or "Verified".
+
+---
+
+## Prompt 008: One-Command Self-Hosted Stack
+
+- **Status**: ALL SUCCESS
+- **Summary of Deliverables**:
+1. **Stack Manager & Configuration (`crates/s3a-harness/src/stack.rs`)**:
+   - `StackConfig` structure parsing single `stack.toml` for lab or Aura nodes.
+   - Provider selection: `local` (e.g. Ollama/vLLM on loopback), `gemini`, `anthropic`, or custom `gateway`.
+   - Core isolation: zero stack code in `s3a-core` or `s3a-engine`.
+   - Secret policy enforcement (`validate_no_secrets`): strictly rejects configs containing plaintext `api_key`, `secret`, `sk-`, `aizasy`, or tokens.
+   - `docker-compose.yml` generation referencing `${ENV_VARS}` only.
+   - Real health checks (`check_service_health`): TCP connection probe + HTTP response verification (`/health`, `/about`). Never relies on started processes or configs alone. Failed checks strictly override every running label.
+2. **CLI Commands (`crates/s3a-cli/src/stack_cli.rs`)**:
+   - `s3a stack init [--provider <local|gemini|anthropic|gateway>]`: generates `stack.toml` and `docker-compose.yml`.
+   - `s3a stack up [--docker|--native|--foreground|--config <path>]`: launches services and verifies health before reporting UP.
+   - `s3a stack status [--config <path>] [--json]`: live network probe reporting table or JSON.
+   - `s3a stack down [--docker|--config <path>]`: stops stack and verifies all services report DOWN.
+3. **One-Page Network Architecture (`NETWORK.md`)**:
+   - Detailed Mermaid topology diagram illustrating client interfaces, isolated node boundary (`127.0.0.1` / `s3a-net`), and egress boundary.
+   - Proves default model calls are the ONLY outbound traffic from the stack, routed via Credential Proxy with strict host allowlisting.
+4. **Integration Test Suites**:
+   - `crates/s3a-harness/tests/stack_tests.rs`:
+     - `test_stopped_service_reports_down`: asserts stopped service reports DOWN with connection refused.
+     - `test_two_different_configs_produce_different_status_output`: asserts distinct configs produce distinct outputs.
+     - `test_secret_rejection_policy`: asserts rejection of embedded API keys/tokens.
+     - `test_docker_compose_generation_zero_secrets`: asserts generated compose contains zero plaintext secrets.
+     - `test_live_health_check_real_http_up`: asserts native listener reports UP, and DOWN when stopped.
+     - `test_stack_up_and_007_viewer_demo`: brings up stack, verifies UP, exercises 007 viewer tools & HTML generation, stops stack, verifies DOWN.
+     - `test_core_free_of_stack_code`: verifies `s3a-core` contains zero stack code.
+   - `crates/s3a-cli/tests/stack_cli_tests.rs`:
+     - `test_stack_cli_help`: CLI help usage.
+     - `test_stack_cli_init_and_status`: init and status CLI verification.
+5. **CI Integration**:
+   - Added `crates/s3a-cli/**` triggers and `Self-Hosted Stack & 007 Viewer Demo Test` step in `.github/workflows/harness.yml`.

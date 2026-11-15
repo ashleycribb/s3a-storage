@@ -16,6 +16,7 @@ pub mod repair;
 pub mod runtime;
 pub mod sandbox;
 pub mod srs;
+pub mod stack;
 pub mod store;
 pub mod tools;
 pub mod trajectory;
@@ -58,6 +59,7 @@ pub use runtime::{
 };
 pub use sandbox::{Sandbox, SandboxError};
 pub use srs::SrsContainerManager;
+pub use stack::*;
 pub use store::{LocalStore, LrsStore, Store, StoreError};
 pub use tools::{
     compute_sha256, CrossrefLookupTool, McpExternalTool, OpenAlexLookupTool,

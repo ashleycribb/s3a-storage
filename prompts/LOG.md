@@ -299,3 +299,23 @@ Notes:
   1. In `check_archive_verification`, if the file is sealed and `integrity_ok` is false, `signature_verified` is forced to false, even if the vault contains validly signed grants or transfers. A failed integrity check overrides every positive label.
   2. In every view pack (`ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, `ManifestFallbackViewPack`), an upfront integrity failure check guarantees that when sealed and integrity fails, the status badge is "Not verified" and human approval is "Sealed (integrity check failed)".
   3. Added test `test_tampered_sealed_archive_with_signed_grants_fails_all_verified_labels` using `vault_delegation_governance.s3a` with signed grants; tampers the seal endcap, asserts `signature_verified == false`, and verifies that no badge or label says "verified" except "integrity check failed" (and "not verified"). All 4 workflows green.
+
+## [2026-11-14] - 008: One-command self-hosted stack
+Status: ALL SUCCESS
+Verification:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo clippy -p s3a-cli --lib --no-deps -- -D warnings: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-harness --test stack_tests: passed (7/7 tests passed in 2.68s)
+  - cargo test -p s3a-cli --test stack_cli_tests: passed (2/2 tests passed in 2.37s)
+Notes:
+  1. Implemented `s3a stack <init|up|down|status>` in `crates/s3a-cli/src/stack_cli.rs` and `crates/s3a-harness/src/stack.rs`.
+  2. Single configuration in `stack.toml` supporting model providers (`local`, `gemini`, `anthropic`, `gateway`).
+  3. `docker-compose.yml` generation using `${ENV_VARS}` interpolation with zero plaintext secrets.
+  4. Real health check verification (`check_service_health`) probing TCP port + HTTP response; failed checks strictly override any running label.
+  5. Zero demo/placeholder data; stopped services report DOWN with connection refused reason.
+  6. Strict secret rejection (`validate_no_secrets`) failing if API keys or tokens are in config files.
+  7. Core stays free of stack code (`s3a-core` has zero stack dependencies/code).
+  8. Created one-page network architecture document and diagram (`NETWORK.md`) proving default model calls are the only outbound traffic.
+  9. Added integration tests and CI workflow step exercising the stack and running the 007 viewer demo.
