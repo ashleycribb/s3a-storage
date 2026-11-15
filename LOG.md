@@ -540,3 +540,27 @@
    - `cargo clippy --workspace --all-targets`: passed.
    - `cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings`: passed.
    - `cargo deny check`: passed (`advisories ok, bans ok, licenses ok, sources ok`).
+
+---
+
+## Prompt 009 Follow-Up: Mutation-Proof Tests, Absent Values, WASM Parity, and Vectors 1.6
+
+- **Status**: done locally, 2026-11-15 18:55 EST. Not pushed; CI not run. Antigravity started this and ran out of quota with the work uncommitted; its "ALL SUCCESS" summary was not accurate and is replaced here.
+- **Engine**
+  - `rebuild_indexes`: every kept tile must pass the header and payload CRC checks (legacy rule) and every statement body must reassemble, hash and parse, else `Err` and the file is untouched. Index records get the stored time from the body's `stored` field (not the event time), the voided flag from voiding statements, and `body_tile_id` = chunk 0. A sealed archive is re-sealed with the same generation, chain hash and parity settings; record roots are rebuilt when the archive had a tile 83 or its seal directory listed one. Written atomically.
+  - Opening a sealed archive for append no longer strips the seal; the trailer is dropped at the first write (as before), so a read-only session keeps it.
+  - Sequence numbers: running past `u32::MAX` is an `io::Error` in `TileWriter` and `append_tile_to_buffer`, never a wrap or panic.
+  - Tiles 12/13 current layout is 2 (JSON blob); typed fixed-record writes are still stamped layout 1 (`pod_record_layout_version`), so v1 records are never mislabelled v2.
+  - `read_embedded_registry`: no fallback; `spec_version` / `engine_version` come only from the file's about entry (absent otherwise); a bad about entry is an error. Embedded schema fixes: tile 12 v2 gains `chunk_data`; tile 13 now describes the v2 blob layout; tile 96 byte fields are BYTES (13), not I32 (7); tile 64 payload is BYTES (13), not UUID (12).
+  - LRS: body lookup by tile id after reopen (queries returned empty after reopen).
+- **Scholar**
+  - Paper/edge decoders return `Err` on any CRC, length, chunk or JSON inconsistency (no silent skip). v1 papers: title/venue absent. v1 edges: keys are the stored hashes as `0x%016x`, actor and schema_version absent, timestamp only when stored.
+  - Edge ids are content-derived (SHA-256 of the NFC-normalised edge JSON); `ScholarGraphEdge::retract(id, actor, ts)` targets one edge, unknown ids are rejected; `new_retraction` keeps its 5-argument form and resolves to the latest visible matching edge. Antigravity's free-text `edge_id` field and hex/decimal key matching were removed.
+  - Dates: strict `YYYY-MM-DDTHH:MM:SSZ` with real calendar checks.
+  - WASM snapshot view: corrupt tiles are errors; tiles 12/13 layout 2 are skipped on purpose (read with get_paper / list_edges).
+- **Stack**: with dev mode off the LRS gets credentials only from `S3A_LRS_CREDENTIALS_FILE` (never argv or stack.toml); unreadable or malformed credential files are fatal. OTel is Up only on 200/202/204 (Antigravity had counted 400 as Up). Antigravity's `test_stack_production_dev_mode_off` was removed: it built its own argument list and never started the stack; `acceptance_009_stack_dev_off` starts the real binary and checks 401/200.
+- **Spec**: `spec_fields_check` checks names, type codes, offsets and widths both ways for every documented tile and fails on unparsable rows. v1 tables moved to `docs/spec/legacy-layouts.md`.
+- **Fixtures and vectors**: vectors 1.0–1.5 byte-identical to `01d9da4`. `conformance/vectors-1.6` generated once (80 cases). WASM parity fixtures in `tests/fixtures/acceptance_009/` and `sealed_with_schema.s3a` generated once from native by examples that never overwrite; Antigravity's self-regenerating `generate_fixtures.rs` and its fixtures were removed.
+- **Acceptance test changes (wrong tests, not weakened)**: `acceptance_009_validation.rs` and `acceptance_009_edge_id_api.rs` compared Option provenance fields to plain strings (now `.as_deref() == Some(..)`); `delete_tiles` in `acceptance_009_rebuild_indexes.rs` now keeps the seal trailer it used to cut off. `prompt009_tests.rs`: moved to the content-id API; malformed length must now be `Err` (was `None`); legacy edge queried by its real key.
+- **Checks**: fmt ok; clippy no errors; `cargo deny check` ok; `cargo test --workspace` 845 passed / 0 failed / 4 ignored; wasm-pack build + `smoke.mjs` 33/33; mutation checks fail as intended.
+- **Known gaps**: wasm cannot verify RSA timestamp tokens (P-256 only; RSA returns an explicit error). `sealed::spec_version()` still falls back to the string "unknown" if the spec loses its version line (pre-existing).
