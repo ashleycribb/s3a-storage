@@ -32,6 +32,23 @@ fn find_free_port() -> u16 {
     port
 }
 
+fn ensure_binary(name: &str) -> std::path::PathBuf {
+    if let Some(p) = find_binary(name) {
+        return p;
+    }
+    let pkg = match name {
+        "s3a" | "s3a-cli" => "s3a-cli",
+        "s3a-lrs-server" => "s3a-lrs-server",
+        "s3a-sandbox" => "s3a-sandbox",
+        "s3a-harness" => "s3a-harness",
+        _ => name,
+    };
+    let _ = std::process::Command::new("cargo")
+        .args(["build", "-p", pkg])
+        .status();
+    find_binary(name).unwrap_or_else(|| panic!("failed to find or build binary '{}'", name))
+}
+
 fn create_test_dispatcher(db_path: &Path) -> S3AMcpDispatcher {
     let sandbox = Sandbox::new(db_path.parent().unwrap(), false).expect("create sandbox");
     let store: Arc<dyn Store> = Arc::new(LocalStore::new(db_path, false));
@@ -81,6 +98,7 @@ fn call_mcp_tool(d: &S3AMcpDispatcher, tool_name: &str, args: Value) -> (Value, 
 
 #[test]
 fn test_stopped_service_reports_down() {
+    let _ = ensure_binary("s3a");
     let port = find_free_port();
     let status = check_service_health("127.0.0.1", port, ServiceKind::Vault);
 
@@ -299,9 +317,7 @@ fn test_live_health_check_real_http_up() {
     assert_eq!(status_pre.state, HealthState::Down);
 
     // Launch real binary
-    let bin = find_binary("s3a")
-        .or_else(|| find_binary("s3a-cli"))
-        .expect("find s3a binary");
+    let bin = ensure_binary("s3a");
     let mut child = std::process::Command::new(bin)
         .args([
             "serve",
@@ -374,6 +390,12 @@ fn test_kill_real_child_process_reports_down() {
     config.services.harness.port = harness_port;
     config.services.sandbox.port = sandbox_port;
     config.services.otel.enabled = false;
+
+    // Ensure binaries are available
+    let _ = ensure_binary("s3a");
+    let _ = ensure_binary("s3a-lrs-server");
+    let _ = ensure_binary("s3a-sandbox");
+    let _ = ensure_binary("s3a-harness");
 
     // Start native real binaries
     let mut handle = mgr.start_native(&config).expect("start native stack");
@@ -465,6 +487,12 @@ fn test_stack_up_and_007_viewer_demo() {
     config.services.harness.port = harness_port;
     config.services.sandbox.port = sandbox_port;
     config.services.otel.enabled = false;
+
+    // Ensure binaries are available
+    let _ = ensure_binary("s3a");
+    let _ = ensure_binary("s3a-lrs-server");
+    let _ = ensure_binary("s3a-sandbox");
+    let _ = ensure_binary("s3a-harness");
 
     // 1. Verify stack status before startup is DOWN
     let status_pre = mgr.status(&config);

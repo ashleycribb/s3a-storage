@@ -18,6 +18,7 @@ node_modules/
 # Design drafts and review artifacts
 design_draft.md
 goldfish_review_report.md
+crates/s3a-harness/agents/
 
 # Conformance vectors are committed on purpose
 !conformance/vectors-*/files/*.s3a

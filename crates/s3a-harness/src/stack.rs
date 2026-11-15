@@ -755,6 +755,16 @@ pub fn find_binary(name: &str) -> Option<PathBuf> {
         }
     }
 
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let p = PathBuf::from(manifest);
+        search_dirs.push(p.join("../../target/debug"));
+        search_dirs.push(p.join("../../target/release"));
+        search_dirs.push(p.join("../target/debug"));
+        search_dirs.push(p.join("../target/release"));
+        search_dirs.push(p.join("target/debug"));
+        search_dirs.push(p.join("target/release"));
+    }
+
     search_dirs.push(PathBuf::from("target").join("debug"));
     search_dirs.push(PathBuf::from("target").join("release"));
     search_dirs.push(PathBuf::from("..").join("target").join("debug"));
