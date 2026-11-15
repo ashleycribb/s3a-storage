@@ -277,3 +277,25 @@ Notes:
   2. For hash-only sealed archives without Ed25519 signatures, labels are renamed to "Sealed (integrity verified)" / "Sealed (integrity check failed)" and status badges to "Integrity verified" / "Not verified". Only state "signature verified" if an actual Ed25519 signature over the seal/vault is verified with `s3a-vault`; if no signature exists, signature is None and the word "signature" is strictly absent.
   3. Decoupled human approval/exclusion decisions from `decision_score`. Removed `decision_score` parameters and score thresholds from `is_human_decision_approved` and `is_human_decision_rejected`. Approval or exclusion strictly requires explicit human decision verbs; scores never imply decisions.
   4. Added test suite coverage: `test_high_score_record_with_non_decision_verb_shows_no_decision` (score 0.99 with non-decision verb shows "No researcher decision recorded" and "Not verified"), `test_hash_only_sealed_archive_never_contains_word_signature_unless_verified` (hash-only sealed archive never contains the word "signature"), `test_ed25519_signed_vault_verifies_signature` (verifies actual signed vault displays "Signature verified"), and updated `test_tampered_seal_shows_not_verified` with the new labels and badges. All 4 workflows green.
+
+---
+
+## 007-followup-3-integrity-failure-overrides, 2026-11-14 21:05
+Status: done
+Commit: ff5458e
+Changed: crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo clippy --workspace --all-targets: passed
+  - cargo test -p s3a-harness --test viewer_mcp_tests: passed (16/16 tests passed)
+  - cargo test -p s3a-harness -j 1: passed (all 20 unit tests + 11 integration suites passed)
+  - GitHub Actions runs on ff5458e:
+    - rust-ci (run 43666148018): success (all 13/13 jobs passed)
+    - cargo-deny (run 43666148073): success (advisories ok, bans ok, licenses ok, sources ok)
+    - S3A Research Agent Harness CI (run 43666148096): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43666153003): success
+Notes:
+  1. In `check_archive_verification`, if the file is sealed and `integrity_ok` is false, `signature_verified` is forced to false, even if the vault contains validly signed grants or transfers. A failed integrity check overrides every positive label.
+  2. In every view pack (`ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, `ManifestFallbackViewPack`), an upfront integrity failure check guarantees that when sealed and integrity fails, the status badge is "Not verified" and human approval is "Sealed (integrity check failed)".
+  3. Added test `test_tampered_sealed_archive_with_signed_grants_fails_all_verified_labels` using `vault_delegation_governance.s3a` with signed grants; tampers the seal endcap, asserts `signature_verified == false`, and verifies that no badge or label says "verified" except "integrity check failed" (and "not verified"). All 4 workflows green.

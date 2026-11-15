@@ -386,3 +386,33 @@
    - `test_ed25519_signed_vault_verifies_signature`: asserts an actual Ed25519-signed digital vault displays `status_badge: "Signature verified"`.
    - `test_tampered_seal_shows_not_verified`: updated to verify clean seal displays `"Integrity verified"` and `"Sealed (integrity verified)"`, and tampered seal displays `"Not verified"` and `"Sealed (integrity check failed)"`.
    - `test_reject_decision_never_shows_approved`: verifies rejection verbs display `"Researcher Excluded"` and never contain `"Approved"`.
+
+---
+
+## Prompt 007 Follow-Up 3: Integrity Failure Overrides & Tampered Signed Vault Grants Test
+
+- **Status**: ALL SUCCESS
+- **Commit**: `ff5458e`
+- **CI Verification on ff5458e**:
+  - `rust-ci` (run 43666148018): **SUCCESS** (13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, clippy, Windows/macOS/Ubuntu runners, spec vectors, wasm snapshot).
+  - `cargo-deny` (run 43666148073): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43666148096): **SUCCESS** (both `windows-latest` and `ubuntu-latest` jobs passed).
+  - `wasm-dist` (run 43666153003): **SUCCESS** (build, test, publish, attestation green).
+- **Summary of Deliverables**:
+1. **Integrity Failure Overrides All Positive Labels & Signatures**:
+   - In `check_archive_verification(path)` (`crates/s3a-harness/src/viewer.rs`):
+     - If the file is sealed and `integrity_ok` is false, `signature_verified` is forced to `false`, even if the underlying digital vault contains validly signed grants or transfers.
+   - In all view packs (`ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, `ManifestFallbackViewPack`):
+     - Added upfront check: `if verif.is_sealed && !verif.integrity_ok`.
+     - Returns status badge `"Not verified"` and human approval `"Sealed (integrity check failed)"`.
+     - Overrides any human decisions, engineering authorization headers, device status, or vault signature statuses.
+     - `extract_approval` returns `is_approved = false`, `approved_by = None`, `signature = None`, and `requires_human_decision = true`.
+2. **Comprehensive Test with Signed Grants & Tampering**:
+   - Added `test_tampered_sealed_archive_with_signed_grants_fails_all_verified_labels` in `crates/s3a-harness/tests/viewer_mcp_tests.rs`:
+     - Uses real vector `vault_delegation_governance.s3a` containing genuine Ed25519-signed grants.
+     - Seals the archive with `s3a_engine::seal_archive_v2`.
+     - Tampers the sealed endcap index hash byte.
+     - Asserts `check_archive_verification` returns `is_sealed: true`, `integrity_ok: false`, and `signature_verified: false`.
+     - Asserts the viewer returns `status_badge: "Not verified"`, `human_approval: "Sealed (integrity check failed)"`, `is_approved: false`, and `signature: None`.
+     - Asserts that no badge or label says "verified" except "integrity check failed" (and "not verified").
+     - Asserts that neither badge nor label says "Signature verified", "Integrity verified", or "Verified".
