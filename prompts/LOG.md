@@ -325,3 +325,22 @@ Notes:
   7. Core stays free of stack code (`s3a-core` has zero stack dependencies/code).
   8. Created one-page network architecture document and diagram (`NETWORK.md`) proving default model calls are the only outbound traffic.
   9. Added integration tests and CI workflow step exercising the stack and running the 007 viewer demo.
+
+---
+
+## 008-followup-native-binaries-and-process-lifecycle, 2026-11-15 13:45
+Status: done
+Commit: 3ce56f0
+Changed: crates/s3a-cli/src/main.rs, crates/s3a-cli/src/stack_cli.rs, crates/s3a-cli/tests/stack_cli_tests.rs, crates/s3a-harness/src/main.rs, crates/s3a-harness/src/stack.rs, crates/s3a-harness/tests/stack_tests.rs, crates/s3a-lrs-server/src/main.rs, crates/s3a-sandbox/src/main.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy --workspace --all-targets: passed
+  - cargo deny check: passed
+  - cargo test -p s3a-harness --test stack_tests: passed (10/10 passed in 5.3s)
+  - cargo test -p s3a-cli --test stack_cli_tests: passed (3/3 passed in 10.9s)
+Notes:
+  1. Removed `spawn_native_service_listener`. `stack up --native` launches real binaries and checks PIDs. Unimplemented binaries report "not implemented".
+  2. Added real `GET /health` with service name, version, and dependency check JSON across all services. Health probe strictly verifies JSON payload; OTel probes for real OTLP responses.
+  3. Fixed Windows test pipe hang by spawning detached background processes with `Stdio::null()`.
+  4. Process tree termination via `taskkill /F /T /PID` (Windows) and `kill -9` (Unix); verified PID absence with hard timeouts.
+

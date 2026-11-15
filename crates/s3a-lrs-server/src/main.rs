@@ -1040,6 +1040,31 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     }
 
     // -------------------------------------------------------------------------
+    // Health Check (Unauthenticated GET /health)
+    // -------------------------------------------------------------------------
+    if (path == "/health" || path == "health") && (method == Method::Get || method == Method::Head)
+    {
+        let store_writable = state.default_store.archive_path().exists();
+        let status_str = if store_writable { "ok" } else { "degraded" };
+        let health_json = serde_json::json!({
+            "service": "lrs",
+            "version": env!("CARGO_PKG_VERSION"),
+            "status": status_str,
+            "store_writable": store_writable,
+            "archive_path": state.default_store.archive_path().display().to_string(),
+        })
+        .to_string();
+        let resp = make_response(
+            if store_writable { 200 } else { 503 },
+            "application/json",
+            health_json.as_bytes(),
+            method == Method::Head,
+        );
+        let _ = req.respond(resp);
+        return;
+    }
+
+    // -------------------------------------------------------------------------
     // Alternate Request Syntax (xAPI 1.0.3 §4.2)
     // -------------------------------------------------------------------------
     if req.method() != &Method::Post && query_params.contains_key("method") {

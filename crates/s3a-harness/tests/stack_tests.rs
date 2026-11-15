@@ -12,14 +12,14 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use s3a_core::HyperTileHeader;
 use s3a_engine::TileWriter;
 use s3a_harness::mcp::S3AMcpDispatcher;
 use s3a_harness::sandbox::Sandbox;
 use s3a_harness::stack::{
-    check_service_health, spawn_native_service_listener, HealthState, ServiceKind, StackConfig,
-    StackManager,
+    check_service_health, find_binary, HealthState, ServiceKind, StackConfig, StackManager,
 };
 use s3a_harness::store::{LocalStore, Store};
 use s3a_harness::viewer::{generate_viewer_html, ViewerRegistry};
@@ -222,47 +222,226 @@ fn test_docker_compose_generation_zero_secrets() {
     assert!(compose.contains("s3a-net:"));
 }
 
+struct TestStubOtelReceiver {
+    shutdown: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    pub port: u16,
+}
+
+impl TestStubOtelReceiver {
+    fn new_raw_tcp_stub() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind raw tcp stub");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let s_clone = shutdown.clone();
+        let handle = std::thread::spawn(move || {
+            while !s_clone.load(Ordering::SeqCst) {
+                if let Ok((_stream, _)) = listener.accept() {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        Self {
+            shutdown,
+            handle: Some(handle),
+            port,
+        }
+    }
+
+    fn new_http_stub() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind http stub");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let s_clone = shutdown.clone();
+        let handle = std::thread::spawn(move || {
+            while !s_clone.load(Ordering::SeqCst) {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    use std::io::Write;
+                    let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}";
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        Self {
+            shutdown,
+            handle: Some(handle),
+            port,
+        }
+    }
+
+    fn stop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for TestStubOtelReceiver {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[test]
 fn test_live_health_check_real_http_up() {
     let host = "127.0.0.1";
     let port = find_free_port();
-    let shutdown = Arc::new(AtomicBool::new(false));
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let vault_file = tmp.path().join("vault.s3a");
 
     // Initially down
     let status_pre = check_service_health(host, port, ServiceKind::Vault);
     assert_eq!(status_pre.state, HealthState::Down);
 
-    // Start listener
-    let (handle, bound_port) =
-        spawn_native_service_listener(host, port, ServiceKind::Vault, shutdown.clone())
-            .expect("spawn native service listener");
-    assert_eq!(bound_port, port);
+    // Launch real binary
+    let bin = find_binary("s3a")
+        .or_else(|| find_binary("s3a-cli"))
+        .expect("find s3a binary");
+    let mut child = std::process::Command::new(bin)
+        .args([
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--vault",
+            vault_file.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn s3a serve");
 
-    // Probe: must report UP
-    let status_post = check_service_health(host, port, ServiceKind::Vault);
+    // Poll: must report UP with valid JSON parsed
+    let start = std::time::Instant::now();
+    let mut status_post = check_service_health(host, port, ServiceKind::Vault);
+    while start.elapsed() < Duration::from_secs(4) {
+        status_post = check_service_health(host, port, ServiceKind::Vault);
+        if status_post.state == HealthState::Up {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     assert_eq!(
         status_post.state,
         HealthState::Up,
-        "running listener must report UP"
+        "running real binary must report UP. detail: {}",
+        status_post.detail
     );
     assert!(
-        status_post.detail.contains("HTTP 200 OK"),
-        "detail must report HTTP 200 OK: {}",
+        status_post.detail.contains("Healthy: vault"),
+        "detail must report Healthy: vault: {}",
         status_post.detail
     );
     assert!(status_post.latency_ms.is_some());
 
-    // Stop listener
-    shutdown.store(true, Ordering::SeqCst);
-    let _ = handle.join();
+    // Stop process
+    let _ = child.kill();
+    let _ = child.wait();
 
     // Probe after stop: must report DOWN
     let status_stopped = check_service_health(host, port, ServiceKind::Vault);
     assert_eq!(
         status_stopped.state,
         HealthState::Down,
-        "stopped listener must report DOWN"
+        "killed child process must report DOWN"
     );
+}
+
+#[test]
+fn test_kill_real_child_process_reports_down() {
+    let tmp_dir = tempfile::tempdir().expect("create tempdir");
+    let mgr = StackManager::new(tmp_dir.path());
+
+    let vault_port = find_free_port();
+    let lrs_port = find_free_port();
+    let mcp_port = find_free_port();
+    let harness_port = find_free_port();
+    let sandbox_port = find_free_port();
+
+    let mut config = StackConfig::default();
+    config.stack.name = "kill-test-stack".to_string();
+    config.stack.data_dir = tmp_dir.path().join("data");
+    config.stack.log_dir = tmp_dir.path().join("logs");
+    config.services.vault.port = vault_port;
+    config.services.lrs.port = lrs_port;
+    config.services.mcp.port = mcp_port;
+    config.services.harness.port = harness_port;
+    config.services.sandbox.port = sandbox_port;
+    config.services.otel.enabled = false;
+
+    // Start native real binaries
+    let mut handle = mgr.start_native(&config).expect("start native stack");
+
+    // Verify all UP
+    let status_up = mgr.status(&config);
+    assert_eq!(status_up.overall, HealthState::Up);
+
+    // Kill one of the real child processes
+    assert!(!handle.children.is_empty(), "Children must be recorded");
+    let _ = handle.children[0].kill();
+    let _ = handle.children[0].wait();
+
+    // Poll status: must report overall DOWN
+    let start = std::time::Instant::now();
+    let mut status_after_kill = mgr.status(&config);
+    while start.elapsed() < Duration::from_secs(3) {
+        status_after_kill = mgr.status(&config);
+        if status_after_kill.overall == HealthState::Down {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert_eq!(
+        status_after_kill.overall,
+        HealthState::Down,
+        "Killing real child process MUST cause stack overall status to report DOWN"
+    );
+
+    handle.stop();
+}
+
+#[test]
+fn test_unimplemented_binary_never_up() {
+    // If a service has no compiled binary, it reports Down with not implemented / not found
+    let port = find_free_port();
+    let status = check_service_health("127.0.0.1", port, ServiceKind::Otel);
+    // Port closed -> Down
+    assert_eq!(status.state, HealthState::Down);
+    assert_ne!(status.state, HealthState::Up);
+}
+
+#[test]
+fn test_otel_requires_real_response_not_tcp_alone() {
+    // 1. Raw TCP open port that sends no HTTP/OTLP response MUST NOT report Up
+    let mut raw_stub = TestStubOtelReceiver::new_raw_tcp_stub();
+    let raw_status = check_service_health("127.0.0.1", raw_stub.port, ServiceKind::Otel);
+    assert_ne!(
+        raw_status.state,
+        HealthState::Up,
+        "Raw TCP port must NEVER report UP for OTel"
+    );
+    raw_stub.stop();
+
+    // 2. HTTP OTel response MUST report Up
+    let mut http_stub = TestStubOtelReceiver::new_http_stub();
+    let http_status = check_service_health("127.0.0.1", http_stub.port, ServiceKind::Otel);
+    assert_eq!(
+        http_status.state,
+        HealthState::Up,
+        "Valid HTTP response must report UP for OTel"
+    );
+    http_stub.stop();
+
+    // 3. Stopped stub MUST report Down
+    let stopped_status = check_service_health("127.0.0.1", http_stub.port, ServiceKind::Otel);
+    assert_eq!(stopped_status.state, HealthState::Down);
 }
 
 #[test]
@@ -274,6 +453,7 @@ fn test_stack_up_and_007_viewer_demo() {
     let lrs_port = find_free_port();
     let mcp_port = find_free_port();
     let harness_port = find_free_port();
+    let sandbox_port = find_free_port();
 
     let mut config = StackConfig::default();
     config.stack.name = "demo-stack".to_string();
@@ -283,14 +463,15 @@ fn test_stack_up_and_007_viewer_demo() {
     config.services.lrs.port = lrs_port;
     config.services.mcp.port = mcp_port;
     config.services.harness.port = harness_port;
+    config.services.sandbox.port = sandbox_port;
     config.services.otel.enabled = false;
 
     // 1. Verify stack status before startup is DOWN
     let status_pre = mgr.status(&config);
     assert_eq!(status_pre.overall, HealthState::Down);
 
-    // 2. Start native services
-    let handle = mgr.start_native(&config).expect("start native stack");
+    // 2. Start native services (real binaries)
+    let mut handle = mgr.start_native(&config).expect("start native stack");
 
     // 3. Verify stack status is UP
     let status_up = mgr.status(&config);

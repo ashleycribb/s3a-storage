@@ -12,12 +12,10 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::Read;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -116,10 +114,16 @@ fn default_harness_config_path() -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SandboxServiceConfig {
     pub enabled: bool,
+    #[serde(default = "default_sandbox_port")]
+    pub port: u16,
     #[serde(default = "default_workers")]
     pub workers: usize,
     #[serde(default = "default_poll_interval")]
     pub poll_interval_ms: u64,
+}
+
+fn default_sandbox_port() -> u16 {
+    8083
 }
 
 fn default_workers() -> usize {
@@ -194,6 +198,7 @@ impl Default for StackConfig {
                 },
                 sandbox: SandboxServiceConfig {
                     enabled: true,
+                    port: default_sandbox_port(),
                     workers: 2,
                     poll_interval_ms: 500,
                 },
@@ -364,6 +369,11 @@ impl StackConfig {
                     },
                     "services.sandbox" => match k {
                         "enabled" => config.services.sandbox.enabled = parse_bool(v),
+                        "port" => {
+                            if let Ok(p) = v.parse() {
+                                config.services.sandbox.port = p;
+                            }
+                        }
                         "workers" => {
                             if let Ok(w) = v.parse() {
                                 config.services.sandbox.workers = w;
@@ -438,6 +448,7 @@ config_path = "{harness_config}"
 
 [services.sandbox]
 enabled = {sandbox_enabled}
+port = {sandbox_port}
 workers = {sandbox_workers}
 poll_interval_ms = {sandbox_poll}
 
@@ -466,6 +477,7 @@ grpc_port = {otel_grpc_port}
             harness_port = self.services.harness.port,
             harness_config = self.services.harness.config_path.display(),
             sandbox_enabled = self.services.sandbox.enabled,
+            sandbox_port = self.services.sandbox.port,
             sandbox_workers = self.services.sandbox.workers,
             sandbox_poll = self.services.sandbox.poll_interval_ms,
             otel_enabled = self.services.otel.enabled,
@@ -604,7 +616,9 @@ services:
                 r#"  sandbox:
     image: ghcr.io/ashleycribb/s3a-sandbox:latest
     container_name: s3a-sandbox-worker
-    command: ["s3a-sandbox", "worker", "--vault", "/data/vault.s3a", "--interval", "{poll_interval}"]
+    command: ["s3a-sandbox", "worker", "--vault", "/data/vault.s3a", "--interval", "{poll_interval}", "--port", "{port}"]
+    ports:
+      - "{port}:{port}"
     deploy:
       replicas: {workers}
     volumes:
@@ -614,6 +628,7 @@ services:
       - s3a-net
 
 "#,
+                port = self.services.sandbox.port,
                 poll_interval = self.services.sandbox.poll_interval_ms,
                 workers = self.services.sandbox.workers,
                 data_dir = self.stack.data_dir.display()
@@ -708,6 +723,63 @@ impl ServiceKind {
             Self::Otel => "otel",
         }
     }
+
+    pub fn binary_name(&self) -> &'static str {
+        match self {
+            Self::Vault => "s3a",
+            Self::Lrs => "s3a-lrs-server",
+            Self::Mcp => "s3a-harness",
+            Self::Harness => "s3a-harness",
+            Self::Sandbox => "s3a-sandbox",
+            Self::Otel => "otelcol",
+        }
+    }
+}
+
+/// Locates a compiled binary across build output directories and system PATH.
+pub fn find_binary(name: &str) -> Option<PathBuf> {
+    let binary_name = if cfg!(windows) && !name.ends_with(".exe") {
+        format!("{}.exe", name)
+    } else {
+        name.to_string()
+    };
+
+    let mut search_dirs = Vec::new();
+
+    if let Ok(cur) = std::env::current_exe() {
+        if let Some(p) = cur.parent() {
+            search_dirs.push(p.to_path_buf());
+            if let Some(pp) = p.parent() {
+                search_dirs.push(pp.to_path_buf());
+            }
+        }
+    }
+
+    search_dirs.push(PathBuf::from("target").join("debug"));
+    search_dirs.push(PathBuf::from("target").join("release"));
+    search_dirs.push(PathBuf::from("..").join("target").join("debug"));
+    search_dirs.push(PathBuf::from("../..").join("target").join("debug"));
+
+    for dir in &search_dirs {
+        let candidate = dir.join(&binary_name);
+        if candidate.is_file() {
+            if let Ok(canonical) = candidate.canonicalize() {
+                return Some(canonical);
+            }
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(paths) = std::env::var("PATH") {
+        for path in std::env::split_paths(&paths) {
+            let candidate = path.join(&binary_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -763,10 +835,13 @@ impl StackStatus {
 
 /// Executes a genuine network health check against a service.
 ///
-/// CRITICAL RULE 1:
-/// Reports `Up` only after an actual network health check against it (port + response).
-/// Never reports `Up` from config or a started process alone.
-/// A failed check strictly overrides every "running" label.
+/// CRITICAL RULES:
+/// 1. Reports `Up` only after an actual network health check against it (port + response).
+///    Never reports `Up` from config or a started process alone.
+///    A failed check strictly overrides every "running" label.
+/// 2. S3A services must return HTTP 200 with valid JSON specifying service name, non-empty version,
+///    status == "ok", and passing dependency checks.
+/// 3. OTel counts as up only after a real OTLP or health response, never TCP alone.
 pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> ServiceStatus {
     let start = Instant::now();
     let addr_str = format!("{}:{}", host, port);
@@ -777,98 +852,100 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
     // 1. Fast TCP probe (instant fail if service is down / not listening)
     let tcp_timeout = Duration::from_millis(300);
     if let Err(tcp_err) = TcpStream::connect_timeout(&socket_addr, tcp_timeout) {
+        let bin_exists = match kind {
+            ServiceKind::Vault => find_binary("s3a")
+                .or_else(|| find_binary("s3a-cli"))
+                .is_some(),
+            ServiceKind::Lrs => find_binary("s3a-lrs-server").is_some(),
+            ServiceKind::Mcp | ServiceKind::Harness => find_binary("s3a-harness").is_some(),
+            ServiceKind::Sandbox => find_binary("s3a-sandbox").is_some(),
+            ServiceKind::Otel => true,
+        };
+
+        let detail = if !bin_exists {
+            format!(
+                "Binary '{}' not implemented / not found",
+                kind.binary_name()
+            )
+        } else {
+            format!("Connection refused ({})", tcp_err)
+        };
+
         return ServiceStatus {
             service: kind.name().to_string(),
             enabled: true,
             port: Some(port),
             state: HealthState::Down,
             latency_ms: None,
-            detail: format!("Connection refused ({})", tcp_err),
+            detail,
             pid: None,
         };
     }
 
+    // 2. OTel Collector probe (OTLP or HTTP health endpoint)
     if kind == ServiceKind::Otel {
-        let elapsed = start.elapsed().as_millis() as u64;
-        return ServiceStatus {
-            service: kind.name().to_string(),
-            enabled: true,
-            port: Some(port),
-            state: HealthState::Up,
-            latency_ms: Some(elapsed),
-            detail: format!("TCP port connected ({}ms)", elapsed),
-            pid: None,
+        let url = format!("http://{}:{}/", host, port);
+        return match ureq::get(&url).timeout(Duration::from_millis(1000)).call() {
+            Ok(resp) => {
+                let status = resp.status();
+                let elapsed = start.elapsed().as_millis() as u64;
+                if status == 200 || status == 204 {
+                    ServiceStatus {
+                        service: "otel".to_string(),
+                        enabled: true,
+                        port: Some(port),
+                        state: HealthState::Up,
+                        latency_ms: Some(elapsed),
+                        detail: format!("OTel HTTP response {} ({}ms)", status, elapsed),
+                        pid: None,
+                    }
+                } else {
+                    ServiceStatus {
+                        service: "otel".to_string(),
+                        enabled: true,
+                        port: Some(port),
+                        state: HealthState::Unhealthy,
+                        latency_ms: Some(elapsed),
+                        detail: format!("OTel HTTP status {}", status),
+                        pid: None,
+                    }
+                }
+            }
+            Err(ureq::Error::Status(status, _)) if status == 404 || status == 405 => {
+                let elapsed = start.elapsed().as_millis() as u64;
+                ServiceStatus {
+                    service: "otel".to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Up,
+                    latency_ms: Some(elapsed),
+                    detail: format!("OTel receiver active (HTTP {}, {}ms)", status, elapsed),
+                    pid: None,
+                }
+            }
+            Err(e) => ServiceStatus {
+                service: "otel".to_string(),
+                enabled: true,
+                port: Some(port),
+                state: HealthState::Unhealthy,
+                latency_ms: None,
+                detail: format!("OTel probe failed (not OTLP/HTTP): {}", e),
+                pid: None,
+            },
         };
     }
 
-    // 2. HTTP response probe for S3A services
-    let path = match kind {
-        ServiceKind::Lrs => "/about",
-        ServiceKind::Vault | ServiceKind::Mcp | ServiceKind::Harness | ServiceKind::Sandbox => {
-            "/health"
-        }
-        ServiceKind::Otel => "/",
-    };
-
-    let url = format!("http://{}:{}{}", host, port, path);
-    let http_timeout = Duration::from_millis(1000);
+    // 3. HTTP GET /health probe for S3A native services
+    let url = format!("http://{}:{}/health", host, port);
+    let http_timeout = Duration::from_millis(1500);
 
     match ureq::get(&url).timeout(http_timeout).call() {
         Ok(resp) => {
             let status = resp.status();
             let elapsed = start.elapsed().as_millis() as u64;
 
-            if status == 200 {
-                let mut reader = resp.into_reader();
-                let mut body = String::new();
-                let _ = reader.read_to_string(&mut body);
-
-                let verified = match kind {
-                    ServiceKind::Lrs => body.contains("version") || body.contains("1.0"),
-                    ServiceKind::Vault => {
-                        body.contains("status")
-                            || body.contains("ok")
-                            || body.contains("vault")
-                            || body.contains("s3a")
-                    }
-                    ServiceKind::Mcp => {
-                        body.contains("status") || body.contains("ok") || body.contains("mcp")
-                    }
-                    ServiceKind::Harness => {
-                        body.contains("status") || body.contains("ok") || body.contains("harness")
-                    }
-                    ServiceKind::Sandbox => {
-                        body.contains("status") || body.contains("ok") || body.contains("worker")
-                    }
-                    ServiceKind::Otel => true,
-                };
-
-                if verified {
-                    ServiceStatus {
-                        service: kind.name().to_string(),
-                        enabled: true,
-                        port: Some(port),
-                        state: HealthState::Up,
-                        latency_ms: Some(elapsed),
-                        detail: format!("HTTP 200 OK ({}ms)", elapsed),
-                        pid: None,
-                    }
-                } else {
-                    ServiceStatus {
-                        service: kind.name().to_string(),
-                        enabled: true,
-                        port: Some(port),
-                        state: HealthState::Unhealthy,
-                        latency_ms: Some(elapsed),
-                        detail: format!(
-                            "Response verification failed: {}",
-                            body.chars().take(40).collect::<String>()
-                        ),
-                        pid: None,
-                    }
-                }
-            } else {
-                ServiceStatus {
+            if status != 200 {
+                return ServiceStatus {
                     service: kind.name().to_string(),
                     enabled: true,
                     port: Some(port),
@@ -876,7 +953,127 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
                     latency_ms: Some(elapsed),
                     detail: format!("HTTP status {}", status),
                     pid: None,
+                };
+            }
+
+            let mut reader = resp.into_reader();
+            let mut body = String::new();
+            if let Err(e) = reader.read_to_string(&mut body) {
+                return ServiceStatus {
+                    service: kind.name().to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Unhealthy,
+                    latency_ms: Some(elapsed),
+                    detail: format!("Failed to read health response body: {}", e),
+                    pid: None,
+                };
+            }
+
+            let json: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(j) => j,
+                Err(e) => {
+                    return ServiceStatus {
+                        service: kind.name().to_string(),
+                        enabled: true,
+                        port: Some(port),
+                        state: HealthState::Unhealthy,
+                        latency_ms: Some(elapsed),
+                        detail: format!("Invalid JSON response: {}", e),
+                        pid: None,
+                    };
                 }
+            };
+
+            // Strict check 1: service name
+            let service_name = json.get("service").and_then(|v| v.as_str()).unwrap_or("");
+            if service_name != kind.name() {
+                return ServiceStatus {
+                    service: kind.name().to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Unhealthy,
+                    latency_ms: Some(elapsed),
+                    detail: format!(
+                        "Service name mismatch: expected '{}', got '{}'",
+                        kind.name(),
+                        service_name
+                    ),
+                    pid: None,
+                };
+            }
+
+            // Strict check 2: non-empty version
+            let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            if version.is_empty() {
+                return ServiceStatus {
+                    service: kind.name().to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Unhealthy,
+                    latency_ms: Some(elapsed),
+                    detail: "Version missing or empty in health JSON".to_string(),
+                    pid: None,
+                };
+            }
+
+            // Strict check 3: status == "ok" or "healthy"
+            let health_status = json.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            if health_status != "ok" && health_status != "healthy" {
+                return ServiceStatus {
+                    service: kind.name().to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Unhealthy,
+                    latency_ms: Some(elapsed),
+                    detail: format!("Service reported status '{}'", health_status),
+                    pid: None,
+                };
+            }
+
+            // Strict check 4: actual service dependency verification
+            let dep_ok = match kind {
+                ServiceKind::Vault => {
+                    json.get("vault_opened").and_then(|v| v.as_bool()) == Some(true)
+                }
+                ServiceKind::Lrs => {
+                    json.get("store_writable").and_then(|v| v.as_bool()) == Some(true)
+                }
+                ServiceKind::Mcp => {
+                    json.get("sandbox_ready").and_then(|v| v.as_bool()) == Some(true)
+                }
+                ServiceKind::Harness => {
+                    json.get("agent_configured").and_then(|v| v.as_bool()) == Some(true)
+                }
+                ServiceKind::Sandbox => {
+                    json.get("queue_accessible").and_then(|v| v.as_bool()) == Some(true)
+                }
+                ServiceKind::Otel => true,
+            };
+
+            if !dep_ok {
+                return ServiceStatus {
+                    service: kind.name().to_string(),
+                    enabled: true,
+                    port: Some(port),
+                    state: HealthState::Unhealthy,
+                    latency_ms: Some(elapsed),
+                    detail: format!(
+                        "Dependency verification failed for service '{}'",
+                        kind.name()
+                    ),
+                    pid: None,
+                };
+            }
+
+            ServiceStatus {
+                service: kind.name().to_string(),
+                enabled: true,
+                port: Some(port),
+                state: HealthState::Up,
+                latency_ms: Some(elapsed),
+                detail: format!("Healthy: {} v{} ({}ms)", kind.name(), version, elapsed),
+                pid: None,
             }
         }
         Err(e) => ServiceStatus {
@@ -885,96 +1082,77 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
             port: Some(port),
             state: HealthState::Unhealthy,
             latency_ms: None,
-            detail: format!("Port open but HTTP probe failed: {}", e),
+            detail: format!("Port open but HTTP health probe failed: {}", e),
             pid: None,
         },
     }
 }
 
 // =============================================================================
-// In-Process & Native Stack Runners
+// Native Stack Process Handle
 // =============================================================================
 
-/// Internal state of running native background services.
+/// Internal handle to real child processes running in background.
 pub struct NativeStackHandle {
-    shutdown: Arc<AtomicBool>,
-    threads: Vec<JoinHandle<()>>,
+    pub children: Vec<std::process::Child>,
+    pub services: Vec<String>,
+    pub pids: Vec<u32>,
     pub ports: HashMap<String, u16>,
 }
 
 impl NativeStackHandle {
-    pub fn stop(self) {
-        self.shutdown.store(true, Ordering::SeqCst);
-        for t in self.threads {
-            let _ = t.join();
+    pub fn stop(&mut self) {
+        for child in self.children.iter_mut() {
+            let pid = child.id();
+            let _ = child.kill();
+
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output();
+            }
+
+            let start = Instant::now();
+            let timeout = Duration::from_secs(10);
+            while start.elapsed() < timeout {
+                match child.try_wait() {
+                    Ok(Some(_status)) => break,
+                    Ok(None) => thread::sleep(Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
         }
     }
 }
 
-/// Spawns a lightweight native HTTP service responder for health checks and stack status.
-pub fn spawn_native_service_listener(
-    host: &str,
-    port: u16,
-    kind: ServiceKind,
-    shutdown: Arc<AtomicBool>,
-) -> std::io::Result<(JoinHandle<()>, u16)> {
-    let listener = TcpListener::bind(format!("{}:{}", host, port))?;
-    let bound_port = listener.local_addr()?.port();
-    listener.set_nonblocking(true)?;
+impl Drop for NativeStackHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 
-    let handle = thread::spawn(move || {
-        while !shutdown.load(Ordering::SeqCst) {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf);
+fn spawn_stack_child(bin: &Path, args: &[&str]) -> std::io::Result<std::process::Child> {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
 
-                    let (status_line, body) = match kind {
-                        ServiceKind::Lrs => {
-                            ("HTTP/1.1 200 OK", "{\"version\":[\"1.0.3\"]}".to_string())
-                        }
-                        ServiceKind::Vault => (
-                            "HTTP/1.1 200 OK",
-                            "{\"status\":\"ok\",\"service\":\"vault\"}".to_string(),
-                        ),
-                        ServiceKind::Mcp => (
-                            "HTTP/1.1 200 OK",
-                            "{\"status\":\"ok\",\"service\":\"mcp\"}".to_string(),
-                        ),
-                        ServiceKind::Harness => (
-                            "HTTP/1.1 200 OK",
-                            "{\"status\":\"ok\",\"service\":\"harness\"}".to_string(),
-                        ),
-                        ServiceKind::Sandbox => (
-                            "HTTP/1.1 200 OK",
-                            "{\"status\":\"ok\",\"service\":\"sandbox\"}".to_string(),
-                        ),
-                        ServiceKind::Otel => (
-                            "HTTP/1.1 200 OK",
-                            "{\"status\":\"ok\",\"service\":\"otel\"}".to_string(),
-                        ),
-                    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW (0x08000000) | CREATE_NEW_PROCESS_GROUP (0x00000200) | DETACHED_PROCESS (0x00000008)
+        cmd.creation_flags(0x08000000 | 0x00000200 | 0x00000008);
+    }
 
-                    let response = format!(
-                        "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        status_line,
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                    let _ = stream.flush();
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(_) => {
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok((handle, bound_port))
+    cmd.spawn()
 }
 
 // =============================================================================
@@ -1079,35 +1257,16 @@ impl StackManager {
 
         // 5. Sandbox Workers
         if config.services.sandbox.enabled {
-            // Sandbox worker health checked via work queue socket / status
-            // If vault is UP and queue is accessible, sandbox status checks worker responsiveness
-            let vault_up = services
-                .first()
-                .map(|s| s.state == HealthState::Up)
-                .unwrap_or(false);
-            if vault_up {
-                services.push(ServiceStatus {
-                    service: "sandbox".to_string(),
-                    enabled: true,
-                    port: None,
-                    state: HealthState::Up,
-                    latency_ms: Some(1),
-                    detail: format!("{} active workers", config.services.sandbox.workers),
-                    pid: None,
-                });
-            } else {
-                services.push(ServiceStatus {
-                    service: "sandbox".to_string(),
-                    enabled: true,
-                    port: None,
-                    state: HealthState::Down,
-                    latency_ms: None,
-                    detail: "Storage vault offline; worker queue unreachable".to_string(),
-                    pid: None,
-                });
-            }
+            services.push(check_service_health(
+                host,
+                config.services.sandbox.port,
+                ServiceKind::Sandbox,
+            ));
         } else {
-            services.push(disabled_status("sandbox", None));
+            services.push(disabled_status(
+                "sandbox",
+                Some(config.services.sandbox.port),
+            ));
         }
 
         // 6. Optional OTel Collector
@@ -1143,91 +1302,171 @@ impl StackManager {
         }
     }
 
-    /// Starts native in-process services for local development and self-contained node runs.
+    /// Launches real native binary child processes for all enabled services and verifies live health.
     pub fn start_native(&self, config: &StackConfig) -> Result<NativeStackHandle, StackError> {
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let mut threads = Vec::new();
+        let mut children = Vec::new();
+        let mut services = Vec::new();
+        let mut pids = Vec::new();
         let mut ports = HashMap::new();
-        let host = &config.stack.host;
 
+        fs::create_dir_all(&config.stack.data_dir)?;
+        fs::create_dir_all(&config.stack.log_dir)?;
+
+        let vault_path = config.stack.data_dir.join("vault.s3a");
+        if !vault_path.exists() {
+            let _ = s3a_engine::TileWriter::create(&vault_path);
+        }
+
+        // 1. Vault
         if config.services.vault.enabled {
-            let (h, p) = spawn_native_service_listener(
-                host,
-                config.services.vault.port,
-                ServiceKind::Vault,
-                shutdown.clone(),
-            )?;
-            threads.push(h);
-            ports.insert("vault".to_string(), p);
+            let bin = find_binary("s3a")
+                .or_else(|| find_binary("s3a-cli"))
+                .ok_or_else(|| StackError::HealthCheckFailed {
+                    service: "vault".to_string(),
+                    reason: "Binary 's3a' not found (not implemented)".to_string(),
+                })?;
+            let port_str = config.services.vault.port.to_string();
+            let vault_str = vault_path.to_str().unwrap();
+            let child =
+                spawn_stack_child(&bin, &["serve", "--port", &port_str, "--vault", vault_str])?;
+            pids.push(child.id());
+            children.push(child);
+            services.push("vault".to_string());
+            ports.insert("vault".to_string(), config.services.vault.port);
         }
 
+        // 2. LRS
         if config.services.lrs.enabled {
-            let (h, p) = spawn_native_service_listener(
-                host,
-                config.services.lrs.port,
-                ServiceKind::Lrs,
-                shutdown.clone(),
+            let bin =
+                find_binary("s3a-lrs-server").ok_or_else(|| StackError::HealthCheckFailed {
+                    service: "lrs".to_string(),
+                    reason: "Binary 's3a-lrs-server' not found (not implemented)".to_string(),
+                })?;
+            let port_str = config.services.lrs.port.to_string();
+            let data_dir_str = config.stack.data_dir.to_str().unwrap();
+            let child = spawn_stack_child(
+                &bin,
+                &[
+                    "--port",
+                    &port_str,
+                    "--data-dir",
+                    data_dir_str,
+                    "-a",
+                    &config.services.lrs.archive,
+                    "--insecure-dev",
+                ],
             )?;
-            threads.push(h);
-            ports.insert("lrs".to_string(), p);
+            pids.push(child.id());
+            children.push(child);
+            services.push("lrs".to_string());
+            ports.insert("lrs".to_string(), config.services.lrs.port);
         }
 
+        // 3. MCP
         if config.services.mcp.enabled {
-            let (h, p) = spawn_native_service_listener(
-                host,
-                config.services.mcp.port,
-                ServiceKind::Mcp,
-                shutdown.clone(),
-            )?;
-            threads.push(h);
-            ports.insert("mcp".to_string(), p);
+            let bin = find_binary("s3a-harness").ok_or_else(|| StackError::HealthCheckFailed {
+                service: "mcp".to_string(),
+                reason: "Binary 's3a-harness' not found (not implemented)".to_string(),
+            })?;
+            let port_str = config.services.mcp.port.to_string();
+            let data_dir_str = config.stack.data_dir.to_str().unwrap();
+            let child =
+                spawn_stack_child(&bin, &["mcp", "--port", &port_str, "--root", data_dir_str])?;
+            pids.push(child.id());
+            children.push(child);
+            services.push("mcp".to_string());
+            ports.insert("mcp".to_string(), config.services.mcp.port);
         }
 
+        // 4. Harness
         if config.services.harness.enabled {
-            let (h, p) = spawn_native_service_listener(
-                host,
-                config.services.harness.port,
-                ServiceKind::Harness,
-                shutdown.clone(),
+            let bin = find_binary("s3a-harness").ok_or_else(|| StackError::HealthCheckFailed {
+                service: "harness".to_string(),
+                reason: "Binary 's3a-harness' not found (not implemented)".to_string(),
+            })?;
+            if let Some(parent) = config.services.harness.config_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if !config.services.harness.config_path.exists() {
+                let _ = fs::write(
+                    &config.services.harness.config_path,
+                    "[agent]\nname = \"scholar_reviewer\"\n",
+                );
+            }
+            let port_str = config.services.harness.port.to_string();
+            let config_str = config.services.harness.config_path.to_str().unwrap();
+            let child = spawn_stack_child(
+                &bin,
+                &["serve", "--port", &port_str, "--config", config_str],
             )?;
-            threads.push(h);
-            ports.insert("harness".to_string(), p);
+            pids.push(child.id());
+            children.push(child);
+            services.push("harness".to_string());
+            ports.insert("harness".to_string(), config.services.harness.port);
         }
 
-        if config.services.otel.enabled {
-            let (h, p) = spawn_native_service_listener(
-                host,
-                config.services.otel.port,
-                ServiceKind::Otel,
-                shutdown.clone(),
+        // 5. Sandbox
+        if config.services.sandbox.enabled {
+            let bin = find_binary("s3a-sandbox").ok_or_else(|| StackError::HealthCheckFailed {
+                service: "sandbox".to_string(),
+                reason: "Binary 's3a-sandbox' not found (not implemented)".to_string(),
+            })?;
+            let interval_str = config.services.sandbox.poll_interval_ms.to_string();
+            let port_str = config.services.sandbox.port.to_string();
+            let vault_str = vault_path.to_str().unwrap();
+            let child = spawn_stack_child(
+                &bin,
+                &[
+                    "worker",
+                    "--vault",
+                    vault_str,
+                    "--interval",
+                    &interval_str,
+                    "--port",
+                    &port_str,
+                ],
             )?;
-            threads.push(h);
-            ports.insert("otel".to_string(), p);
+            pids.push(child.id());
+            children.push(child);
+            services.push("sandbox".to_string());
+            ports.insert("sandbox".to_string(), config.services.sandbox.port);
         }
 
-        // Wait up to 2 seconds for all services to pass live health checks
+        let mut handle = NativeStackHandle {
+            children,
+            services,
+            pids,
+            ports,
+        };
+
+        // Wait up to 30 seconds for all services to pass live health checks
         let start = Instant::now();
+        let timeout = Duration::from_secs(30);
         loop {
             let status = self.status(config);
             if status.overall == HealthState::Up {
                 break;
             }
-            if start.elapsed() > Duration::from_secs(2) {
-                shutdown.store(true, Ordering::SeqCst);
+            if start.elapsed() > timeout {
+                let mut failing = Vec::new();
+                for s in &status.services {
+                    if s.enabled && s.state != HealthState::Up {
+                        failing.push(format!("'{}' ({}: {})", s.service, s.state, s.detail));
+                    }
+                }
+                handle.stop();
                 return Err(StackError::HealthCheckFailed {
                     service: "stack".to_string(),
-                    reason: "Timeout waiting for native stack listeners to pass health check"
-                        .to_string(),
+                    reason: format!(
+                        "Timeout waiting for native stack binaries to pass live health checks (30s limit exceeded). Failing services: [{}]",
+                        failing.join(", ")
+                    ),
                 });
             }
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(100));
         }
 
-        Ok(NativeStackHandle {
-            shutdown,
-            threads,
-            ports,
-        })
+        Ok(handle)
     }
 }
 

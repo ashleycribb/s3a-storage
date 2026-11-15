@@ -8,16 +8,19 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use s3a_harness::stack::{HealthState, StackConfig, StackManager};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct StackState {
-    pid: u32,
+    #[serde(default)]
+    pids: Vec<u32>,
+    #[serde(default)]
+    pid: Option<u32>,
     mode: String, // "native" or "docker"
     config_path: String,
 }
@@ -184,7 +187,8 @@ fn handle_up(args: &[String], _verbose: bool) {
         match status {
             Ok(s) if s.success() => {
                 record_state(StackState {
-                    pid: 0,
+                    pids: Vec::new(),
+                    pid: None,
                     mode: "docker".to_string(),
                     config_path: config_path.to_string_lossy().to_string(),
                 });
@@ -197,31 +201,20 @@ fn handle_up(args: &[String], _verbose: bool) {
     } else {
         // Native background process execution
         println!("Starting S3A stack native services in background...");
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("s3a"));
-
-        let child = Command::new(current_exe)
-            .args([
-                "stack",
-                "_serve-native",
-                "--config",
-                config_path.to_str().unwrap(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-
-        match child {
-            Ok(c) => {
-                let pid = c.id();
+        match mgr.start_native(&config) {
+            Ok(handle) => {
+                let pids = handle.pids.clone();
                 record_state(StackState {
-                    pid,
+                    pids: pids.clone(),
+                    pid: pids.first().copied(),
                     mode: "native".to_string(),
                     config_path: config_path.to_string_lossy().to_string(),
                 });
+                // Detach children to let them continue running in the background
+                std::mem::forget(handle);
             }
             Err(e) => {
-                eprintln!("Failed to spawn native stack process: {}", e);
+                eprintln!("Failed to start native stack services: {}", e);
                 std::process::exit(1);
             }
         }
@@ -317,9 +310,21 @@ fn handle_down(args: &[String], _verbose: bool) {
         if st.mode == "docker" {
             println!("Stopping Docker Compose stack...");
             let _ = Command::new("docker").args(["compose", "down"]).status();
-        } else if st.pid > 0 {
-            println!("Terminating native stack process (PID {})...", st.pid);
-            kill_process(st.pid);
+        } else {
+            let mut pids_to_kill = st.pids.clone();
+            if pids_to_kill.is_empty() {
+                if let Some(p) = st.pid {
+                    pids_to_kill.push(p);
+                }
+            }
+            for pid in pids_to_kill {
+                if pid > 0 {
+                    println!("Terminating native stack process (PID {})...", pid);
+                    if let Err(e) = kill_process_tree(pid) {
+                        eprintln!("Warning: {}", e);
+                    }
+                }
+            }
         }
     } else {
         println!("No active stack state recorded. Verifying services are down...");
@@ -327,7 +332,7 @@ fn handle_down(args: &[String], _verbose: bool) {
 
     clear_state();
 
-    // Verify all services are stopped
+    // Verify all services are stopped with hard timeout
     let config = if config_path.exists() {
         StackConfig::load(&config_path).unwrap_or_default()
     } else {
@@ -335,12 +340,21 @@ fn handle_down(args: &[String], _verbose: bool) {
     };
 
     let mgr = StackManager::new(".");
-    let status = mgr.status(&config);
+    let start = Instant::now();
+    let mut status = mgr.status(&config);
+    while start.elapsed() < Duration::from_secs(10) {
+        status = mgr.status(&config);
+        if !status.services.iter().any(|s| s.state == HealthState::Up) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 
     let any_up = status.services.iter().any(|s| s.state == HealthState::Up);
     if any_up {
         eprintln!("Warning: Some services still appear to be responding:");
         print!("{}", status.to_display());
+        std::process::exit(1);
     } else {
         println!("S3A stack successfully shut down. All services are DOWN.");
     }
@@ -406,15 +420,60 @@ fn clear_state() {
     let _ = fs::remove_file(p);
 }
 
-fn kill_process(pid: u32) {
+pub fn is_process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .output();
+        match output {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                text.contains(&pid.to_string())
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+pub fn kill_process_tree(pid: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
     #[cfg(not(windows))]
     {
+        let _ = Command::new("kill")
+            .args(["-9", &format!("-{}", pid)])
+            .output();
         let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    }
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(10);
+    while start.elapsed() < timeout {
+        if !is_process_alive(pid) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    if is_process_alive(pid) {
+        Err(format!(
+            "Timed out after 10s waiting for process PID {} to exit",
+            pid
+        ))
+    } else {
+        Ok(())
     }
 }

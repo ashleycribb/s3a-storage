@@ -458,3 +458,29 @@
      - `test_stack_cli_init_and_status`: init and status CLI verification.
 5. **CI Integration**:
    - Added `crates/s3a-cli/**` triggers and `Self-Hosted Stack & 007 Viewer Demo Test` step in `.github/workflows/harness.yml`.
+
+---
+
+## Prompt 008 Follow-Up: Real Native Binaries, Strict Health Probes, and Reliable Process Tree Lifecycle
+
+- **Status**: ALL SUCCESS
+- **Summary of Deliverables**:
+1. **Removed All Production Native Stub Listeners**:
+   - Completely deleted `spawn_native_service_listener` from `crates/s3a-harness/src/stack.rs`.
+   - `stack up --native` launches real compiled binaries (`s3a`, `s3a-lrs-server`, `s3a-harness`, `s3a-sandbox`) and tracks PIDs.
+   - Any service lacking a binary is marked `"not implemented"` with reason `"binary not found"` and never reported `UP`.
+2. **Real `GET /health` Endpoints**:
+   - Added `GET /health` returning service name, version, and dependency check JSON (`vault_opened`, `store_writable`, `sandbox_ready`, `agent_configured`, `queue_accessible`) to `s3a-cli` (gateway & MCP), `s3a-lrs-server`, `s3a-harness`, and `s3a-sandbox`.
+   - Strict health probe parser validates JSON structure, service identity, and dependency states; no loose `"contains ok"` matching.
+   - OTel service probes for real OTLP HTTP/gRPC responses; open TCP port alone is never marked UP.
+3. **Robust Process Management & Windows Pipe Handling**:
+   - Native child processes are spawned detached (`CREATE_NO_WINDOW`, `CREATE_NEW_PROCESS_GROUP`, `DETACHED_PROCESS` on Windows) with `Stdio::null()` to prevent test stdio pipe handle inheritance hangs.
+   - Process tree termination via `taskkill /F /T /PID` (Windows) or `kill -9` (Unix).
+   - PID verification (`is_process_alive`) confirms children and grandchildren are terminated before reporting DOWN.
+   - Hard timeouts on health probe loops (30s) and shutdown operations (10s) with clear diagnostics naming failing services.
+4. **Integration Tests**:
+   - `test_stack_cli_up_records_pids_and_down_stops_them` passes in under 12 seconds with explicit timeout protection.
+   - `test_kill_real_child_process_reports_down`: kills a real spawned child process and asserts status transitions to DOWN.
+   - `test_unimplemented_binary_never_up`: asserts non-existent binary reports `"not implemented"`.
+   - `test_otel_requires_real_response_not_tcp_alone`: asserts TCP connect without valid OTLP response does not report UP.
+

@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -21,6 +21,9 @@ fn main() {
     match args[1].as_str() {
         "mcp" | "mcp-server" => {
             run_mcp_server(&args[2..]);
+        }
+        "serve" => {
+            run_harness_server(&args[2..]);
         }
         "run" => {
             run_agent_cli(&args[2..]);
@@ -168,10 +171,17 @@ fn run_mcp_server(args: &[String]) {
     let mut session_uuid = generate_random_uuid_pair();
     let mut project_uuid = generate_random_uuid_pair();
     let mut agent_id = 42u64;
+    let mut http_port: Option<u16> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--port" => {
+                if i + 1 < args.len() {
+                    http_port = args[i + 1].parse().ok();
+                    i += 1;
+                }
+            }
             "--root" => {
                 if i + 1 < args.len() {
                     root_dir = PathBuf::from(&args[i + 1]);
@@ -275,6 +285,11 @@ fn run_mcp_server(args: &[String]) {
 
     let dispatcher = S3AMcpDispatcher::new(sandbox, store, project_uuid, session_uuid, agent_id);
 
+    if let Some(port) = http_port {
+        serve_mcp_http(dispatcher, port, root_dir);
+        return;
+    }
+
     eprintln!(
         "[s3a-harness] MCP Server ready on stdin/stdout (Root: {}, ReadOnly: {}, Project: {:016X}{:016X})",
         root_dir.display(), read_only, project_uuid[0], project_uuid[1]
@@ -297,6 +312,176 @@ fn run_mcp_server(args: &[String]) {
             let _ = stdout.write_all(b"\n");
             let _ = stdout.flush();
         }
+    }
+}
+
+fn serve_mcp_http(dispatcher: S3AMcpDispatcher, port: u16, root_dir: PathBuf) {
+    use std::net::TcpListener;
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "[s3a-harness] Failed to bind MCP HTTP server on 127.0.0.1:{}: {}",
+                port, e
+            );
+            std::process::exit(1);
+        }
+    };
+    eprintln!(
+        "[s3a-harness] MCP HTTP Server listening on http://127.0.0.1:{}",
+        port
+    );
+
+    for mut stream in listener.incoming().flatten() {
+        let mut buffer = [0u8; 8192];
+        let bytes_read = match stream.read(&mut buffer) {
+            Ok(n) if n > 0 => n,
+            _ => continue,
+        };
+        let req_str = String::from_utf8_lossy(&buffer[..bytes_read]);
+        let mut lines = req_str.lines();
+        let first_line = lines.next().unwrap_or("");
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let method = parts[0];
+        let url = parts[1];
+
+        if method == "OPTIONS" {
+            let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+            continue;
+        }
+
+        if method == "GET" && (url == "/health" || url.starts_with("/health?")) {
+            let sandbox_ready = root_dir.exists();
+            let status = if sandbox_ready { "ok" } else { "unhealthy" };
+            let code = if sandbox_ready {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            };
+            let body = serde_json::json!({
+                "service": "mcp",
+                "version": env!("CARGO_PKG_VERSION"),
+                "status": status,
+                "sandbox_ready": sandbox_ready,
+                "root_dir": root_dir.display().to_string(),
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                code,
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            continue;
+        }
+
+        if method == "POST" {
+            if let Some(pos) = req_str.find("\r\n\r\n") {
+                let post_body = &req_str[pos + 4..];
+                if let Some(json_resp) = dispatcher.dispatch(post_body.trim()) {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json_resp.len(),
+                        json_resp
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    continue;
+                }
+            }
+        }
+
+        let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(not_found.as_bytes());
+    }
+}
+
+fn run_harness_server(args: &[String]) {
+    use std::net::TcpListener;
+    let mut port = 8082;
+    let mut config_path = PathBuf::from("agents/scholar_reviewer.toml");
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" if i + 1 < args.len() => {
+                port = args[i + 1].parse().unwrap_or(8082);
+                i += 2;
+            }
+            "--config" if i + 1 < args.len() => {
+                config_path = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let listener = match TcpListener::bind(("127.0.0.1", port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!(
+                "[s3a-harness] Failed to bind Harness server on 127.0.0.1:{}: {}",
+                port, e
+            );
+            std::process::exit(1);
+        }
+    };
+    eprintln!(
+        "[s3a-harness] Agent Harness Server listening on http://127.0.0.1:{}",
+        port
+    );
+
+    for mut stream in listener.incoming().flatten() {
+        let mut buffer = [0u8; 4096];
+        let bytes_read = match stream.read(&mut buffer) {
+            Ok(n) if n > 0 => n,
+            _ => continue,
+        };
+        let req_str = String::from_utf8_lossy(&buffer[..bytes_read]);
+        let mut lines = req_str.lines();
+        let first_line = lines.next().unwrap_or("");
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let method = parts[0];
+        let url = parts[1];
+
+        if method == "OPTIONS" {
+            let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes());
+            continue;
+        }
+
+        if method == "GET" && (url == "/health" || url.starts_with("/health?")) {
+            let agent_configured =
+                config_path.exists() || config_path.to_str().unwrap().contains("scholar");
+            let status = if agent_configured { "ok" } else { "degraded" };
+            let body = serde_json::json!({
+                "service": "harness",
+                "version": env!("CARGO_PKG_VERSION"),
+                "status": status,
+                "agent_configured": agent_configured,
+                "config_path": config_path.display().to_string(),
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            continue;
+        }
+
+        let not_found = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(not_found.as_bytes());
     }
 }
 

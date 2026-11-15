@@ -124,6 +124,7 @@ fn handle_worker(args: &[String]) {
     let mut lease_secs: u64 = 30;
     let mut interval_ms: u64 = 250;
     let mut max_jobs: Option<usize> = None;
+    let mut health_port: Option<u16> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -144,6 +145,10 @@ fn handle_worker(args: &[String]) {
                 max_jobs = args[i + 1].parse().ok();
                 i += 2;
             }
+            "--port" if i + 1 < args.len() => {
+                health_port = args[i + 1].parse().ok();
+                i += 2;
+            }
             _ => {
                 i += 1;
             }
@@ -157,6 +162,46 @@ fn handle_worker(args: &[String]) {
             exit(1);
         }
     };
+
+    if let Some(port) = health_port {
+        let vpath = vault_path.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            use std::net::TcpListener;
+            if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+                for mut stream in listener.incoming().flatten() {
+                    let mut buf = [0u8; 1024];
+                    if let Ok(n) = stream.read(&mut buf) {
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        if req.contains("GET /health") {
+                            let queue_ok = vpath.exists();
+                            let status = if queue_ok { "ok" } else { "unhealthy" };
+                            let code = if queue_ok {
+                                "200 OK"
+                            } else {
+                                "503 Service Unavailable"
+                            };
+                            let body = serde_json::json!({
+                                "service": "sandbox",
+                                "version": env!("CARGO_PKG_VERSION"),
+                                "status": status,
+                                "queue_accessible": queue_ok,
+                                "vault_path": vpath.display().to_string(),
+                            })
+                            .to_string();
+                            let resp = format!(
+                                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                code,
+                                body.len(),
+                                body
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     let queue = WorkQueue::new(vault_path);
     let worker = SandboxWorker::new(queue).with_lease_duration(lease_secs);

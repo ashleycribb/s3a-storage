@@ -957,11 +957,22 @@ fn main() {
             run_stream_ingest_benchmark(file, duration, rate);
         }
         "serve" => {
-            let port = if args.len() >= 3 {
-                args[2].parse().unwrap_or(8080)
-            } else {
-                8080
-            };
+            let mut port = 8080;
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--port" && i + 1 < args.len() {
+                    port = args[i + 1].parse().unwrap_or(8080);
+                    i += 2;
+                } else if args[i] == "--vault" && i + 1 < args.len() {
+                    std::env::set_var("S3A_VAULT_PATH", &args[i + 1]);
+                    i += 2;
+                } else if !args[i].starts_with("--") {
+                    port = args[i].parse().unwrap_or(8080);
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
             run_server(port);
         }
         "serve-tcp" => {
@@ -4356,9 +4367,30 @@ fn handle_connection(stream: &mut TcpStream) {
         return;
     }
 
-    if method == "GET" && (url == "/api/health" || url.starts_with("/api/health?")) {
-        let resp = "{\"status\":\"online\",\"service\":\"s3a-storage-engine\",\"version\":\"0.1.0\",\"capabilities\":[\"srs_snapshot\",\"hilbert_3d\",\"mmap_intake\"]}";
-        send_response(stream, "200 OK", "application/json", resp.as_bytes());
+    if method == "GET"
+        && (url == "/health"
+            || url.starts_with("/health?")
+            || url == "/api/health"
+            || url.starts_with("/api/health?"))
+    {
+        let vault_file =
+            std::env::var("S3A_VAULT_PATH").unwrap_or_else(|_| "vault.s3a".to_string());
+        let storage_ok = S3ACrudEngine::open_or_create(&vault_file).is_ok();
+        let status_str = if storage_ok { "ok" } else { "unhealthy" };
+        let code = if storage_ok {
+            "200 OK"
+        } else {
+            "503 Service Unavailable"
+        };
+        let resp = serde_json::json!({
+            "service": "vault",
+            "version": env!("CARGO_PKG_VERSION"),
+            "status": status_str,
+            "vault_opened": storage_ok,
+            "vault_path": vault_file,
+        })
+        .to_string();
+        send_response(stream, code, "application/json", resp.as_bytes());
         return;
     }
 
