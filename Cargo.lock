@@ -1988,7 +1988,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "s3a-cabi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "s3a-core",
  "s3a-engine",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2030,17 +2030,18 @@ dependencies = [
 
 [[package]]
 name = "s3a-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
+ "serde",
  "sha2 0.10.9",
  "xxhash-rust",
 ]
 
 [[package]]
 name = "s3a-edge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "ed25519-dalek",
@@ -2049,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "cmpv2",
@@ -2086,7 +2087,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-exp-neighbor-delta"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crc32c",
  "s3a-core",
@@ -2095,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-flat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crc32c",
  "s3a-core",
@@ -2105,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2134,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-ledger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "s3a-core",
  "serde",
@@ -2143,7 +2144,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-lrs-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2165,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-clean"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2182,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-da"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2193,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-gis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2204,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-ontology"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "s3a-core",
@@ -2213,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-robotics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2224,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-scholar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2233,16 +2234,19 @@ dependencies = [
  "memmap2",
  "s3a-core",
  "s3a-engine",
+ "s3a-harness",
  "s3a-simd",
+ "s3a-wasm-snapshot",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "unicode-normalization",
  "ureq",
 ]
 
 [[package]]
 name = "s3a-pack-tdp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2258,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-pack-wearable"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2268,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-runledger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -2280,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2302,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-simd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "s3a-core",
@@ -2310,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-spec-vectors"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2329,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-swarm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2352,7 +2356,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-timestamp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sha2 0.10.9",
  "ureq",
@@ -2360,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-trace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "s3a-core",
  "serde",
@@ -2369,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-vault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "bytemuck",
@@ -2392,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-vcs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "crc32c",
@@ -2412,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "s3a-wasm-snapshot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "console_error_panic_hook",
@@ -2425,6 +2429,8 @@ dependencies = [
  "s3a-pack-ontology",
  "s3a-pack-scholar",
  "s3a-simd",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "wasm-bindgen",
 ]

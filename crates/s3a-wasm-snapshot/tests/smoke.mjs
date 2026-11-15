@@ -32,4 +32,52 @@ ok(!throws(()=>{for(let i=0;i<3;i++) s.verify_committee_decision(i,pub);}),'veri
 const w=throws(()=>s.verify_committee_decision(0,wrong)); ok(w,'verify fails with wrong key: '+w);
 const bv=throws(()=>decide(s,0,'bad')); ok(bv,'verdict 0 throws: '+bv);
 const e=throws(()=>S.new_session('0123456789abcdef0123456789abcde0').set_consent(true,1,'')); ok(e,'set_consent empty study_id throws: '+e);
+
+// Test put_paper and get_paper
+const paperJson = JSON.stringify({
+  key: "10.1234/test.paper",
+  doi: "10.1234/test.paper",
+  aliases: ["test-alias"],
+  title: "Attention Is All You Need",
+  authors: [{ name: "Ashish Vaswani", orcid: "0000-0001-2345-6789" }],
+  abstract_text: "The dominant sequence transduction models...",
+  venue: "NeurIPS",
+  year: 2017,
+  language: "en",
+  license: "CC-BY-4.0",
+  source_url: "https://arxiv.org/abs/1706.03762"
+});
+const b3 = m.put_paper(b1, paperJson);
+ok(b3.length > b1.length, 'put_paper appended hyper-tile');
+const fetched = m.get_paper(b3, "10.1234/test.paper");
+ok(fetched && fetched.title === "Attention Is All You Need" && fetched.authors[0].name === "Ashish Vaswani", 'get_paper retrieved paper record');
+
+// Test add_edge and list_edges with retraction
+const edge1 = JSON.stringify({
+  source_key: "paper-A",
+  target_key: "paper-B",
+  edge_type: "cites",
+  provenance_actor: "researcher-1",
+  provenance_timestamp: "2026-11-15T12:00:00Z"
+});
+const b4 = m.add_edge(b3, edge1);
+const edgesBefore = m.list_edges(b4, "paper-A", "cites");
+ok(Array.isArray(edgesBefore) && edgesBefore.length === 1, 'list_edges returned 1 citation edge');
+
+const retractEdge = JSON.stringify({
+  source_key: "paper-A",
+  target_key: "paper-B",
+  edge_type: "cites",
+  provenance_actor: "researcher-1",
+  provenance_timestamp: "2026-11-15T13:00:00Z",
+  is_retraction: true
+});
+const b5 = m.add_edge(b4, retractEdge);
+const edgesAfter = m.list_edges(b5, "paper-A", "cites");
+ok(Array.isArray(edgesAfter) && edgesAfter.length === 0, 'list_edges resolved retraction append-only');
+
+// Test read_embedded_registry
+const regInfo = m.read_embedded_registry(b5);
+ok(regInfo && regInfo.spec_version && Array.isArray(regInfo.types) && regInfo.types.length > 0, 'read_embedded_registry returned spec_version and types');
+
 console.log(`SMOKE PASS ${n}/${n}`);

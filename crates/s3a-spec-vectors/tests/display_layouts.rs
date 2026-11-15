@@ -309,21 +309,17 @@ fn every_tile_of_the_edge_vectors_with_a_known_type_resolves() {
 }
 
 #[test]
-fn display_layouts_do_not_leak_into_the_sealing_schema() {
-    // The sealing path (`standard_schema_for_type`) writes into files; it must keep emitting
-    // the same fallback for these types, i.e. no layout added by this metadata registry.
-    for t in [
-        TileType::STATEMENT_INDEX,
-        TileType::RECORD_ROOT,
-        TileType::RECORD,
-        12,
-        14,
-        15,
-    ] {
+fn sealing_schema_embeds_real_field_definitions() {
+    // Under Prompt 009 C, every sealed archive embeds real tile-type registry entries
+    // with named field descriptors so readers with no pack code can list and decode fields.
+    for t in [TileType::STATEMENT_INDEX, TileType::RECORD_ROOT, 12, 14, 15] {
         let d = s3a_engine::standard_schema_for_type(t);
-        // Fallback is one opaque `record_data` field (type 64 has none); never a named layout.
-        assert!(d.fields.iter().all(|f| f.name == "record_data"), "type {t}");
-        assert!(d.fields.len() <= 1, "type {t}");
+        assert!(!d.fields.is_empty(), "type {t} must have fields");
+        assert!(
+            d.fields.iter().any(|f| f.name != "record_data"),
+            "type {t} must have real named fields, got {:?}",
+            d.fields
+        );
     }
 }
 

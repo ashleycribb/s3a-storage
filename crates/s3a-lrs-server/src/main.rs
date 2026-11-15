@@ -1044,7 +1044,25 @@ fn handle_request(mut req: Request, state: Arc<AppState>) {
     // -------------------------------------------------------------------------
     if (path == "/health" || path == "health") && (method == Method::Get || method == Method::Head)
     {
-        let store_writable = state.default_store.archive_path().exists();
+        let store_writable = {
+            let p = state.default_store.archive_path();
+            let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let test_file = dir.join(format!(
+                ".write_test_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            match std::fs::write(&test_file, b"ok") {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&test_file);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
         let status_str = if store_writable { "ok" } else { "degraded" };
         let health_json = serde_json::json!({
             "service": "lrs",

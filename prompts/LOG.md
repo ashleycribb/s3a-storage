@@ -344,3 +344,27 @@ Notes:
   3. Fixed Windows test pipe hang by spawning detached background processes with `Stdio::null()`.
   4. Process tree termination via `taskkill /F /T /PID` (Windows) and `kill -9` (Unix); verified PID absence with hard timeouts.
 
+
+---
+
+## 009-scholar-records-graph-edges-self-describing, 2026-11-15 16:20
+Status: done
+Commit: HEAD
+Changed: Cargo.toml, Cargo.lock, crates/s3a-core/**, crates/s3a-engine/**, crates/s3a-pack-scholar/**, crates/s3a-wasm-snapshot/**, crates/s3a-cli/**, crates/s3a-spec-vectors/**, crates/s3a-harness/**, docs/spec/**, conformance/**, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy --workspace --all-targets: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
+  - cargo test -p s3a-pack-scholar --test prompt009_tests: passed (6/6 passed)
+  - cargo test -p s3a-spec-vectors --test spec_fields_check: passed
+  - cargo test -p s3a-spec-vectors --test conformance_suite: passed (4/4 passed)
+  - cargo test --workspace: passed (806/806 passed across 137 test suites)
+Notes:
+  1. Implemented ScholarPaperRecord with canonical paper key, DOI/aliases, title, ordered authors (ORCID when known), abstract, venue, year, language, license, and source URL in s3a-pack-scholar. Text normalized to NFC UTF-8; dates formatted in UTC ISO-8601; abstracts spill into continuation blob tiles. Missing fields stored as absent (never 0 or "").
+  2. Implemented ScholarGraphEdge with source key, target key, edge type (cites, cited-by, alias-of, custom), provenance, and schema version. Edges are append-only; retractions are new records with edge type "retraction". Added query API to filter edges by node and relation.
+  3. Embedded self-describing tile-type registry in every sealed archive covering all tile types used and spec version; sealing fails if any tile is unregistered. Added spec_fields_check CI test ensuring all registry fields match docs/spec/registry.md.
+  4. Added monotonic sequence numbers in tile headers (offset 492..496) covered by CRC-32C checksum; recovery selects newest valid copy by sequence number. Backward compatible with legacy v1.0 archives (treated as sequence 0).
+  5. Implemented `s3a rebuild-indexes` CLI command and engine function to drop and rebuild index tiles from data tiles alone; verified identical query answers.
+  6. Exposed put_paper, get_paper, add_edge, list_edges, and read_embedded_registry via wasm-dist. Bumped workspace package version to 0.2.0 and updated wasm-dist CI workflow to publish v0.2.0.
+  7. Completed 008 tidy-ups: OTel UP only on 200/204; LRS store_writable real temp file write+delete; vault health check read-only; --insecure-dev passed only when configured, reporting (dev mode).

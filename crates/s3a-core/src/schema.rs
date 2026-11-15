@@ -48,6 +48,7 @@ pub struct CompactSchemaFieldRecord {
 
 /// High-level representation of a schema field definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SchemaFieldDefinition {
     pub field_id: u16,
     pub field_type: u16,
@@ -59,6 +60,7 @@ pub struct SchemaFieldDefinition {
 
 /// High-level representation of a registered tile type schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SchemaTypeDefinition {
     pub type_id: u32,
     pub type_version: u32,

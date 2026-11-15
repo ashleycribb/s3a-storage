@@ -2834,10 +2834,63 @@ impl LrsStore {
             return Err(LrsStoreError::StatementNotVoided);
         }
 
-        let raw_json = entry
-            .raw_json
-            .clone()
-            .ok_or(LrsStoreError::StatementNotFound)?;
+        let raw_json = match &entry.raw_json {
+            Some(j) => j.clone(),
+            None => {
+                let reader = MmapReader::open(&self.archive_path)?;
+                let mut tile = reader.get_tile(entry.index_record.body_tile_id as usize);
+                if tile.is_none() || tile.unwrap().0.tile_type != TILE_STATEMENT_BODY {
+                    tile = reader.get_tile_by_id(entry.index_record.body_tile_id as u64);
+                }
+                if let Some((header, payload)) = tile {
+                    if header.tile_type == TILE_STATEMENT_BODY
+                        && payload.len() >= std::mem::size_of::<StatementBlobHeader>()
+                    {
+                        let blob_hdr: &StatementBlobHeader =
+                            &bytemuck::pod_read_unaligned::<StatementBlobHeader>(
+                                &payload[..std::mem::size_of::<StatementBlobHeader>()],
+                            );
+                        let total_chunks = blob_hdr.total_chunks;
+                        let mut assembled_bytes = Vec::with_capacity(blob_hdr.total_bytes as usize);
+                        let chunk_data = &payload[std::mem::size_of::<StatementBlobHeader>()..];
+                        assembled_bytes
+                            .extend_from_slice(&chunk_data[..blob_hdr.chunk_bytes as usize]);
+                        if total_chunks > 1 {
+                            for c in 1..total_chunks {
+                                if let Some((_, next_payload)) =
+                                    reader.get_tile(header.tile_index as usize + c as usize)
+                                {
+                                    if next_payload.len()
+                                        >= std::mem::size_of::<StatementBlobHeader>()
+                                    {
+                                        let next_hdr: &StatementBlobHeader =
+                                            &bytemuck::pod_read_unaligned::<StatementBlobHeader>(
+                                                &next_payload
+                                                    [..std::mem::size_of::<StatementBlobHeader>()],
+                                            );
+                                        let next_data = &next_payload
+                                            [std::mem::size_of::<StatementBlobHeader>()..];
+                                        assembled_bytes.extend_from_slice(
+                                            &next_data[..next_hdr.chunk_bytes as usize],
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        String::from_utf8(assembled_bytes).map_err(|e| {
+                            LrsStoreError::CorruptedData(format!(
+                                "Invalid UTF-8 in statement body: {}",
+                                e
+                            ))
+                        })?
+                    } else {
+                        return Err(LrsStoreError::StatementNotFound);
+                    }
+                } else {
+                    return Err(LrsStoreError::StatementNotFound);
+                }
+            }
+        };
 
         // Collect attachments if requested
         let mut atts = Vec::new();

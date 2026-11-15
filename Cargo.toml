@@ -32,7 +32,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["S3A Architecture Contributors"]
 license = "MIT OR Apache-2.0"
@@ -51,6 +51,7 @@ hex = "0.4"
 humantime = "2.1"
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
 miniz_oxide = "0.8"
+unicode-normalization = "0.1"
 
 
 

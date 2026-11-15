@@ -16,14 +16,19 @@ pub mod committee;
 pub mod display_layouts;
 pub mod evidence;
 pub mod ext;
+pub mod graph_edge;
 pub mod ingest;
 pub mod pack;
+pub mod paper;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod recheck;
 pub mod records;
 pub mod snapshot;
 pub mod sync;
 pub mod xapi;
+
+pub use graph_edge::{ScholarEdgeBlobHeader, ScholarGraphEdge};
+pub use paper::{ScholarAuthor, ScholarPaperBlobHeader, ScholarPaperRecord};
 
 pub use committee::{
     committee_comment_hash, committee_reviewer_hash, committee_submission_hash,

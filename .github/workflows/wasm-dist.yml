@@ -73,10 +73,15 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $AUTH" clone https://github.com/ashleycribb/s3a-wasm-dist.git dist
           cd dist
           git -c http.extraheader="AUTHORIZATION: basic $AUTH" fetch --tags
-          LAST=$(git tag -l 'v*' --sort=-v:refname | head -n1)
-          LAST=${LAST:-v0.1.0}
-          IFS=. read -r MA MI PA <<<"${LAST#v}"
-          VER="v${MA}.${MI}.$((PA+1))"
+          PKG_VER=$(node -p "require('../crates/s3a-wasm-snapshot/pkg/package.json').version")
+          IFS=. read -r PKG_MA PKG_MI PKG_PA <<<"${PKG_VER}"
+          LAST=$(git tag -l "v${PKG_MA}.${PKG_MI}.*" --sort=-v:refname | head -n1)
+          if [ -n "$LAST" ]; then
+            IFS=. read -r MA MI PA <<<"${LAST#v}"
+            VER="v${MA}.${MI}.$((PA+1))"
+          else
+            VER="v${PKG_MA}.${PKG_MI}.0"
+          fi
           SRC=../crates/s3a-wasm-snapshot/pkg
           for d in "$VER" latest; do
             rm -rf "$d"; mkdir -p "$d"

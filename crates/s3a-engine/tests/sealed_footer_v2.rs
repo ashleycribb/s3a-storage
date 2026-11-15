@@ -12,17 +12,26 @@ use s3a_engine::{
     verify_sealed_archive, AnchorProof, SealOptionsV2, TileWriter,
 };
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 struct TempTestFile {
     path: PathBuf,
 }
 
 impl TempTestFile {
     fn new(suffix: &str) -> Self {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("s3a_sealed_v2_{}_{}", unique, suffix));
+        let path = std::env::temp_dir().join(format!(
+            "s3a_sealed_v2_{}_{}_{}_{}",
+            pid, unique, id, suffix
+        ));
         Self { path }
     }
 }

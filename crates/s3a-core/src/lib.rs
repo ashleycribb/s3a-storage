@@ -776,7 +776,7 @@ impl Default for TileLearnedIndex {
 /// - Self-addressing:
 ///   - generation: 8 bytes (480..488)
 ///   - tile_index: 4 bytes (488..492)
-///   - _reserved_addr: 4 bytes (492..496)
+///   - sequence_number: 4 bytes (492..496)
 ///   - file_uuid: 16 bytes (496..512)
 /// Total = 48 + 208 + 128 + 32 + 24 + 16 + 16 + 8 + 8 + 4 + 4 + 16 = 512 bytes.
 #[repr(C, align(8))]
@@ -800,7 +800,7 @@ pub struct HyperTileHeader {
     pub learned_index: TileLearnedIndex,
     pub generation: u64,
     pub tile_index: u32,
-    pub _reserved_addr: u32,
+    pub sequence_number: u32,
     pub file_uuid: [u64; 2],
 }
 
@@ -833,9 +833,13 @@ impl HyperTileHeader {
             learned_index: TileLearnedIndex::default(),
             generation: 1,
             tile_index: 0,
-            _reserved_addr: 0,
+            sequence_number: 0,
             file_uuid: [0, 0],
         }
+    }
+
+    pub fn sequence_number(&self) -> u32 {
+        self.sequence_number
     }
 }
 

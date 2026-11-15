@@ -40,6 +40,21 @@ pub struct StackSection {
     pub data_dir: PathBuf,
     #[serde(default = "default_log_dir")]
     pub log_dir: PathBuf,
+    #[serde(default)]
+    pub dev: bool,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+impl StackSection {
+    pub fn is_dev(&self) -> bool {
+        self.dev
+            || self
+                .mode
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("dev"))
+                .unwrap_or(false)
+    }
 }
 
 fn default_host() -> String {
@@ -169,6 +184,8 @@ impl Default for StackConfig {
                 host: "127.0.0.1".to_string(),
                 data_dir: PathBuf::from("./data"),
                 log_dir: PathBuf::from("./logs"),
+                dev: false,
+                mode: None,
             },
             model: ModelSection {
                 provider: "local".to_string(),
@@ -317,6 +334,8 @@ impl StackConfig {
                         "host" => config.stack.host = unquote(v),
                         "data_dir" => config.stack.data_dir = PathBuf::from(unquote(v)),
                         "log_dir" => config.stack.log_dir = PathBuf::from(unquote(v)),
+                        "dev" => config.stack.dev = parse_bool(v),
+                        "mode" => config.stack.mode = Some(unquote(v)),
                         _ => {}
                     },
                     "model" => match k {
@@ -420,6 +439,7 @@ name = "{name}"
 host = "{host}"
 data_dir = "{data_dir}"
 log_dir = "{log_dir}"
+dev = {dev}
 
 [model]
 provider = "{provider}"
@@ -461,6 +481,7 @@ grpc_port = {otel_grpc_port}
             host = self.stack.host,
             data_dir = self.stack.data_dir.display(),
             log_dir = self.stack.log_dir.display(),
+            dev = self.stack.is_dev(),
             provider = self.model.provider,
             model_name = self.model.model_name,
             base_url = self.model.base_url,
@@ -809,14 +830,17 @@ pub struct StackStatus {
     pub host: String,
     pub overall: HealthState,
     pub services: Vec<ServiceStatus>,
+    #[serde(default)]
+    pub dev_mode: bool,
 }
 
 impl StackStatus {
     pub fn to_display(&self) -> String {
         let mut out = String::new();
+        let dev_label = if self.dev_mode { " (dev mode)" } else { "" };
         out.push_str(&format!(
-            "S3A Stack: {} [{}]\n",
-            self.stack_name, self.overall
+            "S3A Stack: {} [{}]{}\n",
+            self.stack_name, self.overall, dev_label
         ));
         out.push_str("----------------------------------------------------------------------\n");
         out.push_str(&format!(
@@ -921,15 +945,15 @@ pub fn check_service_health(host: &str, port: u16, kind: ServiceKind) -> Service
                     }
                 }
             }
-            Err(ureq::Error::Status(status, _)) if status == 404 || status == 405 => {
+            Err(ureq::Error::Status(status, _)) => {
                 let elapsed = start.elapsed().as_millis() as u64;
                 ServiceStatus {
                     service: "otel".to_string(),
                     enabled: true,
                     port: Some(port),
-                    state: HealthState::Up,
+                    state: HealthState::Unhealthy,
                     latency_ms: Some(elapsed),
-                    detail: format!("OTel receiver active (HTTP {}, {}ms)", status, elapsed),
+                    detail: format!("OTel HTTP error status {}", status),
                     pid: None,
                 }
             }
@@ -1309,6 +1333,7 @@ impl StackManager {
             host: config.stack.host.clone(),
             overall,
             services,
+            dev_mode: config.stack.is_dev(),
         }
     }
 
@@ -1354,18 +1379,18 @@ impl StackManager {
                 })?;
             let port_str = config.services.lrs.port.to_string();
             let data_dir_str = config.stack.data_dir.to_str().unwrap();
-            let child = spawn_stack_child(
-                &bin,
-                &[
-                    "--port",
-                    &port_str,
-                    "--data-dir",
-                    data_dir_str,
-                    "-a",
-                    &config.services.lrs.archive,
-                    "--insecure-dev",
-                ],
-            )?;
+            let mut lrs_args = vec![
+                "--port",
+                &port_str,
+                "--data-dir",
+                data_dir_str,
+                "-a",
+                &config.services.lrs.archive,
+            ];
+            if config.stack.is_dev() {
+                lrs_args.push("--insecure-dev");
+            }
+            let child = spawn_stack_child(&bin, &lrs_args)?;
             pids.push(child.id());
             children.push(child);
             services.push("lrs".to_string());

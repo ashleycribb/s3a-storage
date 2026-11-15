@@ -380,7 +380,7 @@ fn v1_1_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
     let off = s3a_core::FILE_HEADER_SIZE;
     let hsz = std::mem::size_of::<s3a_core::HyperTileHeader>();
     let mut h: s3a_core::HyperTileHeader = bytemuck::pod_read_unaligned(&b[off..off + hsz]);
-    h._reserved_addr = 0xDEAD_BEEF;
+    h.sequence_number = 0xDEAD_BEEF;
     h.header_crc32 = s3a_engine::compute_tile_header_crc32(&h);
     b[off..off + hsz].copy_from_slice(bytemuck::bytes_of(&h));
     g.file("reserved_tile_header_nonzero", &w("r1", &b), "reader",

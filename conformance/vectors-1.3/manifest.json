@@ -13,7 +13,7 @@
       "id": "valid_empty",
       "kind": "archive",
       "level": "reader",
-      "sha256": "6c1efd9198561d173896dfe59ea3e7dceae21a2f8eedb962dd89506fa035f33f",
+      "sha256": "0fcb7b29afc07f63fbc602dd67fe58ae15533de632609953aeb9a085fa922235",
       "size": 512
     },
     {
@@ -28,7 +28,7 @@
       "id": "valid_single_tile_core",
       "kind": "archive",
       "level": "reader",
-      "sha256": "ee14e9c10963960055cc43f45d2eb308fefc0c02436fc3cfada1e3a1d100aa54",
+      "sha256": "dd19c02546ba87220b2fc99e965a277b8ac890386a25d1bc459c951b2decde6a",
       "size": 131584
     },
     {
@@ -43,7 +43,7 @@
       "id": "valid_multi_tile",
       "kind": "archive",
       "level": "reader",
-      "sha256": "18721dd4fbdfe42492869e5ec898c8439bd456d1e24fc38552250575928afd95",
+      "sha256": "61d3c6865e67d9775e4b6cde339dd0f2a0bfa525cd59c8e5499071a8b81140b8",
       "size": 393728
     },
     {
@@ -58,7 +58,7 @@
       "id": "valid_after_compaction",
       "kind": "archive",
       "level": "reader",
-      "sha256": "558ceccf2556f9f2e71eb8e0ee0803c7b6e6933e9b2148e99c7e3d9d2d28fb17",
+      "sha256": "a7bb330b9abde34dbe382030a8fe17dc37a387a2805ab7be8a59bead026c69f0",
       "size": 262656
     },
     {
@@ -73,7 +73,7 @@
       "id": "valid_dual_header_slots",
       "kind": "archive",
       "level": "reader",
-      "sha256": "9ae564d6b9cbb0e1f6e35800b6b356f478a2a88885072f770019aa112398612c",
+      "sha256": "06b109be9f2ae349595b124e9903c07b70845ba9b8a9a76d69aa18e0568f0eeb",
       "size": 131584
     },
     {
@@ -88,7 +88,7 @@
       "id": "valid_unknown_tile_type",
       "kind": "archive",
       "level": "reader",
-      "sha256": "d746427ab475b618c6e55663076d508bb18166913206e900c63934a5e5ae4f87",
+      "sha256": "264df7b19be900d04e6c9bfe703642cd33a38456c2cc51d340edc1f6e458f235",
       "size": 131584
     },
     {
@@ -103,7 +103,7 @@
       "id": "valid_schema_catalog",
       "kind": "archive",
       "level": "reader",
-      "sha256": "db07d0d39d9f5f4d85ecafbf6038d64a7ecab304d9ecaff605cedb7922fdfb5d",
+      "sha256": "d9fd0bca694d8773596e3056d1b46a69743d91152c0ce7abb28945447785bcb0",
       "size": 262656
     },
     {
@@ -112,14 +112,14 @@
         "active_slot": 0,
         "generation": 5,
         "outcome": "ok",
-        "tile_count": 3
+        "tile_count": 4
       },
       "file": "files/valid_snapshot_container.s3a",
       "id": "valid_snapshot_container",
       "kind": "archive",
       "level": "reader",
-      "sha256": "a7c54a11c6e5f2a374db2772558fc90dc347acf462208e09aed2e6ef5bf7c3c7",
-      "size": 656304
+      "sha256": "348ceea2f8d4b9dd3c48fc1eb6c6f7ef3ac96853bc04f5c8819e940cc08da06e",
+      "size": 787456
     },
     {
       "description": "Record masked by active MARK_CONSENT_WITHDRAWN; hidden in default queries, visible with include_hidden",
@@ -133,7 +133,7 @@
       "id": "valid_protected_mark_hidden",
       "kind": "archive",
       "level": "reader",
-      "sha256": "6c9f8b46e7c5153401130ae9c8d3c1c8b326d7cc9ac6bf8550731de9c4bfdff8",
+      "sha256": "1a30d0ce0a4fc578818eeb8aef5980cb755b9d20eabbe76a694dc876e3cd6da9",
       "size": 262656
     },
     {
@@ -145,7 +145,7 @@
       "id": "invalid_bad_magic",
       "kind": "archive",
       "level": "reader",
-      "sha256": "2fcf4f9431c4ee165fad29308f3c70f2aaae35e803ae602ecac6e566ccf7c054",
+      "sha256": "49f170ac65ab9fd895b90ce404a6ffb65c76f90b80a7be87a5cb3845beb61b4d",
       "size": 512
     },
     {
@@ -157,7 +157,7 @@
       "id": "invalid_both_slots_corrupt",
       "kind": "archive",
       "level": "reader",
-      "sha256": "891aba21ba61b405c82fa616dfcd8332d8bb7dd97e441673224096d88f6fcdd9",
+      "sha256": "af34807b863e99cdc08bec9eb9c12c530531b2154a9d02111ed59df7cac822b8",
       "size": 131584
     },
     {
@@ -172,7 +172,7 @@
       "id": "invalid_torn_write_fallback",
       "kind": "archive",
       "level": "reader",
-      "sha256": "8f7d5f29c581fe70cb6a1052da0b223d4eb7dc6b6f9f99dd613d87d8f75686ec",
+      "sha256": "853fec91bbe70b98bd123c701e557035204ccc39909b3fb39a872d96c24d5af9",
       "size": 131584
     },
     {
@@ -184,7 +184,7 @@
       "id": "invalid_tile_crc_mismatch",
       "kind": "archive",
       "level": "reader",
-      "sha256": "4623dc2d88c6da911b45a459d3c1f2a7da0a9ad323ad72924d9011d9129bc77f",
+      "sha256": "3b1b11e1c7045bd65362b15609c63d27228e32503ecd5d2ea557ae29f04755b1",
       "size": 131584
     },
     {
@@ -196,7 +196,7 @@
       "id": "invalid_truncated_tile",
       "kind": "archive",
       "level": "reader",
-      "sha256": "b8cef50fbeac093448daba36a2f464df6f29c4d4d09d440e386ddd1b19e538ca",
+      "sha256": "81aa3b70616aa6dee13f0085b3e76916f9aac4da12535e992a5a6a070424e6f5",
       "size": 60000
     },
     {
@@ -208,7 +208,7 @@
       "id": "invalid_unsupported_layout_version",
       "kind": "archive",
       "level": "reader",
-      "sha256": "05829860f33ad6aaacd1924e9edc71b2745a5022b754f1ae2f047d4e5eb8f5ce",
+      "sha256": "811b9d09a39a978013d82e666556fdf6f768fb9e16b6a45e53164d953751dbcd",
       "size": 131584
     },
     {
@@ -219,14 +219,14 @@
         "is_sealed": true,
         "outcome": "ok",
         "repaired_tiles": 0,
-        "tile_count": 2
+        "tile_count": 3
       },
       "file": "files/sealed_ok.s3a",
       "id": "sealed_ok",
       "kind": "archive",
       "level": "reader",
-      "sha256": "ee17550e4c6b2d6659235af7d3e1e4c1c7ff320a17b9cf9c336e0f1065be3997",
-      "size": 525152
+      "sha256": "e44edc45a1e986764f3bbcd2ec2cbc1e4eada2509633c6ae178f276600cad4d9",
+      "size": 656304
     },
     {
       "description": "Sealed archive with footer missing; reader rebuilds directory by scanning self-addressed tiles",
@@ -241,7 +241,7 @@
       "id": "sealed_footer_missing",
       "kind": "archive",
       "level": "reader",
-      "sha256": "13bf82ef49f9192f54ed20bb0b33d0f7ad5d07fbe154d40ef718413e7853d971",
+      "sha256": "73bb59e826fd2fd191696abc481a2934f88e804b4b0d6309a906e6e427a3b67f",
       "size": 131584
     },
     {
@@ -251,14 +251,14 @@
         "generation": 2,
         "is_sealed": false,
         "outcome": "ok",
-        "tile_count": 1
+        "tile_count": 2
       },
       "file": "files/sealed_endcap_corrupt.s3a",
       "id": "sealed_endcap_corrupt",
       "kind": "archive",
       "level": "reader",
-      "sha256": "3a7246645a02c9de70255f9a85a7fb45f8d8eed45e205a819e3cb9b2b851afee",
-      "size": 394000
+      "sha256": "7a21a0b7184843d44a1c5e40750d1a81e3624101e613b797a1a53e114d70a797",
+      "size": 525152
     },
     {
       "description": "Sealed archive truncated in the middle of a hyper-tile; reader must reject with SealedTruncated error",
@@ -269,7 +269,7 @@
       "id": "sealed_truncated_mid_tile",
       "kind": "archive",
       "level": "reader",
-      "sha256": "a227bc30a3ab5009a1dd4944f88c95ba8ed82596aee5a40f89a840f98ea18149",
+      "sha256": "289ab5b3c8281b84e0e27fde6ca594c49dfac9ba0adc5dde05142b31b66e20a4",
       "size": 66048
     },
     {
@@ -280,14 +280,14 @@
         "is_sealed": true,
         "outcome": "repaired",
         "repaired_tiles": 1,
-        "tile_count": 2
+        "tile_count": 3
       },
       "file": "files/one_tile_corrupt_repaired.s3a",
       "id": "one_tile_corrupt_repaired",
       "kind": "archive",
       "level": "reader",
-      "sha256": "32c3945f17593809cb8abf1edb79f4d503f0c5c6d8d13037badfad85362ee0f2",
-      "size": 525152
+      "sha256": "83abd82b275c0638f24978a61fa71d0987b045debb2cc521113855d07d355dd0",
+      "size": 656304
     },
     {
       "description": "Sealed archive with 3 corrupted data tiles in a single group with M=2; exceeds RS parity capacity and must fail closed",
@@ -298,8 +298,8 @@
       "id": "three_tiles_corrupt_in_one_group",
       "kind": "archive",
       "level": "reader",
-      "sha256": "137669c10f4f795977f55551d6c3968088c9980a546048a5a2ba601e3ed6f967",
-      "size": 656304
+      "sha256": "de9da1b51aeaf3081810791e47b08a4dab1437d78ed7ba1670bc47f02710894d",
+      "size": 787456
     },
     {
       "description": "Sealed archive whose tiles on disk are out of order; reader reassembles them correctly by tile_index",
@@ -315,7 +315,7 @@
       "id": "tiles_out_of_order",
       "kind": "archive",
       "level": "reader",
-      "sha256": "df29f45e4d8961ccd61ff1553854aca8db12d3d7cd818f6230a0111b409cdb56",
+      "sha256": "9439451368d7207b0fead2471248442c1909da3c607b424d9a250a2ad8392c88",
       "size": 525152
     },
     {
@@ -327,7 +327,7 @@
       "id": "foreign_tile",
       "kind": "archive",
       "level": "reader",
-      "sha256": "4c687df92611b3c0c3c01a7d3ca378395ad7fd55b1e54ac2decefa3bc785e761",
+      "sha256": "95f6cc56e6c4c8cd01975dc5976a494456e9206ed89c31780b0f72e3b2780886",
       "size": 262656
     },
     {
@@ -343,7 +343,7 @@
       "id": "legacy_unaddressed_tiles",
       "kind": "archive",
       "level": "reader",
-      "sha256": "635bf178899c8c0e1fcdebecb79d93b05efdeb0c5919aabc3ddabbe68a57a04b",
+      "sha256": "cb18436564f00e6cf87170562c8f99da545dd8d1387f2a6d14884f804c4e25d0",
       "size": 131584
     },
     {
@@ -404,7 +404,7 @@
       "id": "vault_transfer_chain",
       "kind": "archive",
       "level": "reader",
-      "sha256": "5956384de0ba8ca52a44e56a48ac7a2d5bf2ab6f8fb6aa2e74b1209561021ef1",
+      "sha256": "636786896be0bbc8b828e763a3681916c82e54c08be93336e97b5bb39bf5c5e5",
       "size": 1049088
     },
     {
@@ -417,7 +417,7 @@
       "id": "vault_delegation_governance",
       "kind": "archive",
       "level": "reader",
-      "sha256": "fa20be4220821cb2d3697dc7ccbeeebcbb4b5328421ac76daa387ce348fb35dc",
+      "sha256": "d1ac42cbf4350d083bc761cc6b5433e9847ea2d97c6fe5c899bf3f02dc8c2850",
       "size": 524800
     },
     {
@@ -430,7 +430,7 @@
       "id": "vault_key_revocation",
       "kind": "archive",
       "level": "reader",
-      "sha256": "0d1e6363688dd78550659fe46b589aadd64a651cc88ee8bab2da005c36e24483",
+      "sha256": "6b464709080017e5138bde60f57dab2ef519cc6e07f45c88bae1bc9f0ed6aaf3",
       "size": 524800
     },
     {
@@ -443,7 +443,7 @@
       "id": "vault_vc_import",
       "kind": "archive",
       "level": "reader",
-      "sha256": "c957363f46bb242972951e67e0e2ad05eef8541934c558384d30b5268518584c",
+      "sha256": "13f0ac6ad3dedad3d364b6598afa1660104fbf2fa973fbb241e0889a0778856d",
       "size": 655872
     },
     {
@@ -475,7 +475,7 @@
       "id": "legacy_v1_0_migrated",
       "kind": "archive",
       "level": "reader",
-      "sha256": "22d9ad5697fe6b552dfae63b5ca9d2901ff174b668fb18e48eee1afcb85b6fb4",
+      "sha256": "d15a6cf0b433a322c65d6c00525400d00a5bea0ee970156c4ff035dccd52c2b5",
       "size": 262656
     },
     {
@@ -489,7 +489,7 @@
       "id": "record_roots_ok",
       "kind": "archive",
       "level": "reader",
-      "sha256": "745d2c0f2c766667dc42a2a406a46b2b5508700627e5706c28c5e804cb0a5a9a",
+      "sha256": "a1c9e8c77c7424b4e71bde7827e3f01fee978c5ecd9232f0dffb776336366c5a",
       "size": 394160
     },
     {
@@ -502,7 +502,7 @@
       "id": "record_roots_mismatch",
       "kind": "archive",
       "level": "reader",
-      "sha256": "6678d6fb2f78668556f61e7af1bf1366ef274af0a78c24c4f49784693390cb71",
+      "sha256": "7dbf4089b4c81144b5fa58064955944b72c717b858063f14f55d3cfacaebbac5",
       "size": 394160
     },
     {
@@ -514,8 +514,8 @@
       "id": "record_roots_absent",
       "kind": "archive",
       "level": "reader",
-      "sha256": "ee17550e4c6b2d6659235af7d3e1e4c1c7ff320a17b9cf9c336e0f1065be3997",
-      "size": 525152
+      "sha256": "e44edc45a1e986764f3bbcd2ec2cbc1e4eada2509633c6ae178f276600cad4d9",
+      "size": 656304
     },
     {
       "description": "Valid RFC 6962 audit path",
@@ -862,7 +862,7 @@
       "id": "reserved_tile_header_nonzero",
       "kind": "archive",
       "level": "reader",
-      "sha256": "bacdc0470fe25e98f1c1ebcc7b6622a580779269dabf982f044a6336ddb3425b",
+      "sha256": "9afa197770d12148fba364a9b7625e83a39f54c9f6a310f9a26fe8a2ec3495da",
       "size": 131584
     },
     {
@@ -879,7 +879,7 @@
       "id": "reserved_file_header_padding_nonzero",
       "kind": "archive",
       "level": "reader",
-      "sha256": "63ed3548e6a88cc9c8b61d2985e84ce7be339f26aa2dd65b4b6fd1b04d12ecb9",
+      "sha256": "d3947ab39d94df6e91f4b53a6d862fea9f2e385069cfcd311303ae0b3516f9cc",
       "size": 131584
     },
     {
@@ -891,7 +891,7 @@
       "id": "header_unknown_flag_bit",
       "kind": "archive",
       "level": "reader",
-      "sha256": "0bfcfcbd9c46a47887a69653bef7c66888672bbac608d22b5247bb07d0865f22",
+      "sha256": "d1df644fae67190e3317b2e2dcad3a83842bfa16e78a27955f82280953edb7c1",
       "size": 131584
     },
     {
@@ -903,7 +903,7 @@
       "id": "header_invalid_tile_stride",
       "kind": "archive",
       "level": "reader",
-      "sha256": "53bc1fd292af22719a0ff2b77b23efb897d55a5c47b6aaa04d84d99122ebf832",
+      "sha256": "ad2e1ac06b48035dbe0c5951e52abbdd2f24bc12b81ff8e7f86c12afcc56f549",
       "size": 131584
     },
     {
@@ -915,7 +915,7 @@
       "id": "header_unknown_flag_newest_slot_only",
       "kind": "archive",
       "level": "reader",
-      "sha256": "fb96ce6116d5561204832917bc54f6ebeaddfe31126d57921d4c67b49f3a5f43",
+      "sha256": "620db5ac45c1e6adae85c7bd4eeae14ea342085345e0be261c24b720d50980d1",
       "size": 131584
     },
     {
@@ -931,7 +931,7 @@
       "id": "unknown_tile_rewrite",
       "kind": "rewrite",
       "level": "writer",
-      "sha256": "d746427ab475b618c6e55663076d508bb18166913206e900c63934a5e5ae4f87",
+      "sha256": "264df7b19be900d04e6c9bfe703642cd33a38456c2cc51d340edc1f6e458f235",
       "size": 131584
     },
     {
@@ -945,7 +945,7 @@
       "id": "about_absent",
       "kind": "archive",
       "level": "reader",
-      "sha256": "db07d0d39d9f5f4d85ecafbf6038d64a7ecab304d9ecaff605cedb7922fdfb5d",
+      "sha256": "d9fd0bca694d8773596e3056d1b46a69743d91152c0ce7abb28945447785bcb0",
       "size": 262656
     },
     {
@@ -964,7 +964,7 @@
       "id": "about_unsealed",
       "kind": "archive",
       "level": "reader",
-      "sha256": "a6da13b171342af304752aa5f86bfe762700e3f1d53716cf3e49199e52788767",
+      "sha256": "4cab67c7d18e9aa71bced31148087d216a2c787f1ed65e761d340a1930d6cc15",
       "size": 262656
     },
     {
@@ -976,7 +976,7 @@
       "id": "about_crc_corrupt",
       "kind": "archive",
       "level": "reader",
-      "sha256": "bfbba80af662bd0dee05dcad028e6a65ec68f083c7e35c15d65fffef4d4cdbfd",
+      "sha256": "67d0067a103bd128ad05ce0ebfeb31e6f567a541700d4675b8e1b3a090b21699",
       "size": 262656
     },
     {
@@ -991,7 +991,7 @@
       "id": "about_embedded_spec_mismatch",
       "kind": "archive",
       "level": "reader",
-      "sha256": "a0f59b3620c9c417a04bfb41c4a5d9632718af5e5194b4eba1124df425187e80",
+      "sha256": "e00e5f98198f1c6d0b33bddd4bccbe0c8834e5d8f3a29d1617b9d38055fc4826",
       "size": 525312
     },
     {
@@ -1011,7 +1011,7 @@
       "id": "about_sealed_self_describing",
       "kind": "archive",
       "level": "reader",
-      "sha256": "742da5d054b3ab358b209e4f7e86ad70292100995e1eb85d5a3a3825c470608b",
+      "sha256": "bca21733e396cc865565c516e44ef9e947d7f4370fca0c11bd08e4af271c6d41",
       "size": 656464
     },
     {
@@ -1029,7 +1029,7 @@
       "id": "about_rewrite",
       "kind": "rewrite",
       "level": "writer",
-      "sha256": "a1ed47f70608bb6962b4baeb72c96c9bca387ee5b112fb3aef408a557d59456b",
+      "sha256": "3899262c63f2517499c8188f8a7395d990f7071bd66216a937381abf03d8af93",
       "size": 524800
     }
   ],

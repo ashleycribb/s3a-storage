@@ -40,7 +40,7 @@ fn hyper_tile_header_matches_spec_3_1() {
     at!(HyperTileHeader, learned_index, 472, 8);
     at!(HyperTileHeader, generation, 480, 8);
     at!(HyperTileHeader, tile_index, 488, 4);
-    at!(HyperTileHeader, _reserved_addr, 492, 4);
+    at!(HyperTileHeader, sequence_number, 492, 4);
     at!(HyperTileHeader, file_uuid, 496, 16);
 }
 

@@ -467,7 +467,7 @@ impl WasmAgentSnapshot {
 
         agent
             .assert_allows(verb_bit, tool_opt)
-            .map_err(|denied| JsValue::from_str(&denied.to_string()))
+            .map_err(|denied| js_error(&denied.to_string()))
     }
 
     /// Checks whether an agent requires human supervisory gate clearance.
@@ -480,7 +480,7 @@ impl WasmAgentSnapshot {
             .iter()
             .find(|a| a.agent_id == agent_id)
             .ok_or_else(|| {
-                JsValue::from_str(&format!(
+                js_error(&format!(
                     "Agent '{}' (id 0x{:016X}) not found in snapshot registry",
                     agent_slug, agent_id
                 ))
@@ -522,14 +522,14 @@ impl WasmAgentSnapshot {
 
         self.inner
             .export_bytes()
-            .map_err(|e| JsValue::from_str(&format!("Snapshot export error: {}", e)))
+            .map_err(|e| js_error(&format!("Snapshot export error: {}", e)))
     }
 
     /// Loads a snapshot from a Uint8Array byte slice.
     #[wasm_bindgen]
     pub fn from_bytes(bytes: &[u8]) -> Result<WasmAgentSnapshot, JsValue> {
         let inner = InnerSnapshot::from_bytes(bytes)
-            .map_err(|e| JsValue::from_str(&format!("Snapshot deserialization error: {}", e)))?;
+            .map_err(|e| js_error(&format!("Snapshot deserialization error: {}", e)))?;
         let session_uuid = inner.manifest.origin_session_uuid;
         Ok(Self {
             inner,
@@ -567,7 +567,7 @@ impl WasmAgentSnapshot {
     pub fn apply_delta(&mut self, delta_bytes: &[u8]) -> Result<usize, JsValue> {
         self.inner
             .apply_delta_bytes(delta_bytes)
-            .map_err(|e| JsValue::from_str(&format!("Apply delta error: {}", e)))
+            .map_err(|e| js_error(&format!("Apply delta error: {}", e)))
     }
 
     /// Adds a research claim or note with optional vector embedding.
@@ -852,4 +852,71 @@ impl WasmSyncBatch {
 #[wasm_bindgen]
 pub fn export_since(snapshot: &WasmAgentSnapshot, cursor: u64) -> Result<WasmSyncBatch, JsValue> {
     snapshot.export_since(cursor)
+}
+
+/// Appends a paper record (given as JSON string conforming to `ScholarPaperRecord`) into an archive byte buffer.
+/// Returns the updated archive bytes.
+#[wasm_bindgen]
+pub fn put_paper(archive_bytes: &[u8], paper_json: &str) -> Result<Vec<u8>, JsValue> {
+    let paper: s3a_pack_scholar::ScholarPaperRecord = serde_json::from_str(paper_json)
+        .map_err(|e| js_error(&format!("Invalid paper JSON: {}", e)))?;
+    paper
+        .put_to_bytes(archive_bytes)
+        .map_err(|e| js_error(&format!("Failed to put paper: {}", e)))
+}
+
+/// Retrieves a paper record matching `paper_key` from an archive byte buffer.
+/// Returns a parsed JavaScript object if found, or null if absent.
+#[wasm_bindgen]
+pub fn get_paper(archive_bytes: &[u8], paper_key: &str) -> Result<JsValue, JsValue> {
+    let paper = s3a_pack_scholar::ScholarPaperRecord::get_from_bytes(archive_bytes, paper_key)
+        .map_err(|e| js_error(&format!("Failed to get paper: {}", e)))?;
+    match paper {
+        Some(p) => {
+            let json_str = serde_json::to_string(&p)
+                .map_err(|e| js_error(&format!("Failed to serialize paper: {}", e)))?;
+            js_sys::JSON::parse(&json_str)
+        }
+        None => Ok(JsValue::NULL),
+    }
+}
+
+/// Appends a research graph edge (given as JSON string conforming to `ScholarGraphEdge`) into an archive byte buffer.
+/// Returns the updated archive bytes.
+#[wasm_bindgen]
+pub fn add_edge(archive_bytes: &[u8], edge_json: &str) -> Result<Vec<u8>, JsValue> {
+    let edge: s3a_pack_scholar::ScholarGraphEdge = serde_json::from_str(edge_json)
+        .map_err(|e| js_error(&format!("Invalid edge JSON: {}", e)))?;
+    edge.add_to_bytes(archive_bytes)
+        .map_err(|e| js_error(&format!("Failed to add edge: {}", e)))
+}
+
+/// Queries graph edges connected to `node_key` (with optional `edge_type` filter) from an archive byte buffer.
+/// Returns a JavaScript array of matching edges with retractions resolved.
+#[wasm_bindgen]
+pub fn list_edges(
+    archive_bytes: &[u8],
+    node_key: &str,
+    edge_type: Option<String>,
+) -> Result<JsValue, JsValue> {
+    let edges = s3a_pack_scholar::ScholarGraphEdge::list_from_bytes(
+        archive_bytes,
+        node_key,
+        edge_type.as_deref(),
+    )
+    .map_err(|e| js_error(&format!("Failed to list edges: {}", e)))?;
+    let json_str = serde_json::to_string(&edges)
+        .map_err(|e| js_error(&format!("Failed to serialize edges: {}", e)))?;
+    js_sys::JSON::parse(&json_str)
+}
+
+/// Decodes the embedded schema registry and spec version directly from archive bytes.
+/// Returns an object with `spec_version` and `types` describing all tile types in the file.
+#[wasm_bindgen]
+pub fn read_embedded_registry(archive_bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let registry_info = s3a_engine::read_embedded_registry_from_bytes(archive_bytes)
+        .map_err(|e| js_error(&format!("Failed to read registry: {}", e)))?;
+    let json_str = serde_json::to_string(&registry_info)
+        .map_err(|e| js_error(&format!("Failed to serialize registry info: {}", e)))?;
+    js_sys::JSON::parse(&json_str)
 }

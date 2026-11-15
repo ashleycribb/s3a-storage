@@ -159,11 +159,12 @@ fn test_manifest_matches_tile_list_and_record_counts() {
     // Floor 0: manifest (0 records)
     // Floor 1: telemetry (12 records)
     // Floor 2: telemetry (7 records)
+    // Floor 3: schema (0 records)
     assert!(manifest.contains("Floor  Type ID  Type Name             Records    Tile Size"));
     assert!(manifest.contains("0      78       manifest              0"));
     assert!(manifest.contains("1      0        telemetry             12"));
     assert!(manifest.contains("2      0        telemetry             7"));
-    assert!(manifest.contains("Total Floors: 3"));
+    assert!(manifest.contains("Total Floors: 4"));
 }
 
 #[test]

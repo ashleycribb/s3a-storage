@@ -208,7 +208,7 @@ fn build_output(
         h.record_layout_version = 1;
         h.generation = (i as u64 + 1).min(hdr.generation.max(1));
         h.tile_index = i as u32;
-        h._reserved_addr = 0;
+        h.sequence_number = 0;
         h.file_uuid = uuid;
         h.header_crc32 = compute_tile_header_crc32(&h);
         out[off..off + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));

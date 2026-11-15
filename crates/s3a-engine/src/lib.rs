@@ -450,6 +450,7 @@ pub struct TileWriter {
     created_timestamp: u64,
     addon_mask: u32,
     file_uuid: [u64; 2],
+    next_sequence: u32,
 }
 
 impl TileWriter {
@@ -485,6 +486,7 @@ impl TileWriter {
             created_timestamp: now,
             addon_mask: 0,
             file_uuid,
+            next_sequence: 1,
         })
     }
 
@@ -529,6 +531,23 @@ impl TileWriter {
         // Clean stale orphan compaction temps since live archive header is verified
         let _ = fsutil::clean_orphan_temps(&path);
 
+        // Scan existing tiles to determine next monotonic sequence number
+        let mut max_seq: u32 = 0;
+        for i in 0..committed_tile_count as usize {
+            let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            if (offset + HYPER_TILE_HEADER_SIZE) as u64 <= file_len {
+                let mut hdr_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
+                if file.seek(SeekFrom::Start(offset as u64)).is_ok()
+                    && file.read_exact(&mut hdr_bytes).is_ok()
+                {
+                    let h: HyperTileHeader = bytemuck::pod_read_unaligned(&hdr_bytes);
+                    if h.sequence_number > max_seq {
+                        max_seq = h.sequence_number;
+                    }
+                }
+            }
+        }
+
         file.seek(SeekFrom::End(0))?;
 
         Ok(Self {
@@ -540,6 +559,7 @@ impl TileWriter {
             created_timestamp: active_header.created_timestamp,
             addon_mask: active_header.addon_mask,
             file_uuid: active_header.file_uuid,
+            next_sequence: max_seq + 1,
         })
     }
 
@@ -663,6 +683,8 @@ impl TileWriter {
         header.payload_bytes = payload_bytes as u32;
         header.generation = self.generation;
         header.tile_index = self.tile_count;
+        header.sequence_number = self.next_sequence;
+        self.next_sequence += 1;
         header.file_uuid = self.file_uuid;
         header.record_layout_version = target_version;
 
@@ -861,6 +883,12 @@ impl TileWriter {
             new_header.generation = self.generation;
         }
         new_header.tile_index = self.tile_count;
+        if new_header.sequence_number == 0 {
+            new_header.sequence_number = self.next_sequence;
+            self.next_sequence += 1;
+        } else if new_header.sequence_number >= self.next_sequence {
+            self.next_sequence = new_header.sequence_number + 1;
+        }
 
         new_header.header_crc32 = compute_tile_header_crc32(&new_header);
 
@@ -1317,6 +1345,58 @@ impl MmapReader {
         self.try_get_tile(index).ok()
     }
 
+    /// Returns the newest valid copy of a tile by `tile_id`.
+    ///
+    /// Evaluates all candidate slots matching `tile_id`. Each candidate is checked for
+    /// integrity (header CRC and data CRC). Candidates that fail verification are discarded.
+    /// From the valid copies, selects the one with the highest monotonic `sequence_number`.
+    /// Ties (such as legacy sequence 0) are broken by the latest valid position.
+    pub fn get_tile_by_id(&self, tile_id: u64) -> Option<(&HyperTileHeader, &[u8])> {
+        let mut best: Option<(u32, usize, (&HyperTileHeader, &[u8]))> = None;
+        let count = self.tile_count() as usize;
+        for i in 0..count {
+            if let Ok((header, payload)) = self.try_get_tile(i) {
+                if header.tile_id == tile_id {
+                    let seq = header.sequence_number;
+                    match &best {
+                        None => {
+                            best = Some((seq, i, (header, payload)));
+                        }
+                        Some((best_seq, best_idx, _)) => {
+                            if seq > *best_seq || (seq == *best_seq && i >= *best_idx) {
+                                best = Some((seq, i, (header, payload)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, _, item)| item)
+    }
+
+    /// Recovers all tiles in the archive, returning the newest valid copy of each tile by sequence.
+    pub fn recover_tiles(&self) -> Vec<(&HyperTileHeader, &[u8])> {
+        let mut by_id: std::collections::BTreeMap<u64, (u32, usize, (&HyperTileHeader, &[u8]))> =
+            std::collections::BTreeMap::new();
+        let count = self.tile_count() as usize;
+        for i in 0..count {
+            if let Ok((header, payload)) = self.try_get_tile(i) {
+                let seq = header.sequence_number;
+                by_id
+                    .entry(header.tile_id)
+                    .and_modify(|(best_seq, best_idx, item)| {
+                        if seq > *best_seq || (seq == *best_seq && i >= *best_idx) {
+                            *best_seq = seq;
+                            *best_idx = i;
+                            *item = (header, payload);
+                        }
+                    })
+                    .or_insert((seq, i, (header, payload)));
+            }
+        }
+        by_id.into_values().map(|(_, _, item)| item).collect()
+    }
+
     /// Like [`MmapReader::get_tile`] but reports why a tile was rejected.
     /// Verifies header and data CRC32C (zero CRCs accepted only on legacy tiles).
     pub fn try_get_tile(&self, index: usize) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
@@ -1644,6 +1724,22 @@ pub fn recover_archive<P: AsRef<Path>>(path: P) -> io::Result<FileHeader> {
     let _ = fsutil::clean_orphan_temps(path_ref);
 
     Ok(active_header)
+}
+
+/// Recovers all valid tiles from an input archive, deduplicating multiple copies of each
+/// tile by monotonic sequence number (picking newest valid copy), and writes them to output_path.
+pub fn recover_archive_to_valid_copies<P: AsRef<Path>, Q: AsRef<Path>>(
+    input_path: P,
+    output_path: Q,
+) -> io::Result<u32> {
+    let reader = MmapReader::open(input_path.as_ref())?;
+    let valid_tiles = reader.recover_tiles();
+    let mut writer = TileWriter::create_with_uuid(output_path.as_ref(), reader.file_uuid())?;
+    writer.enable_addon(reader.addon_mask())?;
+    for (hdr, payload) in valid_tiles {
+        writer.write_raw_hyper_tile(hdr, payload)?;
+    }
+    Ok(writer.tile_count())
 }
 
 /// MULTI-TILE HYPER-MESH FUSION ENGINE: Combines multiple distinct or sparse Hyper-Tiles into a single unified 128 KB Hyper-Tile.
@@ -2340,6 +2436,1828 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
             ],
         },
+        3 => SchemaTypeDefinition {
+            type_id: 3,
+            type_version: 1,
+            name: "wearable_micro".to_string(),
+            owning_pack: "Wearable Pack".to_string(),
+            record_size: 16,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 2,
+                    byte_offset: 8,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "heart_rate".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 2,
+                    byte_offset: 10,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "spo2".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 12,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "motion_flags".to_string(),
+                },
+            ],
+        },
+        4 => SchemaTypeDefinition {
+            type_id: 4,
+            type_version: 1,
+            name: "robotics_kinematic".to_string(),
+            owning_pack: "Robotics Pack".to_string(),
+            record_size: 72,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 8,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "joint_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 3,
+                    byte_offset: 12,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "trajectory_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 13,
+                    byte_offset: 16,
+                    byte_len: 24,
+                    null_allowed: false,
+                    name: "position_xyz".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 13,
+                    byte_offset: 40,
+                    byte_len: 24,
+                    null_allowed: false,
+                    name: "velocity_xyz".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        5 => SchemaTypeDefinition {
+            type_id: 5,
+            type_version: 1,
+            name: "gis_survey_mesh".to_string(),
+            owning_pack: "GIS Pack".to_string(),
+            record_size: 32,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "point_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 10,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "latitude".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 10,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "longitude".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 9,
+                    byte_offset: 24,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "elevation".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 28,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        6 => SchemaTypeDefinition {
+            type_id: 6,
+            type_version: 1,
+            name: "data_availability".to_string(),
+            owning_pack: "Data Availability Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "commitment_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "epoch_number".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 13,
+                    byte_offset: 16,
+                    byte_len: 40,
+                    null_allowed: false,
+                    name: "kzg_commitment".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "status".to_string(),
+                },
+            ],
+        },
+        10 => SchemaTypeDefinition {
+            type_id: 10,
+            type_version: 1,
+            name: "human_lrs".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "session_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "actor_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "verb_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 9,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "decision_score".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 13,
+                    byte_offset: 40,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "ai_trace_coord".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "object_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        11 => SchemaTypeDefinition {
+            type_id: 11,
+            type_version: 1,
+            name: "ai_trace_log".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "session_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "agent_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "step_type".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 9,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "confidence".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 13,
+                    byte_offset: 40,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "human_coord".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "hilbert_index".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        12 => SchemaTypeDefinition {
+            type_id: 12,
+            type_version: 2,
+            name: "academic_papers".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "paper_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "hilbert_index".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 9,
+                    byte_offset: 24,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "topic_x".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 9,
+                    byte_offset: 28,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "topic_y".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 9,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "topic_z".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "citation_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 2,
+                    byte_offset: 40,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "year".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 2,
+                    byte_offset: 42,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "venue_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 2,
+                    byte_offset: 44,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "open_access_flag".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 11,
+                    field_type: 2,
+                    byte_offset: 46,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "warning_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 12,
+                    field_type: 4,
+                    byte_offset: 48,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "doi_prefix_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 13,
+                    field_type: 4,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        13 => SchemaTypeDefinition {
+            type_id: 13,
+            type_version: 2,
+            name: "research_graph".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "subject_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "object_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "hilbert_coord".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "predicate_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 9,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "weight".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 4,
+                    byte_offset: 40,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        14 => SchemaTypeDefinition {
+            type_id: 14,
+            type_version: 1,
+            name: "srs_workspace".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "project_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "question_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "collection_mask".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 12,
+                    null_allowed: false,
+                    name: "topic_centroid_xyz".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 44,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "status".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "pinned_works_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "claims_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 4,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        15 => SchemaTypeDefinition {
+            type_id: 15,
+            type_version: 1,
+            name: "srs_manifest".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 11,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "magic".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 16,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "schema_version".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 3,
+                    byte_offset: 20,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "archive_flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 13,
+                    byte_offset: 24,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "project_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 13,
+                    byte_offset: 40,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "snapshot_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 13,
+                    byte_offset: 56,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "parent_snapshot_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 13,
+                    byte_offset: 72,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "origin_session_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 4,
+                    byte_offset: 88,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "created_at_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 3,
+                    byte_offset: 96,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "tile_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 3,
+                    byte_offset: 100,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "crc32c_checksum".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 11,
+                    field_type: 4,
+                    byte_offset: 104,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "total_records".to_string(),
+                },
+            ],
+        },
+        16 => SchemaTypeDefinition {
+            type_id: 16,
+            type_version: 1,
+            name: "ontology_concept".to_string(),
+            owning_pack: "Ontology Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "concept_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "name_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        17 => SchemaTypeDefinition {
+            type_id: 17,
+            type_version: 1,
+            name: "ontology_axiom".to_string(),
+            owning_pack: "Ontology Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "axiom_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "subject_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "predicate_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "object_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 4,
+                    byte_offset: 32,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        18 => SchemaTypeDefinition {
+            type_id: 18,
+            type_version: 1,
+            name: "agent_registry".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "agent_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "created_at_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "public_key_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 11,
+                    byte_offset: 24,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "name".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "capabilities".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        20 => SchemaTypeDefinition {
+            type_id: 20,
+            type_version: 1,
+            name: "note_claims".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "claim_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 13,
+                    byte_offset: 16,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "session_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 32,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "author_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 9,
+                    byte_offset: 40,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "confidence".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 2,
+                    byte_offset: 44,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "kind".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 2,
+                    byte_offset: 46,
+                    byte_len: 2,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "keyword_bloom".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "text_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "embedding_tile_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 11,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "embedding_offset".to_string(),
+                },
+            ],
+        },
+        TileType::STATEMENT_BODY => SchemaTypeDefinition {
+            type_id: TileType::STATEMENT_BODY,
+            type_version: 1,
+            name: "statement_body".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "statement_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "stored_timestamp_ms".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_ms".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 32,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "actor_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 40,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "verb_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 44,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "activity_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "registration_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "json_len".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "header_crc32".to_string(),
+                },
+            ],
+        },
+        TileType::STATEMENT_INDEX => SchemaTypeDefinition {
+            type_id: TileType::STATEMENT_INDEX,
+            type_version: 1,
+            name: "statement_index".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "statement_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "stored_timestamp_ms".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_ms".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 32,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "actor_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 40,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "verb_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 44,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "activity_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "registration_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "body_tile_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "body_offset".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::DOCUMENT_STORE => SchemaTypeDefinition {
+            type_id: TileType::DOCUMENT_STORE,
+            type_version: 1,
+            name: "document_store".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "doc_key_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "created_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "updated_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 24,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "content_len".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 28,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "content_type".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "header_crc32".to_string(),
+                },
+            ],
+        },
+        TileType::ATTACHMENT_BLOB => SchemaTypeDefinition {
+            type_id: TileType::ATTACHMENT_BLOB,
+            type_version: 1,
+            name: "attachment_blob".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "attachment_sha256".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 32,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "byte_length".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 3,
+                    byte_offset: 40,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "content_type_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 44,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "header_crc32".to_string(),
+                },
+            ],
+        },
+        32 => SchemaTypeDefinition {
+            type_id: 32,
+            type_version: 1,
+            name: "citation_fingerprint".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 96,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "fingerprint_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "paper_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 13,
+                    byte_offset: 24,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "doi_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 13,
+                    byte_offset: 56,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "citation_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 4,
+                    byte_offset: 88,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::RECORD => SchemaTypeDefinition {
+            type_id: TileType::RECORD,
+            type_version: 1,
+            name: "record".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 4,
+                    byte_offset: 0,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 8,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "record_type".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 12,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 12,
+                    byte_offset: 20,
+                    byte_len: 40,
+                    null_allowed: false,
+                    name: "payload".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "record_crc32".to_string(),
+                },
+            ],
+        },
+        TileType::BLOB => SchemaTypeDefinition {
+            type_id: TileType::BLOB,
+            type_version: 1,
+            name: "blob".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 40,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "blob_key".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "chunk_index".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 3,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "total_chunks".to_string(),
+                },
+            ],
+        },
+        TileType::PROVENANCE => SchemaTypeDefinition {
+            type_id: TileType::PROVENANCE,
+            type_version: 1,
+            name: "provenance".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 40,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "provenance_key".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "chunk_index".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 3,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "total_chunks".to_string(),
+                },
+            ],
+        },
+        TileType::RECORD_ROOT => SchemaTypeDefinition {
+            type_id: TileType::RECORD_ROOT,
+            type_version: 1,
+            name: "record_root".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 3,
+                    byte_offset: 0,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "tile_index".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 3,
+                    byte_offset: 4,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "tile_type".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 8,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "tile_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "record_count".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "seal_generation".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "root".to_string(),
+                },
+            ],
+        },
+        TileType::VCS_COMMIT => SchemaTypeDefinition {
+            type_id: TileType::VCS_COMMIT,
+            type_version: 1,
+            name: "vcs_commit".to_string(),
+            owning_pack: "vcs".to_string(),
+            record_size: 96,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "commit_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "parent_commit_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "author_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 72,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 80,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "message_len".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 84,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::VCS_REF => SchemaTypeDefinition {
+            type_id: TileType::VCS_REF,
+            type_version: 1,
+            name: "vcs_ref".to_string(),
+            owning_pack: "vcs".to_string(),
+            record_size: 80,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 11,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "ref_name".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "commit_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "updated_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 72,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::VCS_RESOLUTION => SchemaTypeDefinition {
+            type_id: TileType::VCS_RESOLUTION,
+            type_version: 1,
+            name: "vcs_resolution".to_string(),
+            owning_pack: "vcs".to_string(),
+            record_size: 80,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "conflict_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "resolved_commit_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "resolved_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 72,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "resolver_hash".to_string(),
+                },
+            ],
+        },
+        TileType::GATE_DIRECTORY => SchemaTypeDefinition {
+            type_id: TileType::GATE_DIRECTORY,
+            type_version: 1,
+            name: "gate_directory".to_string(),
+            owning_pack: "vault".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "node_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 11,
+                    byte_offset: 16,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "peer_endpoint".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 48,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "registered_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::GATE_MAILBOX => SchemaTypeDefinition {
+            type_id: TileType::GATE_MAILBOX,
+            type_version: 1,
+            name: "gate_mailbox".to_string(),
+            owning_pack: "vault".to_string(),
+            record_size: 64,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "message_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 13,
+                    byte_offset: 16,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "recipient_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "sender_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 4,
+                    byte_offset: 48,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "queued_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "payload_len".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        TileType::GRAPH_EDGE => SchemaTypeDefinition {
+            type_id: TileType::GRAPH_EDGE,
+            type_version: 1,
+            name: "graph_edge".to_string(),
+            owning_pack: "core".to_string(),
+            record_size: 56,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 13,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "edge_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 4,
+                    byte_offset: 16,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "source_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 4,
+                    byte_offset: 24,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "target_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 32,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "edge_type_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 9,
+                    byte_offset: 36,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "weight".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 4,
+                    byte_offset: 40,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 4,
+                    byte_offset: 48,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "flags".to_string(),
+                },
+            ],
+        },
+        96 => SchemaTypeDefinition {
+            type_id: 96,
+            type_version: 1,
+            name: "committee_decision".to_string(),
+            owning_pack: "Scholar Pack".to_string(),
+            record_size: 160,
+            fields: vec![
+                SchemaFieldDefinition {
+                    field_id: 1,
+                    field_type: 7,
+                    byte_offset: 0,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "submission_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 2,
+                    field_type: 7,
+                    byte_offset: 16,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "reviewer_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 3,
+                    field_type: 7,
+                    byte_offset: 32,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "comment_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 7,
+                    byte_offset: 48,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "prev_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 4,
+                    byte_offset: 80,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "timestamp_sec".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 6,
+                    field_type: 3,
+                    byte_offset: 88,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "verdict".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 92,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "layout_version".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 7,
+                    byte_offset: 96,
+                    byte_len: 64,
+                    null_allowed: false,
+                    name: "signature".to_string(),
+                },
+            ],
+        },
         other => {
             let reg = s3a_core::registry::global_registry();
             if let Some(desc) = reg.get(other) {
@@ -2428,6 +4346,358 @@ pub fn append_schema_tile_if_missing<P: AsRef<Path>>(path: P) -> io::Result<bool
 
     writer.write_raw_hyper_tile(&schema_hdr, &payload)?;
     Ok(true)
+}
+
+/// Appends a new 128 KB hyper-tile with the given `tile_type`, `layout_version`, and `payload`
+/// directly to an archive byte buffer in-memory, updating the dual file header.
+/// Returns the updated archive bytes.
+pub fn append_tile_to_buffer(
+    archive_bytes: &[u8],
+    tile_type: u32,
+    layout_version: u32,
+    payload: &[u8],
+) -> io::Result<Vec<u8>> {
+    let mut out_data = if archive_bytes.len() < FILE_HEADER_SIZE {
+        let mut buf = vec![0u8; FILE_HEADER_SIZE];
+        let uuid = generate_file_uuid();
+        let now = current_time_secs();
+        let mut slot_a = FileHeader::new(0, now);
+        slot_a.addon_mask = s3a_core::ADDON_EDU;
+        slot_a.file_uuid = uuid;
+        slot_a.generation = 1;
+        slot_a.header_crc32 = compute_header_crc32(&slot_a);
+        buf[..FILE_HEADER_SLOT_SIZE].copy_from_slice(bytemuck::bytes_of(&slot_a));
+        buf
+    } else {
+        archive_bytes.to_vec()
+    };
+
+    let slot_a: FileHeader = bytemuck::pod_read_unaligned(
+        &out_data[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let slot_b: FileHeader = bytemuck::pod_read_unaligned(
+        &out_data[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let (active_hdr, _) = resolve_active_header(&slot_a, &slot_b)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let old_count = active_hdr.tile_count as usize;
+    let committed_len = FILE_HEADER_SIZE + old_count * HYPER_TILE_SIZE;
+    if out_data.len() > committed_len {
+        out_data.truncate(committed_len);
+    }
+
+    let mut max_id = 0u64;
+    let mut max_seq = 0u32;
+    for i in 0..old_count {
+        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        let h: HyperTileHeader =
+            bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+        max_id = max_id.max(h.tile_id);
+        max_seq = max_seq.max(h.sequence_number);
+    }
+
+    let tile_id = max_id + 1;
+    let sequence_number = max_seq + 1;
+    let tile_index = old_count as u32;
+
+    let mut hdr = HyperTileHeader::new(tile_id, tile_type);
+    hdr.record_layout_version = layout_version;
+    hdr.sequence_number = sequence_number;
+    hdr.generation = active_hdr.generation;
+    hdr.tile_index = tile_index;
+    hdr.file_uuid = active_hdr.file_uuid;
+    hdr.payload_bytes = payload.len() as u32;
+    hdr.data_crc32 = crc32c::crc32c(payload);
+    hdr.header_crc32 = compute_tile_header_crc32(&hdr);
+
+    let mut tile_buf = vec![0u8; HYPER_TILE_SIZE];
+    tile_buf[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&hdr));
+    tile_buf[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload.len()]
+        .copy_from_slice(payload);
+    out_data.extend_from_slice(&tile_buf);
+
+    let new_count = (old_count + 1) as u32;
+    sealed::set_tile_count(&mut out_data, new_count, active_hdr.file_uuid);
+
+    Ok(out_data)
+}
+
+/// Registry description and format spec version decoded from an archive's embedded schema tile.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddedRegistryInfo {
+    pub spec_version: String,
+    pub types: Vec<SchemaTypeDefinition>,
+}
+
+/// Reads the embedded schema registry and spec version directly from archive bytes.
+pub fn read_embedded_registry_from_bytes(archive_bytes: &[u8]) -> io::Result<EmbeddedRegistryInfo> {
+    if archive_bytes.len() < FILE_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Buffer too small for S3A header",
+        ));
+    }
+    let slot_a: FileHeader = bytemuck::pod_read_unaligned(
+        &archive_bytes
+            [FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let slot_b: FileHeader = bytemuck::pod_read_unaligned(
+        &archive_bytes
+            [FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let (active_hdr, _) = resolve_active_header(&slot_a, &slot_b)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let count = active_hdr.tile_count as usize;
+    let mut schema_payload: Option<&[u8]> = None;
+    let mut present_types: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
+    for i in 0..count {
+        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        if off + HYPER_TILE_SIZE <= archive_bytes.len() {
+            let h: HyperTileHeader =
+                bytemuck::pod_read_unaligned(&archive_bytes[off..off + HYPER_TILE_HEADER_SIZE]);
+            present_types.insert(h.tile_type);
+            if h.tile_type == TileType::SCHEMA && schema_payload.is_none() {
+                let p0 = off + HYPER_TILE_HEADER_SIZE;
+                let plen = (h.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
+                schema_payload = Some(&archive_bytes[p0..p0 + plen]);
+            }
+        }
+    }
+
+    if let Some(payload) = schema_payload {
+        let defs = s3a_core::decode_schema_payload(payload).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to decode schema: {}", e),
+            )
+        })?;
+        let about = s3a_core::decode_schema_about(payload).ok().flatten();
+        let spec_version = about
+            .map(|a| a.spec_version)
+            .unwrap_or_else(|| sealed::spec_version().to_string());
+        Ok(EmbeddedRegistryInfo {
+            spec_version,
+            types: defs,
+        })
+    } else {
+        let mut defs = Vec::new();
+        for t in present_types {
+            defs.push(standard_schema_for_type(t));
+        }
+        Ok(EmbeddedRegistryInfo {
+            spec_version: sealed::spec_version().to_string(),
+            types: defs,
+        })
+    }
+}
+
+/// Rebuilds all index tiles (Tile 22 `STATEMENT_INDEX`, Tile 83 `RECORD_ROOT`) from data tiles alone.
+/// Drops existing index tiles, re-parses statements from Tile 21 `STATEMENT_BODY`, regenerates
+/// Tile 22 index records, builds new record roots if the archive had them, and writes the rebuilt
+/// archive atomically.
+pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    let path_ref = path.as_ref();
+    let in_bytes = std::fs::read(path_ref)?;
+    if in_bytes.len() < FILE_HEADER_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "File too small for S3A header",
+        ));
+    }
+    let slot_a: FileHeader = bytemuck::pod_read_unaligned(
+        &in_bytes[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let slot_b: FileHeader = bytemuck::pod_read_unaligned(
+        &in_bytes[FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
+    );
+    let (active_hdr, _) = resolve_active_header(&slot_a, &slot_b)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let old_tile_count = active_hdr.tile_count as usize;
+    let expected_len = FILE_HEADER_SIZE + old_tile_count * HYPER_TILE_SIZE;
+    if in_bytes.len() < expected_len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "File truncated before all committed tiles are read",
+        ));
+    }
+
+    let mut kept_tiles: Vec<(HyperTileHeader, Vec<u8>)> = Vec::new();
+    let mut statement_chunks_by_hash: std::collections::HashMap<
+        [u8; 32],
+        (
+            s3a_core::lrs::StatementBlobHeader,
+            std::collections::BTreeMap<u16, (u32, Vec<u8>)>,
+        ),
+    > = std::collections::HashMap::new();
+    let mut had_record_roots = false;
+
+    for i in 0..old_tile_count {
+        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        let hdr: HyperTileHeader =
+            bytemuck::pod_read_unaligned(&in_bytes[off..off + HYPER_TILE_HEADER_SIZE]);
+        let payload = &in_bytes[off + HYPER_TILE_HEADER_SIZE..off + HYPER_TILE_SIZE];
+
+        if hdr.tile_type == TileType::RECORD_ROOT {
+            had_record_roots = true;
+            continue;
+        }
+        if hdr.tile_type == TileType::STATEMENT_INDEX {
+            // Drop existing statement index tiles: they will be rebuilt from statement bodies
+            continue;
+        }
+
+        if hdr.tile_type == TileType::STATEMENT_BODY {
+            let bsz = std::mem::size_of::<s3a_core::lrs::StatementBlobHeader>();
+            if payload.len() >= bsz {
+                let blob_hdr: s3a_core::lrs::StatementBlobHeader =
+                    bytemuck::pod_read_unaligned(&payload[..bsz]);
+                let chunk_len = blob_hdr.chunk_bytes as usize;
+                if bsz + chunk_len <= payload.len() {
+                    let chunk_data = &payload[bsz..bsz + chunk_len];
+                    let entry = statement_chunks_by_hash
+                        .entry(blob_hdr.sha256_hash)
+                        .or_insert_with(|| (blob_hdr, std::collections::BTreeMap::new()));
+                    entry.1.insert(
+                        blob_hdr.chunk_index,
+                        (hdr.tile_id as u32, chunk_data.to_vec()),
+                    );
+                }
+            }
+        }
+
+        kept_tiles.push((hdr, payload.to_vec()));
+    }
+
+    // Reconstruct statement index records from STATEMENT_BODY payloads
+    let mut rebuilt_index_records: Vec<s3a_core::lrs::StatementIndexRecord> = Vec::new();
+    for (_sha, (blob_hdr, chunk_map)) in statement_chunks_by_hash {
+        if chunk_map.len() == blob_hdr.total_chunks as usize {
+            let mut full_json = Vec::with_capacity(blob_hdr.total_bytes as usize);
+            let first_tile_id = chunk_map.get(&0).map(|(tid, _)| *tid).unwrap_or(0);
+            for (_, (_, chunk)) in chunk_map {
+                full_json.extend_from_slice(&chunk);
+            }
+
+            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&full_json) {
+                if let Ok(meta) = crate::lrs_store::parse_statement_metadata(&val) {
+                    let mut flags = s3a_core::lrs::STATEMENT_FLAG_ACTIVE;
+                    if meta.is_voiding {
+                        flags |= s3a_core::lrs::STATEMENT_FLAG_VOIDING;
+                    }
+                    if meta.has_attachments {
+                        flags |= s3a_core::lrs::STATEMENT_FLAG_ATTACHMENTS;
+                    }
+                    let index_rec = s3a_core::lrs::StatementIndexRecord::new(
+                        meta.statement_id,
+                        meta.timestamp_ms,
+                        meta.timestamp_ms,
+                        meta.actor_hash,
+                        meta.verb_hash,
+                        meta.activity_hash,
+                        meta.registration_hash,
+                        first_tile_id,
+                        0,
+                        flags,
+                    );
+                    rebuilt_index_records.push(index_rec);
+                }
+            }
+        }
+    }
+
+    // Re-create archive buffer with kept tiles + newly rebuilt index tiles
+    let mut out_data = Vec::with_capacity(expected_len);
+    out_data.extend_from_slice(&in_bytes[..FILE_HEADER_SIZE]);
+
+    let mut current_tile_index = 0u32;
+    let mut max_tile_id = 0u64;
+    let mut max_seq = 0u32;
+
+    for (mut new_hdr, payload) in kept_tiles {
+        new_hdr.tile_index = current_tile_index;
+        new_hdr.header_crc32 = compute_tile_header_crc32(&new_hdr);
+        max_tile_id = max_tile_id.max(new_hdr.tile_id);
+        max_seq = max_seq.max(new_hdr.sequence_number);
+
+        let mut tile_buf = vec![0u8; HYPER_TILE_SIZE];
+        tile_buf[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&new_hdr));
+        tile_buf[HYPER_TILE_HEADER_SIZE..].copy_from_slice(&payload);
+        out_data.extend_from_slice(&tile_buf);
+        current_tile_index += 1;
+    }
+
+    // Append rebuilt STATEMENT_INDEX tiles (Tile 22)
+    if !rebuilt_index_records.is_empty() {
+        let capacity_per_tile = s3a_core::HYPER_TILE_PAYLOAD_SIZE
+            / std::mem::size_of::<s3a_core::lrs::StatementIndexRecord>();
+        for chunk in rebuilt_index_records.chunks(capacity_per_tile) {
+            max_tile_id += 1;
+            max_seq += 1;
+            let index_bytes =
+                bytemuck::cast_slice::<s3a_core::lrs::StatementIndexRecord, u8>(chunk);
+            let mut hdr = HyperTileHeader::new(max_tile_id, TileType::STATEMENT_INDEX);
+            hdr.tile_index = current_tile_index;
+            hdr.sequence_number = max_seq;
+            hdr.generation = active_hdr.generation;
+            hdr.file_uuid = active_hdr.file_uuid;
+            hdr.record_count = chunk.len() as u32;
+            hdr.payload_bytes = index_bytes.len() as u32;
+            hdr.data_crc32 = crc32c::crc32c(index_bytes);
+            hdr.header_crc32 = compute_tile_header_crc32(&hdr);
+
+            let mut tile_buf = vec![0u8; HYPER_TILE_SIZE];
+            tile_buf[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytemuck::bytes_of(&hdr));
+            tile_buf[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + index_bytes.len()]
+                .copy_from_slice(index_bytes);
+            out_data.extend_from_slice(&tile_buf);
+            current_tile_index += 1;
+        }
+    }
+
+    // Update active file header slot with new tile count
+    sealed::set_tile_count(&mut out_data, current_tile_index, active_hdr.file_uuid);
+
+    // If it had record roots, regenerate record roots
+    if had_record_roots {
+        let entries = {
+            let tiles: Vec<(usize, HyperTileHeader, &[u8])> = (0..current_tile_index as usize)
+                .map(|i| {
+                    let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                    let h: HyperTileHeader =
+                        bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+                    (
+                        i,
+                        h,
+                        &out_data[off + HYPER_TILE_HEADER_SIZE..off + HYPER_TILE_SIZE],
+                    )
+                })
+                .collect();
+            crate::record_roots::compute_entries(
+                tiles.iter().map(|(i, h, p)| (*i, h, *p)),
+                active_hdr.generation,
+            )
+        };
+        let rr = crate::record_roots::build_tiles(
+            &entries,
+            current_tile_index,
+            active_hdr.generation,
+            active_hdr.file_uuid,
+        );
+        for t in &rr {
+            out_data.extend_from_slice(t);
+        }
+        current_tile_index += rr.len() as u32;
+        sealed::set_tile_count(&mut out_data, current_tile_index, active_hdr.file_uuid);
+    }
+
+    let temp_path = path_ref.with_extension(format!("rebuild_tmp_{}", std::process::id()));
+    std::fs::write(&temp_path, &out_data)?;
+    fsutil::atomic_replace(&temp_path, path_ref)?;
+    Ok(())
 }
 
 /// Before-gate for rewriters (TILE-SPEC §6.1.2): every committed tile must be readable as a
@@ -3217,6 +5487,20 @@ pub struct S3ACrudEngine {
 }
 
 impl S3ACrudEngine {
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let path_buf = path.as_ref().to_path_buf();
+        if !path_buf.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Archive not found: {}", path_buf.display()),
+            ));
+        }
+        let _ = MmapReader::open(&path_buf)?;
+        Ok(Self {
+            file_path: path_buf,
+        })
+    }
+
     pub fn open_or_create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path_buf = path.as_ref().to_path_buf();
         if !path_buf.exists() || std::fs::metadata(&path_buf)?.len() == 0 {

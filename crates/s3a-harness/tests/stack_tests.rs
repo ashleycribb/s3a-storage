@@ -311,6 +311,7 @@ fn test_live_health_check_real_http_up() {
     let port = find_free_port();
     let tmp = tempfile::tempdir().expect("create tempdir");
     let vault_file = tmp.path().join("vault.s3a");
+    s3a_engine::S3ACrudEngine::open_or_create(&vault_file).expect("initialize test vault");
 
     // Initially down
     let status_pre = check_service_health(host, port, ServiceKind::Vault);
@@ -382,6 +383,7 @@ fn test_kill_real_child_process_reports_down() {
 
     let mut config = StackConfig::default();
     config.stack.name = "kill-test-stack".to_string();
+    config.stack.dev = true;
     config.stack.data_dir = tmp_dir.path().join("data");
     config.stack.log_dir = tmp_dir.path().join("logs");
     config.services.vault.port = vault_port;
@@ -479,6 +481,7 @@ fn test_stack_up_and_007_viewer_demo() {
 
     let mut config = StackConfig::default();
     config.stack.name = "demo-stack".to_string();
+    config.stack.dev = true;
     config.stack.data_dir = tmp_dir.path().join("data");
     config.stack.log_dir = tmp_dir.path().join("logs");
     config.services.vault.port = vault_port;

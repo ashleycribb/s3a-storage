@@ -66,11 +66,9 @@ pub static SCHOLAR_DESCRIPTORS: &[TileTypeDescriptor] = &[
         lifecycle: TileLifecycle::Active,
         required_addon: Some(ADDON_EDU),
         record_size: 64,
-        current_layout_version: 1,
+        current_layout_version: 2,
         min_supported_layout_version: 1,
-        flags: TileTypeFlags::from_bits_truncate(
-            TileTypeFlags::FIXED_POD.bits() | TileTypeFlags::COPY_THROUGH_COMPACT.bits(),
-        ),
+        flags: TileTypeFlags::from_bits_truncate(TileTypeFlags::COPY_THROUGH_COMPACT.bits()),
     },
     TileTypeDescriptor {
         tile_type: ScholarTileType::RESEARCH_GRAPH,
@@ -79,11 +77,9 @@ pub static SCHOLAR_DESCRIPTORS: &[TileTypeDescriptor] = &[
         lifecycle: TileLifecycle::Active,
         required_addon: Some(ADDON_EDU),
         record_size: 64,
-        current_layout_version: 1,
+        current_layout_version: 2,
         min_supported_layout_version: 1,
-        flags: TileTypeFlags::from_bits_truncate(
-            TileTypeFlags::FIXED_POD.bits() | TileTypeFlags::COPY_THROUGH_COMPACT.bits(),
-        ),
+        flags: TileTypeFlags::from_bits_truncate(TileTypeFlags::COPY_THROUGH_COMPACT.bits()),
     },
     TileTypeDescriptor {
         tile_type: ScholarTileType::SRS_WORKSPACE,

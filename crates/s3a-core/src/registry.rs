@@ -636,6 +636,45 @@ pub fn register_core_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 64: Core Equipment Event Log / Generic Vault Record Tile
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::RECORD,
+        name: "record",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 64,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 68: Core Raw Blob Tile (variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::BLOB,
+        name: "blob",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 72: Core Merge Provenance Tile (variable payload)
+    reg.register(TileTypeDescriptor {
+        tile_type: crate::TileType::PROVENANCE,
+        name: "provenance",
+        owner_pack: "core",
+        lifecycle: TileLifecycle::Active,
+        required_addon: None,
+        record_size: 0,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::VARIABLE_PAYLOAD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     // Tile 73: Right-to-be-Forgotten Erasure Tile (144B Pod records)
     reg.register(TileTypeDescriptor {
         tile_type: crate::TileType::ERASURE,
@@ -964,6 +1003,19 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
         record_size: 96,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 96: Scholar Explorer Signed Committee Decisions
+    reg.register(TileTypeDescriptor {
+        tile_type: 96,
+        name: "committee_decision",
+        owner_pack: "Scholar Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(crate::ADDON_EDU),
+        record_size: 160,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,

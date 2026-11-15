@@ -60,6 +60,9 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **30** | `elr_credential_assertion` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
+| **64** | `record` | Core Engine (`s3a-core`) | None | 64 B | Fixed Pod | Active |
+| **68** | `blob` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Raw Chunk | Active |
+| **72** | `provenance` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Provenance Chunk | Active |
 | **77** | `schema` | Core Engine (`s3a-core` codec, `s3a-engine` reader) | None | Variable | Compact Binary Catalog (§14.5.4) | Active⁶ |
 | **78** | `manifest` | Core Engine (`s3a-core`) | None | Variable | Plain UTF-8 Text | Active |
 | **79** | `specification` | Core Engine (`s3a-core`) | None | Variable | Compressed Markdown (Deflate) | Active |
@@ -148,4 +151,425 @@ Why ML-DSA is reserved: RFC 8032 §1 says "A sufficiently large quantum computer
 Open a spec PR that adds a row with a fetched link to the algorithm's defining standard, the reference code, and a new conformance suite version. Keep the list short. RFC 7696 §3.2: once deployed, "it is quite difficult to remove algorithms"; §4: "Support for too many algorithms can lead to implementation vulnerabilities."
 
 Reference code: `s3a_core::algorithms` (Rust) and `ALGORITHMS` in `readers/python/s3a_reader/reader.py`. A test keeps them in sync.
+
+---
+
+## 7. Tile Type Record Field Specifications
+
+Every tile type registered in the schema registry defines its canonical fields, wire type codes, byte offsets, and byte widths. Conforming implementations embed these descriptors in sealed archives so readers with no pack code can inspect and decode fields.
+
+### 7.1 Core Storage Tiles
+
+#### Tile 0: `telemetry` (Record Size: 32 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `timestamp` | U64 (4) | 0 | 8 | false | Timestamp in epoch microseconds |
+| 2 | `sensor_id` | U32 (3) | 8 | 4 | false | Sensor identifier |
+| 3 | `metric_id` | U32 (3) | 12 | 4 | false | Metric type identifier |
+| 4 | `value` | F64 (10) | 16 | 8 | false | 64-bit IEEE 754 floating point reading |
+| 5 | `flags` | U64 (4) | 24 | 8 | false | Provenance and quality flags |
+
+#### Tile 1: `embedding_128` (Record Size: 528 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `id` | U64 (4) | 0 | 8 | false | 64-bit embedding identifier |
+| 2 | `timestamp` | U64 (4) | 8 | 8 | false | Generation timestamp |
+| 3 | `vector` | BYTES (13) | 16 | 512 | false | 128-dimensional f32 dense vector |
+
+#### Tile 19 / 20: `marks` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `mark_id` | U64 (4) | 0 | 8 | false | Unique identifier of mark assertion |
+| 2 | `target_tile_type` | U32 (3) | 8 | 4 | false | Tile type of target record |
+| 3 | `mark_kind` | U32 (3) | 12 | 4 | false | Kind of policy mark (quarantine, hold, etc.) |
+| 4 | `target_tile_id` | U64 (4) | 16 | 8 | false | Target hyper-tile ID |
+| 5 | `record_index` | U32 (3) | 24 | 4 | false | Index of record within target tile |
+| 6 | `set_or_clear` | U8 (1) | 28 | 1 | false | 1 = set, 0 = clear |
+| 7 | `timestamp` | U64 (4) | 32 | 8 | false | Action timestamp in epoch seconds |
+| 8 | `actor_id` | U64 (4) | 40 | 8 | false | Identifier of actor asserting mark |
+
+#### Tile 21: `statement_body` (Header Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `statement_id` | BYTES (13) | 0 | 16 | false | 128-bit statement UUID |
+| 2 | `stored_timestamp_ms` | U64 (4) | 16 | 8 | false | Store insertion time in epoch ms |
+| 3 | `timestamp_ms` | U64 (4) | 24 | 8 | false | Client assertion time in epoch ms |
+| 4 | `actor_hash` | U64 (4) | 32 | 8 | false | 64-bit hash of statement actor |
+| 5 | `verb_hash` | U32 (3) | 40 | 4 | false | 32-bit hash of statement verb |
+| 6 | `activity_hash` | U32 (3) | 44 | 4 | false | 32-bit hash of primary object activity |
+| 7 | `registration_hash` | U32 (3) | 48 | 4 | false | 32-bit hash of registration context |
+| 8 | `json_len` | U32 (3) | 52 | 4 | false | Byte length of statement JSON payload |
+| 9 | `flags` | U32 (3) | 56 | 4 | false | Voiding and attachment status flags |
+| 10 | `header_crc32` | U32 (3) | 60 | 4 | false | CRC32C of statement body header |
+
+#### Tile 22: `statement_index` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `statement_id` | BYTES (13) | 0 | 16 | false | 128-bit statement UUID |
+| 2 | `stored_timestamp_ms` | U64 (4) | 16 | 8 | false | Store insertion time in epoch ms |
+| 3 | `timestamp_ms` | U64 (4) | 24 | 8 | false | Client assertion time in epoch ms |
+| 4 | `actor_hash` | U64 (4) | 32 | 8 | false | 64-bit hash of statement actor |
+| 5 | `verb_hash` | U32 (3) | 40 | 4 | false | 32-bit hash of statement verb |
+| 6 | `activity_hash` | U32 (3) | 44 | 4 | false | 32-bit hash of primary object activity |
+| 7 | `registration_hash` | U32 (3) | 48 | 4 | false | 32-bit hash of registration context |
+| 8 | `body_tile_id` | U32 (3) | 52 | 4 | false | Target tile ID containing statement body |
+| 9 | `body_offset` | U32 (3) | 56 | 4 | false | Byte offset of body within target tile |
+| 10 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
+
+#### Tile 23: `document_store` (Header Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `doc_key_hash` | U64 (4) | 0 | 8 | false | 64-bit hash of document key |
+| 2 | `created_at` | U64 (4) | 8 | 8 | false | Creation timestamp |
+| 3 | `updated_at` | U64 (4) | 16 | 8 | false | Last update timestamp |
+| 4 | `content_len` | U32 (3) | 24 | 4 | false | Byte length of document payload |
+| 5 | `content_type` | U32 (3) | 28 | 4 | false | Document media type code |
+| 6 | `flags` | U32 (3) | 32 | 4 | false | Status flags |
+| 7 | `header_crc32` | U32 (3) | 36 | 4 | false | CRC32C of document header |
+
+#### Tile 24: `attachment_blob` (Header Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `attachment_sha256` | BYTES (13) | 0 | 32 | false | SHA-256 digest of attachment data |
+| 2 | `byte_length` | U64 (4) | 32 | 8 | false | Total binary length in bytes |
+| 3 | `content_type_hash` | U32 (3) | 40 | 4 | false | Hash of MIME content type |
+| 4 | `flags` | U32 (3) | 44 | 4 | false | Status flags |
+| 5 | `header_crc32` | U32 (3) | 48 | 4 | false | CRC32C of attachment header |
+
+#### Tile 65: `columnar` (Header Size: Variable)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `column_count` | U16 (2) | 4 | 2 | false | Number of vertical columns |
+| 2 | `record_count` | U32 (3) | 6 | 4 | false | Number of rows encoded |
+| 3 | `compression_codec` | U16 (2) | 10 | 2 | false | Compression codec ID |
+| 4 | `source_tile_type` | U32 (3) | 16 | 4 | false | Source row tile type |
+
+#### Tile 66: `array` (Header Size: Variable)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `ndim` | U16 (2) | 6 | 2 | false | Number of tensor dimensions |
+| 2 | `dtype` | U16 (2) | 8 | 2 | false | Numeric data type code |
+| 3 | `compression_codec` | U16 (2) | 10 | 2 | false | Compression codec ID |
+| 4 | `shape` | BYTES (13) | 16 | 64 | false | Tensor dimensions |
+| 5 | `chunk_shape` | BYTES (13) | 80 | 64 | false | Chunk dimensions |
+| 6 | `chunk_coords` | BYTES (13) | 144 | 64 | false | Chunk spatial coordinates |
+| 7 | `fill_value` | BYTES (13) | 208 | 8 | false | Default background fill value |
+| 8 | `chunk_hash` | BYTES (13) | 216 | 32 | false | Hash of chunk data |
+| 9 | `axis_names` | F32 (9) | 248 | 64 | false | Named tensor axis labels |
+
+#### Tile 71: `consent` (Record Size: 136 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `subject_id` | UUID (12) | 0 | 16 | false | 128-bit participant UUID |
+| 2 | `study_id` | U64 (4) | 16 | 8 | false | Research study identifier |
+| 3 | `purpose` | U32 (3) | 24 | 4 | false | Permitted purpose bitmask |
+| 4 | `scope` | U32 (3) | 28 | 4 | false | Data sharing scope mask |
+| 5 | `granted_at` | U64 (4) | 32 | 8 | false | Grant timestamp in epoch seconds |
+| 6 | `expires_at` | U64 (4) | 40 | 8 | false | Expiration timestamp |
+| 7 | `withdrawn_at` | U64 (4) | 48 | 8 | false | Withdrawal timestamp (0 if active) |
+| 8 | `legal_hold` | U8 (1) | 56 | 1 | false | Legal hold flag (blocks erasure) |
+| 9 | `granted_by` | U64 (4) | 64 | 8 | false | Authorizing actor identifier |
+| 10 | `prev_consent_hash` | BYTES (13) | 72 | 32 | false | Preceding consent grant hash |
+| 11 | `consent_hash` | BYTES (13) | 104 | 32 | false | Cryptographic hash of consent grant |
+
+#### Tile 73: `erasure` (Record Size: 144 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `erased_record_hash` | BYTES (13) | 0 | 32 | false | Hash of erased payload record |
+| 2 | `target_tile_type` | U32 (3) | 32 | 4 | false | Tile type of target record |
+| 3 | `record_index` | U32 (3) | 36 | 4 | false | Index of record within tile |
+| 4 | `target_tile_id` | U64 (4) | 40 | 8 | false | Target hyper-tile ID |
+| 5 | `reason` | U32 (3) | 48 | 4 | false | Regulatory reason code |
+| 6 | `_reserved_u32` | U32 (3) | 52 | 4 | false | Alignment padding |
+| 7 | `authority` | U64 (4) | 56 | 8 | false | Authorizing governance identifier |
+| 8 | `requested_at` | U64 (4) | 64 | 8 | false | Timestamp request was logged |
+| 9 | `executed_at` | U64 (4) | 72 | 8 | false | Timestamp erasure was committed |
+| 10 | `prev_erasure_hash` | BYTES (13) | 80 | 32 | false | Hash of prior erasure entry |
+| 11 | `erasure_hash` | BYTES (13) | 112 | 32 | false | Cryptographic hash of erasure entry |
+
+#### Tile 77: `schema` (Header Size: 32 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `schema_id` | U32 (3) | 0 | 4 | false | Schema catalog identifier |
+| 2 | `schema_format` | U16 (2) | 4 | 2 | false | Format version code |
+| 3 | `type_count` | U16 (2) | 6 | 2 | false | Number of type records encoded |
+| 4 | `total_fields` | U32 (3) | 8 | 4 | false | Total field records in catalog |
+| 5 | `schema_crc32` | U32 (3) | 12 | 4 | false | CRC32C over catalog records |
+
+#### Tile 83: `record_root` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `tile_index` | U32 (3) | 0 | 4 | false | 0-based index of tile in file |
+| 2 | `tile_type` | U32 (3) | 4 | 4 | false | Wire tile type identifier |
+| 3 | `tile_id` | U64 (4) | 8 | 8 | false | Logical hyper-tile identifier |
+| 4 | `record_count` | U64 (4) | 16 | 8 | false | Number of records in tile |
+| 5 | `seal_generation` | U64 (4) | 24 | 8 | false | Seal generation number |
+| 6 | `root` | BYTES (13) | 32 | 32 | false | RFC 6962 Merkle tree root of records |
+
+#### Tile 87: `graph_edge` (Record Size: 56 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `edge_id` | BYTES (13) | 0 | 16 | false | 128-bit edge UUID |
+| 2 | `source_hash` | U64 (4) | 16 | 8 | false | Hash of source node key |
+| 3 | `target_hash` | U64 (4) | 24 | 8 | false | Hash of target node key |
+| 4 | `edge_type_hash` | U32 (3) | 32 | 4 | false | Hash of edge relation type string |
+| 5 | `weight` | F32 (9) | 36 | 4 | false | Relation weight or confidence |
+| 6 | `timestamp_sec` | U64 (4) | 40 | 8 | false | Creation timestamp in epoch seconds |
+| 7 | `flags` | U64 (4) | 48 | 8 | false | Edge status flags |
+
+---
+
+### 7.2 Scholar Pack Tiles
+
+#### Tile 10: `human_lrs` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `session_uuid` | BYTES (13) | 0 | 16 | false | 128-bit shared session UUID |
+| 2 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Recorded timestamp |
+| 3 | `actor_hash` | U64 (4) | 24 | 8 | false | Hash of human researcher |
+| 4 | `verb_id` | U32 (3) | 32 | 4 | false | xAPI verb ID |
+| 5 | `decision_score` | F32 (9) | 36 | 4 | false | Decision feedback score |
+| 6 | `ai_trace_coord` | BYTES (13) | 40 | 16 | false | O(1) pointer to AI agent trace step |
+| 7 | `object_hash` | U32 (3) | 56 | 4 | false | Hash of target paper or claim |
+| 8 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
+
+#### Tile 11: `ai_trace_log` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `session_uuid` | BYTES (13) | 0 | 16 | false | 128-bit shared session UUID |
+| 2 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Step execution timestamp |
+| 3 | `agent_id` | U64 (4) | 24 | 8 | false | AI agent identifier hash |
+| 4 | `step_type` | U32 (3) | 32 | 4 | false | Step category code |
+| 5 | `confidence` | F32 (9) | 36 | 4 | false | Model confidence score |
+| 6 | `human_coord` | BYTES (13) | 40 | 16 | false | Pointer to human decision |
+| 7 | `hilbert_index` | U32 (3) | 56 | 4 | false | Spatial coordinate |
+| 8 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
+
+#### Tile 12: `academic_papers` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `paper_id` | U64 (4) | 0 | 8 | false | DOI / URI hash |
+| 2 | `timestamp_sec` | U64 (4) | 8 | 8 | false | Publication timestamp |
+| 3 | `hilbert_index` | U64 (4) | 16 | 8 | false | 3D Hilbert curve index |
+| 4 | `topic_x` | F32 (9) | 24 | 4 | false | Topic cluster coordinate X |
+| 5 | `topic_y` | F32 (9) | 28 | 4 | false | Topic cluster coordinate Y |
+| 6 | `topic_z` | F32 (9) | 32 | 4 | false | Topic cluster coordinate Z |
+| 7 | `citation_count` | U32 (3) | 36 | 4 | false | Citation count |
+| 8 | `year` | U16 (2) | 40 | 2 | false | Publication year |
+| 9 | `venue_id` | U16 (2) | 42 | 2 | false | Publication venue ID |
+| 10 | `open_access_flag` | U16 (2) | 44 | 2 | false | 1 = open access |
+| 11 | `warning_count` | U16 (2) | 46 | 2 | false | Provenance warnings count |
+| 12 | `doi_prefix_hash` | U64 (4) | 48 | 8 | false | Publisher DOI prefix hash |
+| 13 | `flags` | U64 (4) | 56 | 8 | false | Status flags |
+
+#### Tile 13: `research_graph` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `subject_hash` | U64 (4) | 0 | 8 | false | Subject node identifier hash |
+| 2 | `object_hash` | U64 (4) | 8 | 8 | false | Object node identifier hash |
+| 3 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Assertion timestamp in epoch seconds |
+| 4 | `hilbert_coord` | U64 (4) | 24 | 8 | false | Spatial coordinate |
+| 5 | `predicate_id` | U32 (3) | 32 | 4 | false | Predicate relation code |
+| 6 | `weight` | F32 (9) | 36 | 4 | false | Edge weight or confidence |
+| 7 | `flags` | U64 (4) | 40 | 8 | false | Status flags |
+
+#### Tile 14: `srs_workspace` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `project_uuid` | BYTES (13) | 0 | 16 | false | 128-bit project UUID |
+| 2 | `question_hash` | U64 (4) | 16 | 8 | false | Hash of research question |
+| 3 | `collection_mask` | U64 (4) | 24 | 8 | false | Corpus inclusion mask |
+| 4 | `topic_centroid_xyz` | BYTES (13) | 32 | 12 | false | Centroid topic coordinates |
+| 5 | `status` | U32 (3) | 44 | 4 | false | Review status code |
+| 6 | `pinned_works_count` | U32 (3) | 48 | 4 | false | Pinned works count |
+| 7 | `claims_count` | U32 (3) | 52 | 4 | false | Extracted claims count |
+| 8 | `flags` | U64 (4) | 56 | 8 | false | Status flags |
+
+#### Tile 15: `srs_manifest` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `magic` | STRING (11) | 0 | 16 | false | Manifest magic identifier |
+| 2 | `schema_version` | U32 (3) | 16 | 4 | false | Snapshot schema version |
+| 3 | `archive_flags` | U32 (3) | 20 | 4 | false | Snapshot archive flags |
+| 4 | `project_uuid` | BYTES (13) | 24 | 16 | false | Project UUID |
+| 5 | `snapshot_uuid` | BYTES (13) | 40 | 16 | false | Snapshot UUID |
+| 6 | `parent_snapshot_uuid` | BYTES (13) | 56 | 16 | false | Parent snapshot UUID |
+| 7 | `origin_session_uuid` | BYTES (13) | 72 | 16 | false | Origin session UUID |
+| 8 | `created_at_sec` | U64 (4) | 88 | 8 | false | Creation timestamp |
+| 9 | `tile_count` | U32 (3) | 96 | 4 | false | Total tiles in snapshot |
+| 10 | `crc32c_checksum` | U32 (3) | 100 | 4 | false | Snapshot checksum |
+| 11 | `total_records` | U64 (4) | 104 | 8 | false | Total records across tiles |
+
+#### Tile 16: `ontology_concept` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `concept_id` | U64 (4) | 0 | 8 | false | Concept identifier |
+| 2 | `timestamp_sec` | U64 (4) | 8 | 8 | false | Definition timestamp |
+| 3 | `name_hash` | U64 (4) | 16 | 8 | false | Concept name hash |
+| 4 | `flags` | U64 (4) | 24 | 8 | false | Status flags |
+
+#### Tile 17: `ontology_axiom` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `axiom_id` | U64 (4) | 0 | 8 | false | Axiom identifier |
+| 2 | `subject_id` | U64 (4) | 8 | 8 | false | Subject concept ID |
+| 3 | `predicate_id` | U64 (4) | 16 | 8 | false | Predicate axiom ID |
+| 4 | `object_id` | U64 (4) | 24 | 8 | false | Object concept ID |
+| 5 | `flags` | U64 (4) | 32 | 8 | false | Status flags |
+
+#### Tile 18: `agent_registry` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `agent_id` | U64 (4) | 0 | 8 | false | Registered agent identifier |
+| 2 | `created_at_sec` | U64 (4) | 8 | 8 | false | Registration timestamp |
+| 3 | `public_key_hash` | U64 (4) | 16 | 8 | false | Agent public key hash |
+| 4 | `name` | STRING (11) | 24 | 32 | false | Canonical agent name |
+| 5 | `capabilities` | U32 (3) | 56 | 4 | false | Capability mask |
+| 6 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
+
+#### Tile 20: `note_claims` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `claim_id` | U64 (4) | 0 | 8 | false | Claim identifier hash |
+| 2 | `timestamp_sec` | U64 (4) | 8 | 8 | false | Assertion timestamp in epoch seconds |
+| 3 | `session_uuid` | BYTES (13) | 16 | 16 | false | 128-bit research session UUID |
+| 4 | `author_hash` | U64 (4) | 32 | 8 | false | Author researcher or agent hash |
+| 5 | `confidence` | F32 (9) | 40 | 4 | false | Claim validation confidence |
+| 6 | `kind` | U16 (2) | 44 | 2 | false | Claim category code |
+| 7 | `flags` | U16 (2) | 46 | 2 | false | Status flags |
+| 8 | `keyword_bloom` | U32 (3) | 48 | 4 | false | 32-bit token bloom filter |
+| 9 | `text_hash` | U32 (3) | 52 | 4 | false | CRC32C hash of text content |
+| 10 | `embedding_tile_id` | U32 (3) | 56 | 4 | false | Pointer to embedding tile |
+| 11 | `embedding_offset` | U32 (3) | 60 | 4 | false | Record offset in embedding tile |
+
+#### Tile 32: `citation_fingerprint` (Record Size: 96 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `fingerprint_id` | U64 (4) | 0 | 8 | false | Fingerprint identifier |
+| 2 | `paper_id` | U64 (4) | 8 | 8 | false | Associated paper identifier |
+| 3 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Fingerprint generation timestamp |
+| 4 | `doi_hash` | BYTES (13) | 24 | 32 | false | SHA-256 hash of canonical DOI |
+| 5 | `citation_hash` | BYTES (13) | 56 | 32 | false | Cryptographic citation tree hash |
+| 6 | `flags` | U64 (4) | 88 | 8 | false | Status flags |
+
+#### Tile 96: `committee_decision` (Record Size: 160 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `submission_hash` | BYTES (7) | 0 | 16 | false | Hash of submission ID |
+| 2 | `reviewer_hash` | BYTES (7) | 16 | 16 | false | Hash of reviewer ID |
+| 3 | `comment_hash` | BYTES (7) | 32 | 16 | false | Hash of review comments |
+| 4 | `prev_hash` | BYTES (7) | 48 | 32 | false | SHA-256 of previous decision record |
+| 5 | `timestamp_sec` | U64 (4) | 80 | 8 | false | Decision timestamp in epoch seconds |
+| 6 | `verdict` | U32 (3) | 88 | 4 | false | Numeric verdict |
+| 7 | `layout_version` | U32 (3) | 92 | 4 | false | Schema layout version |
+| 8 | `signature` | BYTES (7) | 96 | 64 | false | Ed25519 signature over signing message |
+
+---
+
+### 7.3 Other Standard Domain Packs & Extensions
+
+#### Tile 3: `wearable_micro` (Record Size: 16 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `timestamp` | U64 (4) | 0 | 8 | false | Timestamp in epoch microseconds |
+| 2 | `heart_rate` | U16 (2) | 8 | 2 | false | Heart rate reading (bpm) |
+| 3 | `spo2` | U16 (2) | 10 | 2 | false | Blood oxygen level percentage |
+| 4 | `motion_flags` | U32 (3) | 12 | 4 | false | Accelerometer motion mask |
+
+#### Tile 4: `robotics_kinematic` (Record Size: 72 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `timestamp_sec` | U64 (4) | 0 | 8 | false | Trajectory timestamp in epoch seconds |
+| 2 | `joint_id` | U32 (3) | 8 | 4 | false | Robotic actuator joint ID |
+| 3 | `trajectory_id` | U32 (3) | 12 | 4 | false | Path trajectory segment ID |
+| 4 | `position_xyz` | BYTES (13) | 16 | 24 | false | 3D joint coordinate vectors (3 x f64) |
+| 5 | `velocity_xyz` | BYTES (13) | 40 | 24 | false | 3D velocity vectors (3 x f64) |
+| 6 | `flags` | U64 (4) | 64 | 8 | false | Status flags |
+
+#### Tile 5: `gis_survey_mesh` (Record Size: 32 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `point_id` | U64 (4) | 0 | 8 | false | Survey mesh point ID |
+| 2 | `latitude` | F64 (10) | 8 | 8 | false | WGS84 latitude coordinate |
+| 3 | `longitude` | F64 (10) | 16 | 8 | false | WGS84 longitude coordinate |
+| 4 | `elevation` | F32 (9) | 24 | 4 | false | Elevation above sea level (meters) |
+| 5 | `flags` | U32 (3) | 28 | 4 | false | Precision flags |
+
+#### Tile 6: `data_availability` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `commitment_id` | U64 (4) | 0 | 8 | false | Data availability commitment ID |
+| 2 | `epoch_number` | U64 (4) | 8 | 8 | false | Blockchain epoch number |
+| 3 | `kzg_commitment` | BYTES (13) | 16 | 40 | false | KZG cryptographic polynomial commitment |
+| 4 | `status` | U64 (4) | 56 | 8 | false | Verification status bitmask |
+
+#### Tile 80: `vcs_commit` (Record Size: 96 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `commit_id` | BYTES (13) | 0 | 32 | false | SHA-256 commit identifier |
+| 2 | `parent_commit_id` | BYTES (13) | 32 | 32 | false | SHA-256 parent commit identifier |
+| 3 | `author_hash` | U64 (4) | 64 | 8 | false | Commit author hash |
+| 4 | `timestamp` | U64 (4) | 72 | 8 | false | Commit timestamp in epoch seconds |
+| 5 | `message_len` | U32 (3) | 80 | 4 | false | Byte length of commit message |
+| 6 | `flags` | U32 (3) | 84 | 4 | false | Commit status flags |
+
+#### Tile 81: `vcs_ref` (Record Size: 80 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `ref_name` | STRING (11) | 0 | 32 | false | Branch or tag reference name |
+| 2 | `commit_id` | BYTES (13) | 32 | 32 | false | SHA-256 target commit identifier |
+| 3 | `updated_at` | U64 (4) | 64 | 8 | false | Update timestamp in epoch seconds |
+| 4 | `flags` | U64 (4) | 72 | 8 | false | Reference flags |
+
+#### Tile 82: `vcs_resolution` (Record Size: 80 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `conflict_id` | BYTES (13) | 0 | 32 | false | Conflict identifier |
+| 2 | `resolved_commit_id` | BYTES (13) | 32 | 32 | false | Resolved target commit identifier |
+| 3 | `resolved_at` | U64 (4) | 64 | 8 | false | Resolution timestamp in epoch seconds |
+| 4 | `resolver_hash` | U64 (4) | 72 | 8 | false | Hash of resolver identity |
+
+#### Tile 85: `gate_directory` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `node_uuid` | BYTES (13) | 0 | 16 | false | 128-bit gate network node UUID |
+| 2 | `peer_endpoint` | STRING (11) | 16 | 32 | false | Relay socket endpoint address |
+| 3 | `registered_at` | U64 (4) | 48 | 8 | false | Registration timestamp |
+| 4 | `flags` | U64 (4) | 56 | 8 | false | Node status flags |
+
+#### Tile 86: `gate_mailbox` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `message_id` | BYTES (13) | 0 | 16 | false | 128-bit message UUID |
+| 2 | `recipient_uuid` | BYTES (13) | 16 | 16 | false | 128-bit recipient node UUID |
+| 3 | `sender_uuid` | BYTES (13) | 32 | 16 | false | 128-bit sender node UUID |
+| 4 | `queued_at` | U64 (4) | 48 | 8 | false | Queued timestamp in epoch seconds |
+| 5 | `payload_len` | U32 (3) | 56 | 4 | false | Payload byte length |
+| 6 | `flags` | U32 (3) | 60 | 4 | false | Delivery status flags |
+
+#### Tile 64: `record` (Record Size: 64 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `timestamp` | U64 (4) | 0 | 8 | false | Timestamp in epoch seconds |
+| 2 | `record_type` | U32 (3) | 8 | 4 | false | Event or record type identifier |
+| 3 | `flags` | U64 (4) | 12 | 8 | false | Status and attribute flags |
+| 4 | `payload` | BYTES (12) | 20 | 40 | false | Opaque payload bytes |
+| 5 | `record_crc32` | U32 (3) | 60 | 4 | false | CRC32C checksum of record |
+
+#### Tile 68: `blob` (Record Size: 40 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `blob_key` | BYTES (13) | 0 | 32 | false | 256-bit blob key / content hash |
+| 2 | `chunk_index` | U32 (3) | 32 | 4 | false | Zero-based chunk index |
+| 3 | `total_chunks` | U32 (3) | 36 | 4 | false | Total chunk count |
+
+#### Tile 72: `provenance` (Record Size: 40 B)
+| Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
+|:---:|:---|:---:|:---:|:---:|:---:|:---|
+| 1 | `provenance_key` | BYTES (13) | 0 | 32 | false | 256-bit provenance key / manifest hash |
+| 2 | `chunk_index` | U32 (3) | 32 | 4 | false | Zero-based chunk index |
+| 3 | `total_chunks` | U32 (3) | 36 | 4 | false | Total chunk count |
+
+
+
 

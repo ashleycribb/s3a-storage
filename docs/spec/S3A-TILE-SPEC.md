@@ -163,7 +163,7 @@ The first 512 bytes of every Hyper-Tile contain its header metadata:
 | `472 .. 480` | 8 B | `learned_index` | `TileLearnedIndex` | Monotonic timestamp index slope and intercept. |
 | `480 .. 488` | 8 B | `generation` | `u64` | Archive generation when this tile was written. |
 | `488 .. 492` | 4 B | `tile_index` | `u32` | 0-based logical index of this tile in the archive sequence. |
-| `492 .. 496` | 4 B | `_reserved_addr`| `u32` | Reserved. Writers MUST zero; readers MUST ignore (§3.3). |
+| `492 .. 496` | 4 B | `sequence_number`| `u32` | Monotonic tile sequence number covered by header checksum. Legacy archives: 0 (§3.3). |
 | `496 .. 512` | 16 B | `file_uuid` | `[u64; 2]` | 128-bit file UUID matching containing archive's `FileHeader.file_uuid`. |
 
 ### 3.2 Sub-Header Structures

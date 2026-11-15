@@ -181,6 +181,7 @@ pub fn check_archive_verification(path: &Path) -> ArchiveVerification {
         Ok(report) => {
             if report.is_sealed
                 && !report.rebuilt_directory
+                && report.repaired_tiles.is_empty()
                 && !report.warnings.iter().any(|w| w.contains("corrupt"))
             {
                 claims_sealed = true;

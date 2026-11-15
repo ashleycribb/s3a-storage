@@ -484,3 +484,53 @@
    - `test_unimplemented_binary_never_up`: asserts non-existent binary reports `"not implemented"`.
    - `test_otel_requires_real_response_not_tcp_alone`: asserts TCP connect without valid OTLP response does not report UP.
 
+
+---
+
+## Prompt 009: Scholar Readable Records, Graph Edges, Self-Describing Archives & Engine 0.2.0
+
+- **Status**: ALL SUCCESS
+- **Workspace Version**: `0.2.0`
+- **Total Tests Passed**: 806 (across 137 suites)
+- **Summary of Deliverables**:
+1. **Scholar Paper Record (`crates/s3a-pack-scholar/src/paper.rs`)**:
+   - `ScholarPaperRecord`: canonical paper key, DOI and other aliases/identifiers, title, ordered authors (with ORCID when known), abstract, venue, year, language, license, and source URL.
+   - Text is strictly UTF-8 NFC-normalized (`unicode-normalization`); dates formatted in UTC ISO-8601.
+   - Large abstracts/text spill into continuation tiles (`TileType::BLOB` / chunked records) rather than being truncated.
+   - Unknown/missing fields are stored as absent (JSON null/omitted), never as `0` or `""`.
+   - Backward compatibility: older archives open and read cleanly, returning new fields as absent (`None`).
+2. **Graph Edges & Append-Only Retractions (`crates/s3a-pack-scholar/src/graph_edge.rs`)**:
+   - `ScholarGraphEdge`: supports `cites`, `cited-by`, `alias-of`, and registered custom edge extension types.
+   - Includes source key, target key, edge type, provenance (actor/role, UTC timestamp), and schema version.
+   - Append-only semantics: retractions are stored as new records with edge type `"retraction"` containing the retracted target key and reason, never mutating or deleting existing tiles.
+   - Query API (`list_edges_by_node_and_type`) enables filtering edges by node and relation.
+3. **Self-Describing Embedded Schema Registry (`crates/s3a-core/src/registry.rs`, `crates/s3a-engine/src/sealed.rs`)**:
+   - Every sealed archive embeds tile-type registry entries for all tile types used (type ID, pack name, record name, schema version, field names, types, widths) and the format specification version.
+   - Sealing strictly fails if any tile present in the archive lacks an embedded schema registry entry.
+   - CI check (`crates/s3a-spec-vectors/tests/spec_fields_check.rs`) parses `docs/spec/registry.md` and fails if any code-defined field is absent from the spec.
+   - Added standard schemas and documentation for tiles 64 (`RECORD`), 68 (`BLOB`), 72 (`PROVENANCE`), and 96 (`COMMITTEE_DECISION`).
+4. **Monotonic Tile Sequence Numbers (`crates/s3a-core/src/header.rs`, `crates/s3a-engine/src/mmap.rs`)**:
+   - Monotonic sequence numbers in `HyperTileHeader.sequence_number` (offset 492..496) covered by CRC-32C checksum.
+   - `TileWriter` monotonically increments sequence numbers on append.
+   - Recovery logic (`MmapReader::get_tile_by_id`) selects the newest valid copy by sequence number rather than physical offset.
+   - Backward compatibility: legacy/v1.0 archives without sequence numbers open seamlessly (treated as sequence 0).
+5. **Rebuildable Index Caches (`crates/s3a-cli/src/main.rs`, `crates/s3a-engine/src/lib.rs`)**:
+   - `s3a rebuild-indexes <archive>` CLI command and `rebuild_indexes` engine function.
+   - Drops index tiles (Tile 22 `STATEMENT_INDEX`, Tile 83 `RECORD_ROOT`) and reconstructs them from data tiles alone.
+   - Verified that rebuilt indexes answer queries identically to the original.
+6. **WASM Snapshot Engine Bindings (`crates/s3a-wasm-snapshot/src/bindgen.rs`)**:
+   - Exposes `put_paper`, `get_paper`, `add_edge`, `list_edges`, and `read_embedded_registry` via WebAssembly for Scholar Explorer.
+   - Added Node.js smoke tests in `crates/s3a-wasm-snapshot/tests/smoke.mjs`.
+   - Updated `.github/workflows/wasm-dist.yml` to automatically publish `v0.2.0` to `s3a-wasm-dist`.
+7. **008 Tidy-Ups**:
+   - OTel health checks report UP only on HTTP 200/204 response.
+   - LRS `store_writable` check performs a real temp file write and delete.
+   - Vault health probe is read-only (never creates a database file during probe).
+   - `--insecure-dev` is only passed if explicitly configured in `stack.toml`, and status reports `(dev mode)`.
+8. **Verification**:
+   - Conformance test vectors regenerated for versions 1.0 through 1.5.
+   - `cargo test --workspace`: all 806 tests passed with 0 failures across 137 test suites.
+   - `cargo fmt --all -- --check`: passed.
+   - `cargo clippy --workspace --all-targets`: passed.
+   - `cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings`: passed.
+   - `cargo deny check`: passed (`advisories ok, bans ok, licenses ok, sources ok`).

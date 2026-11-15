@@ -440,6 +440,22 @@ fn main() {
         "demo" => {
             s3a_cli::first_run::handle_demo(&args, verbose);
         }
+        "rebuild-indexes" => {
+            let pos: Vec<&String> = args
+                .iter()
+                .skip(2)
+                .filter(|a| !a.starts_with("--"))
+                .collect();
+            if pos.is_empty() {
+                eprintln!("Usage: s3a rebuild-indexes <archive_path>");
+                std::process::exit(1);
+            }
+            if let Err(e) = s3a_engine::rebuild_indexes(pos[0]) {
+                eprintln!("Error rebuilding indexes: {}", e);
+                std::process::exit(1);
+            }
+            println!("Successfully rebuilt indexes for {}", pos[0]);
+        }
         "help" | "--help" | "-h" => {
             s3a_cli::first_run::handle_help(&args);
         }
@@ -4375,7 +4391,8 @@ fn handle_connection(stream: &mut TcpStream) {
     {
         let vault_file =
             std::env::var("S3A_VAULT_PATH").unwrap_or_else(|_| "vault.s3a".to_string());
-        let storage_ok = S3ACrudEngine::open_or_create(&vault_file).is_ok();
+        let vault_path = std::path::Path::new(&vault_file);
+        let storage_ok = vault_path.exists() && S3ACrudEngine::open(&vault_file).is_ok();
         let status_str = if storage_ok { "ok" } else { "unhealthy" };
         let code = if storage_ok {
             "200 OK"

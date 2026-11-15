@@ -811,7 +811,7 @@ pub fn seal_archive_v1<P: AsRef<Path>, Q: AsRef<Path>>(
 }
 
 /// Seals an in-memory S3A archive byte buffer according to v2 format.
-fn set_tile_count(out_data: &mut [u8], tile_count: u32, file_uuid: [u64; 2]) {
+pub(crate) fn set_tile_count(out_data: &mut [u8], tile_count: u32, file_uuid: [u64; 2]) {
     for off in [FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET] {
         let slot: &mut FileHeader =
             bytemuck::from_bytes_mut(&mut out_data[off..off + FILE_HEADER_SLOT_SIZE]);
@@ -894,6 +894,28 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             out_data = kept;
             tile_count = n;
             set_tile_count(&mut out_data, tile_count, file_uuid);
+        }
+    }
+
+    // Prompt 009 C: Every tile in the archive must be registered in the schema registry.
+    // Fail the seal if any tile has an unregistered type.
+    let reg = s3a_core::registry::global_registry();
+    for i in 0..tile_count as usize {
+        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        let h: HyperTileHeader =
+            bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+        if reg.get(h.tile_type).is_none()
+            && crate::standard_schema_for_type(h.tile_type)
+                .fields
+                .is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Cannot seal archive: tile {} has unregistered type {} not in registry",
+                    i, h.tile_type
+                ),
+            ));
         }
     }
 
@@ -1407,7 +1429,7 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         title: None,
         creator: None,
         record_roots: false,
-        about: false,
+        about: true,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
@@ -1425,7 +1447,7 @@ pub fn seal_buffer_with_manifest(in_bytes: &[u8], k: u16, m: u16) -> io::Result<
         title: None,
         creator: None,
         record_roots: false,
-        about: false,
+        about: true,
     };
     seal_buffer_v2(in_bytes, &options)
 }
@@ -1449,7 +1471,7 @@ pub fn seal_archive_with_manifest<P: AsRef<Path>, Q: AsRef<Path>>(
         title: None,
         creator: None,
         record_roots: false,
-        about: false,
+        about: true,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
@@ -1743,6 +1765,7 @@ fn verify_sealed_impl(
                         let global_idx = (start_tile + missing_col) as u32;
                         tiles_raw[global_idx as usize] = repaired.clone();
                         repaired_tiles.push(global_idx);
+                        warnings.push(format!("tile_{}_corrupt_repaired", global_idx));
                     }
                 }
 
@@ -2215,7 +2238,7 @@ mod tests {
 
         let report = verify_sealed_archive(&sealed_file.path, None).unwrap();
         assert!(report.is_sealed);
-        assert_eq!(report.tile_count, 1);
+        assert_eq!(report.tile_count, 2); // 1 telemetry data tile + 1 embedded self-describing schema tile
         assert_eq!(report.k, 16);
         assert_eq!(report.m, 2);
         assert!(report.warnings.is_empty());

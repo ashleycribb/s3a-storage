@@ -181,6 +181,7 @@ name = "cli-test-stack"
 host = "127.0.0.1"
 data_dir = "./data"
 log_dir = "./logs"
+dev = true
 
 [model]
 provider = "local"
