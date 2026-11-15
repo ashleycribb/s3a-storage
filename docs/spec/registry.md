@@ -348,30 +348,39 @@ Every tile type registered in the schema registry defines its canonical fields, 
 #### Tile 12: `academic_papers` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `paper_id` | U64 (4) | 0 | 8 | false | DOI / URI hash |
-| 2 | `timestamp_sec` | U64 (4) | 8 | 8 | false | Publication timestamp |
-| 3 | `hilbert_index` | U64 (4) | 16 | 8 | false | 3D Hilbert curve index |
-| 4 | `topic_x` | F32 (9) | 24 | 4 | false | Topic cluster coordinate X |
-| 5 | `topic_y` | F32 (9) | 28 | 4 | false | Topic cluster coordinate Y |
-| 6 | `topic_z` | F32 (9) | 32 | 4 | false | Topic cluster coordinate Z |
-| 7 | `citation_count` | U32 (3) | 36 | 4 | false | Citation count |
-| 8 | `year` | U16 (2) | 40 | 2 | false | Publication year |
-| 9 | `venue_id` | U16 (2) | 42 | 2 | false | Publication venue ID |
-| 10 | `open_access_flag` | U16 (2) | 44 | 2 | false | 1 = open access |
-| 11 | `warning_count` | U16 (2) | 46 | 2 | false | Provenance warnings count |
-| 12 | `doi_prefix_hash` | U64 (4) | 48 | 8 | false | Publisher DOI prefix hash |
-| 13 | `flags` | U64 (4) | 56 | 8 | false | Status flags |
+| 1 | `key_hash` | U64 (4) | 0 | 8 | false | 64-bit hash of canonical paper key |
+| 2 | `sha256_hash` | BYTES (13) | 8 | 32 | false | SHA-256 hash of paper record JSON |
+| 3 | `total_bytes` | U32 (3) | 40 | 4 | false | Total bytes of UTF-8 JSON payload across all chunks |
+| 4 | `chunk_index` | U16 (2) | 44 | 2 | false | 0-based chunk index |
+| 5 | `total_chunks` | U16 (2) | 46 | 2 | false | Total chunks for this paper |
+| 6 | `chunk_bytes` | U32 (3) | 48 | 4 | false | Bytes in this chunk payload |
+| 7 | `chunk_crc32` | U32 (3) | 52 | 4 | false | CRC32C of this chunk's payload |
+| 8 | `schema_version` | U32 (3) | 56 | 4 | false | Schema layout version (2 for v2) |
+| 9 | `reserved` | U32 (3) | 60 | 4 | false | Alignment padding |
+| 10 | `chunk_data` | STRING (11) | 64 | 0 | false | UTF-8 JSON chunk of `chunk_bytes` bytes; byte length 0 = variable |
+
+Layout v2 (`record_layout_version = 2`): one 64-byte blob header followed by `chunk_data`. A paper
+spans `total_chunks` tiles that share `sha256_hash`; concatenating `chunk_data` in `chunk_index`
+order gives `total_bytes` bytes of UTF-8 JSON whose SHA-256 is `sha256_hash`. Layout v1 (fixed
+64-byte records, read-only) is documented in [legacy-layouts.md](legacy-layouts.md).
 
 #### Tile 13: `research_graph` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `subject_hash` | U64 (4) | 0 | 8 | false | Subject node identifier hash |
-| 2 | `object_hash` | U64 (4) | 8 | 8 | false | Object node identifier hash |
-| 3 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Assertion timestamp in epoch seconds |
-| 4 | `hilbert_coord` | U64 (4) | 24 | 8 | false | Spatial coordinate |
-| 5 | `predicate_id` | U32 (3) | 32 | 4 | false | Predicate relation code |
-| 6 | `weight` | F32 (9) | 36 | 4 | false | Edge weight or confidence |
-| 7 | `flags` | U64 (4) | 40 | 8 | false | Status flags |
+| 1 | `source_hash` | U64 (4) | 0 | 8 | false | CRC32C of the NFC source key, zero-extended |
+| 2 | `target_hash` | U64 (4) | 8 | 8 | false | CRC32C of the NFC target key, zero-extended |
+| 3 | `total_bytes` | U32 (3) | 16 | 4 | false | Bytes of `edge_json` |
+| 4 | `schema_version` | U32 (3) | 20 | 4 | false | Blob encoding version (2) |
+| 5 | `payload_crc32` | U32 (3) | 24 | 4 | false | CRC32C of `edge_json` |
+| 6 | `is_retraction` | U32 (3) | 28 | 4 | false | 1 = retraction record |
+| 7 | `reserved` | BYTES (13) | 32 | 32 | false | Zero |
+| 8 | `edge_json` | STRING (11) | 64 | 0 | false | UTF-8 JSON edge; byte length 0 = variable |
+
+Layout v2 (`record_layout_version = 2`): one edge per tile, a 64-byte blob header followed by
+`edge_json`. A retraction carries `retracted_edge_id`, the lowercase hex SHA-256 of the canonical
+JSON of the one edge it hides. Fields absent from a record are omitted, never filled with
+defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
+[legacy-layouts.md](legacy-layouts.md).
 
 #### Tile 14: `srs_workspace` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
@@ -455,14 +464,14 @@ Every tile type registered in the schema registry defines its canonical fields, 
 #### Tile 96: `committee_decision` (Record Size: 160 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `submission_hash` | BYTES (7) | 0 | 16 | false | Hash of submission ID |
-| 2 | `reviewer_hash` | BYTES (7) | 16 | 16 | false | Hash of reviewer ID |
-| 3 | `comment_hash` | BYTES (7) | 32 | 16 | false | Hash of review comments |
-| 4 | `prev_hash` | BYTES (7) | 48 | 32 | false | SHA-256 of previous decision record |
+| 1 | `submission_hash` | BYTES (13) | 0 | 16 | false | Hash of submission ID |
+| 2 | `reviewer_hash` | BYTES (13) | 16 | 16 | false | Hash of reviewer ID |
+| 3 | `comment_hash` | BYTES (13) | 32 | 16 | false | Hash of review comments |
+| 4 | `prev_hash` | BYTES (13) | 48 | 32 | false | SHA-256 of previous decision record |
 | 5 | `timestamp_sec` | U64 (4) | 80 | 8 | false | Decision timestamp in epoch seconds |
 | 6 | `verdict` | U32 (3) | 88 | 4 | false | Numeric verdict |
 | 7 | `layout_version` | U32 (3) | 92 | 4 | false | Schema layout version |
-| 8 | `signature` | BYTES (7) | 96 | 64 | false | Ed25519 signature over signing message |
+| 8 | `signature` | BYTES (13) | 96 | 64 | false | Ed25519 signature over signing message |
 
 ---
 
@@ -553,7 +562,7 @@ Every tile type registered in the schema registry defines its canonical fields, 
 | 1 | `timestamp` | U64 (4) | 0 | 8 | false | Timestamp in epoch seconds |
 | 2 | `record_type` | U32 (3) | 8 | 4 | false | Event or record type identifier |
 | 3 | `flags` | U64 (4) | 12 | 8 | false | Status and attribute flags |
-| 4 | `payload` | BYTES (12) | 20 | 40 | false | Opaque payload bytes |
+| 4 | `payload` | BYTES (13) | 20 | 40 | false | Opaque payload bytes |
 | 5 | `record_crc32` | U32 (3) | 60 | 4 | false | CRC32C checksum of record |
 
 #### Tile 68: `blob` (Record Size: 40 B)
