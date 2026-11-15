@@ -254,3 +254,26 @@ Notes:
   4. Removed "Approved by Snapshot Sealer"; sealed archives display "Sealed (signature verified)" or "Sealed (signature not verified)".
   5. Applied identical verification and approval status rules across `ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, and `ManifestFallbackViewPack`.
   6. Added test coverage in `viewer_mcp_tests.rs`: `test_unsigned_vault_shows_not_verified`, `test_tampered_seal_shows_not_verified`, and `test_reject_decision_never_shows_approved`. All CI workflows green.
+
+---
+
+## 007-followup-2-integrity-and-decision-verbs, 2026-11-14 19:55
+Status: done
+Commit: b1bb9be
+Changed: crates/s3a-harness/src/viewer.rs, crates/s3a-harness/tests/viewer_mcp_tests.rs, LOG.md, prompts/LOG.md
+Tests:
+  - cargo fmt --all --check: passed
+  - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
+  - cargo clippy --workspace --all-targets: passed
+  - cargo test -p s3a-harness --test viewer_mcp_tests: passed (15/15 tests passed)
+  - cargo test -p s3a-harness -j 1: passed (all 20 unit tests + 11 integration suites passed)
+  - GitHub Actions runs on b1bb9be:
+    - rust-ci (run 43660546445): success (all 13/13 jobs passed)
+    - cargo-deny (run 43660546399): success (advisories ok, bans ok, licenses ok, sources ok)
+    - S3A Research Agent Harness CI (run 43660546410): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43660576616): success
+Notes:
+  1. Distinguish between seal hash/index/parity integrity (`verify_sealed_archive`) and actual Ed25519 digital signatures verified with `s3a-vault`.
+  2. For hash-only sealed archives without Ed25519 signatures, labels are renamed to "Sealed (integrity verified)" / "Sealed (integrity check failed)" and status badges to "Integrity verified" / "Not verified". Only state "signature verified" if an actual Ed25519 signature over the seal/vault is verified with `s3a-vault`; if no signature exists, signature is None and the word "signature" is strictly absent.
+  3. Decoupled human approval/exclusion decisions from `decision_score`. Removed `decision_score` parameters and score thresholds from `is_human_decision_approved` and `is_human_decision_rejected`. Approval or exclusion strictly requires explicit human decision verbs; scores never imply decisions.
+  4. Added test suite coverage: `test_high_score_record_with_non_decision_verb_shows_no_decision` (score 0.99 with non-decision verb shows "No researcher decision recorded" and "Not verified"), `test_hash_only_sealed_archive_never_contains_word_signature_unless_verified` (hash-only sealed archive never contains the word "signature"), `test_ed25519_signed_vault_verifies_signature` (verifies actual signed vault displays "Signature verified"), and updated `test_tampered_seal_shows_not_verified` with the new labels and badges. All 4 workflows green.

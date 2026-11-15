@@ -351,3 +351,38 @@
    - `test_unsigned_vault_shows_not_verified`: verifies an unsigned digital vault displays `status_badge: "Not verified"`, `human_approval: "No researcher decision recorded"`, and `is_approved: false`.
    - `test_tampered_seal_shows_not_verified`: verifies clean sealed archive shows `"Verified"` and `"Sealed (signature verified)"`, and that tampering a byte causes it to show `status_badge: "Not verified"`, `human_approval: "Sealed (signature not verified)"`, and `is_approved: false`.
    - `test_reject_decision_never_shows_approved`: verifies rejected decision (via `VERB_ID_REJECTED` and low decision score) displays `"Researcher Excluded"`, sets `is_approved: false`, and never contains `"Approved"`.
+
+---
+
+## Prompt 007 Follow-Up 2: Hash Integrity vs. Ed25519 Signatures & Human Decision Verb Decoupling
+
+- **Status**: ALL SUCCESS
+- **Commit**: `b1bb9be`
+- **CI Verification on b1bb9be**:
+  - `rust-ci` (run 43660546445): **SUCCESS** (13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, clippy, Windows/macOS/Ubuntu runners, spec vectors, wasm snapshot).
+  - `cargo-deny` (run 43660546399): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43660546410): **SUCCESS** (both `windows-latest` and `ubuntu-latest` jobs passed).
+  - `wasm-dist` (run 43660576616): **SUCCESS** (build, test, publish, attestation green).
+- **Summary of Deliverables**:
+1. **Separation of Seal Hash Integrity and Ed25519 Signatures**:
+   - `check_archive_verification(path: &Path) -> ArchiveVerification` in `crates/s3a-harness/src/viewer.rs`:
+     - Checks candidate endcaps (`SEALED_ENDCAP_MAGIC_V1`, `SEALED_ENDCAP_MAGIC_V2`, `S3AEND`).
+     - Verifies archive integrity with `s3a_engine::verify_sealed_archive(path, None)` (hashes, directory index, and Reed-Solomon parity).
+     - Checks for genuine Ed25519 digital signatures via `s3a_vault::Vault::open` and `vault.verify_records().all_ok()`.
+   - Updated labels and badges across all view packs (`ScholarResearchViewPack`, `TechnicalDataViewPack`, `AuraBackupViewPack`, `ManifestFallbackViewPack`):
+     - Hash-only sealed archives show label `"Sealed (integrity verified)"` and status badge `"Integrity verified"`.
+     - Tampered or corrupted sealed archives show label `"Sealed (integrity check failed)"` and status badge `"Not verified"`.
+     - Only when an actual Ed25519 signature over the seal is checked and verified with `s3a-vault` does the viewer state `"Signature verified"` and `"Sealed (signature verified)"`.
+     - When no signature exists, `signature` in `ViewerApprovalStatus` is `None` and the word "signature" is strictly absent.
+2. **Decoupled Decision Verbs from Decision Scores**:
+   - Refactored `is_human_decision_approved(verb_id: u32) -> bool` and `is_human_decision_rejected(verb_id: u32) -> bool` in `viewer.rs`.
+   - Completely removed `decision_score` thresholds (`>= 0.70`, `< 0.50`). A score never implies approval or exclusion.
+   - Approval strictly requires explicit human approval verbs: `VERB_ID_APPROVED`, `VERB_ID_TA_APPROVED_DRAFT`, or `VERB_ID_ACCEPTED`.
+   - Exclusion strictly requires explicit human rejection verbs: `VERB_ID_REJECTED`, `VERB_ID_REMOVED`, `VERB_ID_CONSENT_DECLINED`, `VERB_ID_FLAGGED_HALLUCINATION`, or `VERB_ID_FLAGGED_DISCREPANCY`.
+   - Non-decision verbs (such as generic experienced/recorded) display `"No researcher decision recorded"` and `"Not verified"` regardless of score.
+3. **Comprehensive Test Suite in `crates/s3a-harness/tests/viewer_mcp_tests.rs`**:
+   - `test_high_score_record_with_non_decision_verb_shows_no_decision`: asserts a high-score (0.99) record with a generic/non-decision verb displays `human_approval: "No researcher decision recorded"` and `status_badge: "Not verified"`.
+   - `test_hash_only_sealed_archive_never_contains_word_signature_unless_verified`: asserts across all packs (Scholar, TDP, Aura) that hash-only sealed archives never contain the word `"signature"` in badges, labels, or approval fields.
+   - `test_ed25519_signed_vault_verifies_signature`: asserts an actual Ed25519-signed digital vault displays `status_badge: "Signature verified"`.
+   - `test_tampered_seal_shows_not_verified`: updated to verify clean seal displays `"Integrity verified"` and `"Sealed (integrity verified)"`, and tampered seal displays `"Not verified"` and `"Sealed (integrity check failed)"`.
+   - `test_reject_decision_never_shows_approved`: verifies rejection verbs display `"Researcher Excluded"` and never contain `"Approved"`.
