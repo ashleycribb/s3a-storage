@@ -2434,10 +2434,16 @@ impl LrsStore {
         start_tile: usize,
         _offset: usize,
     ) -> Result<Option<String>, LrsStoreError> {
-        let (header, payload) = match reader.get_tile(start_tile) {
+        // `body_tile_id` is a tile id; resolve it the same way `get_statement` does.
+        let mut tile = reader.get_tile_by_id(start_tile as u64);
+        if tile.map(|(h, _)| h.tile_type) != Some(TILE_STATEMENT_BODY) {
+            tile = reader.get_tile(start_tile);
+        }
+        let (header, payload) = match tile {
             Some(t) => t,
             None => return Ok(None),
         };
+        let start_index = header.tile_index as usize;
 
         if header.tile_type != TILE_STATEMENT_BODY
             || payload.len() < std::mem::size_of::<StatementBlobHeader>()
@@ -2456,7 +2462,7 @@ impl LrsStore {
 
         if total_chunks > 1 {
             for c in 1..total_chunks {
-                if let Some((_, next_payload)) = reader.get_tile(start_tile + c as usize) {
+                if let Some((_, next_payload)) = reader.get_tile(start_index + c as usize) {
                     if next_payload.len() >= std::mem::size_of::<StatementBlobHeader>() {
                         let next_hdr: &StatementBlobHeader =
                             &bytemuck::pod_read_unaligned::<StatementBlobHeader>(

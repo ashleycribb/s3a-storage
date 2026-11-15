@@ -807,9 +807,9 @@ pub struct HyperTileHeader {
 impl HyperTileHeader {
     pub fn new(tile_id: u64, tile_type: u32) -> Self {
         #[cfg(feature = "std")]
+        // Fixed-record layout for the type (tiles 12/13: 1; their v2 blob writers set 2).
         let default_version = global_registry()
-            .get(tile_type)
-            .map(|d| d.current_layout_version)
+            .pod_record_layout_version(tile_type)
             .unwrap_or(1);
         #[cfg(not(feature = "std"))]
         let default_version = 1;

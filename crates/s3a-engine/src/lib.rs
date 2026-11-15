@@ -451,9 +451,40 @@ pub struct TileWriter {
     addon_mask: u32,
     file_uuid: [u64; 2],
     next_sequence: u32,
+    /// Set once `next_sequence` would pass `u32::MAX`; further writes fail instead of wrapping.
+    sequence_exhausted: bool,
+    /// Committed length of a sealed file whose seal trailer is kept until the first write.
+    /// Opening a sealed archive does not modify it; the first append unseals it (drops the
+    /// trailer) exactly as opening used to, so a read-only session leaves the seal intact.
+    unseal_on_write: Option<u64>,
 }
 
 impl TileWriter {
+    fn ensure_writable(&mut self) -> io::Result<()> {
+        if let Some(committed_len) = self.unseal_on_write.take() {
+            self.file.set_len(committed_len)?;
+            self.file.flush()?;
+            self.file.sync_all()?;
+            self.file.seek(SeekFrom::End(0))?;
+        }
+        Ok(())
+    }
+
+    /// Takes the next tile sequence number, or fails once the u32 space is used up.
+    fn take_sequence(&mut self) -> io::Result<u32> {
+        if self.sequence_exhausted {
+            return Err(io::Error::other(
+                "tile sequence number space exhausted (u32::MAX reached)",
+            ));
+        }
+        let s = self.next_sequence;
+        match s.checked_add(1) {
+            Some(n) => self.next_sequence = n,
+            None => self.sequence_exhausted = true,
+        }
+        Ok(s)
+    }
+
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::create_with_uuid(path, generate_file_uuid())
     }
@@ -487,6 +518,8 @@ impl TileWriter {
             addon_mask: 0,
             file_uuid,
             next_sequence: 1,
+            sequence_exhausted: false,
+            unseal_on_write: None,
         })
     }
 
@@ -521,8 +554,21 @@ impl TileWriter {
         let expected_size =
             FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64);
 
+        // A seal trailer (directory + end cap) after the committed tiles is not a torn write:
+        // leave it in place until the first write instead of stripping it on open.
+        let mut sealed = false;
+        if file_len >= expected_size + s3a_core::SEALED_ENDCAP_SIZE as u64 {
+            let mut magic = [0u8; 8];
+            file.seek(SeekFrom::Start(
+                file_len - s3a_core::SEALED_ENDCAP_SIZE as u64,
+            ))?;
+            file.read_exact(&mut magic)?;
+            sealed = magic == s3a_core::SEALED_ENDCAP_MAGIC_V1
+                || magic == s3a_core::SEALED_ENDCAP_MAGIC_V2;
+        }
+
         // Crash recovery: Truncate any torn/uncommitted tile write beyond the active committed state
-        if file_len > expected_size {
+        if file_len > expected_size && !sealed {
             file.set_len(expected_size)?;
             file.flush()?;
             file.sync_all()?;
@@ -541,7 +587,9 @@ impl TileWriter {
                     && file.read_exact(&mut hdr_bytes).is_ok()
                 {
                     let h: HyperTileHeader = bytemuck::pod_read_unaligned(&hdr_bytes);
-                    if h.sequence_number > max_seq {
+                    if compute_tile_header_crc32(&h) == h.header_crc32
+                        && h.sequence_number > max_seq
+                    {
                         max_seq = h.sequence_number;
                     }
                 }
@@ -559,7 +607,9 @@ impl TileWriter {
             created_timestamp: active_header.created_timestamp,
             addon_mask: active_header.addon_mask,
             file_uuid: active_header.file_uuid,
-            next_sequence: max_seq + 1,
+            next_sequence: max_seq.wrapping_add(1),
+            sequence_exhausted: max_seq == u32::MAX,
+            unseal_on_write: sealed.then_some(expected_size),
         })
     }
 
@@ -641,12 +691,10 @@ impl TileWriter {
         hull: Option<SimplexHull>,
         filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
+        self.ensure_writable()?;
         // Enforce capability write gate and registry validation:
         let registry = s3a_core::registry::global_registry();
-        let target_version = registry
-            .get(tile_type)
-            .map(|d| d.current_layout_version)
-            .unwrap_or(1);
+        let target_version = registry.pod_record_layout_version(tile_type).unwrap_or(1);
         if registry.get(tile_type).is_some() {
             if let Err(e) = registry.validate_write(tile_type, target_version, self.addon_mask) {
                 return Err(io::Error::new(
@@ -683,8 +731,7 @@ impl TileWriter {
         header.payload_bytes = payload_bytes as u32;
         header.generation = self.generation;
         header.tile_index = self.tile_count;
-        header.sequence_number = self.next_sequence;
-        self.next_sequence += 1;
+        header.sequence_number = self.take_sequence()?;
         header.file_uuid = self.file_uuid;
         header.record_layout_version = target_version;
 
@@ -837,6 +884,7 @@ impl TileWriter {
         header: &HyperTileHeader,
         payload: &[u8],
     ) -> io::Result<u64> {
+        self.ensure_writable()?;
         // Enforce capability write gate and registry validation:
         let registry = s3a_core::registry::global_registry();
         let effective_version = if header.record_layout_version == 0 {
@@ -867,7 +915,11 @@ impl TileWriter {
             }
         }
 
-        let committed_tile_id = self.current_tile_id;
+        let committed_tile_id = if header.tile_id != 0 {
+            header.tile_id
+        } else {
+            self.current_tile_id
+        };
         let mut new_header = *header;
         new_header.tile_id = committed_tile_id;
         if new_header.data_crc32 == 0 {
@@ -884,10 +936,20 @@ impl TileWriter {
         }
         new_header.tile_index = self.tile_count;
         if new_header.sequence_number == 0 {
-            new_header.sequence_number = self.next_sequence;
-            self.next_sequence += 1;
-        } else if new_header.sequence_number >= self.next_sequence {
-            self.next_sequence = new_header.sequence_number + 1;
+            new_header.sequence_number = self.take_sequence()?;
+        } else if self.sequence_exhausted || new_header.sequence_number >= self.next_sequence {
+            if self.sequence_exhausted && new_header.sequence_number <= self.next_sequence {
+                return Err(io::Error::other(
+                    "tile sequence number space exhausted (u32::MAX reached)",
+                ));
+            }
+            match new_header.sequence_number.checked_add(1) {
+                Some(n) => self.next_sequence = n,
+                None => {
+                    self.next_sequence = u32::MAX;
+                    self.sequence_exhausted = true;
+                }
+            }
         }
 
         new_header.header_crc32 = compute_tile_header_crc32(&new_header);
@@ -938,7 +1000,9 @@ impl TileWriter {
         }
 
         self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
-        self.current_tile_id += 1;
+        if committed_tile_id >= self.current_tile_id {
+            self.current_tile_id = committed_tile_id + 1;
+        }
         Ok(committed_tile_id)
     }
 
@@ -962,8 +1026,13 @@ impl TileWriter {
         self.addon_mask
     }
 
+    pub fn next_sequence(&self) -> u32 {
+        self.next_sequence
+    }
+
     /// Enables a modular domain addon (e.g. ADDON_EDU) by updating the file header addon_mask.
     pub fn enable_addon(&mut self, mask: u32) -> io::Result<()> {
+        self.ensure_writable()?;
         let new_mask = self.addon_mask | mask;
         self.commit_header_slot(self.tile_count, new_mask)
     }
@@ -2783,103 +2852,79 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 0,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "paper_id".to_string(),
+                    name: "key_hash".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 2,
-                    field_type: 4,
+                    field_type: 13,
                     byte_offset: 8,
-                    byte_len: 8,
+                    byte_len: 32,
                     null_allowed: false,
-                    name: "timestamp_sec".to_string(),
+                    name: "sha256_hash".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 3,
-                    field_type: 4,
-                    byte_offset: 16,
-                    byte_len: 8,
+                    field_type: 3,
+                    byte_offset: 40,
+                    byte_len: 4,
                     null_allowed: false,
-                    name: "hilbert_index".to_string(),
+                    name: "total_bytes".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 4,
-                    field_type: 9,
-                    byte_offset: 24,
-                    byte_len: 4,
-                    null_allowed: false,
-                    name: "topic_x".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 5,
-                    field_type: 9,
-                    byte_offset: 28,
-                    byte_len: 4,
-                    null_allowed: false,
-                    name: "topic_y".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 6,
-                    field_type: 9,
-                    byte_offset: 32,
-                    byte_len: 4,
-                    null_allowed: false,
-                    name: "topic_z".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 7,
-                    field_type: 3,
-                    byte_offset: 36,
-                    byte_len: 4,
-                    null_allowed: false,
-                    name: "citation_count".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 8,
-                    field_type: 2,
-                    byte_offset: 40,
-                    byte_len: 2,
-                    null_allowed: false,
-                    name: "year".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 9,
-                    field_type: 2,
-                    byte_offset: 42,
-                    byte_len: 2,
-                    null_allowed: false,
-                    name: "venue_id".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 10,
                     field_type: 2,
                     byte_offset: 44,
                     byte_len: 2,
                     null_allowed: false,
-                    name: "open_access_flag".to_string(),
+                    name: "chunk_index".to_string(),
                 },
                 SchemaFieldDefinition {
-                    field_id: 11,
+                    field_id: 5,
                     field_type: 2,
                     byte_offset: 46,
                     byte_len: 2,
                     null_allowed: false,
-                    name: "warning_count".to_string(),
+                    name: "total_chunks".to_string(),
                 },
                 SchemaFieldDefinition {
-                    field_id: 12,
-                    field_type: 4,
+                    field_id: 6,
+                    field_type: 3,
                     byte_offset: 48,
-                    byte_len: 8,
+                    byte_len: 4,
                     null_allowed: false,
-                    name: "doi_prefix_hash".to_string(),
+                    name: "chunk_bytes".to_string(),
                 },
                 SchemaFieldDefinition {
-                    field_id: 13,
-                    field_type: 4,
-                    byte_offset: 56,
-                    byte_len: 8,
+                    field_id: 7,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
                     null_allowed: false,
-                    name: "flags".to_string(),
+                    name: "chunk_crc32".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 3,
+                    byte_offset: 56,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "schema_version".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 3,
+                    byte_offset: 60,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "reserved".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 10,
+                    field_type: 11,
+                    byte_offset: 64,
+                    byte_len: 0,
+                    null_allowed: false,
+                    name: "chunk_data".to_string(),
                 },
             ],
         },
@@ -2896,7 +2941,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 0,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "subject_hash".to_string(),
+                    name: "source_hash".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 2,
@@ -2904,47 +2949,55 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 8,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "object_hash".to_string(),
+                    name: "target_hash".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 3,
-                    field_type: 4,
+                    field_type: 3,
                     byte_offset: 16,
-                    byte_len: 8,
+                    byte_len: 4,
                     null_allowed: false,
-                    name: "timestamp_sec".to_string(),
+                    name: "total_bytes".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 4,
-                    field_type: 4,
-                    byte_offset: 24,
-                    byte_len: 8,
+                    field_type: 3,
+                    byte_offset: 20,
+                    byte_len: 4,
                     null_allowed: false,
-                    name: "hilbert_coord".to_string(),
+                    name: "schema_version".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 5,
                     field_type: 3,
-                    byte_offset: 32,
+                    byte_offset: 24,
                     byte_len: 4,
                     null_allowed: false,
-                    name: "predicate_id".to_string(),
+                    name: "payload_crc32".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 6,
-                    field_type: 9,
-                    byte_offset: 36,
+                    field_type: 3,
+                    byte_offset: 28,
                     byte_len: 4,
                     null_allowed: false,
-                    name: "weight".to_string(),
+                    name: "is_retraction".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 7,
-                    field_type: 4,
-                    byte_offset: 40,
-                    byte_len: 8,
+                    field_type: 13,
+                    byte_offset: 32,
+                    byte_len: 32,
                     null_allowed: false,
-                    name: "flags".to_string(),
+                    name: "reserved".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 11,
+                    byte_offset: 64,
+                    byte_len: 0,
+                    null_allowed: false,
+                    name: "edge_json".to_string(),
                 },
             ],
         },
@@ -3744,7 +3797,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
                 SchemaFieldDefinition {
                     field_id: 4,
-                    field_type: 12,
+                    field_type: 13,
                     byte_offset: 20,
                     byte_len: 40,
                     null_allowed: false,
@@ -4194,7 +4247,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
             fields: vec![
                 SchemaFieldDefinition {
                     field_id: 1,
-                    field_type: 7,
+                    field_type: 13,
                     byte_offset: 0,
                     byte_len: 16,
                     null_allowed: false,
@@ -4202,7 +4255,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
                 SchemaFieldDefinition {
                     field_id: 2,
-                    field_type: 7,
+                    field_type: 13,
                     byte_offset: 16,
                     byte_len: 16,
                     null_allowed: false,
@@ -4210,7 +4263,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
                 SchemaFieldDefinition {
                     field_id: 3,
-                    field_type: 7,
+                    field_type: 13,
                     byte_offset: 32,
                     byte_len: 16,
                     null_allowed: false,
@@ -4218,7 +4271,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
                 SchemaFieldDefinition {
                     field_id: 4,
-                    field_type: 7,
+                    field_type: 13,
                     byte_offset: 48,
                     byte_len: 32,
                     null_allowed: false,
@@ -4250,7 +4303,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                 },
                 SchemaFieldDefinition {
                     field_id: 8,
-                    field_type: 7,
+                    field_type: 13,
                     byte_offset: 96,
                     byte_len: 64,
                     null_allowed: false,
@@ -4398,7 +4451,9 @@ pub fn append_tile_to_buffer(
     }
 
     let tile_id = max_id + 1;
-    let sequence_number = max_seq + 1;
+    let sequence_number = max_seq.checked_add(1).ok_or_else(|| {
+        io::Error::other("tile sequence number space exhausted (u32::MAX reached)")
+    })?;
     let tile_index = old_count as u32;
 
     let mut hdr = HyperTileHeader::new(tile_id, tile_type);
@@ -4426,7 +4481,12 @@ pub fn append_tile_to_buffer(
 /// Registry description and format spec version decoded from an archive's embedded schema tile.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddedRegistryInfo {
-    pub spec_version: String,
+    /// Format spec version from the file's about entry; absent when the file has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_version: Option<String>,
+    /// Writer (engine name and version) from the file's about entry; absent when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_version: Option<String>,
     pub types: Vec<SchemaTypeDefinition>,
 }
 
@@ -4451,18 +4511,35 @@ pub fn read_embedded_registry_from_bytes(archive_bytes: &[u8]) -> io::Result<Emb
 
     let count = active_hdr.tile_count as usize;
     let mut schema_payload: Option<&[u8]> = None;
-    let mut present_types: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
 
     for i in 0..count {
         let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
         if off + HYPER_TILE_SIZE <= archive_bytes.len() {
             let h: HyperTileHeader =
                 bytemuck::pod_read_unaligned(&archive_bytes[off..off + HYPER_TILE_HEADER_SIZE]);
-            present_types.insert(h.tile_type);
+            if compute_tile_header_crc32(&h) != h.header_crc32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Tile {} header CRC mismatch", i),
+                ));
+            }
             if h.tile_type == TileType::SCHEMA && schema_payload.is_none() {
                 let p0 = off + HYPER_TILE_HEADER_SIZE;
-                let plen = (h.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
-                schema_payload = Some(&archive_bytes[p0..p0 + plen]);
+                let plen = h.payload_bytes as usize;
+                if plen > HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Tile {} payload_bytes {} exceeds tile size", i, plen),
+                    ));
+                }
+                let p = &archive_bytes[p0..p0 + plen];
+                if crc32c::crc32c(p) != h.data_crc32 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Tile {} payload CRC mismatch", i),
+                    ));
+                }
+                schema_payload = Some(p);
             }
         }
     }
@@ -4474,31 +4551,92 @@ pub fn read_embedded_registry_from_bytes(archive_bytes: &[u8]) -> io::Result<Emb
                 format!("Failed to decode schema: {}", e),
             )
         })?;
-        let about = s3a_core::decode_schema_about(payload).ok().flatten();
-        let spec_version = about
-            .map(|a| a.spec_version)
-            .unwrap_or_else(|| sealed::spec_version().to_string());
+        let about = s3a_core::decode_schema_about(payload).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to decode schema about entry: {}", e),
+            )
+        })?;
         Ok(EmbeddedRegistryInfo {
-            spec_version,
+            spec_version: about.as_ref().map(|a| a.spec_version.clone()),
+            engine_version: about.as_ref().map(|a| a.writer.clone()),
             types: defs,
         })
     } else {
-        let mut defs = Vec::new();
-        for t in present_types {
-            defs.push(standard_schema_for_type(t));
-        }
-        Ok(EmbeddedRegistryInfo {
-            spec_version: sealed::spec_version().to_string(),
-            types: defs,
-        })
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "not embedded: archive contains no Schema tile (type 77)",
+        ))
     }
 }
 
+/// Seal parameters recovered from a v2 seal trailer, used to re-seal after `rebuild_indexes`.
+struct SealTrailerInfo {
+    enable_parity: bool,
+    k: u16,
+    m: u16,
+    seal_generation: u64,
+    prev_seal_hash: [u8; 32],
+    had_record_roots: bool,
+}
+
+/// Parses the bytes after the committed tiles as a v2 seal trailer (`[parity] index endcap`).
+/// The index is located from the end cap's `index_len`, so the trailer stays readable after
+/// tiles were removed in front of it.
+fn parse_seal_trailer(trailer: &[u8]) -> io::Result<SealTrailerInfo> {
+    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, format!("rebuild_indexes: {m}"));
+    if trailer.len() < s3a_core::SEALED_ENDCAP_SIZE {
+        return Err(bad(
+            "bytes after the committed tiles are not a seal trailer",
+        ));
+    }
+    let endcap: s3a_core::SealedEndCapV2 =
+        bytemuck::pod_read_unaligned(&trailer[trailer.len() - s3a_core::SEALED_ENDCAP_SIZE..]);
+    if endcap.magic != s3a_core::SEALED_ENDCAP_MAGIC_V2 {
+        return Err(bad(
+            "bytes after the committed tiles are not a v2 seal trailer; refusing to drop them",
+        ));
+    }
+    let index_len = endcap.index_len as usize;
+    let body = trailer.len() - s3a_core::SEALED_ENDCAP_SIZE;
+    if index_len < s3a_core::SEALED_INDEX_HEADER_SIZE_V2 || index_len > body {
+        return Err(bad("seal index length is inconsistent"));
+    }
+    let index = &trailer[body - index_len..body];
+    let ih: s3a_core::SealedIndexHeaderV2 =
+        bytemuck::pod_read_unaligned(&index[..s3a_core::SEALED_INDEX_HEADER_SIZE_V2]);
+    if ih.magic != s3a_core::SEALED_INDEX_MAGIC_V2 {
+        return Err(bad("seal index magic mismatch"));
+    }
+    let entries = &index[s3a_core::SEALED_INDEX_HEADER_SIZE_V2..];
+    if entries.len() % s3a_core::SEALED_INDEX_ENTRY_SIZE_V2 != 0 {
+        return Err(bad("seal index entries are truncated"));
+    }
+    let had_record_roots = entries
+        .chunks_exact(s3a_core::SEALED_INDEX_ENTRY_SIZE_V2)
+        .map(|e| bytemuck::pod_read_unaligned::<s3a_core::SealedTileIndexEntry>(e).type_id)
+        .any(|t| t == TileType::RECORD_ROOT);
+    Ok(SealTrailerInfo {
+        enable_parity: ih.flags & s3a_core::SEALED_FLAG_PARITY_ENABLED != 0,
+        k: ih.k,
+        m: ih.m,
+        seal_generation: ih.seal_generation,
+        prev_seal_hash: ih.prev_seal_hash,
+        had_record_roots,
+    })
+}
+
 /// Rebuilds all index tiles (Tile 22 `STATEMENT_INDEX`, Tile 83 `RECORD_ROOT`) from data tiles alone.
-/// Drops existing index tiles, re-parses statements from Tile 21 `STATEMENT_BODY`, regenerates
-/// Tile 22 index records, builds new record roots if the archive had them, and writes the rebuilt
-/// archive atomically.
+///
+/// Every non-index tile must pass its header and payload CRC checks, and every statement body
+/// must reassemble and parse; otherwise this returns `Err` and the file is not modified. Index
+/// records are rebuilt with the stored timestamp from the body's `stored` field and with voided
+/// state derived from voiding statements. Record roots are rebuilt when the archive had them
+/// (a Tile 83, or a seal whose directory listed one). A sealed archive is re-sealed with the
+/// same seal generation, chain hash and parity settings. The result is written atomically.
 pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    let bad =
+        |m: String| io::Error::new(io::ErrorKind::InvalidData, format!("rebuild_indexes: {m}"));
     let path_ref = path.as_ref();
     let in_bytes = std::fs::read(path_ref)?;
     if in_bytes.len() < FILE_HEADER_SIZE {
@@ -4524,16 +4662,21 @@ pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
             "File truncated before all committed tiles are read",
         ));
     }
+    let seal = if in_bytes.len() > expected_len {
+        Some(parse_seal_trailer(&in_bytes[expected_len..])?)
+    } else {
+        None
+    };
 
+    type Chunks = (
+        s3a_core::lrs::StatementBlobHeader,
+        std::collections::BTreeMap<u16, (u32, Vec<u8>)>,
+    );
     let mut kept_tiles: Vec<(HyperTileHeader, Vec<u8>)> = Vec::new();
-    let mut statement_chunks_by_hash: std::collections::HashMap<
-        [u8; 32],
-        (
-            s3a_core::lrs::StatementBlobHeader,
-            std::collections::BTreeMap<u16, (u32, Vec<u8>)>,
-        ),
-    > = std::collections::HashMap::new();
-    let mut had_record_roots = false;
+    let mut statement_chunks_by_hash: std::collections::HashMap<[u8; 32], Chunks> =
+        std::collections::HashMap::new();
+    let mut body_order: Vec<[u8; 32]> = Vec::new();
+    let mut had_record_roots = seal.as_ref().is_some_and(|s| s.had_record_roots);
 
     for i in 0..old_tile_count {
         let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
@@ -4546,65 +4689,129 @@ pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
             continue;
         }
         if hdr.tile_type == TileType::STATEMENT_INDEX {
-            // Drop existing statement index tiles: they will be rebuilt from statement bodies
+            // Derived data: dropped (even if corrupt) and rebuilt from statement bodies.
             continue;
+        }
+
+        // Every tile that is kept must verify; a corrupt data tile is never indexed or copied.
+        if check_tile_header_crc(&hdr).is_err() {
+            return Err(bad(format!(
+                "tile {i} (type {}) header CRC mismatch",
+                hdr.tile_type
+            )));
+        }
+        let plen = hdr.payload_bytes as usize;
+        if plen > payload.len() {
+            return Err(bad(format!(
+                "tile {i} payload_bytes {plen} exceeds tile size"
+            )));
+        }
+        if !(is_legacy_tile(&hdr) && hdr.data_crc32 == 0)
+            && crc32c::crc32c(&payload[..plen]) != hdr.data_crc32
+        {
+            return Err(bad(format!(
+                "tile {i} (type {}) payload CRC mismatch",
+                hdr.tile_type
+            )));
         }
 
         if hdr.tile_type == TileType::STATEMENT_BODY {
             let bsz = std::mem::size_of::<s3a_core::lrs::StatementBlobHeader>();
-            if payload.len() >= bsz {
-                let blob_hdr: s3a_core::lrs::StatementBlobHeader =
-                    bytemuck::pod_read_unaligned(&payload[..bsz]);
-                let chunk_len = blob_hdr.chunk_bytes as usize;
-                if bsz + chunk_len <= payload.len() {
-                    let chunk_data = &payload[bsz..bsz + chunk_len];
-                    let entry = statement_chunks_by_hash
-                        .entry(blob_hdr.sha256_hash)
-                        .or_insert_with(|| (blob_hdr, std::collections::BTreeMap::new()));
-                    entry.1.insert(
-                        blob_hdr.chunk_index,
-                        (hdr.tile_id as u32, chunk_data.to_vec()),
-                    );
-                }
+            if plen < bsz {
+                return Err(bad(format!(
+                    "statement body tile {i} shorter than its blob header"
+                )));
             }
+            let blob_hdr: s3a_core::lrs::StatementBlobHeader =
+                bytemuck::pod_read_unaligned(&payload[..bsz]);
+            let chunk_len = blob_hdr.chunk_bytes as usize;
+            if bsz + chunk_len != plen {
+                return Err(bad(format!("statement body tile {i} chunk_bytes {chunk_len} inconsistent with payload_bytes {plen}")));
+            }
+            let chunk_data = &payload[bsz..bsz + chunk_len];
+            if crc32c::crc32c(chunk_data) != blob_hdr.chunk_crc32 {
+                return Err(bad(format!("statement body tile {i} chunk CRC mismatch")));
+            }
+            if !statement_chunks_by_hash.contains_key(&blob_hdr.sha256_hash) {
+                body_order.push(blob_hdr.sha256_hash);
+            }
+            let entry = statement_chunks_by_hash
+                .entry(blob_hdr.sha256_hash)
+                .or_insert_with(|| (blob_hdr, std::collections::BTreeMap::new()));
+            entry.1.insert(
+                blob_hdr.chunk_index,
+                (hdr.tile_id as u32, chunk_data.to_vec()),
+            );
         }
 
         kept_tiles.push((hdr, payload.to_vec()));
     }
 
-    // Reconstruct statement index records from STATEMENT_BODY payloads
+    // Reconstruct statement index records from STATEMENT_BODY payloads, in archive order.
     let mut rebuilt_index_records: Vec<s3a_core::lrs::StatementIndexRecord> = Vec::new();
-    for (_sha, (blob_hdr, chunk_map)) in statement_chunks_by_hash {
-        if chunk_map.len() == blob_hdr.total_chunks as usize {
-            let mut full_json = Vec::with_capacity(blob_hdr.total_bytes as usize);
-            let first_tile_id = chunk_map.get(&0).map(|(tid, _)| *tid).unwrap_or(0);
-            for (_, (_, chunk)) in chunk_map {
-                full_json.extend_from_slice(&chunk);
+    let mut voided_targets: Vec<[u64; 2]> = Vec::new();
+    for sha in body_order {
+        let (blob_hdr, chunk_map) = statement_chunks_by_hash
+            .remove(&sha)
+            .expect("ordered body hash present");
+        if chunk_map.len() != blob_hdr.total_chunks as usize {
+            return Err(bad(format!(
+                "statement body has {} of {} chunks",
+                chunk_map.len(),
+                blob_hdr.total_chunks
+            )));
+        }
+        let first_tile_id = chunk_map
+            .get(&0)
+            .map(|(tid, _)| *tid)
+            .ok_or_else(|| bad("statement body chunk 0 missing".to_string()))?;
+        let mut full_json = Vec::with_capacity(blob_hdr.total_bytes as usize);
+        for (_, (_, chunk)) in chunk_map {
+            full_json.extend_from_slice(&chunk);
+        }
+        if full_json.len() != blob_hdr.total_bytes as usize {
+            return Err(bad("statement body length != total_bytes".to_string()));
+        }
+        use sha2::Digest;
+        if <[u8; 32]>::from(sha2::Sha256::digest(&full_json)) != sha {
+            return Err(bad("statement body SHA-256 mismatch".to_string()));
+        }
+        let val = serde_json::from_slice::<serde_json::Value>(&full_json)
+            .map_err(|e| bad(format!("statement body is not JSON: {e}")))?;
+        let meta = crate::lrs_store::parse_statement_metadata(&val)
+            .map_err(|e| bad(format!("statement body metadata: {e}")))?;
+        let stored_ms = val
+            .get("stored")
+            .and_then(|v| v.as_str())
+            .and_then(crate::lrs_store::chrono_parse_ms)
+            .ok_or_else(|| bad("statement body has no valid `stored` timestamp".to_string()))?;
+        let mut flags = s3a_core::lrs::STATEMENT_FLAG_ACTIVE;
+        if meta.is_voiding {
+            flags |= s3a_core::lrs::STATEMENT_FLAG_VOIDING;
+            if let Some(t) = meta.voided_target_id {
+                voided_targets.push(t);
             }
-
-            if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&full_json) {
-                if let Ok(meta) = crate::lrs_store::parse_statement_metadata(&val) {
-                    let mut flags = s3a_core::lrs::STATEMENT_FLAG_ACTIVE;
-                    if meta.is_voiding {
-                        flags |= s3a_core::lrs::STATEMENT_FLAG_VOIDING;
-                    }
-                    if meta.has_attachments {
-                        flags |= s3a_core::lrs::STATEMENT_FLAG_ATTACHMENTS;
-                    }
-                    let index_rec = s3a_core::lrs::StatementIndexRecord::new(
-                        meta.statement_id,
-                        meta.timestamp_ms,
-                        meta.timestamp_ms,
-                        meta.actor_hash,
-                        meta.verb_hash,
-                        meta.activity_hash,
-                        meta.registration_hash,
-                        first_tile_id,
-                        0,
-                        flags,
-                    );
-                    rebuilt_index_records.push(index_rec);
-                }
+        }
+        if meta.has_attachments {
+            flags |= s3a_core::lrs::STATEMENT_FLAG_ATTACHMENTS;
+        }
+        rebuilt_index_records.push(s3a_core::lrs::StatementIndexRecord::new(
+            meta.statement_id,
+            stored_ms,
+            meta.timestamp_ms,
+            meta.actor_hash,
+            meta.verb_hash,
+            meta.activity_hash,
+            meta.registration_hash,
+            first_tile_id,
+            0,
+            flags,
+        ));
+    }
+    for target in voided_targets {
+        for rec in rebuilt_index_records.iter_mut() {
+            if rec.statement_id == target {
+                rec.mark_voided();
             }
         }
     }
@@ -4636,7 +4843,9 @@ pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
             / std::mem::size_of::<s3a_core::lrs::StatementIndexRecord>();
         for chunk in rebuilt_index_records.chunks(capacity_per_tile) {
             max_tile_id += 1;
-            max_seq += 1;
+            max_seq = max_seq
+                .checked_add(1)
+                .ok_or_else(|| bad("tile sequence number exhausted".to_string()))?;
             let index_bytes =
                 bytemuck::cast_slice::<s3a_core::lrs::StatementIndexRecord, u8>(chunk);
             let mut hdr = HyperTileHeader::new(max_tile_id, TileType::STATEMENT_INDEX);
@@ -4661,8 +4870,20 @@ pub fn rebuild_indexes<P: AsRef<Path>>(path: P) -> io::Result<()> {
     // Update active file header slot with new tile count
     sealed::set_tile_count(&mut out_data, current_tile_index, active_hdr.file_uuid);
 
-    // If it had record roots, regenerate record roots
-    if had_record_roots {
+    if let Some(seal) = seal {
+        // Re-seal: the sealer regenerates record roots (when the seal had them), the directory,
+        // parity and end cap. Data tiles are unchanged, so the same generation and chain apply.
+        let options = sealed::SealOptionsV2 {
+            enable_parity: seal.enable_parity,
+            k: seal.k,
+            m: seal.m,
+            prev_seal_hash: seal.prev_seal_hash,
+            seal_generation: seal.seal_generation,
+            record_roots: had_record_roots,
+            ..Default::default()
+        };
+        out_data = sealed::seal_buffer_v2(&out_data, &options)?;
+    } else if had_record_roots {
         let entries = {
             let tiles: Vec<(usize, HyperTileHeader, &[u8])> = (0..current_tile_index as usize)
                 .map(|i| {

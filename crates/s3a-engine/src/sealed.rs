@@ -1429,7 +1429,7 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         title: None,
         creator: None,
         record_roots: false,
-        about: true,
+        about: false,
     };
     seal_archive_v2(in_path, out_path, &options)
 }
@@ -2238,7 +2238,7 @@ mod tests {
 
         let report = verify_sealed_archive(&sealed_file.path, None).unwrap();
         assert!(report.is_sealed);
-        assert_eq!(report.tile_count, 2); // 1 telemetry data tile + 1 embedded self-describing schema tile
+        assert_eq!(report.tile_count, 1);
         assert_eq!(report.k, 16);
         assert_eq!(report.m, 2);
         assert!(report.warnings.is_empty());

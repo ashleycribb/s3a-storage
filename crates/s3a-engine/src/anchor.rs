@@ -849,13 +849,14 @@ pub fn verify_ots(
 
 use cmpv2::status::PkiStatus;
 use cms::signed_data::SignedData;
-use der::{
-    asn1::{Int, OctetString},
-    oid::ObjectIdentifier,
-    Decode, Encode,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use der::asn1::Int;
+use der::{asn1::OctetString, oid::ObjectIdentifier, Decode, Encode};
+#[cfg(not(target_arch = "wasm32"))]
 use spki::AlgorithmIdentifier;
-use x509_tsp::{MessageImprint, TimeStampReq, TimeStampResp, TspVersion, TstInfo};
+#[cfg(not(target_arch = "wasm32"))]
+use x509_tsp::{MessageImprint, TimeStampReq, TspVersion};
+use x509_tsp::{TimeStampResp, TstInfo};
 
 pub const SHA256_OID_STR: &str = "2.16.840.1.101.3.4.2.1";
 
@@ -902,7 +903,7 @@ fn verify_signature_over_data(
     spki: &x509_cert::spki::SubjectPublicKeyInfoOwned,
     data: &[u8],
     signature: &[u8],
-    sig_alg_oid: &ObjectIdentifier,
+    _sig_alg_oid: &ObjectIdentifier,
 ) -> Result<(), String> {
     use signature::Verifier;
     let pk_bytes = spki
@@ -910,40 +911,61 @@ fn verify_signature_over_data(
         .as_bytes()
         .ok_or_else(|| "Invalid subject public key bit string".to_string())?;
 
-    let rsa_encryption = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
-    let sha256_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
-    let sha384_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
-    let sha512_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
-    let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let rsa_encryption = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
+        let sha256_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+        let sha384_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
+        let sha512_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
+        let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 
-    if spki.algorithm.oid == rsa_encryption || spki.algorithm.oid == sha256_rsa {
-        // Verification-only RSA via ring (public-key ops; no private-key code linked).
-        // ring requires >= 2048-bit moduli, which matches CA/B and RFC 3161 TSA practice.
-        let alg: &'static dyn ring::signature::VerificationAlgorithm = if *sig_alg_oid == sha384_rsa
-        {
-            &ring::signature::RSA_PKCS1_2048_8192_SHA384
-        } else if *sig_alg_oid == sha512_rsa {
-            &ring::signature::RSA_PKCS1_2048_8192_SHA512
+        if spki.algorithm.oid == rsa_encryption || spki.algorithm.oid == sha256_rsa {
+            // Verification-only RSA via ring (public-key ops; no private-key code linked).
+            // ring requires >= 2048-bit moduli, which matches CA/B and RFC 3161 TSA practice.
+            let alg: &'static dyn ring::signature::VerificationAlgorithm =
+                if *_sig_alg_oid == sha384_rsa {
+                    &ring::signature::RSA_PKCS1_2048_8192_SHA384
+                } else if *_sig_alg_oid == sha512_rsa {
+                    &ring::signature::RSA_PKCS1_2048_8192_SHA512
+                } else {
+                    &ring::signature::RSA_PKCS1_2048_8192_SHA256
+                };
+            ring::signature::UnparsedPublicKey::new(alg, pk_bytes)
+                .verify(data, signature)
+                .map_err(|_| "RSA signature verification failed".to_string())?;
+            return Ok(());
+        } else if spki.algorithm.oid == ec_public_key {
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
+                .map_err(|e| format!("Invalid P-256 public key: {}", e))?;
+            let ec_sig = p256::ecdsa::Signature::from_der(signature)
+                .map_err(|e| format!("Invalid ECDSA signature DER: {}", e))?;
+            vk.verify(data, &ec_sig)
+                .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
+            return Ok(());
         } else {
-            &ring::signature::RSA_PKCS1_2048_8192_SHA256
-        };
-        ring::signature::UnparsedPublicKey::new(alg, pk_bytes)
-            .verify(data, signature)
-            .map_err(|_| "RSA signature verification failed".to_string())?;
-        Ok(())
-    } else if spki.algorithm.oid == ec_public_key {
-        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
-            .map_err(|e| format!("Invalid P-256 public key: {}", e))?;
-        let ec_sig = p256::ecdsa::Signature::from_der(signature)
-            .map_err(|e| format!("Invalid ECDSA signature DER: {}", e))?;
-        vk.verify(data, &ec_sig)
-            .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
-        Ok(())
-    } else {
-        Err(format!(
-            "Unsupported public key algorithm OID: {}",
-            spki.algorithm.oid
-        ))
+            return Err(format!(
+                "Unsupported public key algorithm OID: {}",
+                spki.algorithm.oid
+            ));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
+        if spki.algorithm.oid == ec_public_key {
+            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
+                .map_err(|e| format!("Invalid P-256 public key: {}", e))?;
+            let ec_sig = p256::ecdsa::Signature::from_der(signature)
+                .map_err(|e| format!("Invalid ECDSA signature DER: {}", e))?;
+            vk.verify(data, &ec_sig)
+                .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
+            return Ok(());
+        } else {
+            return Err(format!(
+                "Unsupported public key algorithm OID on wasm32: {}",
+                spki.algorithm.oid
+            ));
+        }
     }
 }
 

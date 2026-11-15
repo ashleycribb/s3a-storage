@@ -265,6 +265,19 @@ impl TileTypeRegistry {
         self.get(tile_type).and_then(|d| d.required_addon)
     }
 
+    /// Layout version to stamp on a tile written as an array of fixed-size POD records.
+    ///
+    /// For most types that is the current layout. Tiles 12 (`academic_papers`) and 13
+    /// (`research_graph`) moved to a JSON blob layout in version 2; their fixed 64-byte
+    /// record form is layout 1, so a typed record write must keep labelling it 1.
+    pub fn pod_record_layout_version(&self, tile_type: u32) -> Option<u32> {
+        let desc = self.get(tile_type)?;
+        Some(match tile_type {
+            12 | 13 => 1,
+            _ => desc.current_layout_version,
+        })
+    }
+
     /// Validates an intended tile write against capability authorization and layout version boundaries.
     pub fn validate_write(
         &self,
@@ -907,7 +920,7 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
         record_size: 64,
-        current_layout_version: 1,
+        current_layout_version: 2,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
@@ -918,7 +931,7 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
         record_size: 64,
-        current_layout_version: 1,
+        current_layout_version: 2,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
