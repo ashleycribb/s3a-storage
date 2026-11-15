@@ -308,14 +308,20 @@ fn gen(dir: &Path, version: &str) -> Result<(), String> {
     if version != "vectors-1.0" && version != "vectors-1.1" {
         v1_2_cases(&mut g, &tmp)?;
     }
-    if matches!(version, "vectors-1.3" | "vectors-1.4" | "vectors-1.5") {
+    if matches!(
+        version,
+        "vectors-1.3" | "vectors-1.4" | "vectors-1.5" | "vectors-1.6"
+    ) {
         v1_3_cases(&mut g, &tmp)?;
     }
-    if matches!(version, "vectors-1.4" | "vectors-1.5") {
+    if matches!(version, "vectors-1.4" | "vectors-1.5" | "vectors-1.6") {
         v1_4_cases(&mut g, &tmp)?;
     }
-    if version == "vectors-1.5" {
+    if matches!(version, "vectors-1.5" | "vectors-1.6") {
         v1_5_cases(&mut g, &tmp)?;
+    }
+    if version == "vectors-1.6" {
+        v1_6_cases(&mut g, &tmp)?;
     }
 
     let manifest = json!({
@@ -703,5 +709,77 @@ fn v1_4_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
     rewrite_case(g, tmp, "compact_sealed_with_manifest", &sealed,
         "Sealed archive with a plain-text manifest (tile 78). Compaction MUST accept it, and keep every live record. (The reference compactor also drops the stale manifest, which only describes the sealed file; not checked here)",
         json!({"outcome": "ok", "tile_types.0": 1, "tile_payload_sha256.0": sha}))?;
+    Ok(())
+}
+
+/// vectors-1.6 additions: Scholar v2 paper and edge records (tiles 12/13 layout 2), and a sealed
+/// archive carrying an embedded Schema tile (77) with an about entry.
+fn v1_6_cases(g: &mut Gen, tmp: &Path) -> Result<(), String> {
+    use s3a_pack_scholar::{ScholarAuthor, ScholarPaperRecord};
+
+    let paper = ScholarPaperRecord {
+        key: "10.1234/conformance.paper".to_string(),
+        doi: Some("10.1234/conformance.paper".to_string()),
+        aliases: vec!["conf-v1-6".to_string()],
+        title: Some("Self-Describing Scholar Archive Specification".to_string()),
+        authors: vec![ScholarAuthor {
+            name: "S3A Working Group".to_string(),
+            orcid: None,
+            affiliation: None,
+        }],
+        abstract_text: Some("Conformance test vector 1.6 verifying self-describing archives and Scholar v2 records.".to_string()),
+        venue: Some("S3A Spec".to_string()),
+        year: Some(2026),
+        language: Some("en".to_string()),
+        license: Some("CC-BY-4.0".to_string()),
+        source_url: None,
+        published_date: Some("2026-11-15T12:00:00Z".to_string()),
+    };
+
+    let p = tmp.join("scholar_v2_paper.s3a");
+    let mut writer = s3a_engine::TileWriter::create(&p).map_err(|e| e.to_string())?;
+    writer
+        .enable_addon(s3a_core::ADDON_EDU)
+        .map_err(|e| e.to_string())?;
+    paper
+        .put_to_writer(&mut writer)
+        .map_err(|e| e.to_string())?;
+    drop(writer);
+
+    let raw_bytes = std::fs::read(&p).unwrap();
+
+    let edge = s3a_pack_scholar::ScholarGraphEdge::new(
+        "10.1234/conformance.paper",
+        "10.1234/prior.work",
+        "cites",
+        "s3a-conformance",
+        "2026-11-15T12:00:00Z",
+    );
+    let with_edge = edge.add_to_bytes(&raw_bytes).map_err(|e| e.to_string())?;
+    let edge_p = tmp.join("scholar_v2_paper_edge.s3a");
+    std::fs::write(&edge_p, &with_edge).unwrap();
+    g.file(
+        "scholar_v2_paper_and_edge",
+        &edge_p,
+        "reader",
+        "Unsealed archive with one Scholar v2 paper (tile 12, layout 2) and one v2 graph edge (tile 13, layout 2)",
+        json!({"outcome": "ok", "tile_types.12": 1, "tile_types.13": 1}),
+    )?;
+    let sealed = s3a_engine::seal_buffer_v2(
+        &raw_bytes,
+        &s3a_engine::SealOptionsV2::default().with_about(),
+    )
+    .map_err(|e| e.to_string())?;
+    let sealed_p = tmp.join("scholar_v2_sealed_about.s3a");
+    std::fs::write(&sealed_p, &sealed).unwrap();
+
+    g.file(
+        "scholar_v2_paper_sealed_about",
+        &sealed_p,
+        "reader",
+        "Scholar v2 paper record sealed with self-describing embedded schema (Tile 77 about entry)",
+        json!({"outcome": "ok", "is_sealed": true, "tile_types.12": 1, "tile_types.77": 1}),
+    )?;
+
     Ok(())
 }

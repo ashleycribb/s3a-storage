@@ -528,11 +528,11 @@ fn generate_valid_snapshot_container(dir: &Path) -> io::Result<String> {
         expected_outcome: "ok".to_string(),
         error_class: None,
         expected_error_message: None,
-        file_size_bytes: Some(512 + 4 * HYPER_TILE_SIZE as u64),
+        file_size_bytes: Some(512 + 3 * HYPER_TILE_SIZE as u64),
         header: Some(HeaderExpectation {
             active_slot: 0,
             generation: 5,
-            tile_count: 4,
+            tile_count: 3,
             addon_mask: ADDON_EDU,
         }),
         records_per_tile_type: map,
@@ -906,7 +906,7 @@ fn generate_sealed_ok(dir: &Path) -> io::Result<String> {
         header: Some(HeaderExpectation {
             active_slot: 0,
             generation: 3,
-            tile_count: 3,
+            tile_count: 2,
             addon_mask: 0,
         }),
         records_per_tile_type: map,
@@ -1019,7 +1019,7 @@ fn generate_sealed_endcap_corrupt(dir: &Path) -> io::Result<String> {
         header: Some(HeaderExpectation {
             active_slot: 1,
             generation: 2,
-            tile_count: 2,
+            tile_count: 1,
             addon_mask: 0,
         }),
         records_per_tile_type: map,
@@ -1136,7 +1136,7 @@ fn generate_one_tile_corrupt_repaired(dir: &Path) -> io::Result<String> {
         header: Some(HeaderExpectation {
             active_slot: 0,
             generation: 3,
-            tile_count: 3,
+            tile_count: 2,
             addon_mask: 0,
         }),
         records_per_tile_type: map,

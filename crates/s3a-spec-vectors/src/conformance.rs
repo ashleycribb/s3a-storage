@@ -14,14 +14,15 @@ use sha2::{Digest, Sha256};
 use s3a_engine::MmapReader;
 
 /// Newest suite version. Older versions stay frozen and keep passing.
-pub const SUITE_VERSION: &str = "vectors-1.5";
-pub const SUITE_VERSIONS: [&str; 6] = [
+pub const SUITE_VERSION: &str = "vectors-1.6";
+pub const SUITE_VERSIONS: [&str; 7] = [
     "vectors-1.0",
     "vectors-1.1",
     "vectors-1.2",
     "vectors-1.3",
     "vectors-1.4",
     "vectors-1.5",
+    "vectors-1.6",
 ];
 
 /// Reader report for an archive, as defined in `conformance/README.md`.
