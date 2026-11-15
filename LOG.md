@@ -490,8 +490,14 @@
 ## Prompt 009: Scholar Readable Records, Graph Edges, Self-Describing Archives & Engine 0.2.0
 
 - **Status**: ALL SUCCESS
+- **Commit**: `b9daf82`
 - **Workspace Version**: `0.2.0`
 - **Total Tests Passed**: 806 (across 137 suites)
+- **CI Workflows**:
+  - `rust-ci` (run 43763717330): **SUCCESS** (13/13 jobs passed)
+  - `cargo-deny` (run 43763717297): **SUCCESS**
+  - `S3A Research Agent Harness CI` (run 43763717398): **SUCCESS**
+  - `wasm-dist` (run 43763717338): **SUCCESS** (published `v0.2.0` to `ashleycribb/s3a-wasm-dist`)
 - **Summary of Deliverables**:
 1. **Scholar Paper Record (`crates/s3a-pack-scholar/src/paper.rs`)**:
    - `ScholarPaperRecord`: canonical paper key, DOI and other aliases/identifiers, title, ordered authors (with ORCID when known), abstract, venue, year, language, license, and source URL.

@@ -347,19 +347,24 @@ Notes:
 
 ---
 
-## 009-scholar-records-graph-edges-self-describing, 2026-11-15 16:20
+## 009-scholar-records-graph-edges-self-describing, 2026-11-15 16:30
 Status: done
-Commit: HEAD
+Commit: b9daf82
 Changed: Cargo.toml, Cargo.lock, crates/s3a-core/**, crates/s3a-engine/**, crates/s3a-pack-scholar/**, crates/s3a-wasm-snapshot/**, crates/s3a-cli/**, crates/s3a-spec-vectors/**, crates/s3a-harness/**, docs/spec/**, conformance/**, LOG.md, prompts/LOG.md
 Tests:
   - cargo fmt --all --check: passed
   - cargo clippy --workspace --all-targets: passed
   - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
   - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
-  - cargo test -p s3a-pack-scholar --test prompt009_tests: passed (6/6 passed)
+  - cargo test -p s3a-pack-scholar --test prompt009_tests: passed (8/8 passed)
   - cargo test -p s3a-spec-vectors --test spec_fields_check: passed
   - cargo test -p s3a-spec-vectors --test conformance_suite: passed (4/4 passed)
   - cargo test --workspace: passed (806/806 passed across 137 test suites)
+  - GitHub Actions runs on b9daf82:
+    - rust-ci (run 43763717330): success (all 13/13 jobs passed)
+    - cargo-deny (run 43763717297): success
+    - S3A Research Agent Harness CI (run 43763717398): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43763717338): success (published v0.2.0)
 Notes:
   1. Implemented ScholarPaperRecord with canonical paper key, DOI/aliases, title, ordered authors (ORCID when known), abstract, venue, year, language, license, and source URL in s3a-pack-scholar. Text normalized to NFC UTF-8; dates formatted in UTC ISO-8601; abstracts spill into continuation blob tiles. Missing fields stored as absent (never 0 or "").
   2. Implemented ScholarGraphEdge with source key, target key, edge type (cites, cited-by, alias-of, custom), provenance, and schema version. Edges are append-only; retractions are new records with edge type "retraction". Added query API to filter edges by node and relation.
