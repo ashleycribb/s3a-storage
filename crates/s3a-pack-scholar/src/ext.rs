@@ -26,13 +26,13 @@ pub trait ScholarCrudExt {
         records: &[CitationFingerprintRecord],
     ) -> io::Result<u64>;
     fn put_paper(&self, paper: &crate::paper::ScholarPaperRecord) -> io::Result<()>;
-    fn get_paper(&self, key: &str) -> Option<crate::paper::ScholarPaperRecord>;
+    fn get_paper(&self, key: &str) -> io::Result<Option<crate::paper::ScholarPaperRecord>>;
     fn add_edge(&self, edge: &crate::graph_edge::ScholarGraphEdge) -> io::Result<()>;
     fn list_edges(
         &self,
         node: &str,
         edge_type: Option<&str>,
-    ) -> Vec<crate::graph_edge::ScholarGraphEdge>;
+    ) -> io::Result<Vec<crate::graph_edge::ScholarGraphEdge>>;
     fn trace_ai_from_human(&self, human_coord: &S3ACoordinate) -> Result<AiTraceRecord, S3AError>;
     fn trace_human_from_ai(&self, ai_coord: &S3ACoordinate) -> Result<HumanLrsRecord, S3AError>;
     fn query_session_bundle(
@@ -279,12 +279,20 @@ impl ScholarCrudExt for S3ACrudEngine {
         paper.put_to_writer(&mut writer)
     }
 
-    fn get_paper(&self, key: &str) -> Option<crate::paper::ScholarPaperRecord> {
-        let reader = MmapReader::open(self.file_path()).ok()?;
+    fn get_paper(&self, key: &str) -> io::Result<Option<crate::paper::ScholarPaperRecord>> {
+        let reader = MmapReader::open(self.file_path())?;
         crate::paper::ScholarPaperRecord::get_from_reader(&reader, key)
     }
 
     fn add_edge(&self, edge: &crate::graph_edge::ScholarGraphEdge) -> io::Result<()> {
+        let edge = if edge.is_retraction {
+            let reader = MmapReader::open(self.file_path())?;
+            let existing = crate::graph_edge::ScholarGraphEdge::all_from_reader(&reader)?;
+            drop(reader);
+            edge.resolve_against(&existing)?
+        } else {
+            edge.clone()
+        };
         let mut writer = TileWriter::open_append(self.file_path())?;
         edge.add_to_writer(&mut writer)
     }
@@ -293,11 +301,8 @@ impl ScholarCrudExt for S3ACrudEngine {
         &self,
         node: &str,
         edge_type: Option<&str>,
-    ) -> Vec<crate::graph_edge::ScholarGraphEdge> {
-        let reader = match MmapReader::open(self.file_path()) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+    ) -> io::Result<Vec<crate::graph_edge::ScholarGraphEdge>> {
+        let reader = MmapReader::open(self.file_path())?;
         crate::graph_edge::ScholarGraphEdge::list_from_reader(&reader, node, edge_type)
     }
 

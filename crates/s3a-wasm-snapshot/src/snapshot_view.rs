@@ -98,35 +98,52 @@ impl<'a> WasmSnapshotView<'a> {
 
             match tile_header.tile_type {
                 ScholarTileType::SRS_MANIFEST => {
-                    let recs: &[SrsManifestHeader] = bytemuck::cast_slice(payload);
+                    let recs = bytemuck::try_cast_slice::<u8, SrsManifestHeader>(payload)
+                        .map_err(|_| "Corrupted SRS manifest tile payload")?;
                     if let Some(&m) = recs.first() {
                         manifest = Some(m);
                     }
                 }
                 ScholarTileType::SRS_WORKSPACE => {
-                    let recs: &[SrsWorkspaceRecord] = bytemuck::cast_slice(payload);
+                    let recs = bytemuck::try_cast_slice::<u8, SrsWorkspaceRecord>(payload)
+                        .map_err(|_| "Corrupted SRS workspace tile payload")?;
                     if let Some(&w) = recs.first() {
                         workspace = Some(w);
                     }
                 }
-                ScholarTileType::ACADEMIC_PAPERS => {
-                    let recs: &[AcademicPaperRecord] = bytemuck::cast_slice(payload);
-                    papers.extend(recs.iter());
-                }
-                ScholarTileType::RESEARCH_GRAPH => {
-                    let recs: &[ResearchGraphEdgeRecord] = bytemuck::cast_slice(payload);
-                    edges.extend(recs.iter());
-                }
+                // Tiles 12/13 layout 2 hold JSON blob records (read with get_paper /
+                // list_edges), not the fixed 64-byte records this view exposes.
+                ScholarTileType::ACADEMIC_PAPERS => match tile_header.record_layout_version {
+                    0 | 1 => {
+                        let recs = bytemuck::try_cast_slice::<u8, AcademicPaperRecord>(payload)
+                            .map_err(|_| "Corrupted Tile 12 v1 payload")?;
+                        papers.extend(recs.iter());
+                    }
+                    2 => {}
+                    _ => return Err("Unsupported Tile 12 layout version"),
+                },
+                ScholarTileType::RESEARCH_GRAPH => match tile_header.record_layout_version {
+                    0 | 1 => {
+                        let recs = bytemuck::try_cast_slice::<u8, ResearchGraphEdgeRecord>(payload)
+                            .map_err(|_| "Corrupted Tile 13 v1 payload")?;
+                        edges.extend(recs.iter());
+                    }
+                    2 => {}
+                    _ => return Err("Unsupported Tile 13 layout version"),
+                },
                 ScholarTileType::HUMAN_LRS => {
-                    let recs: &[HumanLrsRecord] = bytemuck::cast_slice(payload);
+                    let recs = bytemuck::try_cast_slice::<u8, HumanLrsRecord>(payload)
+                        .map_err(|_| "Corrupted human LRS tile payload")?;
                     human_decisions.extend(recs.iter());
                 }
                 ScholarTileType::AI_TRACE_LOG => {
-                    let recs: &[AiTraceRecord] = bytemuck::cast_slice(payload);
+                    let recs = bytemuck::try_cast_slice::<u8, AiTraceRecord>(payload)
+                        .map_err(|_| "Corrupted AI trace tile payload")?;
                     ai_traces.extend(recs.iter());
                 }
                 ScholarTileType::AGENT_REGISTRY => {
-                    let recs: &[AgentRegistryRecord] = bytemuck::cast_slice(payload);
+                    let recs = bytemuck::try_cast_slice::<u8, AgentRegistryRecord>(payload)
+                        .map_err(|_| "Corrupted agent registry tile payload")?;
                     agents.extend(recs.iter());
                 }
                 ScholarTileType::NOTE_CLAIMS => {

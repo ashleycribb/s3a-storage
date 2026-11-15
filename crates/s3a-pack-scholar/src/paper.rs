@@ -67,7 +67,8 @@ pub struct ScholarPaperRecord {
     pub doi: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub authors: Vec<ScholarAuthor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,13 +87,111 @@ pub struct ScholarPaperRecord {
     pub published_date: Option<String>,
 }
 
+/// Accepts exactly `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `+00:00`: upper-case
+/// `T`/`Z`, no surrounding whitespace, a real calendar date (leap years included). `-00:00`
+/// (RFC 3339 "offset unknown") and any other offset are rejected.
+pub fn validate_utc_iso8601(s: &str) -> std::io::Result<()> {
+    let bad = |why: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("date '{s}' is not a UTC ISO-8601 timestamp (YYYY-MM-DDTHH:MM:SSZ): {why}"),
+        )
+    };
+    let body = if let Some(b) = s.strip_suffix('Z') {
+        b
+    } else if let Some(b) = s.strip_suffix("+00:00") {
+        b
+    } else {
+        return Err(bad("must end in 'Z' or '+00:00'"));
+    };
+    let (main, frac) = match body.split_once('.') {
+        Some((m, f)) => (m, Some(f)),
+        None => (body, None),
+    };
+    if let Some(f) = frac {
+        if f.is_empty() || !f.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(bad("fractional seconds must be digits"));
+        }
+    }
+    let b = main.as_bytes();
+    if b.len() != 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return Err(bad("layout must be YYYY-MM-DDTHH:MM:SS"));
+    }
+    let num = |r: std::ops::Range<usize>| -> std::io::Result<u32> {
+        let part = &main[r];
+        if !part.bytes().all(|c| c.is_ascii_digit()) {
+            return Err(bad("non-digit in a numeric field"));
+        }
+        Ok(part.parse().expect("ascii digits"))
+    };
+    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hour, min, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(bad("month out of range")),
+    };
+    if year == 0 || day == 0 || day > days_in_month {
+        return Err(bad("day out of range"));
+    }
+    if hour > 23 || min > 59 || sec > 60 {
+        return Err(bad("time out of range"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::validate_utc_iso8601 as v;
+
+    #[test]
+    fn accepts_utc_forms() {
+        for ok in [
+            "2017-06-12T00:00:00Z",
+            "2024-02-29T23:59:59.123Z",
+            "2017-06-12T00:00:00+00:00",
+        ] {
+            assert!(v(ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_utc_and_impossible_dates() {
+        for bad in [
+            "2017-06-12T00:00:00-00:00",
+            "2017-06-12T00:00:00+02:00",
+            "2017-06-12t00:00:00z",
+            " 2017-06-12T00:00:00Z",
+            "2017-06-12T00:00:00Z ",
+            "2017-04-31T00:00:00Z",
+            "2023-02-29T00:00:00Z",
+            "2017-6-12T00:00:00Z",
+            "2017-06-12T24:00:00Z",
+            "2017-06-12T00:00:00.Z",
+            "+017-06-12T00:00:00Z",
+            "2017-06-12 00:00:00Z",
+        ] {
+            assert!(v(bad).is_err(), "{bad}");
+        }
+    }
+}
+
 impl ScholarPaperRecord {
     pub fn new(key: &str, title: &str) -> Self {
         Self {
             key: key.nfc().collect(),
             doi: None,
             aliases: Vec::new(),
-            title: title.nfc().collect(),
+            title: Some(title.nfc().collect()),
             authors: Vec::new(),
             abstract_text: None,
             venue: None,
@@ -104,6 +203,22 @@ impl ScholarPaperRecord {
         }
     }
 
+    pub fn validate(&self) -> std::io::Result<()> {
+        match &self.title {
+            Some(t) if !t.trim().is_empty() => {}
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "paper title cannot be empty",
+                ));
+            }
+        }
+        if let Some(d) = &self.published_date {
+            validate_utc_iso8601(d)?;
+        }
+        Ok(())
+    }
+
     /// Enforces UTF-8 NFC normalization on all text fields.
     pub fn normalize(&mut self) {
         self.key = self.key.nfc().collect();
@@ -111,7 +226,9 @@ impl ScholarPaperRecord {
             self.doi = Some(d.nfc().collect());
         }
         self.aliases = self.aliases.iter().map(|a| a.nfc().collect()).collect();
-        self.title = self.title.nfc().collect();
+        if let Some(t) = &self.title {
+            self.title = Some(t.nfc().collect());
+        }
         for a in &mut self.authors {
             a.name = a.name.nfc().collect();
             if let Some(o) = &a.orcid {
@@ -144,6 +261,7 @@ impl ScholarPaperRecord {
     /// Appends this paper record into an archive, splitting large payloads across
     /// continuation hyper-tiles (Tile 12) if necessary.
     pub fn put_to_writer(&self, writer: &mut s3a_engine::TileWriter) -> std::io::Result<()> {
+        self.validate()?;
         let mut normalized = self.clone();
         normalized.normalize();
 
@@ -200,6 +318,7 @@ impl ScholarPaperRecord {
 
     /// Appends this paper record into an in-memory archive byte buffer, returning the updated bytes.
     pub fn put_to_bytes(&self, archive_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.validate()?;
         let mut normalized = self.clone();
         normalized.normalize();
 
@@ -290,17 +409,18 @@ impl ScholarPaperRecord {
                 payloads.push(payload);
             }
         }
-        let tiles = headers.iter().zip(payloads.into_iter());
-        Ok(Self::get_from_tiles(tiles, target_key))
+        let tiles = headers.iter().zip(payloads);
+        Self::get_from_tiles(tiles, target_key)
     }
 
     /// Retrieves a paper record matching `target_key` (canonical key, DOI, or alias).
     ///
     /// Correctly decodes both version 2 rich chunked papers and version 1 legacy 64-byte records.
+    /// A Tile 12 that fails its checks is an error, never silently skipped.
     pub fn get_from_reader(
         reader: &s3a_engine::MmapReader,
         target_key: &str,
-    ) -> Option<ScholarPaperRecord> {
+    ) -> std::io::Result<Option<ScholarPaperRecord>> {
         let tile_count = reader.tile_count() as usize;
         let mut tiles = Vec::with_capacity(tile_count);
         for i in 0..tile_count {
@@ -312,21 +432,24 @@ impl ScholarPaperRecord {
     }
 
     /// Decodes and finds the paper record matching `target_key` from a sequence of tiles.
+    ///
+    /// Returns `Err(InvalidData)` for any Tile 12 whose header CRC, payload CRC, chunk length,
+    /// chunk CRC, chunk set, SHA-256 or JSON is inconsistent.
     pub fn get_from_tiles<'a>(
         tiles: impl IntoIterator<Item = (&'a s3a_core::HyperTileHeader, &'a [u8])>,
         target_key: &str,
-    ) -> Option<ScholarPaperRecord> {
+    ) -> std::io::Result<Option<ScholarPaperRecord>> {
+        let bad = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidData, m);
         let norm_key: String = target_key.nfc().collect();
-        let target_key_hash = crc32c::crc32c(norm_key.as_bytes()) as u64;
 
         // Group continuation chunks by sha256_hash
-        let mut chunks_by_hash: std::collections::HashMap<
-            [u8; 32],
-            (
-                ScholarPaperBlobHeader,
-                std::collections::BTreeMap<u16, Vec<u8>>,
-            ),
-        > = std::collections::HashMap::new();
+        type Chunks = (
+            ScholarPaperBlobHeader,
+            std::collections::BTreeMap<u16, Vec<u8>>,
+        );
+        let mut chunks_by_hash: std::collections::BTreeMap<[u8; 32], Chunks> =
+            std::collections::BTreeMap::new();
+        let mut order: Vec<[u8; 32]> = Vec::new();
 
         let mut legacy_candidates: Vec<ScholarPaperRecord> = Vec::new();
 
@@ -334,86 +457,157 @@ impl ScholarPaperRecord {
             if hdr.tile_type != ScholarTileType::ACADEMIC_PAPERS {
                 continue;
             }
+            if s3a_engine::check_tile_header_crc(hdr).is_err() {
+                return Err(bad(format!(
+                    "Tile 12 (id {}) header CRC mismatch",
+                    hdr.tile_id
+                )));
+            }
+            let plen = hdr.payload_bytes as usize;
+            if plen > payload.len() {
+                return Err(bad(format!(
+                    "Tile 12 (id {}) payload_bytes {} exceeds tile payload {}",
+                    hdr.tile_id,
+                    plen,
+                    payload.len()
+                )));
+            }
+            let payload_data = &payload[..plen];
+            if !(s3a_engine::is_legacy_tile(hdr) && hdr.data_crc32 == 0)
+                && crc32c::crc32c(payload_data) != hdr.data_crc32
+            {
+                return Err(bad(format!(
+                    "Tile 12 (id {}) payload CRC mismatch",
+                    hdr.tile_id
+                )));
+            }
 
-            if hdr.record_layout_version == 1 {
+            if hdr.record_layout_version <= 1 {
                 // Legacy 64-byte AcademicPaperRecord slice
-                if let Ok(records) = bytemuck::try_cast_slice::<u8, AcademicPaperRecord>(payload) {
-                    for r in records {
-                        if r.is_tombstone() {
-                            continue;
-                        }
-                        let matches = r.paper_id.to_string() == norm_key
-                            || format!("0x{:016x}", r.paper_id) == norm_key
-                            || (r.doi_prefix_hash != 0
-                                && r.doi_prefix_hash == crc32c::crc32c(norm_key.as_bytes()) as u64);
-                        if matches {
-                            legacy_candidates.push(ScholarPaperRecord {
-                                key: r.paper_id.to_string(),
-                                doi: None,
-                                aliases: Vec::new(),
-                                title: format!("Paper {}", r.paper_id),
-                                authors: Vec::new(),
-                                abstract_text: None,
-                                venue: if r.venue_id != 0 {
-                                    Some(format!("venue_{}", r.venue_id))
-                                } else {
-                                    None
-                                },
-                                year: if r.year != 0 {
-                                    Some(r.year as u32)
-                                } else {
-                                    None
-                                },
-                                language: None,
-                                license: None,
-                                source_url: None,
-                                published_date: None,
-                            });
-                        }
+                let records = bytemuck::try_cast_slice::<u8, AcademicPaperRecord>(payload_data)
+                    .map_err(|e| bad(format!("Tile 12 v1 payload is not 64-byte records: {e}")))?;
+                for r in records {
+                    if r.is_tombstone() {
+                        continue;
+                    }
+                    let matches = r.paper_id.to_string() == norm_key
+                        || format!("0x{:016x}", r.paper_id) == norm_key
+                        || (r.doi_prefix_hash != 0
+                            && r.doi_prefix_hash == crc32c::crc32c(norm_key.as_bytes()) as u64);
+                    if matches {
+                        // v1 records hold no title, venue name, DOI or authors: those stay absent.
+                        legacy_candidates.push(ScholarPaperRecord {
+                            key: r.paper_id.to_string(),
+                            doi: None,
+                            aliases: Vec::new(),
+                            title: None,
+                            authors: Vec::new(),
+                            abstract_text: None,
+                            venue: None,
+                            year: if r.year != 0 {
+                                Some(r.year as u32)
+                            } else {
+                                None
+                            },
+                            language: None,
+                            license: None,
+                            source_url: None,
+                            published_date: None,
+                        });
                     }
                 }
-            } else if hdr.record_layout_version >= 2 {
+            } else if hdr.record_layout_version == 2 {
                 let bsz = std::mem::size_of::<ScholarPaperBlobHeader>();
-                if payload.len() >= bsz {
-                    let blob_hdr: ScholarPaperBlobHeader =
-                        bytemuck::pod_read_unaligned(&payload[..bsz]);
-                    let chunk_data = &payload[bsz..bsz + blob_hdr.chunk_bytes as usize];
-                    if crc32c::crc32c(chunk_data) == blob_hdr.chunk_crc32 {
-                        let entry = chunks_by_hash
-                            .entry(blob_hdr.sha256_hash)
-                            .or_insert_with(|| (blob_hdr, std::collections::BTreeMap::new()));
-                        entry.1.insert(blob_hdr.chunk_index, chunk_data.to_vec());
-                    }
+                if payload_data.len() < bsz {
+                    return Err(bad(format!(
+                        "Tile 12 (id {}) v2 payload shorter than blob header",
+                        hdr.tile_id
+                    )));
                 }
+                let blob_hdr: ScholarPaperBlobHeader =
+                    bytemuck::pod_read_unaligned(&payload_data[..bsz]);
+                let chunk_len = blob_hdr.chunk_bytes as usize;
+                if bsz.checked_add(chunk_len) != Some(payload_data.len()) {
+                    return Err(bad(format!(
+                        "Tile 12 (id {}) chunk_bytes {} inconsistent with payload_bytes {}",
+                        hdr.tile_id,
+                        chunk_len,
+                        payload_data.len()
+                    )));
+                }
+                if blob_hdr.total_chunks == 0
+                    || blob_hdr.chunk_index >= blob_hdr.total_chunks
+                    || chunk_len > blob_hdr.total_bytes as usize
+                {
+                    return Err(bad(format!(
+                        "Tile 12 (id {}) chunk index/count/length inconsistent",
+                        hdr.tile_id
+                    )));
+                }
+                let chunk_data = &payload_data[bsz..];
+                if crc32c::crc32c(chunk_data) != blob_hdr.chunk_crc32 {
+                    return Err(bad(format!(
+                        "Tile 12 (id {}) chunk CRC mismatch",
+                        hdr.tile_id
+                    )));
+                }
+                if !chunks_by_hash.contains_key(&blob_hdr.sha256_hash) {
+                    order.push(blob_hdr.sha256_hash);
+                }
+                let entry = chunks_by_hash
+                    .entry(blob_hdr.sha256_hash)
+                    .or_insert_with(|| (blob_hdr, std::collections::BTreeMap::new()));
+                if entry.0.total_chunks != blob_hdr.total_chunks
+                    || entry.0.total_bytes != blob_hdr.total_bytes
+                {
+                    return Err(bad(
+                        "Tile 12 chunks of one paper disagree on totals".to_string()
+                    ));
+                }
+                entry.1.insert(blob_hdr.chunk_index, chunk_data.to_vec());
+            } else {
+                return Err(bad(format!(
+                    "Tile 12 (id {}) has unsupported layout version {}",
+                    hdr.tile_id, hdr.record_layout_version
+                )));
             }
         }
 
-        // Check reassembled v2 papers
-        for (sha, (blob_hdr, chunk_map)) in chunks_by_hash {
-            if chunk_map.len() == blob_hdr.total_chunks as usize {
-                let mut full_bytes = Vec::with_capacity(blob_hdr.total_bytes as usize);
-                for (_, data) in chunk_map {
-                    full_bytes.extend_from_slice(&data);
-                }
-
-                let mut hasher = sha2::Sha256::default();
-                use sha2::Digest;
-                hasher.update(&full_bytes);
-                let actual_sha: [u8; 32] = hasher.finalize().into();
-                if actual_sha == sha {
-                    if let Ok(paper) = serde_json::from_slice::<ScholarPaperRecord>(&full_bytes) {
-                        let matches = paper.key == norm_key
-                            || paper.doi.as_deref() == Some(&norm_key)
-                            || paper.aliases.iter().any(|a| a == &norm_key)
-                            || blob_hdr.key_hash == target_key_hash;
-                        if matches {
-                            return Some(paper);
-                        }
-                    }
-                }
+        // Reassemble v2 papers; the newest matching record wins.
+        let mut found: Option<ScholarPaperRecord> = None;
+        for sha in order {
+            let (blob_hdr, chunk_map) = chunks_by_hash.remove(&sha).expect("ordered key present");
+            if chunk_map.len() != blob_hdr.total_chunks as usize {
+                return Err(bad(format!(
+                    "Tile 12 paper is missing chunks ({} of {})",
+                    chunk_map.len(),
+                    blob_hdr.total_chunks
+                )));
+            }
+            let mut full_bytes = Vec::with_capacity(blob_hdr.total_bytes as usize);
+            for (_, data) in chunk_map {
+                full_bytes.extend_from_slice(&data);
+            }
+            if full_bytes.len() != blob_hdr.total_bytes as usize {
+                return Err(bad("Tile 12 reassembled length != total_bytes".to_string()));
+            }
+            use sha2::Digest;
+            let actual_sha: [u8; 32] = sha2::Sha256::digest(&full_bytes).into();
+            if actual_sha != sha {
+                return Err(bad("Tile 12 reassembled paper SHA-256 mismatch".to_string()));
+            }
+            let paper = serde_json::from_slice::<ScholarPaperRecord>(&full_bytes)
+                .map_err(|e| bad(format!("Tile 12 paper JSON invalid: {e}")))?;
+            let matches = paper.key == norm_key
+                || paper.doi.as_deref() == Some(norm_key.as_str())
+                || paper.aliases.iter().any(|a| a == &norm_key);
+            if matches {
+                found = Some(paper);
             }
         }
-
-        legacy_candidates.pop()
+        if found.is_some() {
+            return Ok(found);
+        }
+        Ok(legacy_candidates.pop())
     }
 }
