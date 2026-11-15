@@ -422,6 +422,12 @@
 ## Prompt 008: One-Command Self-Hosted Stack
 
 - **Status**: ALL SUCCESS
+- **Commit**: `d2c9ab7`
+- **CI Verification on d2c9ab7**:
+  - `rust-ci` (run 43668193550): **SUCCESS** (13/13 jobs passed: `cargo fmt --check`, `cargo test --workspace`, clippy, Windows/macOS/Ubuntu runners, spec vectors, wasm snapshot).
+  - `cargo-deny` (run 43668193539): **SUCCESS** (`advisories ok, bans ok, licenses ok, sources ok`).
+  - `S3A Research Agent Harness CI` (run 43668193532): **SUCCESS** (both `windows-latest` and `ubuntu-latest` jobs passed, including `Self-Hosted Stack & 007 Viewer Demo Test`).
+  - `wasm-dist` (run 43668193529 / 43668199306): **SUCCESS** (build, test, publish, attestation green).
 - **Summary of Deliverables**:
 1. **Stack Manager & Configuration (`crates/s3a-harness/src/stack.rs`)**:
    - `StackConfig` structure parsing single `stack.toml` for lab or Aura nodes.

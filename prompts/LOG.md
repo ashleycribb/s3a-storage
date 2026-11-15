@@ -302,6 +302,7 @@ Notes:
 
 ## [2026-11-14] - 008: One-command self-hosted stack
 Status: ALL SUCCESS
+Commit: d2c9ab7
 Verification:
   - cargo fmt --all --check: passed
   - cargo clippy -p s3a-harness --no-deps --all-targets -- -D warnings: passed
@@ -309,6 +310,11 @@ Verification:
   - cargo deny check: passed (advisories ok, bans ok, licenses ok, sources ok)
   - cargo test -p s3a-harness --test stack_tests: passed (7/7 tests passed in 2.68s)
   - cargo test -p s3a-cli --test stack_cli_tests: passed (2/2 tests passed in 2.37s)
+  - GitHub Actions runs on d2c9ab7:
+    - rust-ci (run 43668193550): success (all 13/13 jobs passed)
+    - cargo-deny (run 43668193539): success (advisories ok, bans ok, licenses ok, sources ok)
+    - S3A Research Agent Harness CI (run 43668193532): success (windows-latest & ubuntu-latest)
+    - wasm-dist (run 43668193529 / 43668199306): success
 Notes:
   1. Implemented `s3a stack <init|up|down|status>` in `crates/s3a-cli/src/stack_cli.rs` and `crates/s3a-harness/src/stack.rs`.
   2. Single configuration in `stack.toml` supporting model providers (`local`, `gemini`, `anthropic`, `gateway`).
