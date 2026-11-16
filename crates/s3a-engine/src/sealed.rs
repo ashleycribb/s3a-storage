@@ -27,13 +27,29 @@ pub const SPEC_MARKDOWN: &str = include_str!("../../../docs/spec/S3A-TILE-SPEC.m
 pub const SPEC_URL: &str =
     "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md";
 
-/// Version string from the spec's `**Document Version:**` line.
-pub fn spec_version() -> &'static str {
-    SPEC_MARKDOWN
+/// Version string from a spec's `**Document Version:**` line. A spec without that line, or
+/// with an empty value, is an `InvalidData` error; no placeholder version is ever returned.
+pub fn spec_version_from(markdown: &str) -> io::Result<&str> {
+    match markdown
         .lines()
         .find_map(|l| l.strip_prefix("**Document Version:**"))
         .map(str::trim)
-        .unwrap_or("unknown")
+    {
+        Some(v) if !v.is_empty() => Ok(v),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "spec has an empty **Document Version:** line",
+        )),
+        None => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "spec has no **Document Version:** line",
+        )),
+    }
+}
+
+/// Version string of the spec this build embeds (`docs/spec/S3A-TILE-SPEC.md`).
+pub fn spec_version() -> io::Result<&'static str> {
+    spec_version_from(SPEC_MARKDOWN)
 }
 
 /// Lowercase hex SHA-256 of the exact spec text this build embeds.
@@ -41,16 +57,21 @@ pub fn spec_sha256_hex() -> String {
     hex::encode(Sha256::digest(SPEC_MARKDOWN.as_bytes()))
 }
 
-/// The self-describing entry this build writes (item 6, TILE-SPEC §14.5.4).
-pub fn build_about() -> s3a_core::SchemaAbout {
-    s3a_core::SchemaAbout {
-        spec_version: spec_version().to_string(),
+/// The about entry for a given spec text; fails if the spec has no version.
+pub fn about_from_spec(markdown: &str) -> io::Result<s3a_core::SchemaAbout> {
+    Ok(s3a_core::SchemaAbout {
+        spec_version: spec_version_from(markdown)?.to_string(),
         spec_url: SPEC_URL.to_string(),
-        spec_sha256: spec_sha256_hex(),
+        spec_sha256: hex::encode(Sha256::digest(markdown.as_bytes())),
         writer: format!("s3a-engine {}", env!("CARGO_PKG_VERSION")),
         seal_hash_alg: s3a_core::algorithms::DEFAULT_SEAL_HASH_ALG.to_string(),
         sig_alg: String::new(),
-    }
+    })
+}
+
+/// The self-describing entry this build writes (item 6, TILE-SPEC §14.5.4).
+pub fn build_about() -> io::Result<s3a_core::SchemaAbout> {
+    about_from_spec(SPEC_MARKDOWN)
 }
 
 /// Reader check of the algorithm IDs an about entry declares (TILE-SPEC §14.5.4).
@@ -133,7 +154,7 @@ fn apply_about(
     file_uuid: [u64; 2],
     generation: u64,
 ) -> io::Result<u32> {
-    let a = build_about();
+    let a = build_about()?;
     for (kind, id) in [
         (s3a_core::algorithms::AlgKind::SealHash, &a.seal_hash_alg),
         (s3a_core::algorithms::AlgKind::Signature, &a.sig_alg),
@@ -365,7 +386,7 @@ pub fn generate_plain_text_manifest(
     seal_generation: u64,
     prev_seal_hash: &[u8; 32],
     enable_parity: bool,
-) -> String {
+) -> io::Result<String> {
     let mut out = String::new();
     out.push_str(
         "================================================================================\n",
@@ -375,7 +396,7 @@ pub fn generate_plain_text_manifest(
     out.push_str(" Specification: https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/S3A-TILE-SPEC.md\n");
     out.push_str(&format!(
         " Spec version {}, SHA-256 of spec text: {}\n",
-        spec_version(),
+        spec_version()?,
         spec_sha256_hex()
     ));
     out.push_str(
@@ -457,7 +478,7 @@ pub fn generate_plain_text_manifest(
         "================================================================================\n",
     );
 
-    out
+    Ok(out)
 }
 
 /// Computes the CRC32C of the SealedEndCap (v1) excluding the endcap_crc32 field itself (first 52 bytes).
@@ -1079,7 +1100,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             options.seal_generation,
             &options.prev_seal_hash,
             options.enable_parity,
-        );
+        )?;
 
         let manifest_bytes = manifest_text.as_bytes();
         let mut manifest_tile = vec![0u8; HYPER_TILE_SIZE];

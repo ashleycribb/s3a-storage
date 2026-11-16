@@ -28,7 +28,7 @@ fn about_entry_names_spec_and_matches_embedded_spec() {
     let ab = about_report(&r);
     let a = ab.about.expect("about entry");
     assert_eq!(a.spec_url, s3a_engine::SPEC_URL);
-    assert_eq!(a.spec_version, s3a_engine::spec_version());
+    assert_eq!(a.spec_version, s3a_engine::spec_version().unwrap());
     assert_eq!(a.spec_sha256, s3a_engine::spec_sha256_hex());
     assert!(a.writer.starts_with("s3a-engine "));
     assert_eq!(ab.embedded_spec, "match");
@@ -82,7 +82,8 @@ fn manifest_without_any_timestamp_says_not_recorded() {
         1,
         &[0; 32],
         false,
-    );
+    )
+    .expect("manifest from the embedded spec");
     assert!(t.contains("Created:          Not recorded"));
     assert!(!t.contains("Genesis"));
 }

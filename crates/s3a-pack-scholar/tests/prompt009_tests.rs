@@ -350,7 +350,7 @@ fn test_embedded_registry_decodes_archive_without_pack_code() {
 
     assert_eq!(
         info.spec_version.as_deref(),
-        Some(s3a_engine::sealed::spec_version())
+        Some(s3a_engine::sealed::spec_version().unwrap())
     );
     assert!(info.engine_version.is_some());
 

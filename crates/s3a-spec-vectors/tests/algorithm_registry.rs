@@ -30,7 +30,7 @@ fn python_reader_and_docs_match_rust_registry() {
 
 #[test]
 fn seal_about_declares_sha256_and_checks_pass() {
-    let a = s3a_engine::build_about();
+    let a = s3a_engine::build_about().expect("about entry from the embedded spec");
     assert_eq!(a.seal_hash_alg, "sha256");
     assert!(s3a_engine::check_about_algorithms(&a).is_ok());
     let mut bad = a.clone();
