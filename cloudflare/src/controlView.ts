@@ -8,12 +8,11 @@ export interface StoredControlState {
   scheduler_status?: string;
 }
 
-export function publicControlView(s: StoredControlState, nowMs: number): Record<string, unknown> {
+// Only `paused` and `status` are public (security hardening, c2b3b68). Who paused, why and when
+// are audit data: they stay in storage, in the authenticated POST response and in /status.
+export function publicControlView(s: StoredControlState, _nowMs: number): { paused: boolean; status: string } {
   return {
     paused: s.paused,
-    paused_by: s.paused_by || "Supervisor (Ashley)",
-    paused_reason: s.paused_reason || (s.paused ? "Swarm paused by supervisor" : "Operating normally"),
-    paused_at: s.paused_at || nowMs,
     status: s.scheduler_status || (s.paused ? "paused" : "idle"),
   };
 }

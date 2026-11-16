@@ -85,17 +85,22 @@ export async function handleAPIRoutes(request: Request, env: Env): Promise<Respo
       const ledgerRes = await stub.fetch("https://internal/project/" + DEFAULT_PROJECT_ID + "/ledger");
       if (ledgerRes.ok) {
         const budget = await ledgerRes.json() as any;
-        const spent = Number(budget.spent_today || 0);
-        const cap = Number(budget.cap || 5.0);
-        const underCap = spent < cap;
-        health.components.ledger = {
-          ok: underCap,
-          under_cap: underCap,
-          spent_today: spent,
-          cap: cap,
-        };
-        if (!underCap) {
+        const spent = budget.spent_today;
+        const cap = budget.cap;
+        if (typeof spent !== "number" || typeof cap !== "number") {
           health.status = "degraded";
+          health.components.ledger = { ok: false, error: "ledger response missing spent_today or cap" };
+        } else {
+          const underCap = spent < cap;
+          health.components.ledger = {
+            ok: underCap,
+            under_cap: underCap,
+            spent_today: spent,
+            cap: cap,
+          };
+          if (!underCap) {
+            health.status = "degraded";
+          }
         }
       } else {
         health.status = "degraded";
