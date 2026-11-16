@@ -3,7 +3,11 @@
 import assert from "node:assert";
 
 const BASE_URL = process.env.BASE_URL || "https://s3a-gate.ashley-e-cribb.workers.dev";
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "s3a_admin_sec_9f8b2a14e6c7d35";
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
+if (!ADMIN_SECRET) {
+  console.error("ADMIN_SECRET is not set; refusing to run (no built-in secret).");
+  process.exit(1);
+}
 const PROJECT_ID = "s3a-swarm-main";
 
 console.log(`\n======================================================`);
@@ -85,6 +89,23 @@ await runTest("Unauthenticated POST /control fails with 401", async () => {
 });
 
 await runTest("Authenticated POST /control with Bearer ADMIN_SECRET succeeds", async () => {
+  // This suite runs against the live worker: remember the current pause state and put it back,
+  // so a CI run never leaves the swarm paused (or resumed) as a side effect.
+  const before = await (await fetch(`${BASE_URL}/project/${PROJECT_ID}/control`)).json();
+  assert.strictEqual(typeof before.paused, "boolean", "could not read the current pause state");
+  try {
+    await pauseAndCheck();
+  } finally {
+    const restore = await fetch(`${BASE_URL}/project/${PROJECT_ID}/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${ADMIN_SECRET}` },
+      body: JSON.stringify({ paused: before.paused, reason: "Restored by security-test.mjs" })
+    });
+    assert.strictEqual(restore.status, 200, `Restoring pause state failed: HTTP ${restore.status}`);
+  }
+});
+
+async function pauseAndCheck() {
   const res = await fetch(`${BASE_URL}/project/${PROJECT_ID}/control`, {
     method: "POST",
     headers: {
@@ -97,7 +118,7 @@ await runTest("Authenticated POST /control with Bearer ADMIN_SECRET succeeds", a
   const data = await res.json();
   assert.strictEqual(data.status, "ok");
   assert.strictEqual(data.paused, true);
-});
+}
 
 // --------------------------------------------------------------------------
 // 4. Protected Endpoints Require Admin Secret
