@@ -575,3 +575,16 @@
 - **deny.toml**: RUSTSEC-2023-0071 (rsa, Marvin) ignored with a written reason: verify-only, no private key; no patched rsa exists. Pending Ashley's review.
 - **Checks**: fmt ok; clippy no errors, no new warnings; `cargo deny check` ok; `cargo test --workspace` 853 passed / 0 failed / 4 ignored; wasm-pack build + `smoke.mjs` 37/37; s3a-edge thumbv7em build ok; vectors 1.0–1.5 byte-identical to `01d9da4`. Mutation checks (spec_version back to "unknown", PSS off, RSA verify bypassed, RSA off on wasm32) each made the matching test fail.
 - **Known gap**: the ECDSA P-256 path assumes SHA-256 (a SHA-384 ECDSA token fails closed with an error).
+
+---
+
+## Gate Worker CI: ledger daily reset and /control info leak
+
+- **Status**: committed 2026-11-15 20:08 EST on top of `296b8e6`. The workflow tests the **live** worker (s3a-gate.ashley-e-cribb.workers.dev); there is no deploy job, so these fixes reach CI only after `wrangler deploy`.
+- **Root causes**
+  - /control (failing since `eb6a9ad`, 2026-10-19, whose own CI run failed this test): the unauthenticated GET gained `paused_by` / `paused_reason` / `paused_at` with invented defaults. Hardening rule (`c2b3b68`): paused + status only. Code fixed; the test was right.
+  - Ledger (failing since 2026-11-02, run 41452452324): `checkDailyReset` never stored `ledger_last_reset_day` (`|| currentDay`), so spend never reset and crossed the cap. Code fixed. /health also stops substituting 0 / 5.0 for missing ledger fields.
+  - The workflow has failed on every run since 2026-10-18 (64 of the last 70); the Nov 14 runs did not start it.
+- **Test changes**: `scripts/security-test.mjs` no longer has a built-in ADMIN_SECRET (refuses to run without the env var), and its authenticated POST /control test restores the swarm's previous pause state (it used to leave the live swarm paused after every run). New unit tests `cloudflare/test/{ledgerDay,controlView}.test.ts`, run in CI by a new `npm test` step.
+- **Checks (local)**: `tsc --noEmit` ok; `npm test` 18/18 (5 new tests failed before the fix); `security-test.mjs` against local `wrangler dev` 15/15 (14/15 before). Mutation checks: ledger key not persisted -> 3 unit tests fail; `paused_by` back in the public view -> 2 unit tests and security test 2 fail.
+- **Not fixed**: `crawl-nav-test.mjs` is stale since the brakets rename / platform split (`4c41aa2`, 2026-10-17) and still fails. See the report for the admin-auth header issue in `crypto.ts`.

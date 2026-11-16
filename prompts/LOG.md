@@ -407,3 +407,18 @@ Tests (local, box):
 Notes:
   1. Acceptance tests written first: gap 1 did not compile on 306b488; gap 2 PSS failed natively and smoke failed at ok 34 (no wasm RSA).
   2. RUSTSEC-2023-0071 ignore needs Ashley's sign-off.
+
+---
+
+## gate-ci-ledger-reset-and-control-leak, 2026-11-15 20:08 EST
+Status: pushed to main; Gate CI targets the live worker, so it passes only after a deploy
+Commit: see `git log 296b8e6..` (author Ashley Cribb)
+Changed: cloudflare/src/{ledgerDay,controlView}.ts, cloudflare/src/do/RepoCoordinator.ts, cloudflare/src/routes/api.ts, cloudflare/test/{ledgerDay,controlView}.test.ts, scripts/security-test.mjs, .github/workflows/s3a-gate-ci.yml, .gitignore, LOG.md, prompts/LOG.md
+Tests (local, box):
+  - npx tsc --noEmit: passed
+  - npm test (node --test): 18 passed, 0 failed
+  - node scripts/security-test.mjs against local wrangler dev: 15/15
+  - mutation checks: each made the matching tests fail
+Notes:
+  1. Rust untouched; cargo checks not rerun for this change.
+  2. crawl-nav-test.mjs still fails (stale UI expectations); not changed.
