@@ -11,7 +11,7 @@ ignore = [
   "RUSTSEC-2024-0384",
   # RUSTSEC-2026-0387: crypto-bigint timing variability. Transitive dependency of p256 0.13 via elliptic-curve 0.13; upgrading requires breaking overhaul to p256 0.14+.
   "RUSTSEC-2026-0387",
-  # RUSTSEC-2023-0071 (rsa, Marvin attack; no patched release). PENDING ASHLEY'S REVIEW.
+  # RUSTSEC-2023-0071 (rsa, Marvin attack; no patched release). Approved by Ashley Cribb on 2026-11-15.
   # The advisory is a timing side channel in RSA *private-key* operations (decryption and
   # signing). s3a-engine uses rsa 0.9 only to verify RFC 3161 / X.509 signatures with
   # RsaPublicKey::verify (anchor.rs, verify_rsa_signature); no private key is ever loaded,
