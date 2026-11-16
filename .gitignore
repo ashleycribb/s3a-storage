@@ -24,3 +24,7 @@ crates/s3a-harness/agents/
 !conformance/vectors-*/files/*.s3a
 !crates/s3a-wasm-snapshot/tests/fixtures/*.s3a
 !crates/s3a-wasm-snapshot/tests/fixtures/acceptance_009/*.s3a
+
+# Wrangler local dev secrets and state
+cloudflare/.dev.vars
+cloudflare/.wrangler/

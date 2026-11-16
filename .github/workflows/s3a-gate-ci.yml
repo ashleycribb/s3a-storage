@@ -38,6 +38,11 @@ jobs:
           cd cloudflare
           npx tsc --noEmit
 
+      - name: Unit Tests (node --test)
+        run: |
+          cd cloudflare
+          npm test
+
       - name: Run Security Hardening Tests
         run: node scripts/security-test.mjs
         env:
