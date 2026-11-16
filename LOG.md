@@ -588,3 +588,9 @@
 - **Test changes**: `scripts/security-test.mjs` no longer has a built-in ADMIN_SECRET (refuses to run without the env var), and its authenticated POST /control test restores the swarm's previous pause state (it used to leave the live swarm paused after every run). New unit tests `cloudflare/test/{ledgerDay,controlView}.test.ts`, run in CI by a new `npm test` step.
 - **Checks (local)**: `tsc --noEmit` ok; `npm test` 18/18 (5 new tests failed before the fix); `security-test.mjs` against local `wrangler dev` 15/15 (14/15 before). Mutation checks: ledger key not persisted -> 3 unit tests fail; `paused_by` back in the public view -> 2 unit tests and security test 2 fail.
 - **Not fixed**: `crawl-nav-test.mjs` is stale since the brakets rename / platform split (`4c41aa2`, 2026-10-17) and still fails. See the report for the admin-auth header issue in `crypto.ts`.
+
+---
+
+## Gate worker retired (2026-11-15)
+
+- The live Cloudflare worker `s3a-gate` (s3a-gate.ashley-e-cribb.workers.dev) was deleted with `wrangler delete` on 2026-11-15 because its admin secret had leaked (hard-coded in public scripts). The "S3A Gate Worker & Navigation CI" workflow is disabled (`gh workflow disable`, reversible); its file and all code under `cloudflare/` and `scripts/` are kept. The gate may return later for academic research; it would need a new admin secret and the Cf-Access header check in `crypto.ts` fixed first.
