@@ -1,6 +1,8 @@
 // cloudflare/src/do/RepoCoordinator.ts
 // Durable Object: RepoCoordinator (One per Project)
 
+import { checkDailyReset } from "../ledgerDay";
+import { publicControlView } from "../controlView";
 import git from "isomorphic-git";
 import { MemoryFS } from "../memory-fs";
 import { getSandbox } from "../sandbox";
@@ -303,13 +305,7 @@ export class RepoCoordinator implements DurableObject {
   }
 
   private async checkDailyReset(): Promise<void> {
-    const currentDay = Math.floor(Date.now() / 86400000);
-    const lastResetDay = (await this.state.storage.get<number>("ledger_last_reset_day")) || currentDay;
-    if (currentDay > lastResetDay) {
-      await this.state.storage.put("ledger_last_reset_day", currentDay);
-      await this.state.storage.put("ledger_spent_today", 0.0);
-      await this.drainDeferredQueue();
-    }
+    await checkDailyReset(this.state.storage, Date.now(), () => this.drainDeferredQueue());
   }
 
   private async drainDeferredQueue(): Promise<DeferredAction[]> {
@@ -601,19 +597,15 @@ export class RepoCoordinator implements DurableObject {
       });
     }
 
-    const isPaused = (await this.state.storage.get<boolean>("autonomous_paused")) || false;
-    const pausedBy = (await this.state.storage.get<string>("autonomous_paused_by")) || "Supervisor (Ashley)";
-    const pausedReason = (await this.state.storage.get<string>("autonomous_paused_reason")) || (isPaused ? "Swarm paused by supervisor" : "Operating normally");
-    const pausedAt = (await this.state.storage.get<number>("autonomous_paused_at")) || Date.now();
-    const schedulerStatus = (await this.state.storage.get<string>("scheduler_status")) || (isPaused ? "paused" : "idle");
+    const view = publicControlView({
+      paused: (await this.state.storage.get<boolean>("autonomous_paused")) || false,
+      paused_by: await this.state.storage.get<string>("autonomous_paused_by"),
+      paused_reason: await this.state.storage.get<string>("autonomous_paused_reason"),
+      paused_at: await this.state.storage.get<number>("autonomous_paused_at"),
+      scheduler_status: await this.state.storage.get<string>("scheduler_status"),
+    }, Date.now());
 
-    return new Response(JSON.stringify({
-      paused: isPaused,
-      paused_by: pausedBy,
-      paused_reason: pausedReason,
-      paused_at: pausedAt,
-      status: schedulerStatus,
-    }), {
+    return new Response(JSON.stringify(view), {
       headers: { "Content-Type": "application/json" }
     });
   }
