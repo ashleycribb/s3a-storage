@@ -899,11 +899,151 @@ pub fn load_pem_certificates<P: AsRef<Path>>(
     parse_pem_certificates(&s)
 }
 
+/// Hash algorithms accepted for RSA signatures (RFC 3161 / CMS / X.509).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SigHash {
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl SigHash {
+    fn from_digest_oid(oid: &ObjectIdentifier) -> Result<Self, String> {
+        match oid.to_string().as_str() {
+            "2.16.840.1.101.3.4.2.1" => Ok(Self::Sha256),
+            "2.16.840.1.101.3.4.2.2" => Ok(Self::Sha384),
+            "2.16.840.1.101.3.4.2.3" => Ok(Self::Sha512),
+            other => Err(format!("Unsupported digest algorithm OID: {other}")),
+        }
+    }
+
+    fn digest(self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Sha256 => sha2::Sha256::digest(data).to_vec(),
+            Self::Sha384 => sha2::Sha384::digest(data).to_vec(),
+            Self::Sha512 => sha2::Sha512::digest(data).to_vec(),
+        }
+    }
+}
+
+const OID_RSA_ENCRYPTION: &str = "1.2.840.113549.1.1.1";
+const OID_RSASSA_PSS: &str = "1.2.840.113549.1.1.10";
+const OID_MGF1: &str = "1.2.840.113549.1.1.8";
+const OID_EC_PUBLIC_KEY: &str = "1.2.840.10045.2.1";
+/// RSA keys below this size are rejected (CA/B and RFC 3161 TSA practice).
+const MIN_RSA_MODULUS_BITS: usize = 2048;
+
+/// Verification-only RSA (RSASSA-PKCS1-v1_5 and RSASSA-PSS) with the pure-Rust `rsa` crate,
+/// identical on native and wasm32. Only public-key operations are used, so the crate's
+/// private-key timing side channel (RUSTSEC-2023-0071) does not apply here.
+fn verify_rsa_signature(
+    pk_pkcs1_der: &[u8],
+    data: &[u8],
+    signature: &[u8],
+    sig_alg: &spki::AlgorithmIdentifierOwned,
+    digest_alg: Option<&ObjectIdentifier>,
+) -> Result<(), String> {
+    use rsa::pkcs1::DecodeRsaPublicKey;
+    use rsa::traits::PublicKeyParts;
+
+    let key = rsa::RsaPublicKey::from_pkcs1_der(pk_pkcs1_der)
+        .map_err(|e| format!("Invalid RSA public key: {e}"))?;
+    let bits = key.n().bits();
+    if bits < MIN_RSA_MODULUS_BITS {
+        return Err(format!(
+            "RSA key of {bits} bits is below the {MIN_RSA_MODULUS_BITS}-bit minimum"
+        ));
+    }
+
+    let oid = sig_alg.oid.to_string();
+    let verified = match oid.as_str() {
+        OID_RSASSA_PSS => {
+            let params_any = sig_alg
+                .parameters
+                .as_ref()
+                .ok_or("RSASSA-PSS signature without parameters")?;
+            let params_der = params_any
+                .to_der()
+                .map_err(|e| format!("Invalid RSASSA-PSS parameters: {e}"))?;
+            let params = rsa::pkcs1::RsaPssParams::from_der(&params_der)
+                .map_err(|e| format!("Invalid RSASSA-PSS parameters: {e}"))?;
+            let hash = SigHash::from_digest_oid(&params.hash.oid)?;
+            if params.mask_gen.oid.to_string() != OID_MGF1 {
+                return Err(format!(
+                    "Unsupported RSASSA-PSS mask generation function: {}",
+                    params.mask_gen.oid
+                ));
+            }
+            let mgf_hash = params
+                .mask_gen
+                .parameters
+                .as_ref()
+                .ok_or("RSASSA-PSS MGF1 without a hash parameter")?;
+            if SigHash::from_digest_oid(&mgf_hash.oid)? != hash {
+                return Err("RSASSA-PSS MGF1 hash differs from the message hash".into());
+            }
+            if params.trailer_field != rsa::pkcs1::TrailerField::BC {
+                return Err("Unsupported RSASSA-PSS trailer field".into());
+            }
+            let salt_len = params.salt_len as usize;
+            let hashed = hash.digest(data);
+            let r = match hash {
+                SigHash::Sha256 => key.verify(
+                    rsa::Pss::new_with_salt::<sha2::Sha256>(salt_len),
+                    &hashed,
+                    signature,
+                ),
+                SigHash::Sha384 => key.verify(
+                    rsa::Pss::new_with_salt::<sha2::Sha384>(salt_len),
+                    &hashed,
+                    signature,
+                ),
+                SigHash::Sha512 => key.verify(
+                    rsa::Pss::new_with_salt::<sha2::Sha512>(salt_len),
+                    &hashed,
+                    signature,
+                ),
+            };
+            r.map_err(|_| "RSA-PSS signature verification failed".to_string())
+        }
+        _ => {
+            // RSASSA-PKCS1-v1_5: the hash comes from the signature algorithm, or, for a CMS
+            // SignerInfo labelled plain rsaEncryption, from its digestAlgorithm.
+            let hash = match oid.as_str() {
+                "1.2.840.113549.1.1.11" => SigHash::Sha256,
+                "1.2.840.113549.1.1.12" => SigHash::Sha384,
+                "1.2.840.113549.1.1.13" => SigHash::Sha512,
+                OID_RSA_ENCRYPTION => SigHash::from_digest_oid(
+                    digest_alg.ok_or("rsaEncryption signature without a digest algorithm")?,
+                )?,
+                other => return Err(format!("Unsupported RSA signature algorithm OID: {other}")),
+            };
+            let hashed = hash.digest(data);
+            let r = match hash {
+                SigHash::Sha256 => {
+                    key.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha256>(), &hashed, signature)
+                }
+                SigHash::Sha384 => {
+                    key.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha384>(), &hashed, signature)
+                }
+                SigHash::Sha512 => {
+                    key.verify(rsa::Pkcs1v15Sign::new::<sha2::Sha512>(), &hashed, signature)
+                }
+            };
+            r.map_err(|_| "RSA signature verification failed".to_string())
+        }
+    };
+    verified
+}
+
+/// Verifies `signature` over `data` with the key in `spki`. `digest_alg` is the CMS
+/// SignerInfo digestAlgorithm (None for certificate signatures).
 fn verify_signature_over_data(
     spki: &x509_cert::spki::SubjectPublicKeyInfoOwned,
     data: &[u8],
     signature: &[u8],
-    _sig_alg_oid: &ObjectIdentifier,
+    sig_alg: &spki::AlgorithmIdentifierOwned,
+    digest_alg: Option<&ObjectIdentifier>,
 ) -> Result<(), String> {
     use signature::Verifier;
     let pk_bytes = spki
@@ -911,61 +1051,19 @@ fn verify_signature_over_data(
         .as_bytes()
         .ok_or_else(|| "Invalid subject public key bit string".to_string())?;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let rsa_encryption = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.1");
-        let sha256_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
-        let sha384_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
-        let sha512_rsa = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
-        let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
-
-        if spki.algorithm.oid == rsa_encryption || spki.algorithm.oid == sha256_rsa {
-            // Verification-only RSA via ring (public-key ops; no private-key code linked).
-            // ring requires >= 2048-bit moduli, which matches CA/B and RFC 3161 TSA practice.
-            let alg: &'static dyn ring::signature::VerificationAlgorithm =
-                if *_sig_alg_oid == sha384_rsa {
-                    &ring::signature::RSA_PKCS1_2048_8192_SHA384
-                } else if *_sig_alg_oid == sha512_rsa {
-                    &ring::signature::RSA_PKCS1_2048_8192_SHA512
-                } else {
-                    &ring::signature::RSA_PKCS1_2048_8192_SHA256
-                };
-            ring::signature::UnparsedPublicKey::new(alg, pk_bytes)
-                .verify(data, signature)
-                .map_err(|_| "RSA signature verification failed".to_string())?;
-            return Ok(());
-        } else if spki.algorithm.oid == ec_public_key {
+    match spki.algorithm.oid.to_string().as_str() {
+        OID_RSA_ENCRYPTION | OID_RSASSA_PSS => {
+            verify_rsa_signature(pk_bytes, data, signature, sig_alg, digest_alg)
+        }
+        OID_EC_PUBLIC_KEY => {
             let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
                 .map_err(|e| format!("Invalid P-256 public key: {}", e))?;
             let ec_sig = p256::ecdsa::Signature::from_der(signature)
                 .map_err(|e| format!("Invalid ECDSA signature DER: {}", e))?;
             vk.verify(data, &ec_sig)
-                .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
-            return Ok(());
-        } else {
-            return Err(format!(
-                "Unsupported public key algorithm OID: {}",
-                spki.algorithm.oid
-            ));
+                .map_err(|e| format!("ECDSA signature verification failed: {}", e))
         }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let ec_public_key = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
-        if spki.algorithm.oid == ec_public_key {
-            let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
-                .map_err(|e| format!("Invalid P-256 public key: {}", e))?;
-            let ec_sig = p256::ecdsa::Signature::from_der(signature)
-                .map_err(|e| format!("Invalid ECDSA signature DER: {}", e))?;
-            vk.verify(data, &ec_sig)
-                .map_err(|e| format!("ECDSA signature verification failed: {}", e))?;
-            return Ok(());
-        } else {
-            return Err(format!(
-                "Unsupported public key algorithm OID on wasm32: {}",
-                spki.algorithm.oid
-            ));
-        }
+        other => Err(format!("Unsupported public key algorithm OID: {other}")),
     }
 }
 
@@ -1076,7 +1174,7 @@ fn verify_certificate_chain(
             .as_bytes()
             .ok_or_else(|| "Invalid signature bit string in certificate".to_string())?;
 
-        verify_signature_over_data(p_spki, &tbs_der, sig, &current.signature_algorithm.oid)
+        verify_signature_over_data(p_spki, &tbs_der, sig, &current.signature_algorithm, None)
             .map_err(|e| format!("Certificate signature verification by parent failed: {}", e))?;
 
         if is_trust_root(parent, trust_roots)? {
@@ -1345,12 +1443,13 @@ pub fn verify_rfc3161(
                 .map_err(|e| format!("Invalid messageDigest DER: {}", e))?;
             let val_oct = OctetString::from_der(&val_der)
                 .map_err(|e| format!("Invalid messageDigest OctetString: {}", e))?;
-            let expected_digest = Sha256::digest(encap.value());
+            let expected_digest =
+                SigHash::from_digest_oid(&signer_info.digest_alg.oid)?.digest(encap.value());
             if val_oct.as_bytes() == expected_digest.as_slice() {
                 found_message_digest = true;
             } else {
                 return Err(
-                    "Signed attribute messageDigest does not match SHA-256(eContent)".into(),
+                    "Signed attribute messageDigest does not match the digest of eContent".into(),
                 );
             }
         }
@@ -1444,7 +1543,8 @@ pub fn verify_rfc3161(
         spki,
         &set_der,
         sig_bytes,
-        &signer_info.signature_algorithm.oid,
+        &signer_info.signature_algorithm,
+        Some(&signer_info.digest_alg.oid),
     )?;
 
     // Verify certificate chain to trust store and enforce validity window at TSTInfo genTime

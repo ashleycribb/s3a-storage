@@ -18,6 +18,7 @@ s3a-pack-ontology = { path = "../s3a-pack-ontology" }
 s3a-engine = { path = "../s3a-engine" }
 bytemuck = { workspace = true }
 sha2 = { workspace = true }
+hex = { workspace = true }
 crc32c = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

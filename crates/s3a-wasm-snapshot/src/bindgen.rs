@@ -920,3 +920,33 @@ pub fn read_embedded_registry(archive_bytes: &[u8]) -> Result<JsValue, JsValue> 
         .map_err(|e| js_error(&format!("Failed to serialize registry info: {}", e)))?;
     js_sys::JSON::parse(&json_str)
 }
+
+/// Verifies an RFC 3161 timestamp token (TimeStampResp or TimeStampToken DER) over a SHA-256
+/// fingerprint (64 hex chars) against PEM trust roots. RSA (PKCS#1 v1.5, PSS) and P-256 TSAs
+/// are supported. Returns `true` only for a fully verified token; a fingerprint that differs
+/// from the token's message imprint returns `false`; any verification failure throws.
+#[wasm_bindgen]
+pub fn verify_rfc3161_token(
+    proof_bytes: &[u8],
+    fingerprint_hex: &str,
+    trust_roots_pem: &str,
+) -> Result<bool, JsValue> {
+    let fp: [u8; 32] = hex::decode(fingerprint_hex.trim())
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| js_error("fingerprint must be 64 hex characters (SHA-256)"))?;
+    let roots = s3a_engine::parse_pem_certificates(trust_roots_pem)
+        .map_err(|e| js_error(&format!("Invalid trust roots: {e}")))?;
+    let proof = s3a_engine::AnchorProof {
+        method: "rfc3161".to_string(),
+        fingerprint: hex::encode(fp),
+        proof_bytes: proof_bytes.to_vec(),
+        submitted_at: 0,
+        status: "unverified".to_string(),
+        uri: None,
+        block_height: None,
+        block_hash: None,
+    };
+    s3a_engine::verify_rfc3161(&proof, &fp, Some(&roots))
+        .map_err(|e| js_error(&format!("RFC 3161 verification failed: {e}")))
+}

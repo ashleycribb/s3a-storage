@@ -17,9 +17,9 @@ mod committee_tests;
 pub use agent_api::WasmAgentSnapshot;
 pub use bindgen::{
     add_edge, export_bytes, from_bytes, get_paper, iri_for_verb_id, list_edges, new_session,
-    put_paper, read_embedded_registry, verb_id_for_iri, TOOL_CREDENTIAL_EXPORT,
-    TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_EXTRACT_CLAIMS, TOOL_MUTATE_GRAPH,
-    TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE, TOOL_SYNTHESIZE_EVIDENCE,
+    put_paper, read_embedded_registry, verb_id_for_iri, verify_rfc3161_token,
+    TOOL_CREDENTIAL_EXPORT, TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_EXTRACT_CLAIMS,
+    TOOL_MUTATE_GRAPH, TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE, TOOL_SYNTHESIZE_EVIDENCE,
     TOOL_TA_SUPERVISOR_CALL,
 };
 pub use snapshot_view::WasmSnapshotView;
