@@ -564,3 +564,14 @@
 - **Acceptance test changes (wrong tests, not weakened)**: `acceptance_009_validation.rs` and `acceptance_009_edge_id_api.rs` compared Option provenance fields to plain strings (now `.as_deref() == Some(..)`); `delete_tiles` in `acceptance_009_rebuild_indexes.rs` now keeps the seal trailer it used to cut off. `prompt009_tests.rs`: moved to the content-id API; malformed length must now be `Err` (was `None`); legacy edge queried by its real key.
 - **Checks**: fmt ok; clippy no errors; `cargo deny check` ok; `cargo test --workspace` 845 passed / 0 failed / 4 ignored; wasm-pack build + `smoke.mjs` 33/33; mutation checks fail as intended.
 - **Known gaps**: wasm cannot verify RSA timestamp tokens (P-256 only; RSA returns an explicit error). `sealed::spec_version()` still falls back to the string "unknown" if the spec loses its version line (pre-existing).
+
+---
+
+## Gaps follow-up: spec_version error and RSA timestamps on wasm
+
+- **Status**: done locally, 2026-11-15 19:46 EST, branch `gaps-fu` from `306b488`. Not pushed; CI not run.
+- **Gap 1**: `sealed::spec_version()` (and new `spec_version_from`, `about_from_spec`, `build_about`) return `io::Result`; a missing or empty `**Document Version:**` line is `InvalidData`, never "unknown". `apply_about` and the plain-text manifest propagate it. Callers adapted (Result API, mechanical): `self_describing.rs`, `algorithm_registry.rs`, `prompt009_tests.rs`.
+- **Gap 2**: RSA signature checks use RustCrypto `rsa` 0.9 + `sha2` on every target (one code path; `ring` is now only a native dev-dependency). PKCS#1 v1.5 and RSASSA-PSS, SHA-256/384/512, modulus >= 2048; unknown algorithms are errors (the old implicit SHA-256 default is gone). wasm binding `verify_rfc3161_token`. Fixtures in `crates/s3a-engine/tests/fixtures/test_tsa/` from `scripts/gen_test_tsa_fixtures.sh` (generated once, refuses to overwrite).
+- **deny.toml**: RUSTSEC-2023-0071 (rsa, Marvin) ignored with a written reason: verify-only, no private key; no patched rsa exists. Pending Ashley's review.
+- **Checks**: fmt ok; clippy no errors, no new warnings; `cargo deny check` ok; `cargo test --workspace` 853 passed / 0 failed / 4 ignored; wasm-pack build + `smoke.mjs` 37/37; s3a-edge thumbv7em build ok; vectors 1.0–1.5 byte-identical to `01d9da4`. Mutation checks (spec_version back to "unknown", PSS off, RSA verify bypassed, RSA off on wasm32) each made the matching test fail.
+- **Known gap**: the ECDSA P-256 path assumes SHA-256 (a SHA-384 ECDSA token fails closed with an error).
