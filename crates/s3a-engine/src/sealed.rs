@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -1453,6 +1455,44 @@ pub fn seal_archive<P: AsRef<Path>, Q: AsRef<Path>>(
         about: false,
     };
     seal_archive_v2(in_path, out_path, &options)
+}
+
+/// Seals an already-open archive file description or handle in place.
+///
+/// Reads the committed archive from `file`, applies the same default v2
+/// (parity enabled) seal as [`seal_archive`], and writes the sealed bytes
+/// back to this same description. Does not open a path and does not reopen
+/// the file via `/proc/self/fd`.
+///
+/// Not compiled on `wasm32`, which has no file descriptors; the path-based
+/// [`seal_archive`] API remains available there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn seal_archive_from_file(file: &mut File, k: u16, m: u16) -> io::Result<()> {
+    let options = SealOptionsV2 {
+        enable_parity: true,
+        k,
+        m,
+        prev_seal_hash: [0u8; 32],
+        seal_generation: 1,
+        write_manifest: false,
+        embed_spec: false,
+        title: None,
+        creator: None,
+        record_roots: false,
+        about: false,
+    };
+    file.flush()?;
+    file.sync_all()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut in_bytes = Vec::new();
+    file.read_to_end(&mut in_bytes)?;
+    let out_data = seal_buffer_v2(&in_bytes, &options)?;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(&out_data)?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
 }
 
 /// Seals an archive buffer writing a UTF-8 manifest tile placed at Tile 0.

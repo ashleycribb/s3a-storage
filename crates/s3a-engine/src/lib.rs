@@ -490,12 +490,38 @@ impl TileWriter {
     }
 
     pub fn create_with_uuid<P: AsRef<Path>>(path: P, file_uuid: [u64; 2]) -> io::Result<Self> {
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
             .open(path)?;
+        Self::init_created_file(file, file_uuid)
+    }
+
+    /// Create a new archive on an already-open file description or handle.
+    ///
+    /// The file is truncated and a fresh dual header is written on this same
+    /// description. The caller may already hold an exclusive advisory lock on
+    /// it. This constructor does not open a path and does not reopen the file
+    /// via `/proc/self/fd`.
+    ///
+    /// Not compiled on `wasm32`, which has no file descriptors; the path-based
+    /// [`Self::create`] API remains available there.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn create_from_file(file: File) -> io::Result<Self> {
+        Self::create_from_file_with_uuid(file, generate_file_uuid())
+    }
+
+    /// Same as [`Self::create_from_file`], with an explicit file UUID.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn create_from_file_with_uuid(file: File, file_uuid: [u64; 2]) -> io::Result<Self> {
+        Self::init_created_file(file, file_uuid)
+    }
+
+    fn init_created_file(mut file: File, file_uuid: [u64; 2]) -> io::Result<Self> {
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
 
         let now = current_time_secs();
 
@@ -524,8 +550,28 @@ impl TileWriter {
     }
 
     pub fn open_append<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let path = path.as_ref();
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        Self::open_append_opened(file, Some(path))
+    }
 
+    /// Open an existing archive for append on an already-open file description
+    /// or handle.
+    ///
+    /// Header parse, torn-write recovery, and sealed-trailer deferral match
+    /// [`Self::open_append`]. Orphan compaction temps are not cleaned, because
+    /// this constructor has no path. The caller may already hold an exclusive
+    /// advisory lock on the same file description. This constructor does not
+    /// open a path and does not reopen the file via `/proc/self/fd`.
+    ///
+    /// Not compiled on `wasm32`, which has no file descriptors; the path-based
+    /// [`Self::open_append`] API remains available there.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_append_from_file(file: File) -> io::Result<Self> {
+        Self::open_append_opened(file, None)
+    }
+
+    fn open_append_opened(mut file: File, orphan_clean_path: Option<&Path>) -> io::Result<Self> {
         let file_len = file.metadata()?.len();
         if file_len < FILE_HEADER_SIZE as u64 {
             return Err(io::Error::new(
@@ -574,8 +620,12 @@ impl TileWriter {
             file.sync_all()?;
         }
 
-        // Clean stale orphan compaction temps since live archive header is verified
-        let _ = fsutil::clean_orphan_temps(&path);
+        // Clean stale orphan compaction temps since live archive header is verified.
+        // Path-based open_append keeps this call; the fd-taking constructor has no
+        // path and must not invent one.
+        if let Some(path) = orphan_clean_path {
+            let _ = fsutil::clean_orphan_temps(path);
+        }
 
         // Scan existing tiles to determine next monotonic sequence number
         let mut max_seq: u32 = 0;
@@ -635,6 +685,18 @@ impl TileWriter {
         {
             Ok(())
         }
+    }
+
+    /// Returns the underlying file description or handle without closing it.
+    ///
+    /// The exclusive advisory lock the caller (or [`Self::try_lock_exclusive`])
+    /// holds on this description is kept. Used to pass the same description to
+    /// [`seal_archive_from_file`]. Not compiled on `wasm32`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn into_file(mut self) -> io::Result<File> {
+        self.file.flush()?;
+        self.file.sync_all()?;
+        Ok(self.file)
     }
 
     /// Flushes and reads all committed bytes directly from the underlying archive file handle.
