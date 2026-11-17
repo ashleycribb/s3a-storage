@@ -119,6 +119,13 @@ fn snapshot_temp_create_append_seal_on_same_locked_file_description() {
     );
     drop(contention);
 
+    // Windows LockFileEx is mandatory: std::fs::read of the path (used by
+    // verify_sealed_archive) cannot read the file while exclusive lock remains
+    // on this description. The lock was already shown to still be held above.
+    #[cfg(windows)]
+    file.unlock()
+        .expect("release LOCK_EX before path verify on Windows");
+
     let report =
         verify_sealed_archive(temp.path(), None).expect("path verify of the sealed snapshot");
     assert!(report.is_sealed, "archive must be sealed");
