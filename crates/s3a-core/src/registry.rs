@@ -1002,7 +1002,10 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         owner_pack: "Scholar Pack",
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
-        record_size: 64,
+        // 160: `ScholarNoteClaimRecord` (incl. Phase C extension). Was 64,
+        // the pre-Phase-C size; must agree with the engine schema and the
+        // pack descriptor (the `schema.rs` cross-check enforces it).
+        record_size: 160,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,

@@ -922,21 +922,34 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
 
     // Prompt 009 C: Every tile in the archive must be registered in the schema registry.
     // Fail the seal if any tile has an unregistered type.
-    let reg = s3a_core::registry::global_registry();
-    for i in 0..tile_count as usize {
-        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-        let h: HyperTileHeader =
-            bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
-        if reg.get(h.tile_type).is_none()
-            && crate::standard_schema_for_type(h.tile_type)
-                .fields
-                .is_empty()
+    // NOTE: the registry read guard must not be held across the
+    // `standard_schema_for_type` call below — that function takes its own
+    // registry read, and std's writer-preferring RwLock deadlocks a nested
+    // read while a writer waits. Two phases: collect the not-in-registry
+    // types under the guard, drop it, then check them.
+    let unregistered: Vec<(usize, u32)> = {
+        let reg = s3a_core::registry::global_registry();
+        let mut v = Vec::new();
+        for i in 0..tile_count as usize {
+            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            let h: HyperTileHeader =
+                bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+            if reg.get(h.tile_type).is_none() {
+                v.push((i, h.tile_type));
+            }
+        }
+        v
+    };
+    for (i, tile_type) in unregistered {
+        if crate::standard_schema_for_type(tile_type)
+            .fields
+            .is_empty()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "Cannot seal archive: tile {} has unregistered type {} not in registry",
-                    i, h.tile_type
+                    i, tile_type
                 ),
             ));
         }

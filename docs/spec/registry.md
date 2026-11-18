@@ -436,7 +436,7 @@ defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
 | 5 | `capabilities` | U32 (3) | 56 | 4 | false | Capability mask |
 | 6 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
 
-#### Tile 20: `note_claims` (Record Size: 64 B)
+#### Tile 20: `note_claims` (Record Size: 160 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
 | 1 | `claim_id` | U64 (4) | 0 | 8 | false | Claim identifier hash |
@@ -450,16 +450,28 @@ defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
 | 9 | `text_hash` | U32 (3) | 52 | 4 | false | CRC32C hash of text content |
 | 10 | `embedding_tile_id` | U32 (3) | 56 | 4 | false | Pointer to embedding tile |
 | 11 | `embedding_offset` | U32 (3) | 60 | 4 | false | Record offset in embedding tile |
+| 12 | `citation_fingerprint_id` | U64 (4) | 64 | 8 | false | 64-bit ID of CitationFingerprintRecord / paper_id (Phase C) |
+| 13 | `passage_page` | U32 (3) | 72 | 4 | false | Page number in source document (Phase C) |
+| 14 | `passage_char_offset` | U32 (3) | 76 | 4 | false | Character start offset within page (Phase C) |
+| 15 | `passage_char_length` | U32 (3) | 80 | 4 | false | Character length of passage (Phase C) |
+| 16 | `reserved_passage` | U32 (3) | 84 | 4 | false | Alignment padding (Phase C) |
+| 17 | `quote_sha256` | BYTES (13) | 88 | 32 | false | SHA-256 hash of the exact quoted passage text (Phase C) |
+| 18 | `producer_id` | U64 (4) | 120 | 8 | false | Human researcher or AI agent ID (Phase C) |
+| 19 | `verification_statement_uuid` | BYTES (13) | 128 | 16 | false | 128-bit statement UUID, verified-claim / flagged-hallucination (Phase C) |
+| 20 | `reserved` | BYTES (13) | 144 | 16 | false | Reserved zero padding to 160 bytes (Phase C) |
 
 #### Tile 32: `citation_fingerprint` (Record Size: 96 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `fingerprint_id` | U64 (4) | 0 | 8 | false | Fingerprint identifier |
-| 2 | `paper_id` | U64 (4) | 8 | 8 | false | Associated paper identifier |
-| 3 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Fingerprint generation timestamp |
-| 4 | `doi_hash` | BYTES (13) | 24 | 32 | false | SHA-256 hash of canonical DOI |
-| 5 | `citation_hash` | BYTES (13) | 56 | 32 | false | Cryptographic citation tree hash |
-| 6 | `flags` | U64 (4) | 88 | 8 | false | Status flags |
+| 1 | `paper_id` | U64 (4) | 0 | 8 | false | 64-bit ID or hash of paper / DOI |
+| 2 | `doi_hash` | U64 (4) | 8 | 8 | false | 64-bit hash of normalized DOI string |
+| 3 | `content_sha256` | BYTES (13) | 16 | 32 | false | SHA-256 digest of fetched content bytes |
+| 4 | `content_kind` | U32 (3) | 48 | 4 | false | Content kind: PDF (1), HTML (2), ABSTRACT (3) |
+| 5 | `crossref_version` | U32 (3) | 52 | 4 | false | Crossref work update sequence / version number |
+| 6 | `fetched_at` | U64 (4) | 56 | 8 | false | Timestamp when content was fetched, epoch seconds |
+| 7 | `source_url_hash` | U64 (4) | 64 | 8 | false | 64-bit hash of source URL |
+| 8 | `flags` | U64 (4) | 72 | 8 | false | Status flags |
+| 9 | `reserved` | BYTES (13) | 80 | 16 | false | Reserved zero padding to 96 bytes |
 
 #### Tile 96: `committee_decision` (Record Size: 160 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |

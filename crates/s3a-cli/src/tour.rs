@@ -462,11 +462,15 @@ fn check_tile_payload(
 // Scholar record decoding (B3)
 // ---------------------------------------------------------------------------
 //
-// Scholar tiles (pack-scholar) carry no field-level schema: the schema tile
-// describes them as a single opaque `record_data` bytes field, which is why
-// tour used to render them as hex blobs. The record layouts live in
-// `s3a-pack-scholar::records`; tour decodes them directly from the pack
-// structs so a floor shows named fields instead of hex.
+// Scholar tiles (pack-scholar) come in two record layouts per type. Layout
+// v1 is the fixed POD record (`s3a-pack-scholar::records`:
+// `AcademicPaperRecord`, `ResearchGraphEdgeRecord`,
+// `ScholarNoteClaimRecord`, `CitationFingerprintRecord`); layout v2 (types
+// 12/13 only) is the chunked-blob layout the engine schema describes. Tour
+// selects the decoder from the tile's declared `record_layout_version` (see
+// `is_scholar_pod_floor`): v1 tiles decode from the pack structs so a floor
+// shows named fields instead of hex, v2 tiles decode through the embedded
+// schema.
 //
 // Honesty limit: Scholar records store hashes only — no title, author, or
 // DOI text exists anywhere in the archive. Hash fields are therefore shown
@@ -599,6 +603,35 @@ fn scholar_record_size(type_id: u32) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// B3 (corrected Nov 18, 2026): Scholar tile types 12/13 exist in two record
+/// layouts. Layout v1 is the fixed POD record (`AcademicPaperRecord`,
+/// `ResearchGraphEdgeRecord`, documented in docs/spec/legacy-layouts.md);
+/// layout v2 is the chunked-blob layout (`ScholarPaperBlobHeader` + JSON
+/// chunks, documented in docs/spec/registry.md) and is what the engine
+/// schema describes. Types 20/32 have only the v1 POD layout. The tile's
+/// declared `record_layout_version` (`floor.type_version`, taken from the
+/// tile header / footer entry) selects the decoder: v1 tiles decode through
+/// the pack decoder (`decode_scholar_record`), v2 tiles through the embedded
+/// schema. Never select on the schema shape — one schema entry per type can
+/// only describe the current (v2) layout, so it cannot tell a v1 tile from
+/// a v2 tile.
+fn scholar_pod_layout_version(type_id: u32) -> Option<u16> {
+    match type_id {
+        ScholarTileType::ACADEMIC_PAPERS
+        | ScholarTileType::RESEARCH_GRAPH
+        | ScholarTileType::NOTE_CLAIMS
+        | ScholarTileType::CITATION_FINGERPRINT => Some(1),
+        _ => None,
+    }
+}
+
+/// True when this floor is a Scholar POD (layout v1) tile: decode it with
+/// the pack decoder, not the embedded schema.
+fn is_scholar_pod_floor(type_id: u32, type_version: u16) -> bool {
+    scholar_record_size(type_id).is_some()
+        && scholar_pod_layout_version(type_id) == Some(type_version)
 }
 
 /// Honesty note shown once per Scholar floor: what the decoded fields
@@ -1642,24 +1675,20 @@ fn inspect_floor_detail<R: Read + Seek>(
 
     let consent_state = build_consent_state(reader, &ctx.floors)?;
 
-    // B3: Scholar floors carry no field-level schema (a single opaque
-    // `record_data` blob), so show the pack's decoded field table instead.
-    // Only when the schema really is the opaque blob: a real field schema,
-    // if one ever exists, stays authoritative.
-    let is_scholar_blob = scholar_record_size(floor.type_id).is_some()
-        && schema.fields.len() == 1
-        && schema.fields[0].name == "record_data";
-    let scholar_size = if is_scholar_blob {
+    // B3: layout-v1 Scholar POD tiles decode through the pack decoder (see
+    // `is_scholar_pod_floor`); v2 blob tiles use the embedded schema.
+    let is_scholar_pod = is_scholar_pod_floor(floor.type_id, floor.type_version);
+    let scholar_size = if is_scholar_pod {
         scholar_record_size(floor.type_id)
     } else {
         None
     };
-    let mut fields = if is_scholar_blob {
+    let mut fields = if is_scholar_pod {
         scholar_record_fields(floor.type_id).unwrap_or_default()
     } else {
         Vec::with_capacity(schema.fields.len())
     };
-    if !is_scholar_blob {
+    if !is_scholar_pod {
         for f in &schema.fields {
             fields.push(TourFieldInfo {
                 field_id: f.field_id,
@@ -1682,9 +1711,10 @@ fn inspect_floor_detail<R: Read + Seek>(
             array_stats = Some(stats);
         }
     } else if let Some(scholar_size) = scholar_size {
-        // B3: decode Scholar records into named fields. Use the pack struct
-        // size, not the schema `record_size`: the registry still says 64
-        // for note_claims while ScholarNoteClaimRecord is 160 bytes.
+        // B3: decode Scholar POD records into named fields. Use the pack
+        // struct size, not the schema `record_size`: the schema describes
+        // the current (v2 blob) layout for types 12/13, not the v1 POD
+        // records on this tile.
         let count = (payload.len() / scholar_size).min(floor.record_count as usize);
         for i in 0..count {
             let start = i * scholar_size;
@@ -2344,11 +2374,10 @@ fn execute_cross_section<R: Read + Seek>(
         }
         let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..];
 
-        // B3: Scholar floors are an opaque `record_data` blob in the schema;
-        // decode them into named fields so `--cross paper_id=1001` can match.
-        let is_scholar_blob = scholar_record_size(floor.type_id).is_some()
-            && schema.fields.len() == 1
-            && schema.fields[0].name == "record_data";
+        // B3: layout-v1 Scholar POD tiles decode through the pack decoder
+        // (see `is_scholar_pod_floor`) so `--cross paper_id=1001` can match;
+        // v2 blob tiles use the embedded schema below.
+        let is_scholar_blob = is_scholar_pod_floor(floor.type_id, floor.type_version);
         let scholar_size = if is_scholar_blob {
             scholar_record_size(floor.type_id)
         } else {

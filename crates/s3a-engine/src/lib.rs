@@ -754,27 +754,40 @@ impl TileWriter {
         filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
         self.ensure_writable()?;
-        // Enforce capability write gate and registry validation:
-        let registry = s3a_core::registry::global_registry();
-        let target_version = registry.pod_record_layout_version(tile_type).unwrap_or(1);
-        if registry.get(tile_type).is_some() {
-            if let Err(e) = registry.validate_write(tile_type, target_version, self.addon_mask) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("{}", e),
-                ));
+        // Enforce capability write gate and registry validation.
+        // NOTE: the registry read guard must be dropped before any call that
+        // takes its own registry read (`required_addon_for_tile` and
+        // `HyperTileHeader::new` below) — std's writer-preferring RwLock
+        // deadlocks a nested read while a writer waits.
+        let (target_version, registered) = {
+            let registry = s3a_core::registry::global_registry();
+            let target_version = registry.pod_record_layout_version(tile_type).unwrap_or(1);
+            let registered = registry.get(tile_type).is_some();
+            if registered {
+                if let Err(e) =
+                    registry.validate_write(tile_type, target_version, self.addon_mask)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("{}", e),
+                    ));
+                }
             }
-        } else if let Some((pack_name, required_mask)) =
-            s3a_core::required_addon_for_tile(tile_type)
-        {
-            if (self.addon_mask & required_mask) == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
-                        tile_type, pack_name, required_mask, self.addon_mask
-                    ),
-                ));
+            (target_version, registered)
+        };
+        if !registered {
+            if let Some((pack_name, required_mask)) =
+                s3a_core::required_addon_for_tile(tile_type)
+            {
+                if (self.addon_mask & required_mask) == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                            tile_type, pack_name, required_mask, self.addon_mask
+                        ),
+                    ));
+                }
             }
         }
 
@@ -947,33 +960,46 @@ impl TileWriter {
         payload: &[u8],
     ) -> io::Result<u64> {
         self.ensure_writable()?;
-        // Enforce capability write gate and registry validation:
-        let registry = s3a_core::registry::global_registry();
-        let effective_version = if header.record_layout_version == 0 {
-            1
-        } else {
-            header.record_layout_version
-        };
-        if registry.get(header.tile_type).is_some() {
-            if let Err(e) =
-                registry.validate_write(header.tile_type, effective_version, self.addon_mask)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("{}", e),
-                ));
+        // Enforce capability write gate and registry validation.
+        // NOTE: the registry read guard must be dropped before any call that
+        // takes its own registry read (`required_addon_for_tile` below) —
+        // std's writer-preferring RwLock deadlocks a nested read while a
+        // writer waits.
+        let (effective_version, registered) = {
+            let registry = s3a_core::registry::global_registry();
+            let effective_version = if header.record_layout_version == 0 {
+                1
+            } else {
+                header.record_layout_version
+            };
+            let registered = registry.get(header.tile_type).is_some();
+            if registered {
+                if let Err(e) = registry.validate_write(
+                    header.tile_type,
+                    effective_version,
+                    self.addon_mask,
+                ) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("{}", e),
+                    ));
+                }
             }
-        } else if let Some((pack_name, required_mask)) =
-            s3a_core::required_addon_for_tile(header.tile_type)
-        {
-            if (self.addon_mask & required_mask) == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
-                        header.tile_type, pack_name, required_mask, self.addon_mask
-                    ),
-                ));
+            (effective_version, registered)
+        };
+        if !registered {
+            if let Some((pack_name, required_mask)) =
+                s3a_core::required_addon_for_tile(header.tile_type)
+            {
+                if (self.addon_mask & required_mask) == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                            header.tile_type, pack_name, required_mask, self.addon_mask
+                        ),
+                    ));
+                }
             }
         }
 
@@ -3385,7 +3411,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
             type_version: 1,
             name: "note_claims".to_string(),
             owning_pack: "Scholar Pack".to_string(),
-            record_size: 64,
+            record_size: 160,
             fields: vec![
                 SchemaFieldDefinition {
                     field_id: 1,
@@ -3474,6 +3500,78 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_len: 4,
                     null_allowed: false,
                     name: "embedding_offset".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 12,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "citation_fingerprint_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 13,
+                    field_type: 3,
+                    byte_offset: 72,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_page".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 14,
+                    field_type: 3,
+                    byte_offset: 76,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_char_offset".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 15,
+                    field_type: 3,
+                    byte_offset: 80,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_char_length".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 16,
+                    field_type: 3,
+                    byte_offset: 84,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "reserved_passage".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 17,
+                    field_type: 13,
+                    byte_offset: 88,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "quote_sha256".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 18,
+                    field_type: 4,
+                    byte_offset: 120,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "producer_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 19,
+                    field_type: 13,
+                    byte_offset: 128,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "verification_statement_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 20,
+                    field_type: 13,
+                    byte_offset: 144,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "reserved".to_string(),
                 },
             ],
         },
@@ -3782,7 +3880,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 0,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "fingerprint_id".to_string(),
+                    name: "paper_id".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 2,
@@ -3790,39 +3888,63 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 8,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "paper_id".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 3,
-                    field_type: 4,
-                    byte_offset: 16,
-                    byte_len: 8,
-                    null_allowed: false,
-                    name: "timestamp_sec".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 4,
-                    field_type: 13,
-                    byte_offset: 24,
-                    byte_len: 32,
-                    null_allowed: false,
                     name: "doi_hash".to_string(),
                 },
                 SchemaFieldDefinition {
-                    field_id: 5,
+                    field_id: 3,
                     field_type: 13,
-                    byte_offset: 56,
+                    byte_offset: 16,
                     byte_len: 32,
                     null_allowed: false,
-                    name: "citation_hash".to_string(),
+                    name: "content_sha256".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "content_kind".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "crossref_version".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 6,
                     field_type: 4,
-                    byte_offset: 88,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "fetched_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "source_url_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 4,
+                    byte_offset: 72,
                     byte_len: 8,
                     null_allowed: false,
                     name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 13,
+                    byte_offset: 80,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "reserved".to_string(),
                 },
             ],
         },
