@@ -40,6 +40,7 @@ use s3a_pack_wearable::{CompactWearableRecord, WearablePack, WearableTileType};
 
 mod gate_cli;
 mod mcp;
+mod scholar_add;
 mod tour;
 mod tour_html;
 mod vcs_cli;
@@ -342,6 +343,15 @@ fn register_all_types() {
     }
 }
 
+/// Terminate the process with a non-zero exit code after an error has already
+/// been reported (plain text on stderr, or a `--json` `{"ok":false,...}`
+/// object on stdout). Every CLI failure path goes through here so scripts,
+/// CI, and the Navigator host can detect failure from exit status (B1).
+/// Callers print the error first, then invoke this; it never returns.
+fn exit_failure() -> ! {
+    std::process::exit(1)
+}
+
 fn main() {
     register_all_types();
     let args: Vec<String> = env::args().collect();
@@ -568,7 +578,10 @@ fn main() {
             let file_opt = args.iter().skip(2).find(|a| !a.starts_with("--"));
             match file_opt {
                 Some(f) => inspect_file(f, json_mode),
-                None => println!("Usage: s3a-cli inspect [--json] <file_path>"),
+                None => {
+                    println!("Usage: s3a-cli inspect [--json] <file_path>");
+                    exit_failure();
+                }
             }
         }
         "tour" => {
@@ -638,7 +651,7 @@ fn main() {
                                 Ok(m) => m.len(),
                                 Err(e) => {
                                     eprintln!("Error reading metadata: {}", e);
-                                    return;
+                                    exit_failure();
                                 }
                             };
                             match tour::tour_file(&mut file, len, &f, &opts) {
@@ -652,6 +665,7 @@ fn main() {
                                     } else {
                                         eprintln!("Tour error: {}", e);
                                     }
+                                    exit_failure();
                                 }
                             }
                         }
@@ -661,6 +675,7 @@ fn main() {
                             } else {
                                 eprintln!("Error opening file '{}': {}", f, e);
                             }
+                            exit_failure();
                         }
                     }
                 }
@@ -670,8 +685,7 @@ fn main() {
                         Some("run 's3a init' to create a new vault, or specify: 's3a tour <file.s3a>'"),
                         verbose,
                         None,
-                    );
-                }
+                    );                }
             }
         }
         "seal" => {
@@ -707,8 +721,7 @@ fn main() {
             }
             if positional.len() < 2 {
                 println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--about] [--title <title>] [--creator <creator>]");
-                return;
-            }
+                exit_failure();            }
             seal_file(
                 positional[0],
                 positional[1],
@@ -728,7 +741,7 @@ fn main() {
                 .collect();
             if positional.len() < 2 {
                 println!("Usage: s3a-cli repair <in_file> <out_file>");
-                return;
+                exit_failure();
             }
             repair_file(positional[0], positional[1]);
         }
@@ -736,12 +749,12 @@ fn main() {
             if args.len() < 3 {
                 println!("Usage: s3a-cli anchor <sealed_file> [--tsa <url>] [--calendars <c1,c2>]");
                 println!("       s3a-cli anchor upgrade <sealed_file> [--calendars <c1,c2>]");
-                return;
+                exit_failure();
             }
             if args[2] == "upgrade" {
                 if args.len() < 4 {
                     println!("Usage: s3a-cli anchor upgrade <sealed_file> [--calendars <c1,c2>]");
-                    return;
+                    exit_failure();
                 }
                 let file = &args[3];
                 let mut cal_opt = None;
@@ -779,7 +792,7 @@ fn main() {
             let pos: Vec<&String> = args[2..].iter().filter(|a| !a.starts_with("--")).collect();
             if pos.len() != 2 {
                 println!("Usage: s3a-cli migrate <in_file> <out_file> [--dry-run]");
-                return;
+                exit_failure();
             }
             let hex = |b: &[u8]| b.iter().map(|x| format!("{:02x}", x)).collect::<String>();
             match s3a_engine::migrate::migrate_file(
@@ -862,8 +875,10 @@ fn main() {
                         std::process::exit(code);
                     }
                 }
-                None => println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor)"),
-            }
+                None => {
+                    println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor)");
+                    exit_failure();
+                }            }
         }
         "status" => {
             let json_mode = args.iter().any(|a| a == "--json");
@@ -888,14 +903,14 @@ fn main() {
         "recover" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli recover <file_path>");
-                return;
+                exit_failure();
             }
             run_recover(&args[2]);
         }
         "lookup" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli lookup <file_path> <coordinate> (e.g. L0:T0:R0)");
-                return;
+                exit_failure();
             }
             lookup_coordinate(&args[2], &args[3]);
         }
@@ -904,28 +919,28 @@ fn main() {
                 println!(
                     "Usage: s3a-cli insert <file_path> <timestamp> <sensor_id> <metric_id> <value>"
                 );
-                return;
+                exit_failure();
             }
             insert_telemetry(&args[2], &args[3], &args[4], &args[5], &args[6]);
         }
         "delete" => {
             if args.len() < 6 {
                 println!("Usage: s3a-cli delete <file_path> <sensor_id> <metric_id> <timestamp>");
-                return;
+                exit_failure();
             }
             delete_telemetry(&args[2], &args[3], &args[4], &args[5]);
         }
         "compact" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli compact <out_file> <in_file1> [in_file2...]");
-                return;
+                exit_failure();
             }
             compact_files(&args[2], &args[3..]);
         }
         "fuse" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli fuse <out_file> <in_file1> [in_file2...]");
-                return;
+                exit_failure();
             }
             fuse_files(&args[2], &args[3..]);
         }
@@ -973,23 +988,53 @@ fn main() {
             run_stream_ingest_benchmark(file, duration, rate);
         }
         "serve" => {
-            let mut port = 8080;
+            // B7: the dashboard has no authentication and accepts unauthenticated
+            // writes, so it binds the loopback interface by default. A
+            // non-loopback bind is only allowed with the explicit `--public`
+            // flag, and startup then prints a warning.
+            let mut port: u16 = 8080;
+            let mut bind = "127.0.0.1".to_string();
+            let mut public = false;
             let mut i = 2;
             while i < args.len() {
-                if args[i] == "--port" && i + 1 < args.len() {
-                    port = args[i + 1].parse().unwrap_or(8080);
-                    i += 2;
-                } else if args[i] == "--vault" && i + 1 < args.len() {
-                    std::env::set_var("S3A_VAULT_PATH", &args[i + 1]);
-                    i += 2;
-                } else if !args[i].starts_with("--") {
-                    port = args[i].parse().unwrap_or(8080);
-                    i += 1;
-                } else {
-                    i += 1;
+                match args[i].as_str() {
+                    "--bind" | "--host" if i + 1 < args.len() => {
+                        bind = args[i + 1].clone();
+                        i += 2;
+                    }
+                    "--port" if i + 1 < args.len() => {
+                        port = args[i + 1].parse().unwrap_or(8080);
+                        i += 2;
+                    }
+                    "--vault" if i + 1 < args.len() => {
+                        std::env::set_var("S3A_VAULT_PATH", &args[i + 1]);
+                        i += 2;
+                    }
+                    "--public" => {
+                        public = true;
+                        i += 1;
+                    }
+                    other => {
+                        port = other.parse().unwrap_or(8080);
+                        i += 1;
+                    }
                 }
             }
-            run_server(port);
+            if public && bind == "127.0.0.1" {
+                bind = "0.0.0.0".to_string();
+            }
+            if !public && !is_loopback_bind(&bind) {
+                eprintln!(
+                    "Refusing to bind the S3A dashboard to '{}': the dashboard has no authentication and accepts unauthenticated reads and writes.",
+                    bind
+                );
+                eprintln!(
+                    "Bind the loopback interface (default), or pass --public to expose it on the network explicitly: s3a-cli serve {} --bind {} --public",
+                    port, bind
+                );
+                exit_failure();
+            }
+            run_server(port, &bind, public);
         }
         "serve-tcp" => {
             let addr = if args.len() >= 3 {
@@ -1002,7 +1047,7 @@ fn main() {
         "remote-query" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli remote-query \"<S3A_QL_STATEMENT>\" [host:port]");
-                return;
+                exit_failure();
             }
             let query = &args[2];
             let addr = if args.len() >= 4 {
@@ -1039,7 +1084,7 @@ fn main() {
         "addon" | "addons" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli addon <list|enable> <archive_file> [addon_name]");
-                return;
+                exit_failure();
             }
             match args[2].as_str() {
                 "list" => {
@@ -1055,7 +1100,7 @@ fn main() {
                         println!(
                             "Usage: s3a-cli addon enable <archive_file> <edu|fintech|robotics>"
                         );
-                        return;
+                        exit_failure();
                     }
                     let file = &args[3];
                     let addon_name = &args[4];
@@ -1063,13 +1108,14 @@ fn main() {
                 }
                 _ => {
                     println!("Unknown addon action: {}. Available: list, enable", args[2]);
+                    exit_failure();
                 }
             }
         }
         "ec-shard" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli ec-shard <archive_file> <out_dir> [k] [m]");
-                return;
+                exit_failure();
             }
             let k: usize = if args.len() >= 5 {
                 args[4].parse().unwrap_or(4)
@@ -1086,7 +1132,7 @@ fn main() {
         "ec-recover" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli ec-recover <shards_dir> <out_archive> [k] [m]");
-                return;
+                exit_failure();
             }
             let k: usize = if args.len() >= 5 {
                 args[4].parse().unwrap_or(4)
@@ -1106,7 +1152,7 @@ fn main() {
         "tier-archive" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli tier-archive <archive_file> <cold_dir> [min_stratum]");
-                return;
+                exit_failure();
             }
             let min_stratum: u8 = if args.len() >= 5 {
                 args[4].parse().unwrap_or(2)
@@ -1149,7 +1195,7 @@ fn main() {
         "export-iceberg" | "iceberg" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli export-iceberg <archive_file> <out_dir> [table_name]");
-                return;
+                exit_failure();
             }
             let table_name = if args.len() >= 5 {
                 &args[4]
@@ -1202,9 +1248,9 @@ fn main() {
             } else if args.len() < 4 {
                 println!("Usage: s3a-cli trace-session <archive_file> <session_uuid>");
                 println!("       s3a trace export --otlp <endpoint> [archive_file]");
+                exit_failure();
             } else {
-                run_trace_session(&args[2], &args[3]);
-            }
+                run_trace_session(&args[2], &args[3]);            }
         }
         #[cfg(feature = "packs")]
         "snapshot" => {
@@ -1213,13 +1259,13 @@ fn main() {
                 println!("  s3a-cli snapshot export <live_db> <snapshot_file> [project_uuid]");
                 println!("  s3a-cli snapshot intake <snapshot_file> [--into <live_db>]");
                 println!("  s3a-cli snapshot inspect <snapshot_file>");
-                return;
+                exit_failure();
             }
             match args[2].as_str() {
                 "export" => {
                     if args.len() < 5 {
                         println!("Usage: s3a-cli snapshot export <live_db> <snapshot_file> [project_uuid]");
-                        return;
+                        exit_failure();
                     }
                     let project_uuid = if args.len() >= 6 {
                         parse_hex_uuid_128(&args[5])
@@ -1233,7 +1279,7 @@ fn main() {
                         println!(
                             "Usage: s3a-cli snapshot intake <snapshot_file> [--into <live_db>]"
                         );
-                        return;
+                        exit_failure();
                     }
                     let into_live = if args.len() >= 6 && args[4] == "--into" {
                         Some(args[5].as_str())
@@ -1245,12 +1291,13 @@ fn main() {
                 "inspect" => {
                     if args.len() < 4 {
                         println!("Usage: s3a-cli snapshot inspect <snapshot_file>");
-                        return;
+                        exit_failure();
                     }
                     run_snapshot_inspect(&args[3]);
                 }
                 _ => {
                     println!("Unknown snapshot action: {}", args[2]);
+                    exit_failure();
                 }
             }
         }
@@ -1259,6 +1306,7 @@ fn main() {
             if args.len() < 3 {
                 println!("Usage:");
                 println!("  s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]");
+                println!("  s3a-cli scholar add-paper <archive.s3a> --doi <doi> [--file <paper.pdf>] [--dossier <dossier.json>] [--title \"...\"] [--year <n>] [--venue <id>] [--citations <n>] [--open-access] [--topic x,y,z]");
                 println!("  s3a-cli scholar recheck <archive.s3a> [--online] [--endpoint <url>] [--out <output.s3a>]");
                 println!(
                     "  s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]"
@@ -1266,7 +1314,7 @@ fn main() {
                 println!(
                     "  s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]"
                 );
-                return;
+                exit_failure();
             }
             match args[2].as_str() {
                 "ingest" => {
@@ -1274,15 +1322,18 @@ fn main() {
                         println!(
                             "Usage: s3a-cli scholar ingest <intermediate_dir> <out.s3a> [--fresh]"
                         );
-                        return;
+                        exit_failure();
                     }
                     let fresh = args.len() >= 6 && args[5] == "--fresh";
                     run_scholar_ingest(&args[3], &args[4], fresh);
                 }
+                "add-paper" => {
+                    scholar_add::run_scholar_add_paper(&args[3..]);
+                }
                 "recheck" => {
                     if args.len() < 4 {
                         println!("Usage: s3a-cli scholar recheck <archive.s3a> [--online] [--endpoint <url>] [--out <output.s3a>]");
-                        return;
+                        exit_failure();
                     }
                     let archive_path = &args[3];
                     let mut online = false;
@@ -1335,7 +1386,7 @@ fn main() {
                 "proof" => {
                     if args.len() < 4 {
                         println!("Usage: s3a-cli scholar proof <archive.s3a> --claim <id> [--json-ld] [--out <file>]");
-                        return;
+                        exit_failure();
                     }
                     let archive_path = &args[3];
                     let mut claim_id = None;
@@ -1379,7 +1430,7 @@ fn main() {
                 "export-bib" => {
                     if args.len() < 4 {
                         println!("Usage: s3a-cli scholar export-bib <archive.s3a> --out <file> [--format bibtex|ris]");
-                        return;
+                        exit_failure();
                     }
                     let archive_path = &args[3];
                     let mut out_path = None;
@@ -1418,12 +1469,13 @@ fn main() {
                 "demo-seed" => {
                     if args.len() < 4 {
                         println!("Usage: s3a-cli scholar demo-seed <out.s3a>");
-                        return;
+                        exit_failure();
                     }
                     run_scholar_demo_seed(&args[3]);
                 }
                 _ => {
                     println!("Unknown scholar action: {}", args[2]);
+                    exit_failure();
                 }
             }
         }
@@ -1433,7 +1485,7 @@ fn main() {
                 println!(
                     "Usage: s3a-cli import-academic-bundle <json_dir> <out_archive> [--fresh]"
                 );
-                return;
+                exit_failure();
             }
             let fresh = args.len() >= 5 && args[4] == "--fresh";
             run_scholar_ingest(&args[2], &args[3], fresh);
@@ -1444,7 +1496,7 @@ fn main() {
                 println!(
                     "Usage: s3a-cli snapshot-export <live_db> <snapshot_file> [project_uuid_hex]"
                 );
-                return;
+                exit_failure();
             }
             let project_uuid = if args.len() >= 5 {
                 parse_hex_uuid_128(&args[4])
@@ -1457,7 +1509,7 @@ fn main() {
         "snapshot-intake" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli snapshot-intake <snapshot_file> [--into <live_db>]");
-                return;
+                exit_failure();
             }
             let into_live = if args.len() >= 5 && args[3] == "--into" {
                 Some(args[4].as_str())
@@ -1470,7 +1522,7 @@ fn main() {
         "snapshot-inspect" => {
             if args.len() < 3 {
                 println!("Usage: s3a-cli snapshot-inspect <snapshot_file>");
-                return;
+                exit_failure();
             }
             run_snapshot_inspect(&args[2]);
         }
@@ -1511,8 +1563,7 @@ fn main() {
                 Some("run 's3a help' to see all available commands"),
                 verbose,
                 None,
-            );
-        }
+            );        }
     }
 }
 
@@ -1582,7 +1633,7 @@ fn print_usage() {
     println!(
         "  s3a-cli shell                                     Interactive SQL-style REPL shell"
     );
-    println!("  s3a-cli serve [port]                              Start Web Dashboard & Agent Function Calling Server (default: 8080)");
+    println!("  s3a-cli serve [port] [--bind <addr>] [--public]  Start Web Dashboard & Agent Function Calling Server (default: loopback 127.0.0.1:8080; --public opts into a network-visible bind)");
     println!("  s3a-cli serve-tcp [host:port]                     Start low-latency binary S3AP wire protocol server (default: 127.0.0.1:9333)");
     println!("  s3a-cli remote-query \"<STMT>\" [host:port]          Query remote S3A server via binary S3AP wire protocol");
     println!("  s3a-cli mcp-server [archive] [--allow-writes]     Run MCP server over stdin/stdout (read-only unless --allow-writes)");
@@ -1622,7 +1673,7 @@ fn run_addon_list(archive_file: &str) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to open archive: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1733,7 +1784,7 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
         "fintech" | "finance" => ADDON_FINTECH,
         _ => {
             eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, fintech", addon_name);
-            return;
+            exit_failure();
         }
     };
 
@@ -1741,7 +1792,7 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Failed to open archive: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1754,6 +1805,7 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
         }
         Err(e) => {
             eprintln!("Failed to enable addon: {}", e);
+            exit_failure();
         }
     }
 }
@@ -1812,7 +1864,7 @@ fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize Reed-Solomon codec: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1821,7 +1873,7 @@ fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("Error reading archive file: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1830,7 +1882,7 @@ fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error encoding shards: {}", e);
-            return;
+            exit_failure();
         }
     };
     let encode_duration = start.elapsed();
@@ -1839,7 +1891,7 @@ fn run_ec_shard(archive_path: &str, out_dir: &str, k: usize, m: usize) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Error saving shards: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1881,7 +1933,7 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize Reed-Solomon codec: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1890,7 +1942,7 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error loading shards: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1921,7 +1973,7 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
             shards.len(),
             k
         );
-        return;
+        exit_failure();
     }
 
     // Build sparse array of K+M slots
@@ -1938,14 +1990,14 @@ fn run_ec_recover(shards_dir: &str, out_archive: &str, k: usize, m: usize) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Error during shard reconstruction: {}", e);
-            return;
+            exit_failure();
         }
     };
     let recovery_duration = start.elapsed();
 
     if let Err(e) = std::fs::write(out_archive, &reconstructed) {
         eprintln!("Error writing recovered archive to {}: {}", out_archive, e);
-        return;
+        exit_failure();
     }
 
     println!("=========================================================================");
@@ -1966,7 +2018,7 @@ fn run_tier_archive(archive_path: &str, cold_dir: &str, min_stratum: u8) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("Failed to initialize cold storage adapter: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -1990,6 +2042,7 @@ fn run_tier_archive(archive_path: &str, cold_dir: &str, min_stratum: u8) {
         }
         Err(e) => {
             eprintln!("Error during cold tier archival: {}", e);
+            exit_failure();
         }
     }
 }
@@ -2092,7 +2145,7 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error opening archive: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -2119,11 +2172,11 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
 
     if let Err(e) = std::fs::write(&iceberg_file, iceberg_meta) {
         eprintln!("Error writing Iceberg metadata: {}", e);
-        return;
+        exit_failure();
     }
     if let Err(e) = std::fs::write(&delta_file, delta_meta) {
         eprintln!("Error writing Delta Lake metadata: {}", e);
-        return;
+        exit_failure();
     }
 
     println!("=========================================================================");
@@ -2139,7 +2192,23 @@ fn run_export_iceberg(archive_path: &str, out_dir: &str, table_name: &str) {
     println!("=========================================================================");
 }
 
+/// Whether a bind address is loopback-only (`127.0.0.1`, `::1`, `localhost`).
+/// Anything else (including `0.0.0.0` and unparseable hostnames) is treated as
+/// a network-visible bind and needs the explicit `--public` opt-in (B7).
+fn is_loopback_bind(bind: &str) -> bool {
+    if bind.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match bind.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
 fn run_snowflake_server(port: u16) {
+    // The Snowflake gateway is a public-facing endpoint by design, so it
+    // keeps its 0.0.0.0 default — but it goes through the same startup
+    // warning as `serve --public` (B7).
     println!(
         "Starting Snowflake External Function HTTP Gateway on http://0.0.0.0:{}",
         port
@@ -2148,7 +2217,7 @@ fn run_snowflake_server(port: u16) {
         "Snowflake Endpoint: POST http://<host>:{}/api/v1/snowflake",
         port
     );
-    run_server(port);
+    run_server(port, "0.0.0.0", true);
 }
 
 fn run_tcp_server(addr: &str) {
@@ -2164,7 +2233,7 @@ fn run_tcp_server(addr: &str) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to bind TCP server on {}: {}", addr, e);
-            return;
+            exit_failure();
         }
     };
     println!(
@@ -2183,7 +2252,7 @@ fn run_remote_query(addr: &str, query: &str) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Connection failed: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -2196,6 +2265,7 @@ fn run_remote_query(addr: &str, query: &str) {
         }
         Err(e) => {
             eprintln!("Query error: {}", e);
+            exit_failure();
         }
     }
 }
@@ -2279,7 +2349,10 @@ fn inspect_file(path: &str, json_mode: bool) {
             println!("  Generation: {}", file_header.generation);
             println!("  Active Metadata Slot: {}", slot_name);
             println!("  Header CRC32: 0x{:08X}", file_header.header_crc32);
-            println!("  Total Tiles: {}", file_header.tile_count);
+            // B4: same defined meaning as `status` ("Committed Tiles") and
+            // `doctor` ("Committed Tile Count") — the tile count of the
+            // active committed header slot, i.e. committed tiles only.
+            println!("  Committed Tiles: {}", file_header.tile_count);
             println!("----------------------------------------");
 
             for i in 0..reader.tile_count() as usize {
@@ -2342,19 +2415,25 @@ fn inspect_file(path: &str, json_mode: bool) {
                     } else {
                         format!("layout_v{}", header.record_layout_version)
                     };
+                    // B4 (merged with upstream): empty tiles carry the
+                    // u64::MAX..0 sentinel range in their header; show that
+                    // honestly as "empty" instead of printing the raw
+                    // sentinel numbers. A populated tile with an inverted
+                    // range is likewise shown as "none", never raw.
+                    let time_range = if header.record_count == 0 {
+                        "empty".to_string()
+                    } else if header.min_timestamp > header.max_timestamp {
+                        "none".to_string()
+                    } else {
+                        format!("{}, {}", header.min_timestamp, header.max_timestamp)
+                    };
                     println!(
-                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange={}, Bytes={}",
-                        i,
+                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange=[{}], Bytes={}",                        i,
                         header.tile_id,
                         tile_type_str,
                         layout_str,
                         header.record_count,
-                        if header.min_timestamp > header.max_timestamp {
-                            "none".to_string()
-                        } else {
-                            format!("[{}, {}]", header.min_timestamp, header.max_timestamp)
-                        },
-                        header.payload_bytes
+                        time_range,                        header.payload_bytes
                     );
                     if header.tile_type == 9 {
                         println!("  ⚠️  WARNING: Tile type 9 is DEPRECATED/RESERVED_BOUNDARY. Greenfield LRS records should use Scholar Pack Tile 10.");
@@ -2393,6 +2472,7 @@ fn inspect_file(path: &str, json_mode: bool) {
             } else {
                 eprintln!("Error opening file: {}", e);
             }
+            exit_failure();
         }
     }
 }
@@ -2578,6 +2658,7 @@ fn seal_file(
         }
         Err(e) => {
             eprintln!("Error sealing archive: {}", e);
+            exit_failure();
         }
     }
 }
@@ -2600,6 +2681,7 @@ fn repair_file(in_path: &str, out_path: &str) {
         }
         Err(e) => {
             eprintln!("Error repairing archive: {}", e);
+            exit_failure();
         }
     }
 }
@@ -2622,8 +2704,7 @@ fn verify_file(
         } else {
             eprintln!("Error: file '{}' not found", path);
         }
-        return 2;
-    }
+        return 2;    }
 
     let repair_path = repair_out.map(Path::new);
     match s3a_engine::verify_sealed_archive(path, repair_path) {
@@ -2845,8 +2926,7 @@ fn verify_file(
             } else {
                 eprintln!("Verification FAILED in {}: {}", path, e);
             }
-            2
-        }
+            2        }
     }
 }
 
@@ -2911,14 +2991,14 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
     let p = Path::new(path);
     if !p.exists() {
         eprintln!("Error: file '{}' not found", path);
-        return;
+        exit_failure();
     }
 
     let fp = match s3a_engine::compute_sealed_file_fingerprint(p) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("Error computing archive fingerprint for '{}': {}", path, e);
-            return;
+            exit_failure();
         }
     };
     let fp_hex = hex::encode(fp);
@@ -2929,12 +3009,14 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
             Ok(proof) => {
                 if let Err(e) = s3a_engine::attach_anchor_to_file(p, proof) {
                     eprintln!("Failed to attach RFC 3161 anchor: {}", e);
+                    exit_failure();
                 } else {
                     println!("Successfully anchored '{}' to TSA at '{}'", path, tsa_url);
                 }
             }
             Err(e) => {
                 eprintln!("RFC 3161 submission failed: {}", e);
+                exit_failure();
             }
         }
     } else {
@@ -2967,6 +3049,7 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
                 for proof in proofs {
                     if let Err(e) = s3a_engine::attach_anchor_to_file(p, proof) {
                         eprintln!("Failed to attach OpenTimestamps anchor: {}", e);
+                        exit_failure();
                     } else {
                         attached_count += 1;
                     }
@@ -2978,6 +3061,7 @@ fn run_anchor_file(path: &str, tsa_opt: Option<&str>, cal_opt: Option<&str>, moc
             }
             Err(e) => {
                 eprintln!("OpenTimestamps anchoring failed: {}", e);
+                exit_failure();
             }
         }
     }
@@ -2987,14 +3071,14 @@ fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
     let p = Path::new(path);
     if !p.exists() {
         eprintln!("Error: file '{}' not found", path);
-        return;
+        exit_failure();
     }
 
     let report = match s3a_engine::verify_sealed_archive(p, None) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error verifying sealed archive: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -3010,6 +3094,7 @@ fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
                 Ok(true) => {
                     if let Err(e) = s3a_engine::attach_anchor_to_file(p, anchor.clone()) {
                         eprintln!("Failed to update anchor in file: {}", e);
+                        exit_failure();
                     } else {
                         println!(
                             "Upgraded OTS anchor to confirmed at Bitcoin block {:?} ({:?})",
@@ -3023,6 +3108,7 @@ fn run_anchor_upgrade(path: &str, cal_opt: Option<&str>) {
                 }
                 Err(e) => {
                     eprintln!("Error upgrading anchor: {}", e);
+                    exit_failure();
                 }
             }
         }
@@ -3047,7 +3133,7 @@ fn run_status(path: &str, json_mode: bool) {
         } else {
             eprintln!("Error: archive file '{}' does not exist", path);
         }
-        return;
+        exit_failure();
     }
 
     let file_len = match std::fs::metadata(path) {
@@ -3062,7 +3148,7 @@ fn run_status(path: &str, json_mode: bool) {
             } else {
                 eprintln!("Error reading metadata: {}", e);
             }
-            return;
+            exit_failure();
         }
     };
 
@@ -3154,6 +3240,7 @@ fn run_status(path: &str, json_mode: bool) {
             } else {
                 eprintln!("Error inspecting status for '{}': {}", path, e);
             }
+            exit_failure();
         }
     }
 }
@@ -3169,7 +3256,7 @@ fn run_doctor(path: &str, json_mode: bool) {
         } else {
             eprintln!("Doctor Error: Archive file '{}' does not exist", path);
         }
-        return;
+        exit_failure();
     }
 
     let file_len = match std::fs::metadata(path) {
@@ -3184,7 +3271,7 @@ fn run_doctor(path: &str, json_mode: bool) {
             } else {
                 eprintln!("Doctor Error: {}", e);
             }
-            return;
+            exit_failure();
         }
     };
 
@@ -3202,7 +3289,7 @@ fn run_doctor(path: &str, json_mode: bool) {
                 s3a_core::FILE_HEADER_SIZE
             );
         }
-        return;
+        exit_failure();
     }
 
     let mut file = match std::fs::File::open(path) {
@@ -3217,7 +3304,7 @@ fn run_doctor(path: &str, json_mode: bool) {
             } else {
                 eprintln!("Doctor Error opening file: {}", e);
             }
-            return;
+            exit_failure();
         }
     };
 
@@ -3232,7 +3319,7 @@ fn run_doctor(path: &str, json_mode: bool) {
         } else {
             eprintln!("Doctor Error reading header: {}", e);
         }
-        return;
+        exit_failure();
     }
 
     let slot_a: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned::<s3a_core::FileHeader>(
@@ -3254,6 +3341,7 @@ fn run_doctor(path: &str, json_mode: bool) {
     };
 
     let mut torn_bytes = 0u64;
+    let mut sealed_footer_bytes = 0u64;
     let mut truncated_bytes = 0u64;
     let mut orphan_temp_count = 0usize;
 
@@ -3281,8 +3369,43 @@ fn run_doctor(path: &str, json_mode: bool) {
         active_tile_count = hdr.tile_count;
         let expected_size = s3a_core::FILE_HEADER_SIZE as u64
             + active_tile_count as u64 * s3a_core::HYPER_TILE_SIZE as u64;
-        if file_len > expected_size {
-            torn_bytes = file_len - expected_size;
+
+        // A v2 sealed archive carries a variable-length footer after the last
+        // tile (index directory + optional parity + 64-byte endcap). Those
+        // bytes are part of the seal, not torn uncommitted data: without this
+        // a pristine sealed archive reported DEGRADED with torn bytes equal
+        // to the footer size. Detect the footer via the validated v2 endcap
+        // at the tail of the file; anything else keeps the old accounting.
+        if file_len > expected_size && file_len >= s3a_core::SEALED_ENDCAP_SIZE as u64 {
+            use std::io::{Read, Seek, SeekFrom};
+            if let Ok(mut f) = std::fs::File::open(path) {
+                if f.seek(SeekFrom::Start(
+                    file_len - s3a_core::SEALED_ENDCAP_SIZE as u64,
+                ))
+                .is_ok()
+                {
+                    let mut endcap_buf = [0u8; s3a_core::SEALED_ENDCAP_SIZE];
+                    if f.read_exact(&mut endcap_buf).is_ok() {
+                        let endcap: s3a_core::SealedEndCapV2 =
+                            bytemuck::pod_read_unaligned(&endcap_buf);
+                        if endcap.magic == s3a_core::SEALED_ENDCAP_MAGIC_V2
+                            && s3a_engine::compute_endcap_crc32_v2(&endcap)
+                                == endcap.endcap_crc32
+                            && endcap.index_offset >= expected_size
+                            && endcap.index_offset
+                                + endcap.index_len
+                                + s3a_core::SEALED_ENDCAP_SIZE as u64
+                                <= file_len
+                        {
+                            sealed_footer_bytes = file_len - endcap.index_offset;
+                        }
+                    }
+                }
+            }
+        }
+
+        if file_len > expected_size + sealed_footer_bytes {
+            torn_bytes = file_len - expected_size - sealed_footer_bytes;
             health = "DEGRADED";
         } else if file_len < expected_size {
             truncated_bytes = expected_size - file_len;
@@ -3312,9 +3435,15 @@ fn run_doctor(path: &str, json_mode: bool) {
         health = "CORRUPTED";
     }
 
+    // B1: a CORRUPTED verdict is a failure outcome, not a successful
+    // diagnosis — report `"ok":false` and exit non-zero so scripts and the
+    // Navigator host can detect it. DEGRADED stays exit 0: the archive is
+    // recoverable and `s3a-cli recover` is the named next step.
+    let corrupted = health == "CORRUPTED";
     if json_mode {
         println!(
-            r#"{{"ok":true,"file":"{}","health":"{}","slot_a":{{"valid":{},"generation":{}}},"slot_b":{{"valid":{},"generation":{}}},"active_slot":"{}","tile_count":{},"torn_bytes":{},"truncated_bytes":{},"orphan_temps":{},"tile_crc_errors":{}}}"#,
+            r#"{{"ok":{},"file":"{}","health":"{}","slot_a":{{"valid":{},"generation":{}}},"slot_b":{{"valid":{},"generation":{}}},"active_slot":"{}","tile_count":{},"torn_bytes":{},"truncated_bytes":{},"orphan_temps":{},"tile_crc_errors":{},"sealed_footer_bytes":{}}}"#,
+            if corrupted { "false" } else { "true" },
             escape_cli_json(path),
             health,
             slot_a_valid,
@@ -3328,7 +3457,8 @@ fn run_doctor(path: &str, json_mode: bool) {
             torn_bytes,
             truncated_bytes,
             orphan_temp_count,
-            tile_checksum_mismatches
+            tile_checksum_mismatches,
+            sealed_footer_bytes
         );
     } else {
         println!("=========================================================================");
@@ -3361,10 +3491,19 @@ fn run_doctor(path: &str, json_mode: bool) {
         println!("Committed Tile Count:   {}", active_tile_count);
         println!("File Size on Disk:      {} bytes", file_len);
         println!("Torn Uncommitted Bytes: {} bytes", torn_bytes);
+        if sealed_footer_bytes > 0 {
+            println!(
+                "Sealed Footer:          {} bytes (v2 index + endcap, part of the seal)",
+                sealed_footer_bytes
+            );
+        }
         println!("Truncated Tile Bytes:   {} bytes", truncated_bytes);
         println!("Orphan Temp Compactions:{} file(s)", orphan_temp_count);
         println!("Tile Checksum Mismatches: {}", tile_checksum_mismatches);
         println!("=========================================================================");
+    }
+    if corrupted {
+        exit_failure();
     }
 }
 
@@ -3381,6 +3520,7 @@ fn run_recover(path: &str) {
         }
         Err(e) => {
             eprintln!("❌ Recovery FAILED on '{}': {}", path, e);
+            exit_failure();
         }
     }
 }
@@ -3390,7 +3530,7 @@ fn lookup_coordinate(path: &str, coord_str: &str) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Invalid coordinate '{}': {}", coord_str, e);
-            return;
+            exit_failure();
         }
     };
 
@@ -3402,7 +3542,10 @@ fn lookup_coordinate(path: &str, coord_str: &str) {
                 coord, r.timestamp, r.sensor_id, r.metric_id, r.value
             );
         }
-        Err(e) => eprintln!("Fetch failed at {}: {}", coord, e),
+        Err(e) => {
+            eprintln!("Fetch failed at {}: {}", coord, e);
+            exit_failure();
+        }
     }
 }
 
@@ -3473,8 +3616,7 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
         ),
         Err(e) => {
             eprintln!("Compaction FAILED: {}", e);
-            std::process::exit(2);
-        }
+            std::process::exit(2);        }
     }
 }
 
@@ -3485,7 +3627,10 @@ fn fuse_files(output_path: &str, input_paths: &[String]) {
             "Multi-Tile Fusion SUCCESS: Consolidated into {} Hyper-Tile(s) in {}",
             count, output_path
         ),
-        Err(e) => eprintln!("Multi-Tile Fusion FAILED: {}", e),
+        Err(e) => {
+            eprintln!("Multi-Tile Fusion FAILED: {}", e);
+            exit_failure();
+        }
     }
 }
 
@@ -4184,6 +4329,7 @@ fn execute_s3a_ql(query: &str, json_mode: bool) {
             } else {
                 eprintln!("S3A-QL Execution Error: {}", e);
             }
+            exit_failure();
         }
     }
 }
@@ -4339,11 +4485,37 @@ fn run_stream_ingest_benchmark(file_path: &str, duration_secs: u64, target_hz: u
     let _ = std::fs::remove_file(file_path);
 }
 
-fn run_server(port: u16) {
-    let listener = TcpListener::bind(("0.0.0.0", port)).expect("Failed to bind TCP listener");
+/// Start the web dashboard / agent function-calling server (B7).
+///
+/// `bind` is the interface to listen on and `public` records whether the
+/// operator explicitly opted into a network-visible bind. The dashboard has
+/// no authentication and accepts unauthenticated writes (`POST /api/insert`,
+/// `POST /api/delete`), so the default call site binds loopback only and a
+/// public bind prints a loud startup warning.
+fn run_server(port: u16, bind: &str, public: bool) {
+    let listener = match TcpListener::bind((bind, port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind TCP listener on {}:{}: {}", bind, port, e);
+            exit_failure();
+        }
+    };
+    if public {
+        eprintln!("WARNING: S3A dashboard is listening on a network-visible address ({}:{}) with NO authentication.", bind, port);
+        eprintln!("WARNING: Anyone who can reach it can read and write archives via /api/insert, /api/delete, /api/snapshot/ingest and /api/lrs/log.");
+        eprintln!("WARNING: Prefer the loopback default (`s3a-cli serve`) unless this host is on a trusted network.");
+    } else {
+        println!(
+            "S3A dashboard is listening on loopback only ({}:{}); it is not reachable from other machines.",
+            bind, port
+        );
+        println!(
+            "Note: this dashboard has no authentication. To expose it on the network, restart with `--bind 0.0.0.0 --public`."
+        );
+    }
     println!(
-        "S3A Web Dashboard & Agent Function Calling Server listening on http://0.0.0.0:{}",
-        port
+        "S3A Web Dashboard & Agent Function Calling Server listening on http://{}:{}",
+        bind, port
     );
 
     for mut stream in listener.incoming().flatten() {
@@ -5115,8 +5287,8 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     let session_uuid = match parse_uuid_to_u64_pair(uuid_str) {
         Some(u) => u,
         None => {
-            println!("Error: Invalid 128-bit UUID format: '{}'", uuid_str);
-            return;
+            eprintln!("Error: Invalid 128-bit UUID format: '{}'", uuid_str);
+            exit_failure();
         }
     };
 
@@ -5134,8 +5306,8 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     let engine = match S3ACrudEngine::open_or_create(archive_file) {
         Ok(e) => e,
         Err(e) => {
-            println!("Failed to open archive: {}", e);
-            return;
+            eprintln!("Failed to open archive: {}", e);
+            exit_failure();
         }
     };
 
@@ -5143,8 +5315,8 @@ fn run_trace_session(archive_file: &str, uuid_str: &str) {
     let (humans, ais) = match engine.query_session_bundle(session_uuid) {
         Ok(b) => b,
         Err(e) => {
-            println!("Query failed: {}", e);
-            return;
+            eprintln!("Query failed: {}", e);
+            exit_failure();
         }
     };
     let elapsed = start.elapsed();
@@ -5222,7 +5394,7 @@ fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<
         Ok(e) => e,
         Err(e) => {
             eprintln!("Error opening source S3A database: {}", e);
-            return;
+            exit_failure();
         }
     };
 
@@ -5280,6 +5452,7 @@ fn run_snapshot_export(live_db: &str, snapshot_file: &str, project_uuid: Option<
         }
         Err(e) => {
             eprintln!("Export failed: {}", e);
+            exit_failure();
         }
     }
 }
@@ -5326,6 +5499,7 @@ fn run_scholar_ingest(intermediate_dir: &str, out_file: &str, fresh: bool) {
         }
         Err(e) => {
             eprintln!("Scholar Ingestion Failed: {}", e);
+            exit_failure();
         }
     }
 }
@@ -5599,6 +5773,7 @@ fn run_snapshot_intake(snapshot_file: &str, into_live_db: Option<&str>) {
         }
         Err(e) => {
             eprintln!("Intake error: {}", e);
+            exit_failure();
         }
     }
 }
@@ -5614,15 +5789,22 @@ fn run_snapshot_inspect(snapshot_file: &str) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Error opening snapshot: {}", e);
-            return;
+            exit_failure();
         }
     };
 
-    if let Err(e) = reader.verify_checksums() {
-        eprintln!("WARNING: Hardware CRC32C verification failed: {}", e);
-    } else {
-        println!("Checksum Status:    100% BIT-EXACT HARDWARE CRC32C PASS");
-    }
+    // B1: a failed checksum verification is a failure outcome — the full
+    // inventory is still printed below, but the command exits non-zero.
+    let checksums_ok = match reader.verify_checksums() {
+        Ok(()) => {
+            println!("Checksum Status:    100% BIT-EXACT HARDWARE CRC32C PASS");
+            true
+        }
+        Err(e) => {
+            eprintln!("WARNING: Hardware CRC32C verification failed: {}", e);
+            false
+        }
+    };
 
     let hdr = reader.file_header();
     println!("File Header:");
@@ -5748,6 +5930,9 @@ fn run_snapshot_inspect(snapshot_file: &str) {
     println!("  Human Decisions:  {} records", human.len());
     println!("  AI Agent Traces:  {} records", ai.len());
     println!("=========================================================================");
+    if !checksums_ok {
+        exit_failure();
+    }
 }
 
 fn run_export_orange(

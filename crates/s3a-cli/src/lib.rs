@@ -1,6 +1,7 @@
 pub mod first_run;
 pub mod gate_cli;
 pub mod proof_cli;
+pub mod scholar_add;
 pub mod stack_cli;
 pub mod tour;
 pub mod tour_html;
