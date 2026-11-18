@@ -31,7 +31,8 @@ pub mod xapi;
 
 pub use add_paper::{
     add_paper, build_paper_record, content_kind_for_file_name, derive_topic_coords, normalize_doi,
-    topic_coords_to_hilbert, AddPaperInput, AddPaperOutcome, HILBERT_BITS, HILBERT_GRID,
+    topic_coords_to_hilbert, AddPaperInput, AddPaperOutcome, DossierVerification, HILBERT_BITS,
+    HILBERT_GRID,
 };
 
 pub use graph_edge::{ScholarEdgeBlobHeader, ScholarGraphEdge};

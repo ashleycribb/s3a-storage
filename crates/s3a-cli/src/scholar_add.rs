@@ -20,7 +20,11 @@
 //!   into the archive.
 //! * `--dossier` is a JSON file with the same fields (`doi`, `title`,
 //!   `year`, `venue_id`, `citation_count`, `open_access`, `topic`).
-//!   Explicit flags override dossier fields.
+//!   Explicit flags override dossier fields. A dossier must also carry a
+//!   `"verification"` block (source, source_record, doi_match, title_match,
+//!   confirmed_by, confirmed_at); `add-paper` refuses to seal a paper
+//!   whose verification does not pass (verify-before-save, paper_identity
+//!   staged path). See `s3a_pack_scholar::add_paper` for the block format.
 //! * `--topic x,y,z` places the paper explicitly on the 3D topic space
 //!   (each axis `[0, 1]`); without it, coordinates are the deterministic
 //!   hash spread from `s3a_pack_scholar::derive_topic_coords`.
@@ -235,6 +239,7 @@ pub fn run_scholar_add_paper(args: &[String]) {
         println!("{ADD_PAPER_USAGE}");
         println!("Adds one paper to an S3A archive, computing all hashes and Hilbert coordinates from the DOI.");
         println!("The title (if given) influences topic placement only — Tile 12 stores hashes, not titles.");
+        println!("A dossier must carry a \"verification\" block (source, source_record, doi_match, title_match, confirmed_by, confirmed_at); add-paper refuses to seal a paper whose verification does not pass (verify-before-save).");
         return;
     }
     let cli = match parse_add_paper_args(args) {
@@ -273,6 +278,12 @@ pub fn run_scholar_add_paper(args: &[String]) {
                 "  DOI: {} (paper_id 0x{:016x})",
                 out.doi_normalized, out.record.paper_id
             );
+            if let Some(v) = &cli.input.verification {
+                println!(
+                    "  Verified: {} match ({}) confirmed by {} at {}",
+                    v.source, v.source_record, v.confirmed_by, v.confirmed_at
+                );
+            }
             println!("  Coordinate: {}", out.coordinate);
             println!(
                 "  {} · {} citations · venue {} · open access: {}",
@@ -400,7 +411,7 @@ mod tests {
         let dossier = temp_path("dossier", ".json");
         std::fs::write(
             &dossier,
-            r#"{"doi":"10.1000/182","title":"Dossier Title","year":2023,"citation_count":5}"#,
+            r#"{"doi":"10.1000/182","title":"Dossier Title","year":2023,"citation_count":5,"verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
         )
         .unwrap();
         let cli = parse_add_paper_args(&[
@@ -415,7 +426,55 @@ mod tests {
         assert_eq!(cli.input.title.as_deref(), Some("Dossier Title"));
         assert_eq!(cli.input.year, Some(2024)); // flag overrides dossier
         assert_eq!(cli.input.citation_count, 5);
+        assert!(cli.input.verification.as_ref().unwrap().is_verified());
         let _ = std::fs::remove_file(&dossier);
+    }
+
+    #[test]
+    fn test_parse_add_paper_args_dossier_verification_gate() {
+        // A dossier without a verification block is rejected at parse time:
+        // nothing is sealed, and no archive is touched.
+        let no_block = temp_path("no-block", ".json");
+        std::fs::write(&no_block, r#"{"doi":"10.1000/182","title":"No block"}"#).unwrap();
+        assert!(parse_add_paper_args(&[
+            s("/tmp/x.s3a"),
+            s("--dossier"),
+            no_block.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        let _ = std::fs::remove_file(&no_block);
+        // A failed match parses (the evidence is well-formed) but is not
+        // verified; the gate in add_paper refuses it.
+        let failed = temp_path("failed", ".json");
+        std::fs::write(
+            &failed,
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":false,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        )
+        .unwrap();
+        let cli = parse_add_paper_args(&[
+            s("/tmp/x.s3a"),
+            s("--dossier"),
+            failed.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let v = cli.input.verification.expect("block must parse");
+        assert!(!v.is_verified());
+        assert!(v.failure_reason().unwrap().contains("doi_match"));
+        let _ = std::fs::remove_file(&failed);
+        // A malformed block is rejected at parse time.
+        let malformed = temp_path("malformed", ".json");
+        std::fs::write(
+            &malformed,
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref"}}"#,
+        )
+        .unwrap();
+        assert!(parse_add_paper_args(&[
+            s("/tmp/x.s3a"),
+            s("--dossier"),
+            malformed.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        let _ = std::fs::remove_file(&malformed);
     }
 
     #[test]

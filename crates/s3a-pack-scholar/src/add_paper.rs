@@ -59,6 +59,39 @@
 //! SPEC's `paper_identity` is a viewer-side wiki-stem identity, not a
 //! stored record), so this JSON shape is the new, minimal convention and
 //! is documented here rather than inherited.
+//!
+//! ## Dossier verification (verify-before-save, paper_identity option 4)
+//!
+//! A dossier must also carry a `"verification"` block — the evidence that
+//! this paper was checked against a real source record and confirmed by a
+//! human before it may be sealed:
+//!
+//! ```json
+//! "verification": {
+//!   "source": "crossref",
+//!   "source_record": "https://api.crossref.org/works/10.1000/182",
+//!   "doi_match": true,
+//!   "title_match": true,
+//!   "confirmed_by": "ashley",
+//!   "confirmed_at": "2026-11-18T12:00:00Z"
+//! }
+//! ```
+//!
+//! * Missing block, malformed block (wrong types, missing or empty
+//!   fields): the dossier is rejected at parse time.
+//! * Well-formed block with a failed match (`doi_match` or `title_match`
+//!   false): the dossier parses, but [`add_paper`] refuses to seal it —
+//!   non-zero exit, nothing written. The paper "waits in staging": there
+//!   is no staging store in S3A; it stays in the researcher's dossier
+//!   until its verification passes.
+//! * No dossier at all (flags-only add): there is no dossier entry to
+//!   verify, so the gate does not apply and the add proceeds as before.
+//!
+//! The verification block is evidence for the gate, not a stored record:
+//! like the rest of the dossier it is never persisted into the archive.
+//! The sealed `paper_identity` tile that would carry this evidence inside
+//! the archive is the "later" half of the staged path and is not built
+//! here.
 
 use std::io;
 use std::path::Path;
@@ -80,6 +113,126 @@ pub const HILBERT_GRID: u32 = 1 << HILBERT_BITS;
 
 /// Per-axis salts for the deterministic hash-spread topic derivation.
 const TOPIC_SALTS: [&str; 3] = ["topic-x", "topic-y", "topic-z"];
+
+/// Verification evidence for one paper, carried in the dossier's
+/// `"verification"` block (verify-before-save, paper_identity staged path,
+/// option 4).
+///
+/// A dossier entry is verified only when the DOI and the title both match
+/// the named source record AND a human confirmed the match. The block is
+/// evidence, not a claim: [`add_paper`] refuses to seal a paper whose
+/// verification does not pass. The block itself is never persisted into
+/// the archive (like the rest of the dossier); it is the gate that decides
+/// whether the paper's hashes may be sealed at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DossierVerification {
+    /// Source the paper was matched against, e.g. `"crossref"`, `"openalex"`.
+    pub source: String,
+    /// The source record the match was checked against, e.g. a Crossref
+    /// work URL or an OpenAlex work ID.
+    pub source_record: String,
+    /// The DOI in the dossier matched the DOI in the source record.
+    pub doi_match: bool,
+    /// The title in the dossier matched the title in the source record.
+    pub title_match: bool,
+    /// Who confirmed the match (human gate).
+    pub confirmed_by: String,
+    /// When the match was confirmed: an RFC 3339 string or epoch seconds,
+    /// stored exactly as given.
+    pub confirmed_at: String,
+}
+
+impl DossierVerification {
+    /// True only when both matches passed. Presence of the block plus both
+    /// matches is what the gate requires.
+    pub fn is_verified(&self) -> bool {
+        self.doi_match && self.title_match
+    }
+
+    /// The first failing check, for the refusal message; `None` when verified.
+    pub fn failure_reason(&self) -> Option<String> {
+        if !self.doi_match {
+            Some(
+                "doi_match is false: the dossier DOI did not match the source record"
+                    .to_string(),
+            )
+        } else if !self.title_match {
+            Some(
+                "title_match is false: the dossier title did not match the source record"
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    }
+}
+
+/// Parses the dossier's `"verification"` block. The block is required
+/// whenever a dossier is used: a dossier without one is an unverified
+/// entry, and the gate refuses it before anything is written. A
+/// well-formed block with a failed match parses fine — the refusal for
+/// that case happens in [`add_paper`], not here, so the error can name
+/// the failed check.
+fn parse_dossier_verification(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<DossierVerification, String> {
+    let block = obj.get("verification").ok_or_else(|| {
+        "dossier is missing required \"verification\" block (verify-before-save: a dossier entry must carry its verification evidence — source, source_record, doi_match, title_match, confirmed_by, confirmed_at)".to_string()
+    })?;
+    let b = block
+        .as_object()
+        .ok_or_else(|| "dossier \"verification\" must be an object".to_string())?;
+    let req_str = |name: &str| -> Result<String, String> {
+        let s = b
+            .get(name)
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| {
+                format!("dossier verification is missing required string field \"{name}\"")
+            })?;
+        if s.trim().is_empty() {
+            return Err(format!(
+                "dossier verification field \"{name}\" must not be empty"
+            ));
+        }
+        Ok(s.to_string())
+    };
+    let req_bool = |name: &str| -> Result<bool, String> {
+        b.get(name).and_then(|x| x.as_bool()).ok_or_else(|| {
+            format!("dossier verification field \"{name}\" must be a boolean")
+        })
+    };
+    let source = req_str("source")?;
+    let source_record = req_str("source_record")?;
+    let doi_match = req_bool("doi_match")?;
+    let title_match = req_bool("title_match")?;
+    let confirmed_by = req_str("confirmed_by")?;
+    let confirmed_at = match b.get("confirmed_at") {
+        Some(v) if v.is_string() => {
+            let s = v.as_str().unwrap_or("");
+            if s.trim().is_empty() {
+                return Err(
+                    "dossier verification field \"confirmed_at\" must not be empty".to_string(),
+                );
+            }
+            s.to_string()
+        }
+        Some(v) if v.is_u64() || v.is_i64() => v.to_string(),
+        _ => {
+            return Err(
+                "dossier verification is missing required field \"confirmed_at\" (RFC 3339 string or epoch seconds)"
+                    .to_string(),
+            )
+        }
+    };
+    Ok(DossierVerification {
+        source,
+        source_record,
+        doi_match,
+        title_match,
+        confirmed_by,
+        confirmed_at,
+    })
+}
 
 /// Human-supplied metadata for one paper. Only `doi` is required; every
 /// other field has a documented default (see [`add_paper`]).
@@ -105,14 +258,25 @@ pub struct AddPaperInput {
     pub topic: Option<[f32; 3]>,
     /// Ingest timestamp (epoch seconds). `None` uses the current time.
     pub timestamp_sec: Option<u64>,
+    /// Verification evidence from the dossier, if a dossier was used.
+    /// `None` = no dossier was supplied (flags-only add); there is no
+    /// dossier entry to verify, so the gate does not apply. `Some` =
+    /// dossier-supplied; [`add_paper`] refuses to seal unless
+    /// [`DossierVerification::is_verified`] holds (verify-before-save).
+    pub verification: Option<DossierVerification>,
 }
 
 impl AddPaperInput {
     /// Builds an input from a dossier JSON document. Fields:
     /// `doi` (required string), `title`, `year`, `venue_id`,
-    /// `citation_count`, `open_access`, `topic` (array of 3 numbers).
+    /// `citation_count`, `open_access`, `topic` (array of 3 numbers), and
+    /// `verification` (required object — see [`DossierVerification`]).
     /// Unknown fields are ignored. CLI flags override these values after
     /// this call by overwriting the corresponding fields.
+    ///
+    /// A dossier without a `verification` block, or with a malformed one,
+    /// is rejected here, before anything is written: an unverified entry
+    /// must never reach the gate in [`add_paper`], let alone the archive.
     pub fn from_dossier_json(json: &str) -> Result<Self, String> {
         let v: serde_json::Value =
             serde_json::from_str(json).map_err(|e| format!("dossier is not valid JSON: {e}"))?;
@@ -155,6 +319,7 @@ impl AddPaperInput {
             }
             input.topic = Some(coords);
         }
+        input.verification = Some(parse_dossier_verification(obj)?);
         Ok(input)
     }
 }
@@ -379,6 +544,24 @@ pub fn add_paper<P: AsRef<Path>>(
     let archive_path = archive_path.as_ref();
     let doi =
         normalize_doi(&input.doi).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // Verify-before-save (paper_identity staged path, option 4): a dossier
+    // entry is sealed only when its verification evidence passes. This
+    // check runs before the archive is opened or created, so a refused
+    // paper writes nothing — it simply is not sealed ("waits in staging":
+    // there is no staging store in S3A; the paper stays in the researcher's
+    // dossier until its verification passes).
+    if let Some(v) = &input.verification {
+        if !v.is_verified() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "verification gate refused: paper {doi} is not verified ({}); refusing to seal — check the DOI/title against the source record, confirm the match, and re-add (verify-before-save)",
+                    v.failure_reason()
+                        .unwrap_or_else(|| "verification did not pass".to_string())
+                ),
+            ));
+        }
+    }
     let paper_id = hash_iri(&doi);
     if archive_path.exists() {
         if let Some((_, coord)) = find_paper_by_id(archive_path, paper_id) {
@@ -491,6 +674,7 @@ mod tests {
             open_access: true,
             topic: None,
             timestamp_sec: Some(1_700_000_000),
+            verification: None,
         };
         let (rec, fp) = build_paper_record(&input, None, 0, 1_700_000_000).unwrap();
         assert!(fp.is_none());
@@ -555,7 +739,7 @@ mod tests {
     #[test]
     fn test_dossier_json_parsing_and_missing_doi() {
         let input = AddPaperInput::from_dossier_json(
-            r#"{"doi":"10.1000/182","title":"Some Title","year":2023,"venue_id":3,"citation_count":4,"open_access":true,"topic":[0.1,0.2,0.3]}"#,
+            r#"{"doi":"10.1000/182","title":"Some Title","year":2023,"venue_id":3,"citation_count":4,"open_access":true,"topic":[0.1,0.2,0.3],"verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
         )
         .unwrap();
         assert_eq!(input.doi, "10.1000/182");
@@ -565,8 +749,185 @@ mod tests {
         assert_eq!(input.citation_count, 4);
         assert!(input.open_access);
         assert_eq!(input.topic, Some([0.1, 0.2, 0.3]));
+        let v = input.verification.expect("verification block must parse");
+        assert_eq!(v.source, "crossref");
+        assert_eq!(
+            v.source_record,
+            "https://api.crossref.org/works/10.1000/182"
+        );
+        assert!(v.is_verified());
         assert!(AddPaperInput::from_dossier_json(r#"{"title":"No DOI"}"#).is_err());
         assert!(AddPaperInput::from_dossier_json(r#"{"doi":"10.1/x","topic":[0.1,0.2]}"#).is_err());
+    }
+
+    /// A dossier JSON with a valid verification block (used by the
+    /// verification tests below).
+    fn verified_dossier_json(doi: &str) -> String {
+        format!(
+            r#"{{"doi":"{doi}","title":"Some Title","year":2023,"verification":{{"source":"crossref","source_record":"https://api.crossref.org/works/{doi}","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}}}"#
+        )
+    }
+
+    #[test]
+    fn test_dossier_verification_block_parses() {
+        let input =
+            AddPaperInput::from_dossier_json(&verified_dossier_json("10.1000/182")).unwrap();
+        let v = input.verification.expect("verification must be present");
+        assert_eq!(v.source, "crossref");
+        assert_eq!(
+            v.source_record,
+            "https://api.crossref.org/works/10.1000/182"
+        );
+        assert!(v.doi_match);
+        assert!(v.title_match);
+        assert_eq!(v.confirmed_by, "ashley");
+        assert_eq!(v.confirmed_at, "2026-11-18T12:00:00Z");
+        assert!(v.is_verified());
+        assert!(v.failure_reason().is_none());
+        // `confirmed_at` may also be epoch seconds (stored as given).
+        let epoch = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":{"source":"openalex","source_record":"https://api.openalex.org/works/W1","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":1763467200}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            epoch.verification.as_ref().unwrap().confirmed_at,
+            "1763467200"
+        );
+    }
+
+    #[test]
+    fn test_dossier_missing_verification_block_rejected() {
+        // No "verification" key at all: the dossier is unverified and the
+        // gate refuses it at parse time, before anything is written.
+        let err = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","title":"Some Title"}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("verification"), "{err}");
+        // Explicit null is the same as missing.
+        let err = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":null}"#,
+        )
+        .unwrap_err();
+        assert!(err.contains("verification"), "{err}");
+    }
+
+    #[test]
+    fn test_dossier_malformed_verification_block_rejected() {
+        // Block is not an object.
+        assert!(AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":"yes"}"#
+        )
+        .is_err());
+        // Each required field, wrong or missing in turn.
+        for bad in [
+            // missing source_record
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+            // doi_match is a string, not a boolean
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"x","doi_match":"yes","title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+            // title_match missing
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"x","doi_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+            // confirmed_by empty
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"x","doi_match":true,"title_match":true,"confirmed_by":"","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+            // confirmed_by missing entirely
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"x","doi_match":true,"title_match":true,"confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+            // confirmed_at missing entirely
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"x","doi_match":true,"title_match":true,"confirmed_by":"ashley"}}"#,
+            // source empty
+            r#"{"doi":"10.1000/182","verification":{"source":"","source_record":"x","doi_match":true,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        ] {
+            assert!(
+                AddPaperInput::from_dossier_json(bad).is_err(),
+                "malformed block must be rejected: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dossier_failed_match_parses_but_is_not_verified() {
+        // A failed match is well-formed evidence, not malformed input: it
+        // parses, but the gate (in add_paper) refuses it.
+        let doi_fail = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":false,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        )
+        .unwrap();
+        let v = doi_fail.verification.unwrap();
+        assert!(!v.is_verified());
+        assert!(
+            v.failure_reason().unwrap().contains("doi_match"),
+            "reason must name the failed check"
+        );
+        let title_fail = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":true,"title_match":false,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        )
+        .unwrap();
+        assert!(!title_fail.verification.unwrap().is_verified());
+    }
+
+    #[test]
+    fn test_add_paper_gate_refuses_unverified_dossier() {
+        // Fresh archive path: the refusal must not create the file.
+        let path = temp_path("gate-fresh");
+        let _guard = Guard(path.clone());
+        let input = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/182","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/182","doi_match":false,"title_match":true,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        )
+        .unwrap();
+        let err = add_paper(&path, &input, None, 0).unwrap_err();
+        assert!(err.to_string().contains("verification"), "{}", err);
+        assert!(!path.exists(), "refused paper must not create the archive");
+        // Existing archive with one verified paper: the refused paper must
+        // not change the stored count.
+        let good = AddPaperInput::from_dossier_json(&verified_dossier_json("10.1000/182"))
+            .unwrap();
+        add_paper(&path, &good, None, 0).unwrap();
+        let bad = AddPaperInput::from_dossier_json(
+            r#"{"doi":"10.1000/999","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/999","doi_match":true,"title_match":false,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,
+        )
+        .unwrap();
+        assert!(add_paper(&path, &bad, None, 0).is_err());
+        let reader = MmapReader::open(&path).unwrap();
+        let sieve = QuerySieve::new(&reader);
+        assert_eq!(
+            sieve
+                .query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
+                .len(),
+            1,
+            "only the verified paper may be stored"
+        );
+    }
+
+    #[test]
+    fn test_add_paper_verified_dossier_seals() {
+        let path = temp_path("gate-ok");
+        let _guard = Guard(path.clone());
+        let input =
+            AddPaperInput::from_dossier_json(&verified_dossier_json("10.1000/182")).unwrap();
+        let out = add_paper(&path, &input, None, 0).unwrap();
+        assert_eq!(out.doi_normalized, "10.1000/182");
+        let reader = MmapReader::open(&path).unwrap();
+        let sieve = QuerySieve::new(&reader);
+        assert_eq!(
+            sieve
+                .query_academic_papers_3d([-f32::INFINITY; 3], [f32::INFINITY; 3], 0, u16::MAX)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_add_paper_flags_only_still_seals() {
+        // No dossier was used, so there is no dossier entry to verify: the
+        // gate does not apply and the flags-only path is unchanged.
+        let path = temp_path("gate-flags");
+        let _guard = Guard(path.clone());
+        let input = AddPaperInput {
+            doi: "10.1000/182".into(),
+            timestamp_sec: Some(100),
+            ..Default::default()
+        };
+        assert!(input.verification.is_none());
+        add_paper(&path, &input, None, 0).unwrap();
     }
 
     #[test]
@@ -583,6 +944,7 @@ mod tests {
             open_access: true,
             topic: None,
             timestamp_sec: Some(1_700_000_001),
+            verification: None,
         };
         let out = add_paper(&path, &input, Some(pdf), CONTENT_KIND_PDF).unwrap();
         assert_eq!(out.doi_normalized, "10.1000/182");
