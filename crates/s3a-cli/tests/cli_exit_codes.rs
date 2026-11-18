@@ -357,3 +357,72 @@ fn test_serve_refuses_public_bind_without_flag() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--public"), "refusal must name --public: {}", stderr);
 }
+
+#[test]
+fn test_vcs_gate_stack_exit_codes() {
+    // Usage errors exit 2 (item #4: previously all exited 0).
+    let usage_cases: &[&[&str]] = &[
+        &["vcs"],
+        &["vcs", "init"],
+        &["vcs", "bogus"],
+        &["gate"],
+        &["gate", "resolve", "foo"],
+        &["gate", "register", "foo"],
+        &["gate", "bogus"],
+        &["stack"],
+        &["stack", "bogus"],
+    ];
+    for args in usage_cases {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{:?} must exit 2 (usage error)",
+            args
+        );
+    }
+
+    // Operational failures exit 1.
+    let op_cases: &[&[&str]] = &[
+        &["vcs", "log", "/nonexistent-s3a-test.s3a"],
+        &[
+            "gate",
+            "resolve",
+            "foo",
+            "--directory",
+            "http://127.0.0.1:9",
+        ],
+    ];
+    for args in op_cases {
+        let out = run(args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{:?} must exit 1 (operational failure)",
+            args
+        );
+    }
+
+    // `vcs commit` on a missing archive fails (exit 1) even though it writes
+    // a throwaway signing key next to the archive first; clean that up.
+    let missing = temp_path("vcs-commit-missing");
+    let key_path = PathBuf::from(format!("{}.vcs.key", missing.display()));
+    let _guard = TempGuard(missing.clone());
+    let out = run(&[
+        "vcs",
+        "commit",
+        missing.to_str().unwrap(),
+        "-m",
+        "x",
+    ]);
+    assert_eq!(out.status.code(), Some(1), "vcs commit on missing file");
+    let _ = std::fs::remove_file(&key_path);
+
+    // Success paths still exit 0: init a repo, then log it.
+    let repo = temp_path("vcs-init-ok");
+    let _guard = TempGuard(repo.clone());
+    let out = run(&["vcs", "init", repo.to_str().unwrap()]);
+    assert!(out.status.success(), "vcs init must succeed: {:?}", out);
+    let out = run(&["vcs", "log", repo.to_str().unwrap()]);
+    assert!(out.status.success(), "vcs log on fresh repo: {:?}", out);
+}

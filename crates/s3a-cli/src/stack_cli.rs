@@ -28,7 +28,7 @@ struct StackState {
 pub fn handle_stack_command(args: &[String], verbose: bool) {
     if args.len() < 3 {
         print_stack_help();
-        return;
+        std::process::exit(2);
     }
 
     match args[2].as_str() {
@@ -41,7 +41,7 @@ pub fn handle_stack_command(args: &[String], verbose: bool) {
         other => {
             eprintln!("Unknown stack subcommand: '{}'", other);
             print_stack_help();
-            std::process::exit(1);
+            std::process::exit(2);
         }
     }
 }

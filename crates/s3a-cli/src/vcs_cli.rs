@@ -9,19 +9,22 @@ use s3a_vcs::{export_git, sync_push_with_limits, LineageMode, PushLimits, VcsRep
 pub fn handle_vcs_command(args: &[String]) {
     if args.len() < 3 {
         print_vcs_usage();
-        return;
+        std::process::exit(2);
     }
 
     match args[2].as_str() {
         "init" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli vcs init <archive_file>");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             match VcsRepo::init(file) {
                 Ok(_) => println!("Initialized empty S3A VCS repository in {}", file),
-                Err(e) => eprintln!("Error initializing repository: {}", e),
+                Err(e) => {
+                    eprintln!("Error initializing repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "commit" => {
@@ -49,7 +52,7 @@ pub fn handle_vcs_command(args: &[String]) {
                 println!(
                     "Usage: s3a-cli vcs commit <archive_file> -m \"<message>\" [--branch <branch>]"
                 );
-                return;
+                std::process::exit(2);
             };
             let msg = msg_opt.unwrap_or_else(|| "Snapshot commit".to_string());
 
@@ -62,9 +65,15 @@ pub fn handle_vcs_command(args: &[String]) {
                         println!("  Seal Hash: {}", hex::encode(commit.seal_hash));
                         println!("  Message:   {}", commit.message());
                     }
-                    Err(e) => eprintln!("Commit failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Commit failed: {}", e);
+                        std::process::exit(1);
+                    }
                 },
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "leaves" | "children" | "lineage" => {
@@ -90,7 +99,7 @@ pub fn handle_vcs_command(args: &[String]) {
                 println!(
                     "Usage: s3a-cli vcs leaves <archive> [--agent <addr>] [--json]\n       s3a-cli vcs children <archive> <hash|ref> [--agent <addr>] [--json]\n       s3a-cli vcs lineage <archive> <hash|ref> [--all] [--agent <addr>] [--json]"
                 );
-                return;
+                std::process::exit(2);
             }
             let file = pos[0];
             let result = VcsRepo::open(file).and_then(|repo| match sub {
@@ -135,7 +144,10 @@ pub fn handle_vcs_command(args: &[String]) {
                         }
                     }
                 }
-                Err(e) => eprintln!("Error: {}", e),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "log" => {
@@ -143,7 +155,7 @@ pub fn handle_vcs_command(args: &[String]) {
             let file_opt = args.iter().skip(3).find(|a| !a.starts_with('-'));
             let Some(file) = file_opt else {
                 println!("Usage: s3a-cli vcs log <archive_file> [--json] [ref_or_commit]");
-                return;
+                std::process::exit(2);
             };
 
             let target = args
@@ -181,15 +193,21 @@ pub fn handle_vcs_command(args: &[String]) {
                             }
                         }
                     }
-                    Err(e) => eprintln!("Log failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Log failed: {}", e);
+                        std::process::exit(1);
+                    }
                 },
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "branch" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli vcs branch <archive_file> [new_branch_name]");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             let new_branch = if args.len() >= 5 {
@@ -215,7 +233,10 @@ pub fn handle_vcs_command(args: &[String]) {
                                 r.ref_name(),
                                 hex::encode(r.target_seal_hash)
                             ),
-                            Err(e) => eprintln!("Failed to create branch: {}", e),
+                            Err(e) => {
+                                eprintln!("Failed to create branch: {}", e);
+                                std::process::exit(1);
+                            }
                         }
                     } else {
                         // List branches
@@ -232,17 +253,23 @@ pub fn handle_vcs_command(args: &[String]) {
                                     }
                                 }
                             }
-                            Err(e) => eprintln!("Failed to list branches: {}", e),
+                            Err(e) => {
+                                eprintln!("Failed to list branches: {}", e);
+                                std::process::exit(1);
+                            }
                         }
                     }
                 }
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "tag" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli vcs tag <archive_file> [new_tag_name] [commit_seal]");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             let new_tag = if args.len() >= 5 {
@@ -260,7 +287,7 @@ pub fn handle_vcs_command(args: &[String]) {
                                 Ok(s) => s,
                                 Err(e) => {
                                     eprintln!("Failed to create tag: {}", e);
-                                    return;
+                                    std::process::exit(1);
                                 }
                             }
                         } else {
@@ -276,7 +303,10 @@ pub fn handle_vcs_command(args: &[String]) {
                                 r.ref_name(),
                                 hex::encode(r.target_seal_hash)
                             ),
-                            Err(e) => eprintln!("Failed to create tag: {}", e),
+                            Err(e) => {
+                                eprintln!("Failed to create tag: {}", e);
+                                std::process::exit(1);
+                            }
                         }
                     } else {
                         match repo.list_refs() {
@@ -292,17 +322,23 @@ pub fn handle_vcs_command(args: &[String]) {
                                     }
                                 }
                             }
-                            Err(e) => eprintln!("Failed to list tags: {}", e),
+                            Err(e) => {
+                                eprintln!("Failed to list tags: {}", e);
+                                std::process::exit(1);
+                            }
                         }
                     }
                 }
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "checkout" => {
             if args.len() < 5 {
                 println!("Usage: s3a-cli vcs checkout <archive_file> <ref_or_commit>");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             let target = &args[4];
@@ -319,11 +355,15 @@ pub fn handle_vcs_command(args: &[String]) {
                     match seal {
                         Some(s) => println!("Checked out view at seal {}", hex::encode(s)),
                         None => {
-                            eprintln!("Could not resolve '{}' to a known ref or commit", target)
+                            eprintln!("Could not resolve '{}' to a known ref or commit", target);
+                            std::process::exit(1);
                         }
                     }
                 }
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "diff" => {
@@ -336,7 +376,7 @@ pub fn handle_vcs_command(args: &[String]) {
                 .collect();
             if non_flags.is_empty() {
                 println!("Usage: s3a-cli vcs diff <archive_file> [commit_a] [commit_b] [--json]");
-                return;
+                std::process::exit(2);
             }
             let file = non_flags[0];
             match VcsRepo::open(file) {
@@ -373,16 +413,22 @@ pub fn handle_vcs_command(args: &[String]) {
                                 }
                             }
                         }
-                        Err(e) => eprintln!("Diff failed: {}", e),
+                        Err(e) => {
+                            eprintln!("Diff failed: {}", e);
+                            std::process::exit(1);
+                        }
                     }
                 }
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "merge" => {
             if args.len() < 6 {
                 println!("Usage: s3a-cli vcs merge <archive_file> <source_branch> <target_branch>");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             let source_branch = &args[4];
@@ -412,6 +458,7 @@ pub fn handle_vcs_command(args: &[String]) {
                             println!("    Version A ({}): {}", target_branch, c.target_version);
                             println!("    Version B ({}): {}", source_branch, c.source_version);
                         }
+                        std::process::exit(1);
                     }
                     Ok(s3a_vcs::VcsMergeResult::Conflict {
                         conflicting_record_ids,
@@ -421,31 +468,44 @@ pub fn handle_vcs_command(args: &[String]) {
                             "Merge conflict: {}. Conflicting IDs: {:?}",
                             message, conflicting_record_ids
                         );
+                        std::process::exit(1);
                     }
-                    Err(e) => eprintln!("Merge failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Merge failed: {}", e);
+                        std::process::exit(1);
+                    }
                 },
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "export-git" => {
             if args.len() < 5 {
                 println!("Usage: s3a-cli vcs export-git <archive_file> <out_dir>");
-                return;
+                std::process::exit(2);
             }
             let file = &args[3];
             let out_dir = &args[4];
             match VcsRepo::open(file) {
                 Ok(repo) => match export_git(&repo, out_dir) {
                     Ok(_) => println!("Successfully exported repository to Git in {}", out_dir),
-                    Err(e) => eprintln!("Git export failed: {}", e),
+                    Err(e) => {
+                        eprintln!("Git export failed: {}", e);
+                        std::process::exit(1);
+                    }
                 },
-                Err(e) => eprintln!("Failed to open repository: {}", e),
+                Err(e) => {
+                    eprintln!("Failed to open repository: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
         "push" => {
             if args.len() < 5 {
                 println!("Usage: s3a-cli vcs push <source_archive> <target_archive> [--branch <branch>] [--merge] [--max-bundle-bytes N] [--max-commits N]");
-                return;
+                std::process::exit(2);
             }
             let src = &args[3];
             let tgt = &args[4];
@@ -481,14 +541,14 @@ pub fn handle_vcs_command(args: &[String]) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Failed to open source: {}", e);
-                    return;
+                    std::process::exit(1);
                 }
             };
             let t_repo = match VcsRepo::open(tgt) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Failed to open target: {}", e);
-                    return;
+                    std::process::exit(1);
                 }
             };
 
@@ -511,7 +571,10 @@ pub fn handle_vcs_command(args: &[String]) {
                 }
             }
         }
-        _ => print_vcs_usage(),
+        _ => {
+            print_vcs_usage();
+            std::process::exit(2);
+        }
     }
 }
 
