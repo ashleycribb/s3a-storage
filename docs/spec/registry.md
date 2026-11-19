@@ -60,6 +60,7 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **30** | `elr_credential_assertion` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
+| **33** | `geopose_basic_quat` | Spatial Pack (`s3a-spatial`) | `0x0080` (`ADDON_SPATIAL`) | 128 B | Fixed Pod | Active |
 | **64** | `record` | Core Engine (`s3a-core`) | None | 64 B | Fixed Pod | Active |
 | **68** | `blob` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Raw Chunk | Active |
 | **72** | `provenance` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Provenance Chunk | Active |
@@ -99,7 +100,8 @@ The `FileHeader.addon_mask` bitmask registers authorized domain extensions enabl
 | **4** | `0x0010` | `ADDON_GIS` | `s3a-pack-gis` | Topographic 3D mesh & geospatial indexing |
 | **5** | `0x0020` | `ADDON_DA` | `s3a-pack-da` | Data availability & state commitments |
 | **6** | `0x0040` | `ADDON_ONTOLOGY` | `s3a-pack-ontology` | Formal concept ontology & axiom registry |
-| **7 – 31** | `0x0080`.. | -- | Unallocated | Reserved for future standardization |
+| **7** | `0x0080` | `ADDON_SPATIAL` | `s3a-spatial` | OGC GeoPose Basic-Quaternion records |
+| **8 – 31** | `0x0100`.. | -- | Unallocated | Reserved for future standardization |
 
 ---
 

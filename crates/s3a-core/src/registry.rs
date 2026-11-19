@@ -1024,6 +1024,21 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tile 33: Spatial Computing OGC GeoPose Basic-Quaternion record.
+    // First free ID in the standard-pack band 32–63 (32 is taken by
+    // `citation_fingerprint`); allocated via spec amendment (registry.md §1).
+    reg.register(TileTypeDescriptor {
+        tile_type: 33,
+        name: "geopose_basic_quat",
+        owner_pack: "Spatial Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(crate::ADDON_SPATIAL),
+        record_size: 128,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     // Tile 96: Scholar Explorer Signed Committee Decisions
     reg.register(TileTypeDescriptor {
         tile_type: 96,

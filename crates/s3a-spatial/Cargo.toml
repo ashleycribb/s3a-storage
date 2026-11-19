@@ -1,0 +1,20 @@
+[package]
+name = "s3a-spatial"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Spatial Computing Domain Pack for S3A Database (Tile 33: OGC GeoPose Basic-Quaternion records)"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-edge = { path = "../s3a-edge" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }

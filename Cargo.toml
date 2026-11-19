@@ -12,6 +12,7 @@ members = [
     "crates/s3a-pack-wearable",
     "crates/s3a-pack-robotics",
     "crates/s3a-pack-gis",
+    "crates/s3a-spatial",
     "crates/s3a-pack-da",
     "crates/s3a-pack-ontology",
     "crates/s3a-wasm-snapshot",

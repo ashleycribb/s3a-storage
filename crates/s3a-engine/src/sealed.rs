@@ -346,6 +346,7 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         30 => "elr_credential_assertion",
         31 => "elr_goal",
         32 => "citation_fingerprint",
+        33 => "geopose_basic_quat",
         64 => "record",
         65 => "columnar",
         66 => "array",

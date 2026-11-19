@@ -2385,6 +2385,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "s3a-spatial"
+version = "0.2.0"
+dependencies = [
+ "bytemuck",
+ "s3a-core",
+ "s3a-edge",
+ "s3a-engine",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "s3a-spec-vectors"
 version = "0.2.0"
 dependencies = [
