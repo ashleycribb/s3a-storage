@@ -72,10 +72,14 @@ provenance event.
 VRM carries its license metadata inside the file; the formats that get adopted in
 the open carry their license with them.
 
-**Status: OPEN DECISION — deferred to tile 38.** No S3A record carries a
-license/rights field yet. VRM's in-file `meta` is the model, and tile 38's
-descriptor is where it would land. Do NOT add it to tile 33: the sealed 128-byte
-layout is already pushed, and changing it would break the sealed record.
+**Status: APPROVED IN PRINCIPLE (Ashley, Nov 19, 2026) — details deferred to
+tile 38.** Recording license/rights metadata is fine as long as it doesn't impede
+on people's rights: the field describes the rights that came with the asset, it
+never adds restrictions of S3A's own, and it is never used as an access gate —
+it must not withhold someone's own data from them. VRM's in-file `meta` is the
+model, and tile 38's descriptor is where it lands. Do NOT add it to tile 33: the
+sealed 128-byte layout is already pushed, and changing it would break the sealed
+record.
 
 ## 8. Keep the container simple enough to parse from the spec alone
 
