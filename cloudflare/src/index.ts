@@ -12,12 +12,14 @@
 import type { Env, AgentTaskParams } from "./types";
 import { Sandbox, ContainerProxy, proxyToSandbox } from "./sandbox";
 import { RepoCoordinator } from "./do/RepoCoordinator";
+import { GatehavenVault } from "./do/GatehavenVault";
 import { AgentTaskWorkflow } from "./workflow/AgentTask";
 import { handleAPIRoutes } from "./routes/api";
+import { handleGatehavenRoutes } from "./routes/gatehaven";
 import { handleUIRoutes } from "./routes/ui";
 
 // Re-export required Durable Objects & Workflows for Cloudflare Workers runtime
-export { Sandbox, ContainerProxy, RepoCoordinator, AgentTaskWorkflow };
+export { Sandbox, ContainerProxy, RepoCoordinator, GatehavenVault, AgentTaskWorkflow };
 export type { Env, AgentTaskParams };
 
 export default {
@@ -36,6 +38,12 @@ export default {
     const apiResponse = await handleAPIRoutes(request, env);
     if (apiResponse) {
       return apiResponse;
+    }
+
+    // 2b. Gatehaven account API v1 (vaults, sealed state, ledger)
+    const gatehavenResponse = await handleGatehavenRoutes(request, env);
+    if (gatehavenResponse) {
+      return gatehavenResponse;
     }
 
     // 3. Handle Server-Rendered UI routes & Redirects

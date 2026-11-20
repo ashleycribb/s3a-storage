@@ -7,6 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [durable_objects]
 bindings = [
   { name = "REPO_COORDINATOR", class_name = "RepoCoordinator" },
+  { name = "GATEHAVEN_VAULT", class_name = "GatehavenVault" },
   { name = "Sandbox", class_name = "Sandbox" }
 ]
 
@@ -17,6 +18,10 @@ new_sqlite_classes = ["RepoCoordinator"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Sandbox"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["GatehavenVault"]
 
 # Cloudflare Artifacts binding for Git repositories & tokens
 [[artifacts]]
