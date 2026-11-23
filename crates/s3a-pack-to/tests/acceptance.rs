@@ -265,7 +265,7 @@ fn at_to_02_encode_decode_fixture_records() {
     assert_eq!(section.page, 1);
     assert_eq!(section.title_hash, hex_to_32(TITLE_SHA256_HEX));
     assert_eq!(section.content_hash, hex_to_32(SCOPE_SHA256_HEX));
-    assert_eq!(section._pad, [0u8; 12]);
+    assert_eq!(section._pad, [0u8; 4]);
     let back: ToSectionRecord = pod_read_unaligned(bytes_of(&section));
     assert_eq!(back, section);
 
@@ -274,7 +274,6 @@ fn at_to_02_encode_decode_fixture_records() {
     assert_eq!(warning.text_hash, hex_to_32(WARNING_SHA256_HEX));
     assert_eq!(warning.content_hash, hex_to_32(WARNING_SHA256_HEX));
     assert_eq!(warning._pad, [0u8; 3]);
-    assert_eq!(warning._pad2, [0u8; 4]);
 
     let caution = encode_to_wcn(
         CAUTION_TEXT,
@@ -366,7 +365,6 @@ fn at_to_02_encode_decode_fixture_records() {
     assert_eq!(yes_12.from_node_id, 1);
     assert_eq!(yes_12.to_node_id, 2);
     assert_eq!(yes_12.outcome_hash, hex_to_32(YES_SHA256_HEX));
-    assert_eq!(yes_12._pad, [0u8; 16]);
 
     let no_13 = encode_to_fault_edge(NO, source_id(11), ORIGIN_PTR, DOC_ID, 1, 3).unwrap();
     assert_eq!(no_13.outcome_hash, hex_to_32(NO_SHA256_HEX));
