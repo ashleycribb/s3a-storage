@@ -1064,6 +1064,22 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         })?;
     }
 
+    // Tiles 47..=48: CAN bus bridge (J1939/OBD ingest and fail-closed triggers).
+    // Next free IDs after the Technical Order pack (tiles 41..=46).
+    for (tile_type, name) in [(47, "can_dtc"), (48, "can_trigger")] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "s3a-can-bridge",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_CAN),
+            record_size: 128,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
     // Tile 96: Scholar Explorer Signed Committee Decisions
     reg.register(TileTypeDescriptor {
         tile_type: 96,

@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use s3a_core::{
     compare_hilbert_vs_morton_curve_continuity, toroidal_distance_3d, Dop14Hull, S3AAddon,
-    ADDON_DA, ADDON_EDU, ADDON_FINTECH, ADDON_GIS, ADDON_ONTOLOGY, ADDON_ROBOTICS, ADDON_TO, ADDON_WEARABLE,
+    ADDON_CAN, ADDON_DA, ADDON_EDU, ADDON_FINTECH, ADDON_GIS, ADDON_ONTOLOGY, ADDON_ROBOTICS,
+    ADDON_TO, ADDON_WEARABLE,
 };
 use s3a_engine::{
     archive_cold_tiles, execute_query, generate_delta_metadata, generate_iceberg_metadata,
@@ -685,7 +686,8 @@ fn main() {
                         Some("run 's3a init' to create a new vault, or specify: 's3a tour <file.s3a>'"),
                         verbose,
                         None,
-                    );                }
+                    );
+                }
             }
         }
         "seal" => {
@@ -721,7 +723,8 @@ fn main() {
             }
             if positional.len() < 2 {
                 println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--about] [--title <title>] [--creator <creator>]");
-                exit_failure();            }
+                exit_failure();
+            }
             seal_file(
                 positional[0],
                 positional[1],
@@ -870,7 +873,14 @@ fn main() {
                 Some(f) => {
                     // Exit codes: 0 ok (warnings allowed), 2 verification failed,
                     // 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor).
-                    let code = verify_file(f, repair_out, json_mode, anchor_mode, trust_store, esplora_url);
+                    let code = verify_file(
+                        f,
+                        repair_out,
+                        json_mode,
+                        anchor_mode,
+                        trust_store,
+                        esplora_url,
+                    );
                     if code != 0 {
                         std::process::exit(code);
                     }
@@ -878,7 +888,8 @@ fn main() {
                 None => {
                     println!("Usage: s3a-cli verify <file_path> [--anchor] [--repair <out>] [--trust-store <pem>] [--esplora <url>] [--json]\nExit: 0 ok (warnings allowed), 2 verification failed, 3 record-root mismatch, 4 anchor mismatch/invalid (--anchor)");
                     exit_failure();
-                }            }
+                }
+            }
         }
         "status" => {
             let json_mode = args.iter().any(|a| a == "--json");
@@ -1250,7 +1261,8 @@ fn main() {
                 println!("       s3a trace export --otlp <endpoint> [archive_file]");
                 exit_failure();
             } else {
-                run_trace_session(&args[2], &args[3]);            }
+                run_trace_session(&args[2], &args[3]);
+            }
         }
         #[cfg(feature = "packs")]
         "snapshot" => {
@@ -1563,7 +1575,8 @@ fn main() {
                 Some("run 's3a help' to see all available commands"),
                 verbose,
                 None,
-            );        }
+            );
+        }
     }
 }
 
@@ -1768,6 +1781,15 @@ fn run_addon_list(archive_file: &str) {
                 "INACTIVE"
             }
         );
+        let is_can = engine.is_addon_active(ADDON_CAN);
+        println!(
+            "  [9] s3a-can-bridge (J1939/OBD ingest and triggers):              {}",
+            if is_can {
+                "ACTIVE (Tiles 47..=48)"
+            } else {
+                "INACTIVE"
+            }
+        );
     }
     #[cfg(not(feature = "packs"))]
     {
@@ -1791,9 +1813,10 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
         "da" | "data-availability" | "s3a-pack-da" => ADDON_DA,
         "ontology" | "ont" | "s3a-pack-ontology" => ADDON_ONTOLOGY,
         "to" | "technical-order" | "s3a-pack-to" => ADDON_TO,
+        "can" | "can-bridge" | "s3a-can-bridge" => ADDON_CAN,
         "fintech" | "finance" => ADDON_FINTECH,
         _ => {
-            eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, to, fintech", addon_name);
+            eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, to, can, fintech", addon_name);
             exit_failure();
         }
     };
@@ -2438,12 +2461,14 @@ fn inspect_file(path: &str, json_mode: bool) {
                         format!("{}, {}", header.min_timestamp, header.max_timestamp)
                     };
                     println!(
-                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange=[{}], Bytes={}",                        i,
+                        "Tile #{}: ID={}, Type={}, Layout={}, Records={}, TimeRange=[{}], Bytes={}",
+                        i,
                         header.tile_id,
                         tile_type_str,
                         layout_str,
                         header.record_count,
-                        time_range,                        header.payload_bytes
+                        time_range,
+                        header.payload_bytes
                     );
                     if header.tile_type == 9 {
                         println!("  ⚠️  WARNING: Tile type 9 is DEPRECATED/RESERVED_BOUNDARY. Greenfield LRS records should use Scholar Pack Tile 10.");
@@ -2714,7 +2739,8 @@ fn verify_file(
         } else {
             eprintln!("Error: file '{}' not found", path);
         }
-        return 2;    }
+        return 2;
+    }
 
     let repair_path = repair_out.map(Path::new);
     match s3a_engine::verify_sealed_archive(path, repair_path) {
@@ -2936,7 +2962,8 @@ fn verify_file(
             } else {
                 eprintln!("Verification FAILED in {}: {}", path, e);
             }
-            2        }
+            2
+        }
     }
 }
 
@@ -3189,6 +3216,9 @@ fn run_status(path: &str, json_mode: bool) {
             if mask & ADDON_TO != 0 {
                 addons.push("to");
             }
+            if mask & ADDON_CAN != 0 {
+                addons.push("can");
+            }
 
             if json_mode {
                 let addons_json = addons
@@ -3402,8 +3432,7 @@ fn run_doctor(path: &str, json_mode: bool) {
                         let endcap: s3a_core::SealedEndCapV2 =
                             bytemuck::pod_read_unaligned(&endcap_buf);
                         if endcap.magic == s3a_core::SEALED_ENDCAP_MAGIC_V2
-                            && s3a_engine::compute_endcap_crc32_v2(&endcap)
-                                == endcap.endcap_crc32
+                            && s3a_engine::compute_endcap_crc32_v2(&endcap) == endcap.endcap_crc32
                             && endcap.index_offset >= expected_size
                             && endcap.index_offset
                                 + endcap.index_len
@@ -3629,7 +3658,8 @@ fn compact_files(output_path: &str, input_paths: &[String]) {
         ),
         Err(e) => {
             eprintln!("Compaction FAILED: {}", e);
-            std::process::exit(2);        }
+            std::process::exit(2);
+        }
     }
 }
 
