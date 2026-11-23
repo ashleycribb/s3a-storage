@@ -1103,6 +1103,21 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         })?;
     }
 
+    // Tile 52: Technical Order scan-agreement adjunct (dual-OCR provenance).
+    // Next free ID after tiles 49..=51. Existing TO tiles are not resized.
+    // required_addon_for_tile returns owner_pack "s3a-pack-to".
+    reg.register(TileTypeDescriptor {
+        tile_type: 52,
+        name: "to_scan_agreement",
+        owner_pack: "s3a-pack-to",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(crate::ADDON_TO),
+        record_size: 384,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
     // Tile 96: Scholar Explorer Signed Committee Decisions
     reg.register(TileTypeDescriptor {
         tile_type: 96,

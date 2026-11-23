@@ -348,3 +348,92 @@ impl ToLocatorRecord {
     pub const SIZE: usize = 160;
 }
 
+/// Scan-agreement status: born-digital / already verified content.
+pub const SCAN_STATUS_VERIFIED: u8 = 1;
+/// Scan-agreement status: held for review (disagreement, empty OCR, or other hold).
+pub const SCAN_STATUS_HELD: u8 = 2;
+/// Scan-agreement status: dual-OCR agreement within the configured CER threshold.
+/// This is never `verified` and is not citable until human review.
+pub const SCAN_STATUS_SCAN_AGREEMENT: u8 = 3;
+/// Scan-agreement status: a human reviewer accepted the block with evidence hashes.
+pub const SCAN_STATUS_HUMAN_VERIFIED: u8 = 4;
+
+/// Flag bit: `cer_bits` holds a finite character-error rate (as `f64::to_bits`).
+/// When clear, `cer_bits` must be zero (CER was not scorable).
+pub const SCAN_FLAG_CER_PRESENT: u8 = 1;
+
+/// Scan-agreement adjunct record (tile 52, `to_scan_agreement`, 384 B).
+///
+/// Links to an existing Technical Order section, cell, or other TO record
+/// in tiles 41..=46 or 49..=51 by `target_source_id` and `target_tile_type`.
+/// Existing tiles are not resized. `content_hash` is SHA-256 of
+/// `engine_a_name || 0x1F || engine_a_version || 0x1F || engine_b_name ||
+/// 0x1F || engine_b_version || 0x1F || ocr_a_sha256 || ocr_b_sha256 ||
+/// crop_sha256` using the unpadded engine field bytes.
+///
+/// | Off | Len | Field |
+/// |---:|---:|---|
+/// | 0 | 16 | `source_id` |
+/// | 16 | 32 | `content_hash` |
+/// | 48 | 16 | `origin_ptr` |
+/// | 64 | 16 | `doc_id` |
+/// | 80 | 16 | `target_source_id` |
+/// | 96 | 4 | `target_tile_type` |
+/// | 100 | 1 | `status` |
+/// | 101 | 1 | `flags` |
+/// | 102 | 2 | `_pad0` (must be zero) |
+/// | 104 | 32 | `engine_a_name` (NUL-padded UTF-8) |
+/// | 136 | 16 | `engine_a_version` (NUL-padded UTF-8) |
+/// | 152 | 32 | `engine_b_name` (NUL-padded UTF-8) |
+/// | 184 | 16 | `engine_b_version` (NUL-padded UTF-8) |
+/// | 200 | 32 | `ocr_a_sha256` |
+/// | 232 | 32 | `ocr_b_sha256` |
+/// | 264 | 32 | `crop_sha256` |
+/// | 296 | 8 | `cer_bits` (`f64::to_bits`, or 0 if CER absent) |
+/// | 304 | 8 | `max_cer_bits` (`f64::to_bits` of the required threshold) |
+/// | 312 | 8 | `reviewed_at` (unix seconds, 0 unless `human_verified`) |
+/// | 320 | 32 | `reviewer` (NUL-padded, zero unless `human_verified`) |
+/// | 352 | 32 | `_pad` (must be zero) |
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct ToScanAgreementRecord {
+    pub source_id: [u8; 16],
+    pub content_hash: [u8; 32],
+    pub origin_ptr: [u8; 16],
+    pub doc_id: [u8; 16],
+    pub target_source_id: [u8; 16],
+    pub target_tile_type: u32,
+    pub status: u8,
+    pub flags: u8,
+    pub _pad0: [u8; 2],
+    pub engine_a_name: [u8; 32],
+    pub engine_a_version: [u8; 16],
+    pub engine_b_name: [u8; 32],
+    pub engine_b_version: [u8; 16],
+    pub ocr_a_sha256: [u8; 32],
+    pub ocr_b_sha256: [u8; 32],
+    pub crop_sha256: [u8; 32],
+    pub cer_bits: u64,
+    pub max_cer_bits: u64,
+    pub reviewed_at: u64,
+    pub reviewer: [u8; 32],
+    pub _pad: [u8; 32],
+}
+
+impl ToScanAgreementRecord {
+    /// Wire size of the record in bytes.
+    pub const SIZE: usize = 384;
+}
+
+/// Human-readable label for a scan-tier status byte.
+///
+/// `scan_agreement` is never returned as `"verified"`.
+pub fn scan_status_label(status: u8) -> &'static str {
+    match status {
+        SCAN_STATUS_VERIFIED => "verified",
+        SCAN_STATUS_HELD => "held",
+        SCAN_STATUS_SCAN_AGREEMENT => "scan_agreement",
+        SCAN_STATUS_HUMAN_VERIFIED => "human_verified",
+        _ => "invalid_scan_status",
+    }
+}

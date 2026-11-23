@@ -314,7 +314,7 @@ pub fn required_addon_for_tile(tile_type: u32) -> Option<(&'static str, u32)> {
             10..=15 | 18 | 20 => Some(("s3a-pack-scholar", ADDON_EDU)),
             16..=17 => Some(("s3a-pack-ontology", ADDON_ONTOLOGY)),
             33 => Some(("s3a-spatial", ADDON_SPATIAL)),
-            41..=46 | 49..=51 => Some(("s3a-pack-to", ADDON_TO)),
+            41..=46 | 49..=51 | 52 => Some(("s3a-pack-to", ADDON_TO)),
             47..=48 => Some(("s3a-can-bridge", ADDON_CAN)),
             _ => None,
         }

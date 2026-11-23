@@ -26,6 +26,8 @@ impl ToTileType {
     pub const TO_REFERENCE: u32 = 50;
     /// Hyper-Tile 51: Paragraph path and printed-page locator (`ToLocatorRecord`, 160 bytes)
     pub const TO_LOCATOR: u32 = 51;
+    /// Hyper-Tile 52: Scan-agreement adjunct (`ToScanAgreementRecord`, 384 bytes)
+    pub const TO_SCAN_AGREEMENT: u32 = 52;
 }
 
 const FIXED_POD_COPY: TileTypeFlags = TileTypeFlags::from_bits_truncate(
@@ -99,7 +101,6 @@ pub static TO_DESCRIPTORS: &[TileTypeDescriptor] = &[
         min_supported_layout_version: 1,
         flags: FIXED_POD_COPY,
     },
-
 ];
 
 /// Tiles 49..=51. Kept separate from `TO_DESCRIPTORS` so the original
@@ -141,9 +142,28 @@ pub static TO_LOCATOR_DESCRIPTORS: &[TileTypeDescriptor] = &[
     },
 ];
 
+/// Tile 52. Kept separate from `TO_DESCRIPTORS` and
+/// `TO_LOCATOR_DESCRIPTORS` so the 41..=46 and 49..=51 bands stay
+/// unchanged; 47..=48 belong to `s3a-can-bridge`.
+pub static TO_SCAN_DESCRIPTORS: &[TileTypeDescriptor] = &[TileTypeDescriptor {
+    tile_type: ToTileType::TO_SCAN_AGREEMENT,
+    name: "to_scan_agreement",
+    owner_pack: "s3a-pack-to",
+    lifecycle: TileLifecycle::Active,
+    required_addon: Some(ADDON_TO),
+    record_size: 384,
+    current_layout_version: 1,
+    min_supported_layout_version: 1,
+    flags: FIXED_POD_COPY,
+}];
+
 /// Registers tile types for the Technical Order domain pack into a registry.
 pub fn register_pack_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryError> {
-    for desc in TO_DESCRIPTORS.iter().chain(TO_LOCATOR_DESCRIPTORS.iter()) {
+    for desc in TO_DESCRIPTORS
+        .iter()
+        .chain(TO_LOCATOR_DESCRIPTORS.iter())
+        .chain(TO_SCAN_DESCRIPTORS.iter())
+    {
         reg.register(desc.clone())?;
     }
     Ok(())
@@ -156,6 +176,11 @@ impl ToPack {
     /// Second tile band, after the CAN-bridge reservation of 47..=48.
     pub fn additional_tile_range() -> RangeInclusive<u32> {
         49..=51
+    }
+
+    /// Scan-agreement adjunct tile, after the locator band of 49..=51.
+    pub fn scan_tile_range() -> RangeInclusive<u32> {
+        52..=52
     }
 }
 

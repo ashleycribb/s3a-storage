@@ -3,9 +3,11 @@
 use crate::pack::ToTileType;
 use crate::records::{
     ToFaultEdgeRecord, ToFaultNodeRecord, ToFigureAnchorRecord, ToLocatorRecord,
-    ToProcedureStepRecord, ToReferenceRecord, ToSectionRecord, ToSpecCellRecord, ToWcnRecord,
-    NODE_KIND_ACTION, NODE_KIND_CONCLUSION, NODE_KIND_TEST, PAGE_THOUSANDTHS_MAX,
-    WCN_KIND_CAUTION, WCN_KIND_NOTE, WCN_KIND_WARNING,
+    ToProcedureStepRecord, ToReferenceRecord, ToScanAgreementRecord, ToSectionRecord,
+    ToSpecCellRecord, ToWcnRecord, NODE_KIND_ACTION, NODE_KIND_CONCLUSION, NODE_KIND_TEST,
+    PAGE_THOUSANDTHS_MAX, SCAN_FLAG_CER_PRESENT, SCAN_STATUS_HELD, SCAN_STATUS_HUMAN_VERIFIED,
+    SCAN_STATUS_SCAN_AGREEMENT, SCAN_STATUS_VERIFIED, WCN_KIND_CAUTION, WCN_KIND_NOTE,
+    WCN_KIND_WARNING,
 };
 use bytemuck::{pod_read_unaligned, Pod};
 use sha2::{Digest, Sha256};
@@ -34,6 +36,18 @@ pub enum ToError {
     ZeroPage,
     MissingTargetSourceId,
     TargetTileNotTo { tile_type: u32 },
+    UnknownScanStatus { status: u8 },
+    MissingEngineName,
+    MissingEngineVersion,
+    EngineFieldTooLong,
+    MissingOcrHash,
+    MissingCropHash,
+    InvalidThreshold,
+    MissingCer,
+    CerExceedsThreshold,
+    MissingReviewer,
+    MissingReviewedAt,
+    UnexpectedReviewEvidence,
 }
 
 /// Successfully decoded payload of one Technical Order tile.
@@ -48,6 +62,7 @@ pub enum ToDecoded {
     ProcedureStep(Vec<ToProcedureStepRecord>),
     Reference(Vec<ToReferenceRecord>),
     Locator(Vec<ToLocatorRecord>),
+    ScanAgreement(Vec<ToScanAgreementRecord>),
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -607,6 +622,256 @@ fn validate_locator(record: &ToLocatorRecord) -> Result<(), ToError> {
     require_zero(&record._pad)
 }
 
+fn pack_bytes<const N: usize>(bytes: &[u8], empty: ToError) -> Result<[u8; N], ToError> {
+    if bytes.is_empty() {
+        return Err(empty);
+    }
+    if bytes.len() > N {
+        return Err(ToError::EngineFieldTooLong);
+    }
+    let mut out = [0u8; N];
+    out[..bytes.len()].copy_from_slice(bytes);
+    Ok(out)
+}
+
+fn require_threshold(max_character_error_rate: f64) -> Result<u64, ToError> {
+    if !max_character_error_rate.is_finite() || !(0.0..=1.0).contains(&max_character_error_rate) {
+        Err(ToError::InvalidThreshold)
+    } else {
+        Ok(max_character_error_rate.to_bits())
+    }
+}
+
+fn require_status(status: u8) -> Result<(), ToError> {
+    match status {
+        SCAN_STATUS_VERIFIED
+        | SCAN_STATUS_HELD
+        | SCAN_STATUS_SCAN_AGREEMENT
+        | SCAN_STATUS_HUMAN_VERIFIED => Ok(()),
+        other => Err(ToError::UnknownScanStatus { status: other }),
+    }
+}
+
+fn scan_content_hash(
+    engine_a_name: &[u8],
+    engine_a_version: &[u8],
+    engine_b_name: &[u8],
+    engine_b_version: &[u8],
+    ocr_a: [u8; 32],
+    ocr_b: [u8; 32],
+    crop: [u8; 32],
+) -> [u8; 32] {
+    let mut src = alloc_vec(engine_a_name);
+    src.push(0x1f);
+    src.extend_from_slice(engine_a_version);
+    src.push(0x1f);
+    src.extend_from_slice(engine_b_name);
+    src.push(0x1f);
+    src.extend_from_slice(engine_b_version);
+    src.push(0x1f);
+    src.extend_from_slice(&ocr_a);
+    src.extend_from_slice(&ocr_b);
+    src.extend_from_slice(&crop);
+    sha256(&src)
+}
+
+fn alloc_vec(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
+}
+
+/// Encodes a scan-agreement adjunct record (tile 52) linked to an existing
+/// Technical Order section, cell, or other TO record by id.
+///
+/// `max_character_error_rate` is required configuration in `[0, 1]`. There
+/// is no silent default. Status `scan_agreement` requires a scorable CER at
+/// or below that threshold and must not carry reviewer evidence.
+/// `human_verified` requires a reviewer, a non-zero timestamp, and the
+/// three evidence hashes.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_to_scan_agreement(
+    source_id: [u8; 16],
+    origin_ptr: [u8; 16],
+    doc_id: [u8; 16],
+    target_source_id: [u8; 16],
+    target_tile_type: u32,
+    status: u8,
+    engine_a_name: &[u8],
+    engine_a_version: &[u8],
+    engine_b_name: &[u8],
+    engine_b_version: &[u8],
+    ocr_a_sha256: [u8; 32],
+    ocr_b_sha256: [u8; 32],
+    crop_sha256: [u8; 32],
+    cer: Option<f64>,
+    max_character_error_rate: f64,
+    reviewer: Option<&[u8]>,
+    reviewed_at: Option<u64>,
+) -> Result<ToScanAgreementRecord, ToError> {
+    require_source_id(source_id)?;
+    require_origin_ptr(origin_ptr)?;
+    require_doc_id(doc_id)?;
+    if target_source_id == [0u8; 16] {
+        return Err(ToError::MissingTargetSourceId);
+    }
+    if !is_to_target_tile(target_tile_type) {
+        return Err(ToError::TargetTileNotTo {
+            tile_type: target_tile_type,
+        });
+    }
+    require_status(status)?;
+    let engine_a_name_f = pack_bytes::<32>(engine_a_name, ToError::MissingEngineName)?;
+    let engine_a_version_f = pack_bytes::<16>(engine_a_version, ToError::MissingEngineVersion)?;
+    let engine_b_name_f = pack_bytes::<32>(engine_b_name, ToError::MissingEngineName)?;
+    let engine_b_version_f = pack_bytes::<16>(engine_b_version, ToError::MissingEngineVersion)?;
+    if ocr_a_sha256 == [0u8; 32] || ocr_b_sha256 == [0u8; 32] {
+        return Err(ToError::MissingOcrHash);
+    }
+    if crop_sha256 == [0u8; 32] {
+        return Err(ToError::MissingCropHash);
+    }
+    let max_cer_bits = require_threshold(max_character_error_rate)?;
+    let (flags, cer_bits) = match cer {
+        Some(value) => {
+            if !value.is_finite() {
+                return Err(ToError::MissingCer);
+            }
+            if status == SCAN_STATUS_SCAN_AGREEMENT && value > max_character_error_rate {
+                return Err(ToError::CerExceedsThreshold);
+            }
+            (SCAN_FLAG_CER_PRESENT, value.to_bits())
+        }
+        None => {
+            if status == SCAN_STATUS_SCAN_AGREEMENT {
+                return Err(ToError::MissingCer);
+            }
+            (0, 0)
+        }
+    };
+
+    let (reviewer_f, reviewed_at_v) = match status {
+        SCAN_STATUS_HUMAN_VERIFIED => {
+            let reviewer_bytes = reviewer.unwrap_or(b"");
+            if reviewer_bytes.is_empty() {
+                return Err(ToError::MissingReviewer);
+            }
+            match reviewed_at {
+                Some(ts) if ts != 0 => (
+                    pack_bytes::<32>(reviewer_bytes, ToError::MissingReviewer)?,
+                    ts,
+                ),
+                _ => return Err(ToError::MissingReviewedAt),
+            }
+        }
+        _ => {
+            if reviewer.is_some() || reviewed_at.is_some() {
+                return Err(ToError::UnexpectedReviewEvidence);
+            }
+            ([0u8; 32], 0)
+        }
+    };
+
+    Ok(ToScanAgreementRecord {
+        source_id,
+        content_hash: scan_content_hash(
+            engine_a_name,
+            engine_a_version,
+            engine_b_name,
+            engine_b_version,
+            ocr_a_sha256,
+            ocr_b_sha256,
+            crop_sha256,
+        ),
+        origin_ptr,
+        doc_id,
+        target_source_id,
+        target_tile_type,
+        status,
+        flags,
+        _pad0: [0u8; 2],
+        engine_a_name: engine_a_name_f,
+        engine_a_version: engine_a_version_f,
+        engine_b_name: engine_b_name_f,
+        engine_b_version: engine_b_version_f,
+        ocr_a_sha256,
+        ocr_b_sha256,
+        crop_sha256,
+        cer_bits,
+        max_cer_bits,
+        reviewed_at: reviewed_at_v,
+        reviewer: reviewer_f,
+        _pad: [0u8; 32],
+    })
+}
+
+fn validate_scan(record: &ToScanAgreementRecord) -> Result<(), ToError> {
+    require_source_id(record.source_id)?;
+    require_origin_ptr(record.origin_ptr)?;
+    require_doc_id(record.doc_id)?;
+    if record.target_source_id == [0u8; 16] {
+        return Err(ToError::MissingTargetSourceId);
+    }
+    if !is_to_target_tile(record.target_tile_type) {
+        return Err(ToError::TargetTileNotTo {
+            tile_type: record.target_tile_type,
+        });
+    }
+    require_status(record.status)?;
+    if record.engine_a_name.iter().all(|b| *b == 0) || record.engine_b_name.iter().all(|b| *b == 0)
+    {
+        return Err(ToError::MissingEngineName);
+    }
+    if record.engine_a_version.iter().all(|b| *b == 0)
+        || record.engine_b_version.iter().all(|b| *b == 0)
+    {
+        return Err(ToError::MissingEngineVersion);
+    }
+    if record.ocr_a_sha256 == [0u8; 32] || record.ocr_b_sha256 == [0u8; 32] {
+        return Err(ToError::MissingOcrHash);
+    }
+    if record.crop_sha256 == [0u8; 32] {
+        return Err(ToError::MissingCropHash);
+    }
+    let max_cer = f64::from_bits(record.max_cer_bits);
+    require_threshold(max_cer)?;
+    match record.flags {
+        0 => {
+            if record.cer_bits != 0 {
+                return Err(ToError::MissingCer);
+            }
+            if record.status == SCAN_STATUS_SCAN_AGREEMENT {
+                return Err(ToError::MissingCer);
+            }
+        }
+        SCAN_FLAG_CER_PRESENT => {
+            let cer = f64::from_bits(record.cer_bits);
+            if !cer.is_finite() {
+                return Err(ToError::MissingCer);
+            }
+            if record.status == SCAN_STATUS_SCAN_AGREEMENT && cer > max_cer {
+                return Err(ToError::CerExceedsThreshold);
+            }
+        }
+        _ => return Err(ToError::NonZeroPad),
+    }
+    match record.status {
+        SCAN_STATUS_HUMAN_VERIFIED => {
+            if record.reviewer.iter().all(|b| *b == 0) {
+                return Err(ToError::MissingReviewer);
+            }
+            if record.reviewed_at == 0 {
+                return Err(ToError::MissingReviewedAt);
+            }
+        }
+        _ => {
+            if record.reviewer.iter().any(|b| *b != 0) || record.reviewed_at != 0 {
+                return Err(ToError::UnexpectedReviewEvidence);
+            }
+        }
+    }
+    require_zero(&record._pad0)?;
+    require_zero(&record._pad)
+}
+
 pub fn decode_to_records(
     tile_type: u32,
     layout_version: u32,
@@ -621,7 +886,8 @@ pub fn decode_to_records(
         | ToTileType::TO_FIGURE_ANCHOR
         | ToTileType::TO_PROCEDURE_STEP
         | ToTileType::TO_REFERENCE
-        | ToTileType::TO_LOCATOR => require_layout(tile_type, layout_version)?,
+        | ToTileType::TO_LOCATOR
+        | ToTileType::TO_SCAN_AGREEMENT => require_layout(tile_type, layout_version)?,
         other => return Err(ToError::UnknownTileType(other)),
     }
 
@@ -676,6 +942,12 @@ pub fn decode_to_records(
             ToLocatorRecord::SIZE,
             validate_locator,
             ToDecoded::Locator,
+        ),
+        ToTileType::TO_SCAN_AGREEMENT => decode_pod_slice(
+            payload,
+            ToScanAgreementRecord::SIZE,
+            validate_scan,
+            ToDecoded::ScanAgreement,
         ),
         other => Err(ToError::UnknownTileType(other)),
     }
