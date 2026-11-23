@@ -353,6 +353,8 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         44 => "to_fault_edge",
         45 => "to_spec_cell",
         46 => "to_figure_anchor",
+        47 => "can_dtc",
+        48 => "can_trigger",
         64 => "record",
         65 => "columnar",
         66 => "array",

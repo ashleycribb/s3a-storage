@@ -1,0 +1,17 @@
+# SYNTHETIC CAN log for s3a-can-bridge acceptance tests.
+# NOT a vehicle capture. NOT OEM or ETIMS data. Demonstration pump only.
+#
+# Frame 0: single-frame DM1, SA=0x00, PGN 65226, SPN 110 FMI 16 OC 3
+# Frame 1: in-range coolant temperature, PGN 65262, raw=80
+# Frame 2: out-of-range coolant temperature, PGN 65262, raw=200
+# Frame 3: OBD-II Mode 03 response, 11-bit id 0x7E8, DTC P0133
+# Frame 4: TP.CM_BAM for a 14-byte DM1, SA=0x21
+# Frame 5: TP.DT packet 1
+# Frame 6: TP.DT packet 2 (SPN 110/16, 94/1, 190/3)
+(1609430400.000000) vcan0 18FECA00#04006E001003FFFF
+(1609430400.010000) vcan0 18FEEE00#5000000000000000
+(1609430400.020000) vcan0 18FEEE00#C800000000000000
+(1609430400.030000) vcan0 7E8#0343013300000000
+(1609430400.040000) vcan0 1CECFF21#200E0002FFCAFE00
+(1609430400.041000) vcan0 1CEBFF21#0104006E0010035E
+(1609430400.042000) vcan0 1CEBFF21#02000101BE000305

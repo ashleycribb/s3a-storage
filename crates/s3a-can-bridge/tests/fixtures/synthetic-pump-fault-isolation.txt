@@ -1,0 +1,12 @@
+SYNTHETIC MAINTENANCE MANUAL
+Document: SYN-DEMO-0001
+NOT A TECHNICAL ORDER
+This file is a demonstration fixture. It contains no ETIMS content and no OEM manual text.
+
+Chapter 2  Fault Isolation
+
+Node 2 (test): Is discharge pressure within Table 1 limits?
+Node 5 (action): Replace the demonstration pressure regulator.
+
+The s3a-can-bridge mapping table points unmapped vehicle captures at these
+synthetic node identifiers only. It is not a real Technical Order procedure.

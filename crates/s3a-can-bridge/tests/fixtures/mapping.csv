@@ -1,0 +1,11 @@
+# s3a-can-bridge mapping table v1
+# SYNTHETIC. NOT OEM or ETIMS data. Demonstration pump only.
+# kind,key,fault_node_id
+# kind is one of: j1939, obd, param
+# j1939 key is spn:fmi (decimal)
+# obd key is a five-character code (P|C|B|U + four hex digits)
+# param key is a decimal SPN; a match occurs only when that SPN
+# is out of range in the threshold table
+j1939,110:16,5
+obd,P0133,2
+param,110,5
