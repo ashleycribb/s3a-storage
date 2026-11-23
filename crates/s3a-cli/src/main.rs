@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use s3a_core::{
     compare_hilbert_vs_morton_curve_continuity, toroidal_distance_3d, Dop14Hull, S3AAddon,
-    ADDON_DA, ADDON_EDU, ADDON_FINTECH, ADDON_GIS, ADDON_ONTOLOGY, ADDON_ROBOTICS, ADDON_WEARABLE,
+    ADDON_DA, ADDON_EDU, ADDON_FINTECH, ADDON_GIS, ADDON_ONTOLOGY, ADDON_ROBOTICS, ADDON_TO, ADDON_WEARABLE,
 };
 use s3a_engine::{
     archive_cold_tiles, execute_query, generate_delta_metadata, generate_iceberg_metadata,
@@ -1623,7 +1623,7 @@ fn print_usage() {
     println!("  s3a-cli compact <out_file> <in_file1> [in_file2...] Compact files into stratified Hyper-Tiles");
     println!("  s3a-cli fuse <out_file> <in_file1> [in_file2...]  Fuse multi-tile archives into a consolidated Hyper-Tile archive");
     println!("  s3a-cli addon list [archive]                      List active modular domain addons on an archive");
-    println!("  s3a-cli addon enable <archive> <addon_name>       Apply a modular addon (scholar, robotics, gis, da, wearable, ontology)");
+    println!("  s3a-cli addon enable <archive> <addon_name>       Apply a modular addon (scholar, robotics, gis, da, wearable, ontology, to)");
     println!("  s3a-cli query [--json] \"<S3A_QL_STATEMENT>\"       Execute versioned S3A-QL v1 statement");
     println!("  s3a-cli snapshot export <live_db> <out> [uuid]    Export portable Scholar Research Snapshot container");
     println!("  s3a-cli snapshot intake <snapshot> [--into <live>] Intake & validate portable SRS snapshot into live database");
@@ -1759,6 +1759,15 @@ fn run_addon_list(archive_file: &str) {
             "  [7] S3A-FINTECH (High-Frequency Financial Ticks):                {}",
             if is_fintech { "ACTIVE" } else { "INACTIVE" }
         );
+        let is_to = engine.is_addon_active(ADDON_TO);
+        println!(
+            "  [8] s3a-pack-to (Technical Order / OEM manuals):                 {}",
+            if is_to {
+                "ACTIVE (Tiles 41..=46)"
+            } else {
+                "INACTIVE"
+            }
+        );
     }
     #[cfg(not(feature = "packs"))]
     {
@@ -1781,9 +1790,10 @@ fn run_addon_enable(archive_file: &str, addon_name: &str) {
         "gis" | "geo" | "s3a-pack-gis" => ADDON_GIS,
         "da" | "data-availability" | "s3a-pack-da" => ADDON_DA,
         "ontology" | "ont" | "s3a-pack-ontology" => ADDON_ONTOLOGY,
+        "to" | "technical-order" | "s3a-pack-to" => ADDON_TO,
         "fintech" | "finance" => ADDON_FINTECH,
         _ => {
-            eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, fintech", addon_name);
+            eprintln!("Unknown addon: {}. Available: scholar, wearable, robotics, gis, da, ontology, to, fintech", addon_name);
             exit_failure();
         }
     };
@@ -3175,6 +3185,9 @@ fn run_status(path: &str, json_mode: bool) {
             }
             if mask & ADDON_FINTECH != 0 {
                 addons.push("fintech");
+            }
+            if mask & ADDON_TO != 0 {
+                addons.push("to");
             }
 
             if json_mode {

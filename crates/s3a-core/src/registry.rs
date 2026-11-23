@@ -1039,6 +1039,31 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
     })?;
 
+    // Tiles 41..=46: Technical Order / OEM maintenance manual pack.
+    // Next free IDs in the standard-pack band 32–63 after tile 33
+    // (geopose_basic_quat) and after in-tree vault IDs 36–40.
+    // Allocated via spec amendment (docs/spec/registry.md §1).
+    for (tile_type, name, record_size) in [
+        (41, "to_section", 128),
+        (42, "to_wcn", 128),
+        (43, "to_fault_node", 128),
+        (44, "to_fault_edge", 128),
+        (45, "to_spec_cell", 160),
+        (46, "to_figure_anchor", 160),
+    ] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "Technical Order Pack",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_TO),
+            record_size,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
     // Tile 96: Scholar Explorer Signed Committee Decisions
     reg.register(TileTypeDescriptor {
         tile_type: 96,

@@ -347,6 +347,12 @@ pub fn resolve_type_name(type_id: u32) -> &'static str {
         31 => "elr_goal",
         32 => "citation_fingerprint",
         33 => "geopose_basic_quat",
+        41 => "to_section",
+        42 => "to_wcn",
+        43 => "to_fault_node",
+        44 => "to_fault_edge",
+        45 => "to_spec_cell",
+        46 => "to_figure_anchor",
         64 => "record",
         65 => "columnar",
         66 => "array",
@@ -942,10 +948,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         v
     };
     for (i, tile_type) in unregistered {
-        if crate::standard_schema_for_type(tile_type)
-            .fields
-            .is_empty()
-        {
+        if crate::standard_schema_for_type(tile_type).fields.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
