@@ -370,7 +370,8 @@ fn at_to_13_fail_closed_on_invalid_locator_records() {
         }
     );
 
-    let short = &bytes_of(&procedure_record())[..10];
+    let record = procedure_record();
+    let short = &bytes_of(&record)[..10];
     let err = decode_to_records(ToTileType::TO_PROCEDURE_STEP, 1, short)
         .expect_err("truncated record must be rejected");
     match err {
