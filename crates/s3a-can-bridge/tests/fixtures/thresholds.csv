@@ -1,0 +1,10 @@
+# s3a-can-bridge threshold table v1
+# SYNTHETIC. NOT OEM or ETIMS data. Demonstration pump only.
+# spn,pgn,start_bit,bit_length,min_raw,max_raw
+# start_bit is 0-based in the 8-byte payload, numbered
+# least-significant bit first within each byte, bytes in order
+# (ISO 11898 / SAE J1939-71 Intel bit numbering).
+# bit_length is 1..=32. min_raw and max_raw are inclusive unsigned
+# integers in the raw (unscaled) signal domain.
+# A value is out of range when raw < min_raw or raw > max_raw.
+110,65262,0,8,16,145

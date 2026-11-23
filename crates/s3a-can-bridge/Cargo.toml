@@ -1,0 +1,30 @@
+[package]
+name = "s3a-can-bridge"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3A CAN bus bridge: J1939/OBD ingest, fail-closed fault-isolation triggers (Tiles 47..=48)"
+
+[features]
+default = []
+# Live SocketCAN reader. Linux only. The default build does not include it,
+# and the shipped reader never falls back to a mock source.
+socketcan = ["dep:libc"]
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-pack-to = { path = "../s3a-pack-to" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+s3a-pack-to = { path = "../s3a-pack-to" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
