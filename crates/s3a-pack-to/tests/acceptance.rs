@@ -811,8 +811,9 @@ fn at_to_07_unsupported_layout_version_fails_closed() {
         .get_tile(0)
         .expect("patched tile must still be listed");
     assert_eq!(header.record_layout_version, 99);
+    // read_record_by_coordinate treats the coordinate tile_id as the slot index.
     let res: Result<ToSectionRecord, S3AError> =
-        reader.read_record_by_coordinate(&S3ACoordinate::new(0, header.tile_id as u32, 0));
+        reader.read_record_by_coordinate(&S3ACoordinate::new(0, 0, 0));
     match res {
         Err(S3AError::UnsupportedLayoutVersion(v)) => assert_eq!(v, 99),
         other => panic!(
@@ -846,7 +847,6 @@ fn at_to_09_fixture_is_synthetic_only() {
     assert!(fixture.contains("NOT A TECHNICAL ORDER"));
     assert!(fixture.contains("no ETIMS content"));
     assert!(fixture.contains("SYN-DEMO-0001"));
-    assert!(!fixture.to_ascii_uppercase().contains("ETIMS"));
     assert!(!fixture.contains("T.O."));
     assert_eq!(sha256_hex(&sha256(fixture.as_bytes())), FIXTURE_SHA256_HEX);
 }
