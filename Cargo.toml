@@ -15,6 +15,7 @@ members = [
     "crates/s3a-spatial",
     "crates/s3a-pack-da",
     "crates/s3a-pack-ontology",
+    "crates/s3a-pack-to",
     "crates/s3a-wasm-snapshot",
     "crates/s3a-lrs-server",
     "crates/s3a-spec-vectors",

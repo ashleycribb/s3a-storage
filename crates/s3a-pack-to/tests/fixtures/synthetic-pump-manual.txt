@@ -1,0 +1,51 @@
+SYNTHETIC MAINTENANCE MANUAL — NOT A TECHNICAL ORDER
+
+This file is a demonstration fixture for the s3a-pack-to crate.
+It contains no ETIMS content, no official USAF Technical Order text,
+and no OEM manual excerpts. All names, part numbers, procedures,
+values, and figures are invented for software tests.
+
+Document-ID: SYN-DEMO-0001
+Title: Demonstration Pump Assembly
+
+Chapter 1  General
+  Section 1  Scope
+    Page 1
+      This synthetic manual describes a fictional demonstration pump used only to exercise Technical Order record layouts.
+
+    WARNING
+      Do not operate the demonstration pump without the safety cap installed.
+
+    CAUTION
+      Do not exceed the demonstration discharge pressure shown in Table 1.
+
+    NOTE
+      The demonstration pump is a bench model and is not installed on any aircraft.
+
+Chapter 2  Fault Isolation
+  Section 1  Isolation Tree
+    Page 2
+      Node 1  TEST  Is the inlet valve open?
+        YES -> Node 2
+        NO  -> Node 3
+      Node 2  TEST  Is discharge pressure within Table 1 limits?
+        YES -> Node 4
+        NO  -> Node 5
+      Node 3  ACTION  Open the inlet valve.
+      Node 4  CONCLUSION  Demonstration system is normal.
+      Node 5  ACTION  Replace the demonstration pressure regulator.
+
+Chapter 3  Specifications
+  Section 1  Limits
+    Page 3
+      Table 1  Demonstration operating limits
+        Row 1  Col 1  Discharge pressure
+        Row 1  Col 2  90
+        Row 1  Col 3  kPa
+
+Chapter 4  Figures
+  Section 1  Drawings
+    Page 4
+      Figure 1  Demonstration pump overview
+        Bounding-box (page thousandths): x=100 y=150 w=400 h=300
+        Quote: demonstration pump assembly
