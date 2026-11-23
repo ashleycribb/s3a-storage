@@ -290,6 +290,7 @@ pub const ADDON_GIS: u32 = 1 << 4; // 0x0010: GIS Topographic Point Cloud & Mesh
 pub const ADDON_DA: u32 = 1 << 5; // 0x0020: Decentralized Data Availability / State Commitments Pack
 pub const ADDON_ONTOLOGY: u32 = 1 << 6; // 0x0040: Formal Ontology & Axiom Registry Pack
 pub const ADDON_SPATIAL: u32 = 1 << 7; // 0x0080: Spatial Computing (OGC GeoPose) Pack
+pub const ADDON_TO: u32 = 1 << 8; // 0x0100: Technical Order / OEM maintenance manual pack
 
 /// Resolves the required addon capability bitmask and pack name for a given tile type.
 /// Returns None for domain-agnostic core tiles (0, 1, 2, 7, 8, 9).
@@ -312,6 +313,7 @@ pub fn required_addon_for_tile(tile_type: u32) -> Option<(&'static str, u32)> {
             10..=15 | 18 | 20 => Some(("s3a-pack-scholar", ADDON_EDU)),
             16..=17 => Some(("s3a-pack-ontology", ADDON_ONTOLOGY)),
             33 => Some(("s3a-spatial", ADDON_SPATIAL)),
+            41..=46 => Some(("s3a-pack-to", ADDON_TO)),
             _ => None,
         }
     }

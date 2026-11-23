@@ -16,7 +16,11 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **21 – 24** | Core xAPI 1.0.3 Learning Record Store (LRS) | Core LRS Specification |
 | **25 – 31** | Core Enterprise Learner Record (ELR) Projections (IEEE P2997) | Core ELR Specification |
 | **32** | Cryptographic Citation Fingerprints (Scholar Pack, spec amendment v1.2) | Research Provenance Extensions |
-| **33 – 63** | Reserved for Standard Domain Packs (allocated via spec amendment) | Standards Working Group |
+| **33** | Spatial Computing OGC GeoPose Basic-Quaternion (Spatial Pack, spec amendment) | Standard Domain Packs |
+| **34 – 35** | Unallocated (standard domain packs, via spec amendment) | Standards Working Group |
+| **36 – 40** | Vault identity/delegation/holding/transfer/event log (`s3a-vault`, in-tree; not yet listed in §2) | Vault Specification |
+| **41 – 46** | Technical Order / OEM maintenance manual records (TO Pack, spec amendment) | Standard Domain Packs |
+| **47 – 63** | Reserved for Standard Domain Packs (allocated via spec amendment) | Standards Working Group |
 | **64 – $2^{32}-1$** | Open Third-Party & Vendor Extensions | Uncoordinated / Vendor Addons |
 
 > ¹ **Note on IDs 3–6**: Tile IDs 3–6 (`wearable_micro`, `robotics_kinematic`, `gis_survey_mesh`, `data_availability`) are legacy pack assignments allocated inside the core band (0–9) and are now frozen. Greenfield standard domain packs MUST use IDs in the **32–63** band (via specification amendment), and third-party/application extensions MUST use **64+**.
@@ -61,6 +65,12 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
 | **33** | `geopose_basic_quat` | Spatial Pack (`s3a-spatial`) | `0x0080` (`ADDON_SPATIAL`) | 128 B | Fixed Pod | Active |
+| **41** | `to_section` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **42** | `to_wcn` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **43** | `to_fault_node` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **44** | `to_fault_edge` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **45** | `to_spec_cell` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **46** | `to_figure_anchor` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
 | **64** | `record` | Core Engine (`s3a-core`) | None | 64 B | Fixed Pod | Active |
 | **68** | `blob` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Raw Chunk | Active |
 | **72** | `provenance` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Provenance Chunk | Active |
@@ -101,7 +111,8 @@ The `FileHeader.addon_mask` bitmask registers authorized domain extensions enabl
 | **5** | `0x0020` | `ADDON_DA` | `s3a-pack-da` | Data availability & state commitments |
 | **6** | `0x0040` | `ADDON_ONTOLOGY` | `s3a-pack-ontology` | Formal concept ontology & axiom registry |
 | **7** | `0x0080` | `ADDON_SPATIAL` | `s3a-spatial` | OGC GeoPose Basic-Quaternion records |
-| **8 – 31** | `0x0100`.. | -- | Unallocated | Reserved for future standardization |
+| **8** | `0x0100` | `ADDON_TO` | `s3a-pack-to` | Technical Order and OEM maintenance manual records |
+| **9 – 31** | `0x0200`.. | -- | Unallocated | Reserved for future standardization |
 
 ---
 

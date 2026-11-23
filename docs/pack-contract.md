@@ -17,6 +17,7 @@ S3A Hyper-Tiles are 128 KB page-aligned binary storage units identified by an in
 | **Scholar Pack** | `s3a-pack-scholar` | `10..=15` | Academic literature, cognitive provenance, and learning analytics:<br>• `10`: `HumanLrsRecord` (64B) — Researcher decisions & gating ledger<br>• `11`: `AiTraceRecord` (64B) — Autonomous agent step traces & prompts<br>• `12`: `AcademicPaperRecord` (64B) — 3D Skilling Hilbert topic centroids<br>• `13`: `ResearchGraphEdgeRecord` (64B) — Citation & evidence graph<br>• `14`: `SrsWorkspaceRecord` (64B) — Research question & context<br>• `15`: `SrsManifestHeader` (512B) — Snapshot container manifest |
 | **Scholar Pack (pack band)** | `s3a-pack-scholar` | `96` | `96`: `CommitteeDecisionRecord` (160B) — reviewer-signed, hash-chained committee verdicts. Allocated at >= 64 because the Scholar slots in `10..=32` are taken. |
 | **Ontology Pack** | `s3a-pack-ontology` | `16..=17` | Web ontologies (OWL), semantic grounding, and xAPI rule registry:<br>• `16`: `OntologyConceptRecord` (64B) — Normalized URI concepts, verbs & scaffolds<br>• `17`: `OntologyAxiomRecord` (64B) — Structural invariants, domain/range, and approved analogies |
+| **Technical Order Pack** | `s3a-pack-to` | `41..=46` | Technical Order and OEM maintenance manual records (synthetic fixtures only in-tree):<br>• `41`: `ToSectionRecord` (128B)<br>• `42`: `ToWcnRecord` (128B) — Warning / Caution / Note<br>• `43`: `ToFaultNodeRecord` (128B)<br>• `44`: `ToFaultEdgeRecord` (128B)<br>• `45`: `ToSpecCellRecord` (160B)<br>• `46`: `ToFigureAnchorRecord` (160B) |
 | **Clean Pack** | `s3a-pack-clean` | none (uses core `64` RECORD, `68` BLOB, `72` PROVENANCE) | Raw-sealed intake, company rulebook cleaning, signed cleaned versions with provenance. No `addon_mask` bit needed. See [clean-pack.md](clean-pack.md). |
 | **Reserved Gap** | — | `18..=63` | Reserved for future S3A standard extensions. |
 | **Future Packs** | Third-party | `64..` | Net-new third-party domain packs (FinTech, Healthcare, Astronomy, etc.) must allocate IDs starting at 64 to prevent collisions with Core, System, Scholar, and Ontology packs. |
@@ -36,6 +37,8 @@ The S3A 64-byte `FileHeader` contains an immutable-per-slot `addon_mask: u32` bi
 - `ADDON_GIS = 1 << 4` (0x0010: GIS survey mesh pack active)
 - `ADDON_DA = 1 << 5` (0x0020: Data availability / state commitments pack active)
 - `ADDON_ONTOLOGY = 1 << 6` (0x0040: Formal Ontology & Axiom Registry Pack active)
+- `ADDON_SPATIAL = 1 << 7` (0x0080: Spatial Computing OGC GeoPose pack active)
+- `ADDON_TO = 1 << 8` (0x0100: Technical Order / OEM maintenance manual pack active)
 
 ### Enforcement Rules
 1. **Write Gate (Fail Closed)**:
@@ -46,6 +49,8 @@ The S3A 64-byte `FileHeader` contains an immutable-per-slot `addon_mask: u32` bi
    - Tile 6 requires `ADDON_DA` (0x0020)
    - Tiles 10..=15 require `ADDON_EDU` (0x0001)
    - Tiles 16..=17 require `ADDON_ONTOLOGY` (0x0040)
+   - Tile 33 requires `ADDON_SPATIAL` (0x0080)
+   - Tiles 41..=46 require `ADDON_TO` (0x0100)
    The engine returns `io::ErrorKind::PermissionDenied`. Capabilities must be explicitly authorized using `enable_addon(mask)` or CLI `s3a-cli addon enable <file> <name>`.
 2. **Read Gate (Data Safety)**:
    Reading existing pack tiles in an archive always succeeds even if the mask is zero or cleared, preventing data loss. Legacy archives with tiles 3–6 remain fully readable. Inspection tools issue an advisory warning if unmasked pack tiles are detected.

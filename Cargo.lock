@@ -2333,6 +2333,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "s3a-pack-to"
+version = "0.2.0"
+dependencies = [
+ "bytemuck",
+ "crc32c",
+ "s3a-core",
+ "s3a-engine",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "s3a-pack-wearable"
 version = "0.2.0"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "s3a-pack-to"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3A Domain Pack for Technical Order and OEM maintenance manual records (Tiles 41..=46)"
+
+[dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+s3a-core = { path = "../s3a-core" }
+s3a-engine = { path = "../s3a-engine" }
+bytemuck = { workspace = true }
+sha2 = { workspace = true }
+crc32c = { workspace = true }
