@@ -247,3 +247,104 @@ mod tests {
         assert_eq!(std::mem::align_of::<ToFigureAnchorRecord>(), 8);
     }
 }
+
+/// Procedure step record (tile 49, `to_procedure_step`, 160 B).
+///
+/// | Off | Len | Field |
+/// |---:|---:|---|
+/// | 0 | 16 | `source_id` |
+/// | 16 | 32 | `content_hash` (SHA-256 of the step text) |
+/// | 48 | 16 | `origin_ptr` |
+/// | 64 | 16 | `doc_id` |
+/// | 80 | 32 | `para_path_hash` (SHA-256 of the paragraph path bytes) |
+/// | 112 | 4 | `step_no` (1-based) |
+/// | 116 | 4 | `page` (1-based PDF page) |
+/// | 120 | 32 | `text_hash` (SHA-256 of the step text) |
+/// | 152 | 8 | `_pad` (must be zero) |
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct ToProcedureStepRecord {
+    pub source_id: [u8; 16],
+    pub content_hash: [u8; 32],
+    pub origin_ptr: [u8; 16],
+    pub doc_id: [u8; 16],
+    pub para_path_hash: [u8; 32],
+    pub step_no: u32,
+    pub page: u32,
+    pub text_hash: [u8; 32],
+    pub _pad: [u8; 8],
+}
+
+impl ToProcedureStepRecord {
+    /// Wire size of the record in bytes.
+    pub const SIZE: usize = 160;
+}
+
+/// Related-publication record (tile 50, `to_reference`, 128 B).
+///
+/// | Off | Len | Field |
+/// |---:|---:|---|
+/// | 0 | 16 | `source_id` |
+/// | 16 | 32 | `content_hash` (SHA-256 of the title bytes) |
+/// | 48 | 16 | `origin_ptr` |
+/// | 64 | 16 | `doc_id` |
+/// | 80 | 32 | `pub_id_hash` (SHA-256 of the publication identifier bytes) |
+/// | 112 | 4 | `page` (1-based PDF page of the citation) |
+/// | 116 | 12 | `_pad` (must be zero) |
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct ToReferenceRecord {
+    pub source_id: [u8; 16],
+    pub content_hash: [u8; 32],
+    pub origin_ptr: [u8; 16],
+    pub doc_id: [u8; 16],
+    pub pub_id_hash: [u8; 32],
+    pub page: u32,
+    pub _pad: [u8; 12],
+}
+
+impl ToReferenceRecord {
+    /// Wire size of the record in bytes.
+    pub const SIZE: usize = 128;
+}
+
+/// Locator record (tile 51, `to_locator`, 160 B).
+///
+/// Carries the full paragraph path and printed page for a Technical Order
+/// record (including tiles 41..=46, which have no room for those fields).
+/// `content_hash` is SHA-256 of `para_path || 0x1F || printed_page`.
+/// `printed_page_hash` is the first 16 bytes of SHA-256 of the printed
+/// page string (for example `4-2` or `xi`).
+///
+/// | Off | Len | Field |
+/// |---:|---:|---|
+/// | 0 | 16 | `source_id` |
+/// | 16 | 32 | `content_hash` |
+/// | 48 | 16 | `origin_ptr` |
+/// | 64 | 16 | `doc_id` |
+/// | 80 | 16 | `target_source_id` |
+/// | 96 | 4 | `target_tile_type` |
+/// | 100 | 4 | `page` (1-based PDF page) |
+/// | 104 | 32 | `para_path_hash` |
+/// | 136 | 16 | `printed_page_hash` |
+/// | 152 | 8 | `_pad` (must be zero) |
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]
+pub struct ToLocatorRecord {
+    pub source_id: [u8; 16],
+    pub content_hash: [u8; 32],
+    pub origin_ptr: [u8; 16],
+    pub doc_id: [u8; 16],
+    pub target_source_id: [u8; 16],
+    pub target_tile_type: u32,
+    pub page: u32,
+    pub para_path_hash: [u8; 32],
+    pub printed_page_hash: [u8; 16],
+    pub _pad: [u8; 8],
+}
+
+impl ToLocatorRecord {
+    /// Wire size of the record in bytes.
+    pub const SIZE: usize = 160;
+}
+

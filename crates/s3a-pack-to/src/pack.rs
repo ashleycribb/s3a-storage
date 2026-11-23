@@ -20,6 +20,12 @@ impl ToTileType {
     pub const TO_SPEC_CELL: u32 = 45;
     /// Hyper-Tile 46: Figure / schematic anchor (`ToFigureAnchorRecord`, 160 bytes)
     pub const TO_FIGURE_ANCHOR: u32 = 46;
+    /// Hyper-Tile 49: Procedure step (`ToProcedureStepRecord`, 160 bytes)
+    pub const TO_PROCEDURE_STEP: u32 = 49;
+    /// Hyper-Tile 50: Related publication (`ToReferenceRecord`, 128 bytes)
+    pub const TO_REFERENCE: u32 = 50;
+    /// Hyper-Tile 51: Paragraph path and printed-page locator (`ToLocatorRecord`, 160 bytes)
+    pub const TO_LOCATOR: u32 = 51;
 }
 
 const FIXED_POD_COPY: TileTypeFlags = TileTypeFlags::from_bits_truncate(
@@ -93,11 +99,51 @@ pub static TO_DESCRIPTORS: &[TileTypeDescriptor] = &[
         min_supported_layout_version: 1,
         flags: FIXED_POD_COPY,
     },
+
+];
+
+/// Tiles 49..=51. Kept separate from `TO_DESCRIPTORS` so the original
+/// 41..=46 band and `ToPack::tile_range()` stay unchanged; 47..=48
+/// belong to `s3a-can-bridge`.
+pub static TO_LOCATOR_DESCRIPTORS: &[TileTypeDescriptor] = &[
+    TileTypeDescriptor {
+        tile_type: ToTileType::TO_PROCEDURE_STEP,
+        name: "to_procedure_step",
+        owner_pack: "Technical Order Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(ADDON_TO),
+        record_size: 160,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: FIXED_POD_COPY,
+    },
+    TileTypeDescriptor {
+        tile_type: ToTileType::TO_REFERENCE,
+        name: "to_reference",
+        owner_pack: "Technical Order Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(ADDON_TO),
+        record_size: 128,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: FIXED_POD_COPY,
+    },
+    TileTypeDescriptor {
+        tile_type: ToTileType::TO_LOCATOR,
+        name: "to_locator",
+        owner_pack: "Technical Order Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(ADDON_TO),
+        record_size: 160,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: FIXED_POD_COPY,
+    },
 ];
 
 /// Registers tile types for the Technical Order domain pack into a registry.
 pub fn register_pack_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryError> {
-    for desc in TO_DESCRIPTORS {
+    for desc in TO_DESCRIPTORS.iter().chain(TO_LOCATOR_DESCRIPTORS.iter()) {
         reg.register(desc.clone())?;
     }
     Ok(())
@@ -105,6 +151,13 @@ pub fn register_pack_types(reg: &mut TileTypeRegistry) -> Result<(), RegistryErr
 
 /// Domain pack implementation for Technical Orders (`s3a-pack-to`).
 pub struct ToPack;
+
+impl ToPack {
+    /// Second tile band, after the CAN-bridge reservation of 47..=48.
+    pub fn additional_tile_range() -> RangeInclusive<u32> {
+        49..=51
+    }
+}
 
 impl S3AAddon for ToPack {
     fn addon_id(&self) -> u32 {
