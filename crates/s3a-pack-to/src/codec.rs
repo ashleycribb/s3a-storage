@@ -2,8 +2,9 @@
 
 use crate::pack::ToTileType;
 use crate::records::{
-    ToFaultEdgeRecord, ToFaultNodeRecord, ToFigureAnchorRecord, ToSectionRecord, ToSpecCellRecord,
-    ToWcnRecord, NODE_KIND_ACTION, NODE_KIND_CONCLUSION, NODE_KIND_TEST, PAGE_THOUSANDTHS_MAX,
+    ToFaultEdgeRecord, ToFaultNodeRecord, ToFigureAnchorRecord, ToLocatorRecord,
+    ToProcedureStepRecord, ToReferenceRecord, ToSectionRecord, ToSpecCellRecord, ToWcnRecord,
+    NODE_KIND_ACTION, NODE_KIND_CONCLUSION, NODE_KIND_TEST, PAGE_THOUSANDTHS_MAX,
     WCN_KIND_CAUTION, WCN_KIND_NOTE, WCN_KIND_WARNING,
 };
 use bytemuck::{pod_read_unaligned, Pod};
@@ -29,6 +30,10 @@ pub enum ToError {
     UnsupportedLayoutVersion { tile_type: u32, version: u32 },
     UnknownTileType(u32),
     NonZeroPad,
+    ZeroStepNo,
+    ZeroPage,
+    MissingTargetSourceId,
+    TargetTileNotTo { tile_type: u32 },
 }
 
 /// Successfully decoded payload of one Technical Order tile.
@@ -40,6 +45,9 @@ pub enum ToDecoded {
     FaultEdge(Vec<ToFaultEdgeRecord>),
     SpecCell(Vec<ToSpecCellRecord>),
     FigureAnchor(Vec<ToFigureAnchorRecord>),
+    ProcedureStep(Vec<ToProcedureStepRecord>),
+    Reference(Vec<ToReferenceRecord>),
+    Locator(Vec<ToLocatorRecord>),
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -76,6 +84,31 @@ fn require_non_empty(text: &[u8]) -> Result<(), ToError> {
     } else {
         Ok(())
     }
+}
+
+fn first16(hash: [u8; 32]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&hash[..16]);
+    out
+}
+
+fn require_page(page: u32) -> Result<(), ToError> {
+    if page == 0 {
+        Err(ToError::ZeroPage)
+    } else {
+        Ok(())
+    }
+}
+
+fn is_to_target_tile(tile_type: u32) -> bool {
+    (41..=46).contains(&tile_type) || (49..=51).contains(&tile_type)
+}
+
+fn locator_content_hash(para_path: &[u8], printed_page: &[u8]) -> [u8; 32] {
+    let mut src = para_path.to_vec();
+    src.push(0x1f);
+    src.extend_from_slice(printed_page);
+    sha256(&src)
 }
 
 fn require_wcn_kind(kind: u8) -> Result<(), ToError> {
@@ -438,6 +471,142 @@ where
 /// Decodes a Technical Order tile payload. Fails closed on an unknown tile
 /// type, an unsupported layout version, a truncated record, or an invalid
 /// record.
+
+/// Encodes a procedure step record (tile 49).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_to_procedure_step(
+    text: &[u8],
+    source_id: [u8; 16],
+    origin_ptr: [u8; 16],
+    doc_id: [u8; 16],
+    para_path: &[u8],
+    step_no: u32,
+    page: u32,
+) -> Result<ToProcedureStepRecord, ToError> {
+    require_source_id(source_id)?;
+    require_origin_ptr(origin_ptr)?;
+    require_doc_id(doc_id)?;
+    require_non_empty(text)?;
+    require_non_empty(para_path)?;
+    if step_no == 0 {
+        return Err(ToError::ZeroStepNo);
+    }
+    require_page(page)?;
+    Ok(ToProcedureStepRecord {
+        source_id,
+        content_hash: sha256(text),
+        origin_ptr,
+        doc_id,
+        para_path_hash: sha256(para_path),
+        step_no,
+        page,
+        text_hash: sha256(text),
+        _pad: [0u8; 8],
+    })
+}
+
+fn validate_procedure_step(record: &ToProcedureStepRecord) -> Result<(), ToError> {
+    require_source_id(record.source_id)?;
+    require_origin_ptr(record.origin_ptr)?;
+    require_doc_id(record.doc_id)?;
+    if record.step_no == 0 {
+        return Err(ToError::ZeroStepNo);
+    }
+    require_page(record.page)?;
+    require_zero(&record._pad)
+}
+
+/// Encodes a related-publication record (tile 50).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_to_reference(
+    title: &[u8],
+    source_id: [u8; 16],
+    origin_ptr: [u8; 16],
+    doc_id: [u8; 16],
+    pub_id: &[u8],
+    page: u32,
+) -> Result<ToReferenceRecord, ToError> {
+    require_source_id(source_id)?;
+    require_origin_ptr(origin_ptr)?;
+    require_doc_id(doc_id)?;
+    require_non_empty(title)?;
+    require_non_empty(pub_id)?;
+    require_page(page)?;
+    Ok(ToReferenceRecord {
+        source_id,
+        content_hash: sha256(title),
+        origin_ptr,
+        doc_id,
+        pub_id_hash: sha256(pub_id),
+        page,
+        _pad: [0u8; 12],
+    })
+}
+
+fn validate_reference(record: &ToReferenceRecord) -> Result<(), ToError> {
+    require_source_id(record.source_id)?;
+    require_origin_ptr(record.origin_ptr)?;
+    require_doc_id(record.doc_id)?;
+    require_page(record.page)?;
+    require_zero(&record._pad)
+}
+
+/// Encodes a locator record (tile 51) for paragraph path and printed page.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_to_locator(
+    source_id: [u8; 16],
+    origin_ptr: [u8; 16],
+    doc_id: [u8; 16],
+    target_source_id: [u8; 16],
+    target_tile_type: u32,
+    page: u32,
+    para_path: &[u8],
+    printed_page: &[u8],
+) -> Result<ToLocatorRecord, ToError> {
+    require_source_id(source_id)?;
+    require_origin_ptr(origin_ptr)?;
+    require_doc_id(doc_id)?;
+    if target_source_id == [0u8; 16] {
+        return Err(ToError::MissingTargetSourceId);
+    }
+    if !is_to_target_tile(target_tile_type) {
+        return Err(ToError::TargetTileNotTo {
+            tile_type: target_tile_type,
+        });
+    }
+    require_page(page)?;
+    require_non_empty(para_path)?;
+    require_non_empty(printed_page)?;
+    Ok(ToLocatorRecord {
+        source_id,
+        content_hash: locator_content_hash(para_path, printed_page),
+        origin_ptr,
+        doc_id,
+        target_source_id,
+        target_tile_type,
+        page,
+        para_path_hash: sha256(para_path),
+        printed_page_hash: first16(sha256(printed_page)),
+        _pad: [0u8; 8],
+    })
+}
+
+fn validate_locator(record: &ToLocatorRecord) -> Result<(), ToError> {
+    require_source_id(record.source_id)?;
+    require_origin_ptr(record.origin_ptr)?;
+    require_doc_id(record.doc_id)?;
+    if record.target_source_id == [0u8; 16] {
+        return Err(ToError::MissingTargetSourceId);
+    }
+    if !is_to_target_tile(record.target_tile_type) {
+        return Err(ToError::TargetTileNotTo {
+            tile_type: record.target_tile_type,
+        });
+    }
+    require_page(record.page)?;
+    require_zero(&record._pad)
+}
+
 pub fn decode_to_records(
     tile_type: u32,
     layout_version: u32,
@@ -449,7 +618,10 @@ pub fn decode_to_records(
         | ToTileType::TO_FAULT_NODE
         | ToTileType::TO_FAULT_EDGE
         | ToTileType::TO_SPEC_CELL
-        | ToTileType::TO_FIGURE_ANCHOR => require_layout(tile_type, layout_version)?,
+        | ToTileType::TO_FIGURE_ANCHOR
+        | ToTileType::TO_PROCEDURE_STEP
+        | ToTileType::TO_REFERENCE
+        | ToTileType::TO_LOCATOR => require_layout(tile_type, layout_version)?,
         other => return Err(ToError::UnknownTileType(other)),
     }
 
@@ -486,6 +658,24 @@ pub fn decode_to_records(
             ToFigureAnchorRecord::SIZE,
             validate_figure,
             ToDecoded::FigureAnchor,
+        ),
+        ToTileType::TO_PROCEDURE_STEP => decode_pod_slice(
+            payload,
+            ToProcedureStepRecord::SIZE,
+            validate_procedure_step,
+            ToDecoded::ProcedureStep,
+        ),
+        ToTileType::TO_REFERENCE => decode_pod_slice(
+            payload,
+            ToReferenceRecord::SIZE,
+            validate_reference,
+            ToDecoded::Reference,
+        ),
+        ToTileType::TO_LOCATOR => decode_pod_slice(
+            payload,
+            ToLocatorRecord::SIZE,
+            validate_locator,
+            ToDecoded::Locator,
         ),
         other => Err(ToError::UnknownTileType(other)),
     }

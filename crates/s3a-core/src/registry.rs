@@ -1080,6 +1080,27 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         })?;
     }
 
+    // Tiles 49..=51: Technical Order pack extension (procedure steps,
+    // related publications, and paragraph/printed-page locators).
+    // 47..=48 remain s3a-can-bridge (PR #224).
+    for (tile_type, name, record_size) in [
+        (49, "to_procedure_step", 160),
+        (50, "to_reference", 128),
+        (51, "to_locator", 160),
+    ] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "Technical Order Pack",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_TO),
+            record_size,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
     // Tile 96: Scholar Explorer Signed Committee Decisions
     reg.register(TileTypeDescriptor {
         tile_type: 96,

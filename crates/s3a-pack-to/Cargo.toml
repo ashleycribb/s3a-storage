@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "S3A Domain Pack for Technical Order and OEM maintenance manual records (Tiles 41..=46)"
+description = "S3A Domain Pack for Technical Order and OEM maintenance manual records (Tiles 41..=46 and 49..=51)"
 
 [dependencies]
 s3a-core = { path = "../s3a-core" }

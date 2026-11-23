@@ -73,6 +73,9 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **46** | `to_figure_anchor` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
 | **47** | `can_dtc` | CAN Bridge (`s3a-can-bridge`) | `0x0200` (`ADDON_CAN`) | 128 B | Fixed Pod | Active |
 | **48** | `can_trigger` | CAN Bridge (`s3a-can-bridge`) | `0x0200` (`ADDON_CAN`) | 128 B | Fixed Pod | Active |
+| **49** | `to_procedure_step` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **50** | `to_reference` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **51** | `to_locator` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
 | **64** | `record` | Core Engine (`s3a-core`) | None | 64 B | Fixed Pod | Active |
 | **68** | `blob` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Raw Chunk | Active |
 | **72** | `provenance` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Provenance Chunk | Active |
