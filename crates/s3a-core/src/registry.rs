@@ -1083,6 +1083,8 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
     // Tiles 49..=51: Technical Order pack extension (procedure steps,
     // related publications, and paragraph/printed-page locators).
     // 47..=48 remain s3a-can-bridge (PR #224).
+    // required_addon_for_tile returns owner_pack; AT-TO-11 (and the
+    // no_std fallback) use the crate name, matching tiles 47..=48.
     for (tile_type, name, record_size) in [
         (49, "to_procedure_step", 160),
         (50, "to_reference", 128),
@@ -1091,7 +1093,7 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         reg.register(TileTypeDescriptor {
             tile_type,
             name,
-            owner_pack: "Technical Order Pack",
+            owner_pack: "s3a-pack-to",
             lifecycle: TileLifecycle::Active,
             required_addon: Some(crate::ADDON_TO),
             record_size,
