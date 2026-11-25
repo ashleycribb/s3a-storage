@@ -31,8 +31,8 @@ use s3a_core::registry::TileTypeRegistry;
 use s3a_engine::standard_schema_for_type;
 use s3a_pack_scholar::{
     register_pack_types, AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord,
-    CitationFingerprintRecord, HumanLrsRecord, ResearchGraphEdgeRecord,
-    ScholarNoteClaimRecord, ScholarTileType, SrsWorkspaceRecord,
+    CitationFingerprintRecord, HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord,
+    ScholarTileType, SrsWorkspaceRecord,
 };
 
 /// (type_id, struct size) for every Scholar type with a named record struct.
@@ -40,11 +40,26 @@ fn scholar_types() -> Vec<(u32, usize)> {
     vec![
         (ScholarTileType::HUMAN_LRS, size_of::<HumanLrsRecord>()),
         (ScholarTileType::AI_TRACE_LOG, size_of::<AiTraceRecord>()),
-        (ScholarTileType::ACADEMIC_PAPERS, size_of::<AcademicPaperRecord>()),
-        (ScholarTileType::RESEARCH_GRAPH, size_of::<ResearchGraphEdgeRecord>()),
-        (ScholarTileType::SRS_WORKSPACE, size_of::<SrsWorkspaceRecord>()),
-        (ScholarTileType::AGENT_REGISTRY, size_of::<AgentRegistryRecord>()),
-        (ScholarTileType::NOTE_CLAIMS, size_of::<ScholarNoteClaimRecord>()),
+        (
+            ScholarTileType::ACADEMIC_PAPERS,
+            size_of::<AcademicPaperRecord>(),
+        ),
+        (
+            ScholarTileType::RESEARCH_GRAPH,
+            size_of::<ResearchGraphEdgeRecord>(),
+        ),
+        (
+            ScholarTileType::SRS_WORKSPACE,
+            size_of::<SrsWorkspaceRecord>(),
+        ),
+        (
+            ScholarTileType::AGENT_REGISTRY,
+            size_of::<AgentRegistryRecord>(),
+        ),
+        (
+            ScholarTileType::NOTE_CLAIMS,
+            size_of::<ScholarNoteClaimRecord>(),
+        ),
         (
             ScholarTileType::CITATION_FINGERPRINT,
             size_of::<CitationFingerprintRecord>(),
@@ -69,19 +84,28 @@ fn assert_schema_fields(type_id: u32, expected: &[(&str, u16, u32, u32)]) {
         let f = &schema.fields[i];
         assert_eq!(f.name, *name, "type {} field {}: name", type_id, i + 1);
         assert_eq!(
-            f.field_type, *ftype,
+            f.field_type,
+            *ftype,
             "type {} field {} ({}): field_type",
-            type_id, i + 1, name
+            type_id,
+            i + 1,
+            name
         );
         assert_eq!(
-            f.byte_offset, *off,
+            f.byte_offset,
+            *off,
             "type {} field {} ({}): byte_offset",
-            type_id, i + 1, name
+            type_id,
+            i + 1,
+            name
         );
         assert_eq!(
-            f.byte_len, *len,
+            f.byte_len,
+            *len,
             "type {} field {} ({}): byte_len",
-            type_id, i + 1, name
+            type_id,
+            i + 1,
+            name
         );
     }
 }
@@ -231,9 +255,7 @@ fn note_claims_is_160_everywhere() {
     let mut reg = TileTypeRegistry::new();
     register_pack_types(&mut reg).expect("register pack types");
     assert_eq!(
-        reg.get(ScholarTileType::NOTE_CLAIMS)
-            .unwrap()
-            .record_size,
+        reg.get(ScholarTileType::NOTE_CLAIMS).unwrap().record_size,
         160
     );
 }

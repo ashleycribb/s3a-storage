@@ -227,8 +227,8 @@ fn at_sp_05_sealed_record_in_4k_edge_tile() {
     assert_eq!(tile_header.payload_len, 128);
 
     // The payload is the record, byte for byte, and the seal covers it.
-    let payload = &flash_bytes[tile_offset + COMMON_TILE_HEADER_SIZE
-        ..tile_offset + COMMON_TILE_HEADER_SIZE + 128];
+    let payload = &flash_bytes
+        [tile_offset + COMMON_TILE_HEADER_SIZE..tile_offset + COMMON_TILE_HEADER_SIZE + 128];
     assert_eq!(payload, record_bytes);
     assert_eq!(tile_header.data_crc32, crc32c(payload));
     let payload_hash: [u8; 32] = Sha256::digest(payload).into();

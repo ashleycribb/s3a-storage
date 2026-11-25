@@ -167,10 +167,7 @@ fn test_small_document_is_not_padded_to_128kib() {
     let vault = dir.join("small.s3a");
     run_cli(&dir, ["init", "small.s3a"]);
     let content = b"0123456789abcdefg"; // 17 bytes
-    run_cli(
-        &dir,
-        ["put", "small.s3a", "hello", "0123456789abcdefg"],
-    );
+    run_cli(&dir, ["put", "small.s3a", "hello", "0123456789abcdefg"]);
     let out = run_cli(&dir, ["get", "small.s3a", "hello"]);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
@@ -208,7 +205,10 @@ fn test_different_payloads_select_different_size_classes() {
     write_document_record(&vault1, "a", &vec![b'y'; 5000]).expect("put class-1 payload");
     let bytes0 = fs::read(&vault0).expect("read vault0");
     let bytes1 = fs::read(&vault1).expect("read vault1");
-    assert_ne!(bytes0, bytes1, "different payloads must produce different vault bytes");
+    assert_ne!(
+        bytes0, bytes1,
+        "different payloads must produce different vault bytes"
+    );
     assert_ne!(
         sha256_hex(&bytes0),
         sha256_hex(&bytes1),
@@ -229,11 +229,15 @@ fn test_different_payloads_select_different_size_classes() {
         );
     }
     assert_eq!(
-        read_document_record(&vault0, "a").expect("get class-0").unwrap(),
+        read_document_record(&vault0, "a")
+            .expect("get class-0")
+            .unwrap(),
         vec![b'x'; 100]
     );
     assert_eq!(
-        read_document_record(&vault1, "a").expect("get class-1").unwrap(),
+        read_document_record(&vault1, "a")
+            .expect("get class-1")
+            .unwrap(),
         vec![b'y'; 5000]
     );
 }
@@ -361,7 +365,8 @@ fn test_wiki_shape_tamper_fails_verify_and_restore_is_byte_identical() {
         .output()
         .expect("run verify on tampered file");
     let tampered_stdout = String::from_utf8_lossy(&tampered_out.stdout);
-    let tampered_failed = !tampered_out.status.success() || tampered_stdout.contains("\"ok\":false");
+    let tampered_failed =
+        !tampered_out.status.success() || tampered_stdout.contains("\"ok\":false");
     assert!(
         tampered_failed,
         "flipping one byte must fail verify (status {:?}, stdout {})",
@@ -376,7 +381,11 @@ fn test_wiki_shape_tamper_fails_verify_and_restore_is_byte_identical() {
         let got = read_document_record(&sealed, &entry.key)
             .unwrap_or_else(|e| panic!("read {} from sealed archive: {}", entry.key, e))
             .unwrap_or_else(|| panic!("key {} missing from sealed archive", entry.key));
-        assert_eq!(got, expected, "key {} did not restore byte-identical", entry.key);
+        assert_eq!(
+            got, expected,
+            "key {} did not restore byte-identical",
+            entry.key
+        );
         if first.is_none() {
             first = Some(got);
         } else if second.is_none() {
@@ -393,17 +402,9 @@ fn test_wiki_shape_tamper_fails_verify_and_restore_is_byte_identical() {
     // byte for byte.
     run_cli(
         &dir,
-        [
-            "flatten",
-            "--zstd",
-            "wiki.sealed.s3a",
-            "wiki.sealed.s3af",
-        ],
+        ["flatten", "--zstd", "wiki.sealed.s3a", "wiki.sealed.s3af"],
     );
-    run_cli(
-        &dir,
-        ["unflatten", "wiki.sealed.s3af", "wiki.restored.s3a"],
-    );
+    run_cli(&dir, ["unflatten", "wiki.sealed.s3af", "wiki.restored.s3a"]);
     assert_eq!(
         fs::read(dir.join("wiki.restored.s3a")).expect("read restored"),
         fs::read(&sealed).expect("read sealed"),

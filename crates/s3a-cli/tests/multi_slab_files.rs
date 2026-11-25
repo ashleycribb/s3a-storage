@@ -192,7 +192,10 @@ fn test_file_larger_than_128kib_round_trips() {
     let got = read_document_record(&vault, "big")
         .expect("get 200 KiB document")
         .expect("big key must exist");
-    assert_eq!(got, content, "200 KiB document must round-trip byte-identical");
+    assert_eq!(
+        got, content,
+        "200 KiB document must round-trip byte-identical"
+    );
 
     // The CLI must round-trip it the same way.
     let big_file = dir.join("big.bin");
@@ -235,13 +238,36 @@ fn test_two_large_files_have_different_content_and_hashes() {
     assert_eq!(b["size_bytes"].as_u64().unwrap(), 300 * 1024);
     let hash_a = a["sha256"].as_str().expect("a-large sha256 in ls");
     let hash_b = b["sha256"].as_str().expect("b-large sha256 in ls");
-    assert_eq!(hash_a, sha256_hex(&content_a), "a-large sha256 must match content");
-    assert_eq!(hash_b, sha256_hex(&content_b), "b-large sha256 must match content");
-    assert_ne!(hash_a, hash_b, "different files must have different whole-file hashes");
-    let chunks_a = a["chunk_count"].as_u64().expect("a-large chunk_count in ls");
-    let chunks_b = b["chunk_count"].as_u64().expect("b-large chunk_count in ls");
-    assert!(chunks_a >= 2, "200 KiB file must span at least 2 chunks, got {}", chunks_a);
-    assert!(chunks_b >= 3, "300 KiB file must span at least 3 chunks, got {}", chunks_b);
+    assert_eq!(
+        hash_a,
+        sha256_hex(&content_a),
+        "a-large sha256 must match content"
+    );
+    assert_eq!(
+        hash_b,
+        sha256_hex(&content_b),
+        "b-large sha256 must match content"
+    );
+    assert_ne!(
+        hash_a, hash_b,
+        "different files must have different whole-file hashes"
+    );
+    let chunks_a = a["chunk_count"]
+        .as_u64()
+        .expect("a-large chunk_count in ls");
+    let chunks_b = b["chunk_count"]
+        .as_u64()
+        .expect("b-large chunk_count in ls");
+    assert!(
+        chunks_a >= 2,
+        "200 KiB file must span at least 2 chunks, got {}",
+        chunks_a
+    );
+    assert!(
+        chunks_b >= 3,
+        "300 KiB file must span at least 3 chunks, got {}",
+        chunks_b
+    );
     assert_ne!(
         chunks_a, chunks_b,
         "200 KiB and 300 KiB files must have different chunk counts"
@@ -259,7 +285,11 @@ fn test_chunk_list_is_ordered_complete_and_hashed() {
     let ls = ls_json(&dir, "chunks.s3a");
     let entry = doc_entry(&ls, "big");
     let chunk_count = entry["chunk_count"].as_u64().expect("chunk_count in ls") as usize;
-    assert!(chunk_count >= 2, "200 KiB file must span chunks, got {}", chunk_count);
+    assert!(
+        chunk_count >= 2,
+        "200 KiB file must span chunks, got {}",
+        chunk_count
+    );
     let chunks = entry["chunks"].as_array().expect("chunks array in ls");
     assert_eq!(
         chunks.len(),
@@ -281,7 +311,10 @@ fn test_chunk_list_is_ordered_complete_and_hashed() {
             .or_else(|| chunk.get("total"))
             .and_then(|v| v.as_u64())
             .expect("chunk total/total_chunks");
-        assert_eq!(total as usize, chunk_count, "chunk total must equal chunk_count");
+        assert_eq!(
+            total as usize, chunk_count,
+            "chunk total must equal chunk_count"
+        );
         let bytes = chunk["chunk_bytes"].as_u64().expect("chunk_bytes");
         assert!(
             bytes > 0 && bytes <= HYPER_TILE_SIZE,
@@ -369,25 +402,14 @@ fn test_seal_verify_prove_flatten_unflatten_and_tamper() {
     for chunk in chunks {
         let tile = chunk["tile_index"].as_u64().expect("chunk tile_index") as usize;
         let proof_file = dir.join(format!("proof-{}.json", tile));
-        let prove_out = run_cli(
-            &dir,
-            [
-                "prove",
-                "seal.sealed.s3a",
-                &tile.to_string(),
-                "0",
-            ],
-        );
+        let prove_out = run_cli(&dir, ["prove", "seal.sealed.s3a", &tile.to_string(), "0"]);
         fs::write(&proof_file, &prove_out.stdout).expect("write proof json");
         let proof_name = proof_file
             .file_name()
             .expect("proof file name")
             .to_str()
             .expect("proof file name utf8");
-        let verify_proof_out = run_cli(
-            &dir,
-            ["verify-proof", proof_name, "seal.sealed.s3a"],
-        );
+        let verify_proof_out = run_cli(&dir, ["verify-proof", proof_name, "seal.sealed.s3a"]);
         assert!(
             String::from_utf8_lossy(&verify_proof_out.stdout).contains("PROOF OK"),
             "verify-proof for chunk tile {} must print PROOF OK: {}",
@@ -400,17 +422,9 @@ fn test_seal_verify_prove_flatten_unflatten_and_tamper() {
     // and the 200 KiB file still matches.
     run_cli(
         &dir,
-        [
-            "flatten",
-            "--zstd",
-            "seal.sealed.s3a",
-            "seal.sealed.s3af",
-        ],
+        ["flatten", "--zstd", "seal.sealed.s3a", "seal.sealed.s3af"],
     );
-    run_cli(
-        &dir,
-        ["unflatten", "seal.sealed.s3af", "seal.restored.s3a"],
-    );
+    run_cli(&dir, ["unflatten", "seal.sealed.s3af", "seal.restored.s3a"]);
     assert_eq!(
         fs::read(dir.join("seal.restored.s3a")).expect("read restored"),
         fs::read(dir.join("seal.sealed.s3a")).expect("read sealed"),
@@ -477,8 +491,7 @@ fn test_wiki_shape_plus_large_file_still_beats_245mb_and_restores() {
     create_vault(&vault);
     pack_shape(&vault, &shape);
     let large = content_for("overflow/large.bin", 200 * 1024);
-    write_document_record(&vault, "overflow/large.bin", &large)
-        .expect("put 200 KiB overflow file");
+    write_document_record(&vault, "overflow/large.bin", &large).expect("put 200 KiB overflow file");
     let len = fs::metadata(&vault).expect("stat vault").len();
     let extents = count_slab_extent_files(&dir);
     let ceiling = WIKI_CEILING + 2 * HYPER_TILE_SIZE + 4096 * extents;
@@ -513,7 +526,11 @@ fn test_wiki_shape_plus_large_file_still_beats_245mb_and_restores() {
         let got = read_document_record(&vault, &entry.key)
             .unwrap_or_else(|e| panic!("read {}: {}", entry.key, e))
             .unwrap_or_else(|| panic!("key {} missing", entry.key));
-        assert_eq!(got, expected, "key {} did not restore byte-identical", entry.key);
+        assert_eq!(
+            got, expected,
+            "key {} did not restore byte-identical",
+            entry.key
+        );
         if first.is_none() {
             first = Some(got);
         } else if second.is_none() {
