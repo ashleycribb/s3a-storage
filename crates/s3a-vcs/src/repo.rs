@@ -912,7 +912,15 @@ fn get_active_data_len(buf: &[u8]) -> Result<usize, VcsError> {
     let slot_b: &FileHeader = &bytemuck::pod_read_unaligned::<FileHeader>(&buf[64..128]);
     let (active, _) = s3a_engine::resolve_active_header(slot_a, slot_b)
         .map_err(|e| VcsError::Generic(e.to_string()))?;
-    let len = FILE_HEADER_SIZE + (active.tile_count as usize * HYPER_TILE_SIZE);
+    // Prompt 010: packed archives store tiles back-to-back at their size
+    // class, so the active data length is the walked end of the last tile,
+    // not tile_count * 128 KiB.
+    let len = if active.is_packed_slots() {
+        let spans = s3a_core::packed_tile_spans(buf, active.tile_count);
+        spans.last().map(|(o, l)| o + l).unwrap_or(FILE_HEADER_SIZE)
+    } else {
+        FILE_HEADER_SIZE + (active.tile_count as usize * HYPER_TILE_SIZE)
+    };
     Ok(len.min(buf.len()))
 }
 

@@ -443,6 +443,63 @@ pub fn size_class_bytes(class_id: u8) -> Option<u32> {
     SLAB_SIZE_CLASSES.get(class_id as usize).copied()
 }
 
+/// Stored length of one packed tile slot holding `payload_bytes` of tile
+/// payload (prompt 010): the 512-byte tile header plus the payload, padded
+/// up to the smallest slab size class that fits them both. Returns `None`
+/// when even the largest class (128 KiB) cannot hold the tile.
+pub fn packed_slot_size(payload_bytes: usize) -> Option<usize> {
+    let stored = crate::HYPER_TILE_HEADER_SIZE.checked_add(payload_bytes)?;
+    select_size_class(stored).map(|c| SLAB_SIZE_CLASSES[c as usize] as usize)
+}
+
+/// Walks the packed tile slots of `bytes` (whole-file bytes starting at the
+/// 512-byte dual header) and returns `(offset, slot_len)` for each tile it
+/// can read, stopping at the first truncated or malformed tile instead of
+/// failing. A caller that needs fail-closed semantics compares the returned
+/// length against the header's `tile_count`.
+pub fn packed_tile_spans(bytes: &[u8], tile_count: u32) -> Vec<(usize, usize)> {
+    let mut spans = Vec::with_capacity(tile_count as usize);
+    let mut offset = crate::FILE_HEADER_SIZE;
+    for _ in 0..tile_count {
+        let header_end = match offset.checked_add(crate::HYPER_TILE_HEADER_SIZE) {
+            Some(e) => e,
+            None => break,
+        };
+        let Some(header_bytes) = bytes.get(offset..header_end) else {
+            break;
+        };
+        let header: &crate::HyperTileHeader = &bytemuck::pod_read_unaligned(header_bytes);
+        let Some(slot_len) = packed_slot_size(header.payload_bytes as usize) else {
+            break;
+        };
+        let Some(end) = offset.checked_add(slot_len) else {
+            break;
+        };
+        if bytes.get(offset..end).is_none() {
+            break;
+        }
+        spans.push((offset, slot_len));
+        offset = end;
+    }
+    spans
+}
+
+/// Stored bytes of one tile in a packed archive: header + payload + zero
+/// padding up to the tile's size class. Truncates a 128 KiB tile vec to its
+/// packed length; returns `None` when the tile cannot fit any class.
+pub fn truncate_tile_to_packed(tile_bytes: &[u8]) -> Option<Vec<u8>> {
+    if tile_bytes.len() < crate::HYPER_TILE_HEADER_SIZE {
+        return None;
+    }
+    let header: &crate::HyperTileHeader =
+        &bytemuck::pod_read_unaligned(&tile_bytes[..crate::HYPER_TILE_HEADER_SIZE]);
+    let slot_len = packed_slot_size(header.payload_bytes as usize)?;
+    if tile_bytes.len() < slot_len {
+        return None;
+    }
+    Some(tile_bytes[..slot_len].to_vec())
+}
+
 pub const MAX_SIZE_CLASS_ID: u8 = (NUM_SLAB_CLASSES - 1) as u8; // 9
 pub const MAX_SLAB_EXTENT_ID: u32 = 0x0FFF_FFFF; // 28 bits (268,435,455)
 pub const MAX_SLOT_INDEX: u32 = 0x00FF_FFFF; // 24 bits (16,777,215)
