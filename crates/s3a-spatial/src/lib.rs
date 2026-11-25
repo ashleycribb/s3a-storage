@@ -12,7 +12,9 @@ pub mod ext;
 pub mod pack;
 pub mod records;
 
-pub use codec::{decode_geopose_basic_quat, encode_geopose_basic_quat, DecodedGeopose, GeoposeError};
+pub use codec::{
+    decode_geopose_basic_quat, encode_geopose_basic_quat, DecodedGeopose, GeoposeError,
+};
 pub use ext::SpatialCrudExt;
 pub use pack::{register_pack_types, SpatialPack, SpatialTileType};
 pub use records::GeoposeBasicQuatRecord;

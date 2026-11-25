@@ -152,10 +152,7 @@ impl DossierVerification {
     /// The first failing check, for the refusal message; `None` when verified.
     pub fn failure_reason(&self) -> Option<String> {
         if !self.doi_match {
-            Some(
-                "doi_match is false: the dossier DOI did not match the source record"
-                    .to_string(),
-            )
+            Some("doi_match is false: the dossier DOI did not match the source record".to_string())
         } else if !self.title_match {
             Some(
                 "title_match is false: the dossier title did not match the source record"
@@ -183,12 +180,9 @@ fn parse_dossier_verification(
         .as_object()
         .ok_or_else(|| "dossier \"verification\" must be an object".to_string())?;
     let req_str = |name: &str| -> Result<String, String> {
-        let s = b
-            .get(name)
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| {
-                format!("dossier verification is missing required string field \"{name}\"")
-            })?;
+        let s = b.get(name).and_then(|x| x.as_str()).ok_or_else(|| {
+            format!("dossier verification is missing required string field \"{name}\"")
+        })?;
         if s.trim().is_empty() {
             return Err(format!(
                 "dossier verification field \"{name}\" must not be empty"
@@ -197,9 +191,9 @@ fn parse_dossier_verification(
         Ok(s.to_string())
     };
     let req_bool = |name: &str| -> Result<bool, String> {
-        b.get(name).and_then(|x| x.as_bool()).ok_or_else(|| {
-            format!("dossier verification field \"{name}\" must be a boolean")
-        })
+        b.get(name)
+            .and_then(|x| x.as_bool())
+            .ok_or_else(|| format!("dossier verification field \"{name}\" must be a boolean"))
     };
     let source = req_str("source")?;
     let source_record = req_str("source_record")?;
@@ -727,8 +721,8 @@ mod tests {
         // FNV-1a barely avalanches a last-byte difference into the top
         // bits. Regression test for that diagonal collapse.
         for coords in [a, no_title, other_title] {
-            let spread =
-                coords.iter().fold(0.0f32, |m, c| m.max(*c)) - coords.iter().fold(1.0f32, |m, c| m.min(*c));
+            let spread = coords.iter().fold(0.0f32, |m, c| m.max(*c))
+                - coords.iter().fold(1.0f32, |m, c| m.min(*c));
             assert!(
                 spread > 0.01,
                 "topic axes must spread, got {coords:?} (spread {spread})"
@@ -799,26 +793,22 @@ mod tests {
     fn test_dossier_missing_verification_block_rejected() {
         // No "verification" key at all: the dossier is unverified and the
         // gate refuses it at parse time, before anything is written.
-        let err = AddPaperInput::from_dossier_json(
-            r#"{"doi":"10.1000/182","title":"Some Title"}"#,
-        )
-        .unwrap_err();
+        let err = AddPaperInput::from_dossier_json(r#"{"doi":"10.1000/182","title":"Some Title"}"#)
+            .unwrap_err();
         assert!(err.contains("verification"), "{err}");
         // Explicit null is the same as missing.
-        let err = AddPaperInput::from_dossier_json(
-            r#"{"doi":"10.1000/182","verification":null}"#,
-        )
-        .unwrap_err();
+        let err = AddPaperInput::from_dossier_json(r#"{"doi":"10.1000/182","verification":null}"#)
+            .unwrap_err();
         assert!(err.contains("verification"), "{err}");
     }
 
     #[test]
     fn test_dossier_malformed_verification_block_rejected() {
         // Block is not an object.
-        assert!(AddPaperInput::from_dossier_json(
-            r#"{"doi":"10.1000/182","verification":"yes"}"#
-        )
-        .is_err());
+        assert!(
+            AddPaperInput::from_dossier_json(r#"{"doi":"10.1000/182","verification":"yes"}"#)
+                .is_err()
+        );
         // Each required field, wrong or missing in turn.
         for bad in [
             // missing source_record
@@ -878,8 +868,7 @@ mod tests {
         assert!(!path.exists(), "refused paper must not create the archive");
         // Existing archive with one verified paper: the refused paper must
         // not change the stored count.
-        let good = AddPaperInput::from_dossier_json(&verified_dossier_json("10.1000/182"))
-            .unwrap();
+        let good = AddPaperInput::from_dossier_json(&verified_dossier_json("10.1000/182")).unwrap();
         add_paper(&path, &good, None, 0).unwrap();
         let bad = AddPaperInput::from_dossier_json(
             r#"{"doi":"10.1000/999","verification":{"source":"crossref","source_record":"https://api.crossref.org/works/10.1000/999","doi_match":true,"title_match":false,"confirmed_by":"ashley","confirmed_at":"2026-11-18T12:00:00Z"}}"#,

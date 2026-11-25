@@ -56,13 +56,13 @@ use s3a_engine::standard_schema_for_type;
 use s3a_pack_scholar::{
     AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, CitationFingerprintRecord,
     HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType,
-    SrsWorkspaceRecord, AGENT_FLAG_DISABLED, AGENT_FLAG_REQUIRES_HUMAN_GATE, AGENT_KIND_CITATION_GENERATOR,
-    AGENT_KIND_CUSTODIAN, AGENT_KIND_ORCHESTRATOR, AGENT_KIND_REVIEW_COORDINATOR,
-    AGENT_KIND_VERIFIER, CLAIM_KIND_EMPIRICAL, CLAIM_KIND_HYPOTHESIS, CLAIM_KIND_NOTE,
-    CLAIM_KIND_THEORETICAL, CONTENT_KIND_ABSTRACT, CONTENT_KIND_HTML, CONTENT_KIND_PDF,
-    STEP_CLAIM, STEP_HALLUCINATION, STEP_NOTE, STEP_REASONING, STEP_TOOL_CALL,
-    TOOL_CREDENTIAL_EXPORT, TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_EXTRACT_CLAIMS,
-    TOOL_MUTATE_GRAPH, TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE,
+    SrsWorkspaceRecord, AGENT_FLAG_DISABLED, AGENT_FLAG_REQUIRES_HUMAN_GATE,
+    AGENT_KIND_CITATION_GENERATOR, AGENT_KIND_CUSTODIAN, AGENT_KIND_ORCHESTRATOR,
+    AGENT_KIND_REVIEW_COORDINATOR, AGENT_KIND_VERIFIER, CLAIM_KIND_EMPIRICAL,
+    CLAIM_KIND_HYPOTHESIS, CLAIM_KIND_NOTE, CLAIM_KIND_THEORETICAL, CONTENT_KIND_ABSTRACT,
+    CONTENT_KIND_HTML, CONTENT_KIND_PDF, STEP_CLAIM, STEP_HALLUCINATION, STEP_NOTE, STEP_REASONING,
+    STEP_TOOL_CALL, TOOL_CREDENTIAL_EXPORT, TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT,
+    TOOL_EXTRACT_CLAIMS, TOOL_MUTATE_GRAPH, TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE,
     TOOL_SYNTHESIZE_EVIDENCE, TOOL_TA_SUPERVISOR_CALL,
 };
 
@@ -452,8 +452,7 @@ fn check_tile_payload(
         }
         _ => (
             true,
-            "ok (header CRC ✓, data CRC ✓; no payload hash recorded for this tile)"
-                .to_string(),
+            "ok (header CRC ✓, data CRC ✓; no payload hash recorded for this tile)".to_string(),
         ),
     }
 }
@@ -2601,8 +2600,7 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         if !detail.records.is_empty() {
             println!("Records (First {}):", detail.records.len());
             for (idx, r) in detail.records.iter().enumerate() {
-                let pretty = serde_json::to_string_pretty(r)
-                    .unwrap_or_else(|_| r.to_string());
+                let pretty = serde_json::to_string_pretty(r).unwrap_or_else(|_| r.to_string());
                 let mut lines = pretty.lines();
                 if let Some(first) = lines.next() {
                     println!("  [{}] {}", idx, first);
@@ -2703,10 +2701,7 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!("--- FLOOR DIRECTORY ---");
         for f in floors {
             let type_upper = f.type_name.to_uppercase();
-            let keys = f
-                .key_range
-                .clone()
-                .unwrap_or_else(|| "—".to_string());
+            let keys = f.key_range.clone().unwrap_or_else(|| "—".to_string());
             if let Some(arr) = &f.array_info {
                 let range = match (arr.min_val, arr.max_val) {
                     (Some(lo), Some(hi)) => format!("{}..{}", lo, hi),

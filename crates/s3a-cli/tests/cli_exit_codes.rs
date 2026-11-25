@@ -40,7 +40,10 @@ impl Drop for TempGuard {
 }
 
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(bin()).args(args).output().expect("run s3a-cli")
+    Command::new(bin())
+        .args(args)
+        .output()
+        .expect("run s3a-cli")
 }
 
 fn seed_demo(path: &PathBuf) -> TempGuard {
@@ -51,8 +54,7 @@ fn seed_demo(path: &PathBuf) -> TempGuard {
 }
 
 fn json_tile_count(stdout: &[u8]) -> u64 {
-    let v: serde_json::Value =
-        serde_json::from_slice(stdout).expect("stdout is valid JSON");
+    let v: serde_json::Value = serde_json::from_slice(stdout).expect("stdout is valid JSON");
     v["tile_count"]
         .as_u64()
         .expect("tile_count present in JSON output")
@@ -64,7 +66,10 @@ fn test_failure_paths_exit_nonzero_and_keep_json_errors() {
     let out = run(&["tour", "/nonexistent-s3a-test.s3a"]);
     assert!(!out.status.success(), "tour on missing file must fail");
     let out = run(&["tour", "/nonexistent-s3a-test.s3a", "--json"]);
-    assert!(!out.status.success(), "tour --json on missing file must fail");
+    assert!(
+        !out.status.success(),
+        "tour --json on missing file must fail"
+    );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("\"ok\":false"),
         "tour --json must keep its error object"
@@ -74,7 +79,10 @@ fn test_failure_paths_exit_nonzero_and_keep_json_errors() {
     let out = run(&["verify", "/nonexistent-s3a-test.s3a"]);
     assert!(!out.status.success(), "verify on missing file must fail");
     let out = run(&["verify", "/nonexistent-s3a-test.s3a", "--json"]);
-    assert!(!out.status.success(), "verify --json on missing file must fail");
+    assert!(
+        !out.status.success(),
+        "verify --json on missing file must fail"
+    );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("\"ok\":false"),
         "verify --json must keep its error object"
@@ -83,11 +91,7 @@ fn test_failure_paths_exit_nonzero_and_keep_json_errors() {
     // inspect / status / doctor on a missing file.
     for cmd in ["inspect", "status", "doctor"] {
         let out = run(&[cmd, "/nonexistent-s3a-test.s3a"]);
-        assert!(
-            !out.status.success(),
-            "{} on missing file must fail",
-            cmd
-        );
+        assert!(!out.status.success(), "{} on missing file must fail", cmd);
         let out = run(&[cmd, "--json", "/nonexistent-s3a-test.s3a"]);
         assert!(
             !out.status.success(),
@@ -158,8 +162,7 @@ fn test_counts_agree_across_status_inspect_doctor() {
     assert_eq!(s, d, "status vs doctor tile_count");
 
     // The inspect tile list itself must have exactly that many entries.
-    let v: serde_json::Value =
-        serde_json::from_slice(&inspect.stdout).expect("inspect JSON");
+    let v: serde_json::Value = serde_json::from_slice(&inspect.stdout).expect("inspect JSON");
     assert_eq!(v["tiles"].as_array().unwrap().len() as u64, s);
 
     // Honest labels: "Committed Tiles" (same defined meaning as status and
@@ -190,9 +193,11 @@ fn test_doctor_sealed_archive_is_healthy_not_degraded() {
     assert!(out.status.success(), "seal failed: {:?}", out);
 
     let out = run(&["doctor", "--json", sealed_str]);
-    assert!(out.status.success(), "doctor on sealed archive must succeed");
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("doctor JSON");
+    assert!(
+        out.status.success(),
+        "doctor on sealed archive must succeed"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("doctor JSON");
     assert_eq!(v["health"], "HEALTHY", "pristine sealed archive is HEALTHY");
     assert_eq!(v["torn_bytes"], 0, "sealed footer is not torn bytes");
     assert!(
@@ -335,8 +340,14 @@ fn test_serve_binds_loopback_by_default() {
             .write_all(b"GET /api/health HTTP/1.0\r\n\r\n")
             .expect("write health request");
         let mut resp = String::new();
-        stream.read_to_string(&mut resp).expect("read health response");
-        assert!(resp.contains("200 OK"), "health endpoint must answer: {}", resp);
+        stream
+            .read_to_string(&mut resp)
+            .expect("read health response");
+        assert!(
+            resp.contains("200 OK"),
+            "health endpoint must answer: {}",
+            resp
+        );
         assert!(resp.contains("\"status\":\"ok\""), "health body: {}", resp);
 
         // The process must still be running (it is a server, not a one-shot).
@@ -355,7 +366,11 @@ fn test_serve_refuses_public_bind_without_flag() {
         "serve --bind 0.0.0.0 without --public must refuse to start"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--public"), "refusal must name --public: {}", stderr);
+    assert!(
+        stderr.contains("--public"),
+        "refusal must name --public: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -408,13 +423,7 @@ fn test_vcs_gate_stack_exit_codes() {
     let missing = temp_path("vcs-commit-missing");
     let key_path = PathBuf::from(format!("{}.vcs.key", missing.display()));
     let _guard = TempGuard(missing.clone());
-    let out = run(&[
-        "vcs",
-        "commit",
-        missing.to_str().unwrap(),
-        "-m",
-        "x",
-    ]);
+    let out = run(&["vcs", "commit", missing.to_str().unwrap(), "-m", "x"]);
     assert_eq!(out.status.code(), Some(1), "vcs commit on missing file");
     let _ = std::fs::remove_file(&key_path);
 

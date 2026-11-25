@@ -15,8 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use s3a_cli::tour::{tour_file, TourOptions};
 use s3a_core::{
-    TelemetryRecord, TileType, ADDON_EDU, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE,
-    HYPER_TILE_SIZE,
+    TelemetryRecord, TileType, ADDON_EDU, FILE_HEADER_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
 };
 use s3a_engine::{
     seal_archive_v1, seal_archive_v2, verify_sealed_archive, SealOptionsV2, TileWriter,
@@ -109,7 +108,11 @@ fn tour_lobby_never_says_verified() {
     assert!(rep.lobby.seal_status.hash_chain_verified);
     assert!(!rep.lobby.seal_status.payloads_checked);
     assert!(
-        !rep.lobby.seal_status.summary.to_lowercase().contains("verified"),
+        !rep.lobby
+            .seal_status
+            .summary
+            .to_lowercase()
+            .contains("verified"),
         "lobby summary must not claim verified: {}",
         rep.lobby.seal_status.summary
     );
@@ -130,7 +133,12 @@ fn tour_lobby_never_says_verified() {
     );
     let rep_bad = open_report(corrupt.path(), &TourOptions::default());
     assert!(
-        !rep_bad.lobby.seal_status.summary.to_lowercase().contains("verified"),
+        !rep_bad
+            .lobby
+            .seal_status
+            .summary
+            .to_lowercase()
+            .contains("verified"),
         "corrupt archive lobby must not claim verified: {}",
         rep_bad.lobby.seal_status.summary
     );
@@ -382,7 +390,8 @@ fn tour_scholar_records_decode_from_library_tiles() {
     let raw = TempArchiveGuard::new("scholar_raw");
     let sealed = TempArchiveGuard::new("scholar_v2");
 
-    let paper = AcademicPaperRecord::new(1001, 1600000000, 7, 0.5, 0.25, 0.125, 3, 2023, 2, 0, 1, 0);
+    let paper =
+        AcademicPaperRecord::new(1001, 1600000000, 7, 0.5, 0.25, 0.125, 3, 2023, 2, 0, 1, 0);
     let fp = CitationFingerprintRecord::from_content(
         1001,
         "10.1000/1001",
@@ -509,7 +518,11 @@ fn tour_v1_lobby_never_says_verified() {
     // CRC), so it must not claim the archive is verified either.
     assert!(!rep.lobby.seal_status.hash_chain_verified);
     assert!(
-        !rep.lobby.seal_status.summary.to_lowercase().contains("verified"),
+        !rep.lobby
+            .seal_status
+            .summary
+            .to_lowercase()
+            .contains("verified"),
         "v1 lobby must not claim verified: {}",
         rep.lobby.seal_status.summary
     );

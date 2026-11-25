@@ -378,7 +378,10 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
-fn object_field<'a>(obj: &'a JsonValue<'a>, field: &'static str) -> Result<&'a JsonValue<'a>, GeoposeError> {
+fn object_field<'a>(
+    obj: &'a JsonValue<'a>,
+    field: &'static str,
+) -> Result<&'a JsonValue<'a>, GeoposeError> {
     match obj {
         JsonValue::Object(fields) => fields
             .iter()

@@ -171,12 +171,8 @@ fn at_to_12_encode_decode_procedure_reference_locator() {
     assert_eq!(step.page, 32);
     assert_eq!(step._pad, [0u8; 8]);
 
-    let decoded = decode_to_records(
-        ToTileType::TO_PROCEDURE_STEP,
-        1,
-        bytes_of(&step),
-    )
-    .expect("procedure payload must decode");
+    let decoded = decode_to_records(ToTileType::TO_PROCEDURE_STEP, 1, bytes_of(&step))
+        .expect("procedure payload must decode");
     match decoded {
         ToDecoded::ProcedureStep(recs) => assert_eq!(recs, vec![step]),
         other => panic!("expected ProcedureStep, got {:?}", other),
@@ -232,13 +228,29 @@ fn at_to_13_fail_closed_on_invalid_locator_records() {
         ToError::MissingSourceId
     );
     assert_eq!(
-        encode_to_procedure_step(STEP_TEXT, source_id(21), ORIGIN_PTR, DOC_ID, PARA_PATH, 0, 32)
-            .unwrap_err(),
+        encode_to_procedure_step(
+            STEP_TEXT,
+            source_id(21),
+            ORIGIN_PTR,
+            DOC_ID,
+            PARA_PATH,
+            0,
+            32
+        )
+        .unwrap_err(),
         ToError::ZeroStepNo
     );
     assert_eq!(
-        encode_to_procedure_step(STEP_TEXT, source_id(21), ORIGIN_PTR, DOC_ID, PARA_PATH, 1, 0)
-            .unwrap_err(),
+        encode_to_procedure_step(
+            STEP_TEXT,
+            source_id(21),
+            ORIGIN_PTR,
+            DOC_ID,
+            PARA_PATH,
+            1,
+            0
+        )
+        .unwrap_err(),
         ToError::ZeroPage
     );
 
@@ -360,8 +372,12 @@ fn at_to_13_fail_closed_on_invalid_locator_records() {
         .expect_err("nonzero pad must be rejected");
     assert_eq!(err, ToError::NonZeroPad);
 
-    let err = decode_to_records(ToTileType::TO_PROCEDURE_STEP, 99, bytes_of(&procedure_record()))
-        .expect_err("layout version 99 must be rejected");
+    let err = decode_to_records(
+        ToTileType::TO_PROCEDURE_STEP,
+        99,
+        bytes_of(&procedure_record()),
+    )
+    .expect_err("layout version 99 must be rejected");
     assert_eq!(
         err,
         ToError::UnsupportedLayoutVersion {
