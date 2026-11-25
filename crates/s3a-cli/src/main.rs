@@ -375,6 +375,12 @@ fn main() {
         "open" => {
             s3a_cli::first_run::handle_open(&args, verbose);
         }
+        "pack" => {
+            s3a_cli::first_run::handle_pack(&args, verbose);
+        }
+        "extract" => {
+            s3a_cli::first_run::handle_extract(&args, verbose);
+        }
         "telemetry" => {
             if args.len() < 3 {
                 println!("Usage: s3a telemetry <get|insert|delete> [args...]");
