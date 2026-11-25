@@ -19,6 +19,14 @@ pub const DOC_KIND_GENERIC_KV: u32 = 16;
 pub const DOC_KIND_JSON: u32 = 17;
 pub const DOC_KIND_BINARY: u32 = 18;
 
+// Prompt 011: chunked-document record kinds. A logical file too large for
+// one tile is stored as DOC_KIND_CHUNK_DATA records under derived chunk keys
+// plus one DOC_KIND_CHUNK_MANIFEST record under the logical key carrying the
+// chunk list's summary (record-layout version, total bytes, whole-file
+// SHA-256, chunk count). See s3a-engine::document for the layout.
+pub const DOC_KIND_CHUNK_MANIFEST: u32 = 19;
+pub const DOC_KIND_CHUNK_DATA: u32 = 20;
+
 /// Computes the canonical 64-bit XXH3 compound key hash matching S3A engine document indexing.
 /// Key is hashed as `"{doc_kind}\0{key}"`.
 pub fn compute_key_hash(doc_kind: u32, key: &str) -> u64 {
@@ -161,5 +169,8 @@ mod tests {
         assert!(DOC_KIND_GENERIC_KV > 3);
         assert!(DOC_KIND_JSON > 3);
         assert!(DOC_KIND_BINARY > 3);
+        assert!(DOC_KIND_CHUNK_MANIFEST > 3);
+        assert!(DOC_KIND_CHUNK_DATA > 3);
+        assert_ne!(DOC_KIND_CHUNK_MANIFEST, DOC_KIND_CHUNK_DATA);
     }
 }

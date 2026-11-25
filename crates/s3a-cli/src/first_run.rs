@@ -398,6 +398,17 @@ pub fn list_all_documents(path: &Path) -> Result<Vec<StoredDocumentMeta>, String
     s3a_engine::document::list_all_documents(path)
 }
 
+/// Single-slot write primitive (prompt 011): one record in one tile, or an
+/// error when the record does not fit in one tile payload. See
+/// `s3a_engine::document::write_single_slot_document_record`.
+pub fn write_single_slot_document_record(
+    path: &Path,
+    key: &str,
+    content: &[u8],
+) -> Result<(), String> {
+    s3a_engine::document::write_single_slot_document_record(path, key, content)
+}
+
 // =========================================================================
 // Command Handlers
 // =========================================================================
@@ -2489,14 +2500,37 @@ pub fn handle_ls(args: &[String], verbose: bool) {
     }
 
     if json_mode {
+        // Prompt 011: every document reports its whole-file SHA-256 and
+        // chunk count; chunked documents also expose the ordered chunk list
+        // (index, totals, per-chunk bytes, and the tile each chunk lives on).
         let items_json = docs
             .iter()
             .map(|d| {
+                let chunks_json = d
+                    .chunks
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            r#"{{"index":{},"total":{},"total_chunks":{},"chunk_bytes":{},"tile_index":{},"tile_id":{},"crc32":{}}}"#,
+                            c.index,
+                            c.total_chunks,
+                            c.total_chunks,
+                            c.chunk_bytes,
+                            c.tile_index,
+                            c.tile_id,
+                            c.crc32
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
                 format!(
-                    r#"{{"key":"{}","size_bytes":{},"timestamp_ms":{}}}"#,
+                    r#"{{"key":"{}","size_bytes":{},"timestamp_ms":{},"sha256":"{}","chunk_count":{},"chunks":[{}]}}"#,
                     d.key.replace('"', "\\\""),
                     d.size_bytes,
-                    d.timestamp_ms
+                    d.timestamp_ms,
+                    d.sha256,
+                    d.chunk_count,
+                    chunks_json
                 )
             })
             .collect::<Vec<_>>()
