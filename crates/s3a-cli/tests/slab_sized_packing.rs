@@ -13,7 +13,10 @@
 //! `legacy_one_doc.s3a` was generated with current main's `s3a put`
 //! (key `legacy-doc`, 17-byte content `hello-slab-legacy`, 131,584 bytes).
 
-use s3a_cli::first_run::{list_all_documents, read_document_record, write_document_record};
+use s3a_cli::first_run::{
+    list_all_documents, read_document_record, write_document_record,
+    write_single_slot_document_record,
+};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -426,26 +429,18 @@ fn test_legacy_128kib_stride_archive_still_opens() {
 }
 
 #[test]
-fn test_oversize_document_is_rejected_until_prompt_011() {
+fn test_single_slot_helper_still_rejects_overflow() {
+    // Prompt 011: spanning now stores 200 KiB documents, so the old
+    // oversize test is retired. The single-tile ceiling itself is kept as
+    // a primitive — the single-slot helper must still reject a payload
+    // that does not fit in one tile.
     let dir = unique_tmp("oversize");
     let vault = dir.join("big.s3a");
     create_vault(&vault);
     let content = vec![0u8; 200 * 1024];
-    let err = write_document_record(&vault, "big", &content);
+    let err = write_single_slot_document_record(&vault, "big", &content);
     assert!(
         err.is_err(),
-        "a 200 KiB put must still error until prompt 011 implements spanning"
-    );
-    // The CLI must fail the same way.
-    let big_file = dir.join("big.bin");
-    fs::write(&big_file, &content).expect("write big.bin");
-    let out = Command::new(cli_bin())
-        .args(["put", "big.s3a", "big", "@big.bin"])
-        .current_dir(&dir)
-        .output()
-        .expect("run put on 200 KiB file");
-    assert!(
-        !out.status.success(),
-        "CLI put of a 200 KiB file must fail until prompt 011"
+        "a 200 KiB single-slot write must still error: the 128 KiB per-tile ceiling is unchanged"
     );
 }
