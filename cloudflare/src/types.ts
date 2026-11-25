@@ -4,6 +4,7 @@
 export interface Env {
   ARTIFACTS: any;
   REPO_COORDINATOR: any;
+  GATEHAVEN_VAULT: any;
   Sandbox: any;
   AI: any;
   BROWSER: any;

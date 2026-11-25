@@ -101,6 +101,12 @@ pub const FLAG_TILE_SIZE_4KB: u16 = 1 << 1; // 0x0002
 pub const FLAG_TILE_SIZE_8KB: u16 = 1 << 2; // 0x0004
 pub const FLAG_COMPACT_HEADER: u16 = 1 << 3; // 0x0008
 pub const FLAG_SEAL_CHAIN_ACTIVE: u16 = 1 << 4; // 0x0010
+pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020
+/// Prompt 010: tiles are stored back-to-back at their smallest fitting slab
+/// size class instead of one 128 KiB stride each (a "packed" document archive).
+/// Set on the file header by the first packed write; readers walk the slots
+/// via each tile header's `payload_bytes`.
+pub const FLAG_PACKED_SLOTS: u16 = 1 << 6; // 0x0040
 /// All file-header flag bits defined by this version. Any other set bit is a
 /// "critical" unknown: readers MUST reject the file (TILE-SPEC §2.1, ADR-0013).
 pub const KNOWN_HEADER_FLAGS: u16 = FLAG_PROFILE_EDGE
@@ -108,10 +114,10 @@ pub const KNOWN_HEADER_FLAGS: u16 = FLAG_PROFILE_EDGE
     | FLAG_TILE_SIZE_8KB
     | FLAG_COMPACT_HEADER
     | FLAG_SEAL_CHAIN_ACTIVE
-    | FLAG_ED25519_SIGNED;
+    | FLAG_ED25519_SIGNED
+    | FLAG_PACKED_SLOTS;
 /// Tile strides a reader accepts in `FileHeader._reserved1` (0 means 128 KiB).
 pub const VALID_TILE_STRIDES: [u32; 3] = [0, 4096, 8192];
-pub const FLAG_ED25519_SIGNED: u16 = 1 << 5; // 0x0020
 
 /// Error types returned by S3A core functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +295,9 @@ pub const ADDON_WEARABLE: u32 = 1 << 3; // 0x0008: Wearable / Micro-Telemetry Pa
 pub const ADDON_GIS: u32 = 1 << 4; // 0x0010: GIS Topographic Point Cloud & Mesh Pack
 pub const ADDON_DA: u32 = 1 << 5; // 0x0020: Decentralized Data Availability / State Commitments Pack
 pub const ADDON_ONTOLOGY: u32 = 1 << 6; // 0x0040: Formal Ontology & Axiom Registry Pack
+pub const ADDON_SPATIAL: u32 = 1 << 7; // 0x0080: Spatial Computing (OGC GeoPose) Pack
+pub const ADDON_TO: u32 = 1 << 8; // 0x0100: Technical Order / OEM maintenance manual pack
+pub const ADDON_CAN: u32 = 1 << 9; // 0x0200: CAN bus bridge (J1939/OBD ingest and triggers)
 
 /// Resolves the required addon capability bitmask and pack name for a given tile type.
 /// Returns None for domain-agnostic core tiles (0, 1, 2, 7, 8, 9).
@@ -310,6 +319,9 @@ pub fn required_addon_for_tile(tile_type: u32) -> Option<(&'static str, u32)> {
             6 => Some(("s3a-pack-da", ADDON_DA)),
             10..=15 | 18 | 20 => Some(("s3a-pack-scholar", ADDON_EDU)),
             16..=17 => Some(("s3a-pack-ontology", ADDON_ONTOLOGY)),
+            33 => Some(("s3a-spatial", ADDON_SPATIAL)),
+            41..=46 | 49..=51 | 52 => Some(("s3a-pack-to", ADDON_TO)),
+            47..=48 => Some(("s3a-can-bridge", ADDON_CAN)),
             _ => None,
         }
     }
@@ -409,6 +421,12 @@ impl FileHeader {
     pub fn is_edge_profile(&self) -> bool {
         (self.flags & FLAG_PROFILE_EDGE) != 0
             || (self._reserved1 > 0 && (self._reserved1 as usize) < HYPER_TILE_SIZE)
+    }
+
+    /// Prompt 010: the archive stores tiles back-to-back at their smallest
+    /// fitting slab size class instead of one 128 KiB stride each.
+    pub fn is_packed_slots(&self) -> bool {
+        (self.flags & FLAG_PACKED_SLOTS) != 0
     }
 
     pub fn verify(&self) -> Result<(), S3AError> {

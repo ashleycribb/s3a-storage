@@ -63,21 +63,37 @@ impl std::error::Error for CatalogError {}
 /// Builds a catalog from the compiled-in registry (no field lists; the registry
 /// does not carry them). Engine-known types get their standard field lists.
 pub fn registry_catalog() -> Catalog {
-    let reg = s3a_core::registry::global_registry();
+    // NOTE: the registry read guard must be dropped before
+    // `standard_schema_for_type` is called — it takes its own registry read,
+    // and std's writer-preferring RwLock deadlocks a nested read while a
+    // writer waits. Two phases: collect descriptors first, then build
+    // definitions.
+    let descriptors: Vec<(u32, u32, &'static str, &'static str, usize)> = {
+        let reg = s3a_core::registry::global_registry();
+        reg.descriptors()
+            .iter()
+            .map(|d| {
+                (
+                    d.tile_type,
+                    d.current_layout_version,
+                    d.name,
+                    d.owner_pack,
+                    d.record_size,
+                )
+            })
+            .collect()
+    };
     let mut types: Vec<SchemaTypeDefinition> = Vec::new();
-    for d in reg.descriptors() {
-        let id = d.tile_type;
-        {
-            let std_def = crate::standard_schema_for_type(id);
-            types.push(SchemaTypeDefinition {
-                type_id: id,
-                type_version: d.current_layout_version,
-                name: d.name.to_string(),
-                owning_pack: d.owner_pack.to_string(),
-                record_size: d.record_size as u32,
-                fields: std_def.fields,
-            });
-        }
+    for (id, version, name, pack, record_size) in descriptors {
+        let std_def = crate::standard_schema_for_type(id);
+        types.push(SchemaTypeDefinition {
+            type_id: id,
+            type_version: version,
+            name: name.to_string(),
+            owning_pack: pack.to_string(),
+            record_size: record_size as u32,
+            fields: std_def.fields,
+        });
     }
     types.sort_by_key(|t| t.type_id);
     Catalog {

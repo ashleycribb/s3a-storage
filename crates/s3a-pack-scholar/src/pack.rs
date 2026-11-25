@@ -126,7 +126,10 @@ pub static SCHOLAR_DESCRIPTORS: &[TileTypeDescriptor] = &[
         owner_pack: "Scholar Pack",
         lifecycle: TileLifecycle::Active,
         required_addon: Some(ADDON_EDU),
-        record_size: 64,
+        // 160: `ScholarNoteClaimRecord` (incl. Phase C extension). Was 64,
+        // the pre-Phase-C size; the schema and the tour workaround already
+        // used the real size, so this value must agree with them.
+        record_size: 160,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::from_bits_truncate(

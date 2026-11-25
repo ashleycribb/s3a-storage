@@ -5,10 +5,27 @@
 //!
 //! Guarantees:
 //! - Strictly read-only operations.
-//! - On v2 files, reads only footer index and explicitly requested tile bytes.
+//! - On v2 files, the lobby reads only the footer index; floor detail reads the
+//!   footer plus the single requested tile.
 //! - Evaluates and respects research participant consent (`purpose=research`),
 //!   withholding and reporting records without active research consent.
 //! - Supports plain text terminal output and machine-readable `--json`.
+//!
+//! Trust contract (B5/N5): the lobby seal status reports ONLY whether the seal
+//! hash chain verifies. It never claims an archive is "verified": tour does not
+//! re-check record payload checksums in the lobby path (that would turn every
+//! lobby call into a full scan and break the read bound above). Run
+//! `s3a-cli verify` for payload truth. Floor detail (`--floor N`) DOES verify
+//! the payload checksums of the tile it displays and reports the result
+//! per-floor (`payload_ok` / `payload_check`).
+//!
+//! Floor numbering (N4): the canonical floor index is the floor's position in
+//! the archive (0..tile_count), matching the manifest's own tile directory.
+//! The raw `tile_index` recorded in a sealed footer is NOT used for display or
+//! addressing: the sealer writes the manifest tile as tile 0 without
+//! renumbering the original tiles, so two floors can share one `tile_index`
+//! (e.g. MANIFEST and ACADEMIC_PAPERS both 0). `--floor N`, the floor
+//! directory, and `--json` all use the canonical position.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Seek, SeekFrom};
@@ -31,10 +48,23 @@ use s3a_edge::{
     CompactEdgeSensorRecord, EdgeConsentRecord, EquipmentEventRecord, PURPOSE_RESEARCH_ANALYTICS,
 };
 use s3a_engine::anchor::{extract_anchors_from_footer, AnchorProof};
+use s3a_engine::compute_tile_header_crc32;
 use s3a_engine::sealed::{
     compute_endcap_crc32, compute_endcap_crc32_v2, compute_seal_hash_v2, verify_seal_chain,
 };
 use s3a_engine::standard_schema_for_type;
+use s3a_pack_scholar::{
+    AcademicPaperRecord, AgentRegistryRecord, AiTraceRecord, CitationFingerprintRecord,
+    HumanLrsRecord, ResearchGraphEdgeRecord, ScholarNoteClaimRecord, ScholarTileType,
+    SrsWorkspaceRecord, AGENT_FLAG_DISABLED, AGENT_FLAG_REQUIRES_HUMAN_GATE, AGENT_KIND_CITATION_GENERATOR,
+    AGENT_KIND_CUSTODIAN, AGENT_KIND_ORCHESTRATOR, AGENT_KIND_REVIEW_COORDINATOR,
+    AGENT_KIND_VERIFIER, CLAIM_KIND_EMPIRICAL, CLAIM_KIND_HYPOTHESIS, CLAIM_KIND_NOTE,
+    CLAIM_KIND_THEORETICAL, CONTENT_KIND_ABSTRACT, CONTENT_KIND_HTML, CONTENT_KIND_PDF,
+    STEP_CLAIM, STEP_HALLUCINATION, STEP_NOTE, STEP_REASONING, STEP_TOOL_CALL,
+    TOOL_CREDENTIAL_EXPORT, TOOL_CROSSREF_QUERY, TOOL_EXPORT_SNAPSHOT, TOOL_EXTRACT_CLAIMS,
+    TOOL_MUTATE_GRAPH, TOOL_OPENALEX_QUERY, TOOL_PUBLISH, TOOL_READ_FILE,
+    TOOL_SYNTHESIZE_EVIDENCE, TOOL_TA_SUPERVISOR_CALL,
+};
 
 /// CLI Tour execution options.
 #[derive(Debug, Clone, Default)]
@@ -80,12 +110,22 @@ pub struct TourLobby {
 }
 
 /// Cryptographic seal and anchor verification state.
+///
+/// Trust contract: `hash_chain_verified` reports ONLY the seal hash chain.
+/// `payloads_checked` is false for the lobby path — tour does not re-check
+/// record payload checksums there (see module docs). Nothing in this struct
+/// claims the payloads are verified; use `s3a-cli verify` for that, or the
+/// per-floor `payload_ok` in `TourFloorDetail`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TourSealStatus {
     pub is_sealed: bool,
     pub hash_chain_verified: bool,
     pub anchors_verified: bool,
     pub anchor_status: String,
+    /// Whether tour re-checked record payload checksums for this report.
+    /// Always false for the lobby: the lobby reads the footer only.
+    #[serde(default)]
+    pub payloads_checked: bool,
     pub summary: String,
 }
 
@@ -99,6 +139,11 @@ pub struct TourConsentSummary {
 }
 
 /// Item in the floor directory listing.
+///
+/// `index` is the canonical floor index: the floor's position in the archive
+/// (0..tile_count), matching the manifest's tile directory. `min_key` /
+/// `max_key` are the raw stored values; they are `u64::MAX..0` sentinels on
+/// empty tiles, so use `key_range` (`None` = empty tile, no keys) for display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TourFloorItem {
     pub index: u32,
@@ -109,6 +154,10 @@ pub struct TourFloorItem {
     pub size_bytes: u64,
     pub min_key: u64,
     pub max_key: u64,
+    /// Human-honest key range (`"min..max"`), or `None` when the tile holds
+    /// no records (the raw `min_key`/`max_key` are sentinels then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_range: Option<String>,
     pub payload_hash_short: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub array_info: Option<TourArrayInfo>,
@@ -128,6 +177,12 @@ pub struct TourArrayInfo {
 }
 
 /// Detail view for an individual floor (`--floor N`).
+///
+/// `index` is the canonical floor index (position in the archive). `payload_ok`
+/// / `payload_check` report the payload checksum verification tour performed
+/// on this tile's bytes (header CRC, data CRC, and — on v2 sealed archives —
+/// the payload SHA-256 against the footer index). `payload_hash` is "—" when
+/// no payload hash is recorded for the tile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TourFloorDetail {
     pub index: u32,
@@ -138,10 +193,24 @@ pub struct TourFloorDetail {
     pub size_bytes: u64,
     pub min_key: u64,
     pub max_key: u64,
+    /// Human-honest key range (`"min..max"`), or `None` when the tile holds
+    /// no records (the raw `min_key`/`max_key` are sentinels then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_range: Option<String>,
     pub payload_hash: String,
+    /// True when this tile's payload checksums verified (see `payload_check`).
+    #[serde(default)]
+    pub payload_ok: bool,
+    /// Human-readable payload checksum result for this tile.
+    #[serde(default)]
+    pub payload_check: String,
     pub fields: Vec<TourFieldInfo>,
     pub records: Vec<serde_json::Value>,
     pub withheld_count: usize,
+    /// Honesty note for hash-only record types (Scholar): what the decoded
+    /// fields cannot show (no title/author/DOI text is stored). `None` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub array_stats: Option<TourArrayStats>,
 }
@@ -216,7 +285,13 @@ pub struct TourHistoryEntry {
 // ---------------------------------------------------------------------------
 
 struct ParsedFloorMeta {
+    /// Raw tile index recorded in the footer / tile header. NOT used for
+    /// display or addressing: it can collide across floors (see module docs).
+    /// Kept because consent marks address records by this tile id.
     tile_index: u32,
+    /// Canonical floor index: position in the archive (0..tile_count).
+    /// This is what tour displays and what `--floor N` addresses.
+    floor_index: u32,
     type_id: u32,
     type_version: u16,
     record_count: u32,
@@ -285,6 +360,590 @@ fn format_unix_timestamp(ts: u64) -> String {
     }
     humantime::format_rfc3339_seconds(std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts))
         .to_string()
+}
+
+/// Human-honest key range for a floor, or `None` when the tile holds no
+/// records. The stored min/max are `u64::MAX..0` sentinels on empty tiles;
+/// never display those raw.
+fn key_range_display(min_key: u64, max_key: u64, record_count: u32) -> Option<String> {
+    if record_count == 0 || min_key > max_key {
+        None
+    } else {
+        Some(format!("{}..{}", min_key, max_key))
+    }
+}
+
+/// Short payload hash for display, or "—" when no hash is recorded
+/// (unsealed floors and v1 directory entries carry all zeros).
+fn payload_hash_short_display(hash: &[u8; 32]) -> String {
+    if *hash == [0u8; 32] {
+        "—".to_string()
+    } else {
+        let full_hex = hex::encode(hash);
+        format!("{}...", &full_hex[..8])
+    }
+}
+
+fn payload_hash_display(hash: &[u8; 32]) -> String {
+    if *hash == [0u8; 32] {
+        "—".to_string()
+    } else {
+        hex::encode(hash)
+    }
+}
+
+/// Verifies one tile's payload checksums against its own header and, on v2
+/// sealed archives, the payload SHA-256 recorded in the footer index.
+/// This is the same per-tile rule `s3a-cli verify` applies: header CRC (when
+/// recorded), data CRC32C over `payload_bytes`, and payload SHA-256 when an
+/// expected hash is recorded. Returns (ok, human-readable detail).
+fn check_tile_payload(
+    tile_bytes: &[u8],
+    expected_payload_hash: Option<[u8; 32]>,
+) -> (bool, String) {
+    if tile_bytes.len() < HYPER_TILE_HEADER_SIZE {
+        return (
+            false,
+            "tile truncated (shorter than a tile header)".to_string(),
+        );
+    }
+    let hdr: HyperTileHeader = pod_read_unaligned(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+    if hdr.header_crc32 != 0 && hdr.header_crc32 != compute_tile_header_crc32(&hdr) {
+        return (
+            false,
+            format!("header CRC mismatch (stored 0x{:08x})", hdr.header_crc32),
+        );
+    }
+    let payload_len = hdr.payload_bytes as usize;
+    if HYPER_TILE_HEADER_SIZE + payload_len > tile_bytes.len() {
+        return (
+            false,
+            format!(
+                "payload length {} exceeds the {} tile bytes read",
+                payload_len,
+                tile_bytes.len()
+            ),
+        );
+    }
+    let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_len];
+    let actual_data_crc = crc32c::crc32c(payload);
+    if hdr.data_crc32 != actual_data_crc {
+        return (
+            false,
+            format!(
+                "data CRC mismatch (stored 0x{:08x}, computed 0x{:08x})",
+                hdr.data_crc32, actual_data_crc
+            ),
+        );
+    }
+    match expected_payload_hash {
+        Some(expected) if expected != [0u8; 32] => {
+            let actual: [u8; 32] = Sha256::digest(payload).into();
+            if actual != expected {
+                return (
+                    false,
+                    "payload SHA-256 mismatch against the footer index".to_string(),
+                );
+            }
+            (
+                true,
+                "ok (header CRC ✓, data CRC ✓, payload SHA-256 ✓)".to_string(),
+            )
+        }
+        _ => (
+            true,
+            "ok (header CRC ✓, data CRC ✓; no payload hash recorded for this tile)"
+                .to_string(),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scholar record decoding (B3)
+// ---------------------------------------------------------------------------
+//
+// Scholar tiles (pack-scholar) come in two record layouts per type. Layout
+// v1 is the fixed POD record (`s3a-pack-scholar::records`:
+// `AcademicPaperRecord`, `ResearchGraphEdgeRecord`,
+// `ScholarNoteClaimRecord`, `CitationFingerprintRecord`); layout v2 (types
+// 12/13 only) is the chunked-blob layout the engine schema describes. Tour
+// selects the decoder from the tile's declared `record_layout_version` (see
+// `is_scholar_pod_floor`): v1 tiles decode from the pack structs so a floor
+// shows named fields instead of hex, v2 tiles decode through the embedded
+// schema.
+//
+// Honesty limit: Scholar records store hashes only — no title, author, or
+// DOI text exists anywhere in the archive. Hash fields are therefore shown
+// as hex (what they are), never resolved into invented titles. See
+// `scholar_record_note`.
+
+fn fmt_u64_hex(v: u64) -> String {
+    format!("0x{:x}", v)
+}
+
+/// Display rounding for f32 record fields: serde would print the exact f64
+/// conversion (0.10000000149011612 for stored 0.1f32). Six decimals is exact
+/// for the scores/coordinates these fields hold.
+fn f32d(v: f32) -> f64 {
+    (v as f64 * 1_000_000.0).round() / 1_000_000.0
+}
+
+fn fmt_u128_hex(v: [u64; 2]) -> String {
+    format!("0x{:016x}{:016x}", v[0], v[1])
+}
+
+fn fmt_coord(c: s3a_core::S3ACoordinate) -> serde_json::Value {
+    serde_json::json!({
+        "level": c.level,
+        "tile_id": c.tile_id,
+        "record_offset": c.record_offset,
+    })
+}
+
+/// "active" when the tombstone bit is clear, "tombstone" when set.
+/// (`FLAG_ACTIVE` is 0 by definition; active is the absence of tombstone.)
+fn record_status(flags: u64) -> &'static str {
+    if flags & s3a_core::FLAG_TOMBSTONE != 0 {
+        "tombstone"
+    } else {
+        "active"
+    }
+}
+
+fn step_type_name(step_type: u32) -> &'static str {
+    match step_type {
+        STEP_REASONING => "reasoning",
+        STEP_TOOL_CALL => "tool_call",
+        STEP_CLAIM => "claim",
+        STEP_NOTE => "note",
+        STEP_HALLUCINATION => "hallucination",
+        _ => "unknown",
+    }
+}
+
+fn claim_kind_name(kind: u16) -> &'static str {
+    match kind {
+        CLAIM_KIND_EMPIRICAL => "empirical",
+        CLAIM_KIND_THEORETICAL => "theoretical",
+        CLAIM_KIND_NOTE => "note",
+        CLAIM_KIND_HYPOTHESIS => "hypothesis",
+        _ => "unknown",
+    }
+}
+
+fn content_kind_name(kind: u32) -> &'static str {
+    match kind {
+        CONTENT_KIND_PDF => "PDF",
+        CONTENT_KIND_HTML => "HTML",
+        CONTENT_KIND_ABSTRACT => "abstract",
+        _ => "unknown",
+    }
+}
+
+fn agent_kind_name(kind: u16) -> &'static str {
+    match kind {
+        AGENT_KIND_ORCHESTRATOR => "orchestrator",
+        AGENT_KIND_VERIFIER => "verifier",
+        AGENT_KIND_CUSTODIAN => "custodian",
+        AGENT_KIND_REVIEW_COORDINATOR => "review_coordinator",
+        AGENT_KIND_CITATION_GENERATOR => "citation_generator",
+        _ => "unknown",
+    }
+}
+
+fn tool_names(mask: u32) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if mask & TOOL_READ_FILE != 0 {
+        names.push("read_file");
+    }
+    if mask & TOOL_OPENALEX_QUERY != 0 {
+        names.push("openalex_query");
+    }
+    if mask & TOOL_EXTRACT_CLAIMS != 0 {
+        names.push("extract_claims");
+    }
+    if mask & TOOL_SYNTHESIZE_EVIDENCE != 0 {
+        names.push("synthesize_evidence");
+    }
+    if mask & TOOL_CROSSREF_QUERY != 0 {
+        names.push("crossref_query");
+    }
+    if mask & TOOL_EXPORT_SNAPSHOT != 0 {
+        names.push("export_snapshot");
+    }
+    if mask & TOOL_TA_SUPERVISOR_CALL != 0 {
+        names.push("ta_supervisor_call");
+    }
+    if mask & TOOL_MUTATE_GRAPH != 0 {
+        names.push("mutate_graph");
+    }
+    if mask & TOOL_PUBLISH != 0 {
+        names.push("publish");
+    }
+    if mask & TOOL_CREDENTIAL_EXPORT != 0 {
+        names.push("credential_export");
+    }
+    names
+}
+
+/// Byte size of one record for a Scholar tile type, from the pack structs
+/// (NOT the registry/schema `record_size`: the registry still says 64 for
+/// note_claims while `ScholarNoteClaimRecord` is 160 bytes).
+fn scholar_record_size(type_id: u32) -> Option<usize> {
+    match type_id {
+        ScholarTileType::HUMAN_LRS => Some(std::mem::size_of::<HumanLrsRecord>()),
+        ScholarTileType::AI_TRACE_LOG => Some(std::mem::size_of::<AiTraceRecord>()),
+        ScholarTileType::ACADEMIC_PAPERS => Some(std::mem::size_of::<AcademicPaperRecord>()),
+        ScholarTileType::RESEARCH_GRAPH => Some(std::mem::size_of::<ResearchGraphEdgeRecord>()),
+        ScholarTileType::SRS_WORKSPACE => Some(std::mem::size_of::<SrsWorkspaceRecord>()),
+        ScholarTileType::AGENT_REGISTRY => Some(std::mem::size_of::<AgentRegistryRecord>()),
+        ScholarTileType::NOTE_CLAIMS => Some(std::mem::size_of::<ScholarNoteClaimRecord>()),
+        ScholarTileType::CITATION_FINGERPRINT => {
+            Some(std::mem::size_of::<CitationFingerprintRecord>())
+        }
+        _ => None,
+    }
+}
+
+/// B3 (corrected Nov 18, 2026): Scholar tile types 12/13 exist in two record
+/// layouts. Layout v1 is the fixed POD record (`AcademicPaperRecord`,
+/// `ResearchGraphEdgeRecord`, documented in docs/spec/legacy-layouts.md);
+/// layout v2 is the chunked-blob layout (`ScholarPaperBlobHeader` + JSON
+/// chunks, documented in docs/spec/registry.md) and is what the engine
+/// schema describes. Types 20/32 have only the v1 POD layout. The tile's
+/// declared `record_layout_version` (`floor.type_version`, taken from the
+/// tile header / footer entry) selects the decoder: v1 tiles decode through
+/// the pack decoder (`decode_scholar_record`), v2 tiles through the embedded
+/// schema. Never select on the schema shape — one schema entry per type can
+/// only describe the current (v2) layout, so it cannot tell a v1 tile from
+/// a v2 tile.
+fn scholar_pod_layout_version(type_id: u32) -> Option<u16> {
+    match type_id {
+        ScholarTileType::ACADEMIC_PAPERS
+        | ScholarTileType::RESEARCH_GRAPH
+        | ScholarTileType::NOTE_CLAIMS
+        | ScholarTileType::CITATION_FINGERPRINT => Some(1),
+        _ => None,
+    }
+}
+
+/// True when this floor is a Scholar POD (layout v1) tile: decode it with
+/// the pack decoder, not the embedded schema.
+fn is_scholar_pod_floor(type_id: u32, type_version: u16) -> bool {
+    scholar_record_size(type_id).is_some()
+        && scholar_pod_layout_version(type_id) == Some(type_version)
+}
+
+/// Honesty note shown once per Scholar floor: what the decoded fields
+/// cannot show, because the archive stores hashes, not identity text.
+fn scholar_record_note(type_id: u32) -> Option<String> {
+    match type_id {
+        ScholarTileType::HUMAN_LRS
+        | ScholarTileType::AI_TRACE_LOG
+        | ScholarTileType::ACADEMIC_PAPERS
+        | ScholarTileType::RESEARCH_GRAPH
+        | ScholarTileType::SRS_WORKSPACE
+        | ScholarTileType::AGENT_REGISTRY
+        | ScholarTileType::NOTE_CLAIMS
+        | ScholarTileType::CITATION_FINGERPRINT => Some(
+            "Records store hashes only — no title, author, or DOI text is stored in \
+            this archive, so hash fields are shown as hex and cannot be resolved to \
+            names here. (Titles/DOIs live in the researcher's dossier, not in S3A.)"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// Decodes one Scholar record from its raw bytes into named fields.
+/// Returns `None` for non-Scholar types or a short slice.
+fn decode_scholar_record(type_id: u32, slice: &[u8]) -> Option<serde_json::Value> {
+    match type_id {
+        ScholarTileType::HUMAN_LRS => {
+            if slice.len() < std::mem::size_of::<HumanLrsRecord>() {
+                return None;
+            }
+            let r: HumanLrsRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "session_uuid": fmt_u128_hex(r.session_uuid),
+                "timestamp": format_unix_timestamp(r.timestamp_sec),
+                "timestamp_sec": r.timestamp_sec,
+                "actor_hash": fmt_u64_hex(r.actor_hash),
+                "verb_id": r.verb_id,
+                "decision_score": f32d(r.decision_score),
+                "ai_trace_coord": fmt_coord(r.ai_trace_coord),
+                "object_hash": fmt_u64_hex(r.object_hash as u64),
+                "flags": r.flags,
+                "status": record_status(r.flags as u64),
+            }))
+        }
+        ScholarTileType::AI_TRACE_LOG => {
+            if slice.len() < std::mem::size_of::<AiTraceRecord>() {
+                return None;
+            }
+            let r: AiTraceRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "session_uuid": fmt_u128_hex(r.session_uuid),
+                "timestamp": format_unix_timestamp(r.timestamp_sec),
+                "timestamp_sec": r.timestamp_sec,
+                "agent_id": fmt_u64_hex(r.agent_id),
+                "step_type": step_type_name(r.step_type),
+                "step_type_id": r.step_type,
+                "confidence": f32d(r.confidence),
+                "human_coord": fmt_coord(r.human_coord),
+                "hilbert_index": r.hilbert_index,
+                "flags": r.flags,
+                "status": record_status(r.flags as u64),
+            }))
+        }
+        ScholarTileType::ACADEMIC_PAPERS => {
+            if slice.len() < std::mem::size_of::<AcademicPaperRecord>() {
+                return None;
+            }
+            let r: AcademicPaperRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "paper_id": r.paper_id,
+                "paper_id_hex": fmt_u64_hex(r.paper_id),
+                "published": format_unix_timestamp(r.timestamp_sec),
+                "timestamp_sec": r.timestamp_sec,
+                "hilbert_index": r.hilbert_index,
+                "topic": { "x": f32d(r.topic_x), "y": f32d(r.topic_y), "z": f32d(r.topic_z) },
+                "citation_count": r.citation_count,
+                "year": r.year,
+                "venue_id": r.venue_id,
+                "open_access": r.open_access_flag != 0,
+                "warning_count": r.warning_count,
+                "doi_prefix_hash": fmt_u64_hex(r.doi_prefix_hash),
+                "flags": r.flags,
+                "status": record_status(r.flags),
+            }))
+        }
+        ScholarTileType::RESEARCH_GRAPH => {
+            if slice.len() < std::mem::size_of::<ResearchGraphEdgeRecord>() {
+                return None;
+            }
+            let r: ResearchGraphEdgeRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "subject_hash": fmt_u64_hex(r.subject_hash),
+                "object_hash": fmt_u64_hex(r.object_hash),
+                "timestamp": format_unix_timestamp(r.timestamp_sec),
+                "timestamp_sec": r.timestamp_sec,
+                "hilbert_coord": r.hilbert_coord,
+                "predicate_id": r.predicate_id,
+                "weight": f32d(r.weight),
+                "flags": r.flags,
+                "status": record_status(r.flags),
+            }))
+        }
+        ScholarTileType::SRS_WORKSPACE => {
+            if slice.len() < std::mem::size_of::<SrsWorkspaceRecord>() {
+                return None;
+            }
+            let r: SrsWorkspaceRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "project_uuid": fmt_u128_hex(r.project_uuid),
+                "question_hash": fmt_u64_hex(r.question_hash),
+                "collection_mask": fmt_u64_hex(r.collection_mask),
+                "topic_centroid": { "x": f32d(r.topic_centroid_xyz[0]), "y": f32d(r.topic_centroid_xyz[1]), "z": f32d(r.topic_centroid_xyz[2]) },
+                "status_id": r.status,
+                "pinned_works_count": r.pinned_works_count,
+                "claims_count": r.claims_count,
+                "flags": r.flags,
+                "status": record_status(r.flags),
+            }))
+        }
+        ScholarTileType::AGENT_REGISTRY => {
+            if slice.len() < std::mem::size_of::<AgentRegistryRecord>() {
+                return None;
+            }
+            let r: AgentRegistryRecord = pod_read_unaligned(slice);
+            let mut agent_flags = Vec::new();
+            if r.flags & AGENT_FLAG_DISABLED != 0 {
+                agent_flags.push("disabled");
+            }
+            if r.flags & AGENT_FLAG_REQUIRES_HUMAN_GATE != 0 {
+                agent_flags.push("requires_human_gate");
+            }
+            if agent_flags.is_empty() {
+                agent_flags.push("active");
+            }
+            Some(serde_json::json!({
+                "agent_id": fmt_u64_hex(r.agent_id),
+                "xapi_profile_iri_hash": fmt_u64_hex(r.xapi_profile_iri_hash),
+                "owl_ontology_iri_hash": fmt_u64_hex(r.owl_ontology_iri_hash),
+                "allowed_verb_mask": r.allowed_verb_mask,
+                "allowed_tools": tool_names(r.allowed_tool_mask),
+                "denied_tools": tool_names(r.denied_tool_mask),
+                "agent_kind": agent_kind_name(r.agent_kind),
+                "agent_kind_id": r.agent_kind,
+                "agent_flags": agent_flags,
+                "version": r.version,
+            }))
+        }
+        ScholarTileType::NOTE_CLAIMS => {
+            if slice.len() < std::mem::size_of::<ScholarNoteClaimRecord>() {
+                return None;
+            }
+            let r: ScholarNoteClaimRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "claim_id": r.claim_id,
+                "timestamp": format_unix_timestamp(r.timestamp_sec),
+                "timestamp_sec": r.timestamp_sec,
+                "session_uuid": fmt_u128_hex(r.session_uuid),
+                "author_hash": fmt_u64_hex(r.author_hash),
+                "confidence": f32d(r.confidence),
+                "kind": claim_kind_name(r.kind),
+                "kind_id": r.kind,
+                "flags": r.flags,
+                "status": record_status(r.flags as u64),
+                "keyword_bloom": fmt_u64_hex(r.keyword_bloom as u64),
+                "text_hash": fmt_u64_hex(r.text_hash as u64),
+                "embedding_tile_id": r.embedding_tile_id,
+                "embedding_offset": r.embedding_offset,
+                "citation_fingerprint_id": r.citation_fingerprint_id,
+                "passage_page": r.passage_page,
+                "passage_char_offset": r.passage_char_offset,
+                "passage_char_length": r.passage_char_length,
+                "quote_sha256": hex::encode(r.quote_sha256),
+                "producer_id": r.producer_id,
+                "verification_statement_uuid": fmt_u128_hex(r.verification_statement_uuid),
+            }))
+        }
+        ScholarTileType::CITATION_FINGERPRINT => {
+            if slice.len() < std::mem::size_of::<CitationFingerprintRecord>() {
+                return None;
+            }
+            let r: CitationFingerprintRecord = pod_read_unaligned(slice);
+            Some(serde_json::json!({
+                "paper_id": r.paper_id,
+                "doi_hash": fmt_u64_hex(r.doi_hash),
+                "content_sha256": hex::encode(r.content_sha256),
+                "content_kind": content_kind_name(r.content_kind),
+                "content_kind_id": r.content_kind,
+                "crossref_version": r.crossref_version,
+                "fetched_at": format_unix_timestamp(r.fetched_at),
+                "fetched_at_sec": r.fetched_at,
+                "source_url_hash": fmt_u64_hex(r.source_url_hash),
+                "flags": r.flags,
+                "status": record_status(r.flags),
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Field table for a Scholar floor's "Schema Fields" listing, mirroring the
+/// pack struct layouts (name, type, byte offset, byte length).
+fn scholar_record_fields(type_id: u32) -> Option<Vec<TourFieldInfo>> {
+    let f = |field_id: u16, name: &str, field_type: &str, byte_offset: u32, byte_len: u32| {
+        TourFieldInfo {
+            field_id,
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            byte_offset,
+            byte_len,
+            null_allowed: false,
+        }
+    };
+    let fields = match type_id {
+        ScholarTileType::HUMAN_LRS => vec![
+            f(1, "session_uuid", "uuid128", 0, 16),
+            f(2, "timestamp_sec", "u64", 16, 8),
+            f(3, "actor_hash", "u64", 24, 8),
+            f(4, "verb_id", "u32", 32, 4),
+            f(5, "decision_score", "f32", 36, 4),
+            f(6, "ai_trace_coord", "coord", 40, 16),
+            f(7, "object_hash", "u32", 56, 4),
+            f(8, "flags", "u32", 60, 4),
+        ],
+        ScholarTileType::AI_TRACE_LOG => vec![
+            f(1, "session_uuid", "uuid128", 0, 16),
+            f(2, "timestamp_sec", "u64", 16, 8),
+            f(3, "agent_id", "u64", 24, 8),
+            f(4, "step_type", "u32", 32, 4),
+            f(5, "confidence", "f32", 36, 4),
+            f(6, "human_coord", "coord", 40, 16),
+            f(7, "hilbert_index", "u32", 56, 4),
+            f(8, "flags", "u32", 60, 4),
+        ],
+        ScholarTileType::ACADEMIC_PAPERS => vec![
+            f(1, "paper_id", "u64", 0, 8),
+            f(2, "timestamp_sec", "u64", 8, 8),
+            f(3, "hilbert_index", "u64", 16, 8),
+            f(4, "topic_x", "f32", 24, 4),
+            f(5, "topic_y", "f32", 28, 4),
+            f(6, "topic_z", "f32", 32, 4),
+            f(7, "citation_count", "u32", 36, 4),
+            f(8, "year", "u16", 40, 2),
+            f(9, "venue_id", "u16", 42, 2),
+            f(10, "open_access_flag", "u16", 44, 2),
+            f(11, "warning_count", "u16", 46, 2),
+            f(12, "doi_prefix_hash", "u64", 48, 8),
+            f(13, "flags", "u64", 56, 8),
+        ],
+        ScholarTileType::RESEARCH_GRAPH => vec![
+            f(1, "subject_hash", "u64", 0, 8),
+            f(2, "object_hash", "u64", 8, 8),
+            f(3, "timestamp_sec", "u64", 16, 8),
+            f(4, "hilbert_coord", "u64", 24, 8),
+            f(5, "predicate_id", "u32", 32, 4),
+            f(6, "weight", "f32", 36, 4),
+            f(7, "flags", "u64", 40, 8),
+        ],
+        ScholarTileType::SRS_WORKSPACE => vec![
+            f(1, "project_uuid", "uuid128", 0, 16),
+            f(2, "question_hash", "u64", 16, 8),
+            f(3, "collection_mask", "u64", 24, 8),
+            f(4, "topic_centroid_xyz", "f32[3]", 32, 12),
+            f(5, "status", "u32", 44, 4),
+            f(6, "pinned_works_count", "u32", 48, 4),
+            f(7, "claims_count", "u32", 52, 4),
+            f(8, "flags", "u64", 56, 8),
+        ],
+        ScholarTileType::AGENT_REGISTRY => vec![
+            f(1, "agent_id", "u64", 0, 8),
+            f(2, "xapi_profile_iri_hash", "u64", 8, 8),
+            f(3, "owl_ontology_iri_hash", "u64", 16, 8),
+            f(4, "allowed_verb_mask", "u32", 24, 4),
+            f(5, "allowed_tool_mask", "u32", 28, 4),
+            f(6, "denied_tool_mask", "u32", 32, 4),
+            f(7, "agent_kind", "u16", 36, 2),
+            f(8, "flags", "u16", 38, 2),
+            f(9, "version", "u64", 40, 8),
+        ],
+        ScholarTileType::NOTE_CLAIMS => vec![
+            f(1, "claim_id", "u64", 0, 8),
+            f(2, "timestamp_sec", "u64", 8, 8),
+            f(3, "session_uuid", "uuid128", 16, 16),
+            f(4, "author_hash", "u64", 32, 8),
+            f(5, "confidence", "f32", 40, 4),
+            f(6, "kind", "u16", 44, 2),
+            f(7, "flags", "u16", 46, 2),
+            f(8, "keyword_bloom", "u32", 48, 4),
+            f(9, "text_hash", "u32", 52, 4),
+            f(10, "embedding_tile_id", "u32", 56, 4),
+            f(11, "embedding_offset", "u32", 60, 4),
+            f(12, "citation_fingerprint_id", "u64", 64, 8),
+            f(13, "passage_page", "u32", 72, 4),
+            f(14, "passage_char_offset", "u32", 76, 4),
+            f(15, "passage_char_length", "u32", 80, 4),
+            f(16, "quote_sha256", "bytes", 88, 32),
+            f(17, "producer_id", "u64", 120, 8),
+            f(18, "verification_statement_uuid", "uuid128", 128, 16),
+        ],
+        ScholarTileType::CITATION_FINGERPRINT => vec![
+            f(1, "paper_id", "u64", 0, 8),
+            f(2, "doi_hash", "u64", 8, 8),
+            f(3, "content_sha256", "bytes", 16, 32),
+            f(4, "content_kind", "u32", 48, 4),
+            f(5, "crossref_version", "u32", 52, 4),
+            f(6, "fetched_at", "u64", 56, 8),
+            f(7, "source_url_hash", "u64", 64, 8),
+            f(8, "flags", "u64", 72, 8),
+        ],
+        _ => return None,
+    };
+    Some(fields)
 }
 
 // ---------------------------------------------------------------------------
@@ -388,12 +1047,11 @@ pub fn tour_file<R: Read + Seek>(
             .map(|s| s.name.clone())
             .unwrap_or_else(|| format!("type_{}", f.type_id));
 
-        let hash_short = if f.payload_hash == [0u8; 32] {
-            "00000000...".to_string()
-        } else {
-            let full_hex = hex::encode(f.payload_hash);
-            format!("{}...", &full_hex[..8])
-        };
+        // "—" when no payload hash is recorded (all unsealed floors, v1
+        // entries): the old "00000000..." looked like a real hash.
+        let hash_short = payload_hash_short_display(&f.payload_hash);
+        // Honest key range: None on empty tiles (raw min/max are sentinels).
+        let key_range = key_range_display(f.min_key, f.max_key, f.record_count);
 
         let mut array_info = None;
         if f.type_id == TileType::ARRAY {
@@ -407,6 +1065,14 @@ pub fn tour_file<R: Read + Seek>(
                     .map(|d| format!("{:?}", d))
                     .unwrap_or_else(|| format!("dtype_{}", hdr.dtype));
 
+                // Only report a value range when the stored bounds are
+                // ordered; on empty tiles they are u64::MAX..0 sentinels.
+                let (min_val, max_val) = if f.min_key <= f.max_key {
+                    (Some(f.min_key as f64), Some(f.max_key as f64))
+                } else {
+                    (None, None)
+                };
+
                 array_info = Some(TourArrayInfo {
                     ndim: hdr.ndim,
                     dtype: dtype_str,
@@ -414,22 +1080,14 @@ pub fn tour_file<R: Read + Seek>(
                     axis_names,
                     units,
                     chunk_coords,
-                    min_val: if f.min_key != 0 {
-                        Some(f.min_key as f64)
-                    } else {
-                        None
-                    },
-                    max_val: if f.max_key != 0 {
-                        Some(f.max_key as f64)
-                    } else {
-                        None
-                    },
+                    min_val,
+                    max_val,
                 });
             }
         }
 
         floor_items.push(TourFloorItem {
-            index: f.tile_index,
+            index: f.floor_index,
             type_id: f.type_id,
             type_name,
             version: f.type_version,
@@ -437,6 +1095,7 @@ pub fn tour_file<R: Read + Seek>(
             size_bytes: f.length,
             min_key: f.min_key,
             max_key: f.max_key,
+            key_range,
             payload_hash_short: hash_short,
             array_info,
         });
@@ -519,15 +1178,24 @@ fn inspect_archive_context<R: Read + Seek>(
                     let anchors_ok =
                         !anchors.is_empty() && anchors.iter().all(|a| a.status == "confirmed");
 
+                    // B5/N5: the lobby reports ONLY the seal hash chain. It
+                    // must not say "verified": tour does not re-check record
+                    // payload checksums in the lobby path (that would be a
+                    // full scan on every call). `payloads_checked` is false
+                    // so a consumer can tell chain-valid from payload-valid.
                     let seal_status = TourSealStatus {
                         is_sealed: true,
                         hash_chain_verified: chain_valid && seal_hash_valid,
                         anchors_verified: anchors_ok,
                         anchor_status: anchor_status_str.clone(),
+                        payloads_checked: false,
                         summary: if chain_valid && seal_hash_valid {
-                            format!("verified ✓ (Chain: ✓, Anchors: {})", anchor_status_str)
+                            format!(
+                                "chain valid ✓ (payloads not re-checked by tour — run `s3a-cli verify` for payload checksums; Anchors: {})",
+                                anchor_status_str
+                            )
                         } else {
-                            "broken ✗ (Checksum or chain invalid)".to_string()
+                            "chain broken ✗ (checksum or chain invalid)".to_string()
                         },
                     };
 
@@ -541,10 +1209,18 @@ fn inspect_archive_context<R: Read + Seek>(
                         hash_chain_valid: chain_valid && seal_hash_valid,
                     };
 
+                    // N4: the canonical floor index is the floor's position
+                    // in the footer index (0..tile_count), matching the
+                    // manifest's tile directory. The raw `tile_index` from
+                    // the entry is kept only for consent-mark matching: the
+                    // sealer writes the manifest as tile 0 without
+                    // renumbering the original tiles, so it can collide
+                    // (MANIFEST and ACADEMIC_PAPERS both 0).
                     let mut floors = Vec::with_capacity(v2_entries.len());
-                    for e in v2_entries {
+                    for (pos, e) in v2_entries.iter().enumerate() {
                         floors.push(ParsedFloorMeta {
                             tile_index: e.tile_index,
+                            floor_index: pos as u32,
                             type_id: e.type_id,
                             type_version: e.type_version,
                             record_count: e.record_count,
@@ -622,9 +1298,11 @@ fn inspect_archive_context<R: Read + Seek>(
                 let mut floors = Vec::with_capacity(dir_entries.len());
                 let mut schema_map = BTreeMap::new();
 
-                for e in dir_entries {
+                // N4: canonical floor index is the position in the directory.
+                for (pos, e) in dir_entries.iter().enumerate() {
                     floors.push(ParsedFloorMeta {
                         tile_index: e.tile_index,
+                        floor_index: pos as u32,
                         type_id: e.tile_type,
                         type_version: 1,
                         record_count: 0,
@@ -645,10 +1323,14 @@ fn inspect_archive_context<R: Read + Seek>(
                     tile_count: endcap_v1.tile_count,
                     seal_status: TourSealStatus {
                         is_sealed: true,
-                        hash_chain_verified: true,
+                        // B5: v1 verifies nothing but the directory endcap
+                        // CRC; it never checked a hash chain, so it must not
+                        // claim the archive is verified either.
+                        hash_chain_verified: false,
                         anchors_verified: false,
                         anchor_status: "v1".to_string(),
-                        summary: "verified ✓ (v1 directory)".to_string(),
+                        payloads_checked: false,
+                        summary: "sealed v1 (directory endcap CRC ok; payloads not re-checked by tour — run `s3a-cli verify` for payload checksums)".to_string(),
                     },
                     floors,
                     schema_map,
@@ -684,7 +1366,9 @@ fn inspect_archive_context<R: Read + Seek>(
             if reader.read_exact(&mut tile_hdr_buf).is_ok() {
                 let th: HyperTileHeader = pod_read_unaligned(&tile_hdr_buf);
                 floors.push(ParsedFloorMeta {
+                    // Unsealed scan: position and tile index agree.
                     tile_index: i,
+                    floor_index: i,
                     type_id: th.tile_type,
                     type_version: th.record_layout_version as u16,
                     record_count: th.record_count,
@@ -710,6 +1394,7 @@ fn inspect_archive_context<R: Read + Seek>(
             hash_chain_verified: false,
             anchors_verified: false,
             anchor_status: "none".to_string(),
+            payloads_checked: false,
             summary: "unsealed (live database)".to_string(),
         },
         floors,
@@ -950,11 +1635,19 @@ fn inspect_floor_detail<R: Read + Seek>(
     floor_idx: u32,
     ctx: &ParsedArchiveContext,
 ) -> Result<TourFloorDetail, Box<dyn std::error::Error>> {
+    // N4: address by canonical floor index (position), not the raw
+    // tile_index recorded in the footer, which can collide across floors.
     let floor = ctx
         .floors
         .iter()
-        .find(|f| f.tile_index == floor_idx)
-        .ok_or_else(|| format!("Floor index {} out of range", floor_idx))?;
+        .find(|f| f.floor_index == floor_idx)
+        .ok_or_else(|| {
+            format!(
+                "Floor index {} out of range (floors 0..{}; run `s3a-cli tour <file>` to list them)",
+                floor_idx,
+                ctx.floors.len().saturating_sub(1)
+            )
+        })?;
 
     let schema = ctx
         .schema_map
@@ -969,18 +1662,43 @@ fn inspect_floor_detail<R: Read + Seek>(
         &[]
     };
 
+    // B5: verify this tile's payload checksums (header CRC, data CRC, and
+    // the payload SHA-256 against the footer index on v2 sealed archives).
+    // This reuses the bytes already read for the detail view, so the lobby
+    // read bound is unaffected.
+    let expected_hash = if ctx.footer_version == "v2" {
+        Some(floor.payload_hash)
+    } else {
+        None
+    };
+    let (payload_ok, payload_check) = check_tile_payload(&tile_bytes, expected_hash);
+
     let consent_state = build_consent_state(reader, &ctx.floors)?;
 
-    let mut fields = Vec::with_capacity(schema.fields.len());
-    for f in &schema.fields {
-        fields.push(TourFieldInfo {
-            field_id: f.field_id,
-            name: f.name.clone(),
-            field_type: type_enum_to_name(f.field_type).to_string(),
-            byte_offset: f.byte_offset,
-            byte_len: f.byte_len,
-            null_allowed: f.null_allowed,
-        });
+    // B3: layout-v1 Scholar POD tiles decode through the pack decoder (see
+    // `is_scholar_pod_floor`); v2 blob tiles use the embedded schema.
+    let is_scholar_pod = is_scholar_pod_floor(floor.type_id, floor.type_version);
+    let scholar_size = if is_scholar_pod {
+        scholar_record_size(floor.type_id)
+    } else {
+        None
+    };
+    let mut fields = if is_scholar_pod {
+        scholar_record_fields(floor.type_id).unwrap_or_default()
+    } else {
+        Vec::with_capacity(schema.fields.len())
+    };
+    if !is_scholar_pod {
+        for f in &schema.fields {
+            fields.push(TourFieldInfo {
+                field_id: f.field_id,
+                name: f.name.clone(),
+                field_type: type_enum_to_name(f.field_type).to_string(),
+                byte_offset: f.byte_offset,
+                byte_len: f.byte_len,
+                null_allowed: f.null_allowed,
+            });
+        }
     }
 
     let mut records = Vec::new();
@@ -991,6 +1709,27 @@ fn inspect_floor_detail<R: Read + Seek>(
         if let Ok(view) = ArrayTileView::parse(payload) {
             let stats = calculate_array_stats(&view);
             array_stats = Some(stats);
+        }
+    } else if let Some(scholar_size) = scholar_size {
+        // B3: decode Scholar POD records into named fields. Use the pack
+        // struct size, not the schema `record_size`: the schema describes
+        // the current (v2 blob) layout for types 12/13, not the v1 POD
+        // records on this tile.
+        let count = (payload.len() / scholar_size).min(floor.record_count as usize);
+        for i in 0..count {
+            let start = i * scholar_size;
+            let slice = &payload[start..start + scholar_size];
+            let obj = match decode_scholar_record(floor.type_id, slice) {
+                Some(obj) => obj,
+                None => continue,
+            };
+
+            if is_record_withheld(&consent_state, floor, i as u32, &obj) {
+                withheld_count += 1;
+            } else if records.len() < 10 {
+                // Keep first 10 allowed records
+                records.push(obj);
+            }
         }
     } else if schema.record_size > 0 && !schema.fields.is_empty() {
         let rec_size = schema.record_size as usize;
@@ -1020,7 +1759,7 @@ fn inspect_floor_detail<R: Read + Seek>(
     }
 
     Ok(TourFloorDetail {
-        index: floor.tile_index,
+        index: floor.floor_index,
         type_id: floor.type_id,
         type_name: schema.name.clone(),
         version: floor.type_version,
@@ -1028,10 +1767,14 @@ fn inspect_floor_detail<R: Read + Seek>(
         size_bytes: floor.length,
         min_key: floor.min_key,
         max_key: floor.max_key,
-        payload_hash: hex::encode(floor.payload_hash),
+        key_range: key_range_display(floor.min_key, floor.max_key, floor.record_count),
+        payload_hash: payload_hash_display(&floor.payload_hash),
+        payload_ok,
+        payload_check,
         fields,
         records,
         withheld_count,
+        record_note: scholar_record_note(floor.type_id),
         array_stats,
     })
 }
@@ -1631,7 +2374,47 @@ fn execute_cross_section<R: Read + Seek>(
         }
         let payload = &tile_bytes[HYPER_TILE_HEADER_SIZE..];
 
-        if schema.record_size > 0 && !schema.fields.is_empty() {
+        // B3: layout-v1 Scholar POD tiles decode through the pack decoder
+        // (see `is_scholar_pod_floor`) so `--cross paper_id=1001` can match;
+        // v2 blob tiles use the embedded schema below.
+        let is_scholar_blob = is_scholar_pod_floor(floor.type_id, floor.type_version);
+        let scholar_size = if is_scholar_blob {
+            scholar_record_size(floor.type_id)
+        } else {
+            None
+        };
+
+        if let Some(scholar_size) = scholar_size {
+            let count = (payload.len() / scholar_size).min(floor.record_count as usize);
+            for i in 0..count {
+                let start = i * scholar_size;
+                let slice = &payload[start..start + scholar_size];
+                let obj = match decode_scholar_record(floor.type_id, slice) {
+                    Some(obj) => obj,
+                    None => continue,
+                };
+
+                if record_matches_filter(
+                    &obj,
+                    &search_key,
+                    search_val,
+                    floor.min_key,
+                    floor.max_key,
+                ) {
+                    if is_record_withheld(&consent_state, floor, i as u32, &obj) {
+                        withheld_count += 1;
+                    } else {
+                        matches.push(TourCrossMatch {
+                            floor_index: floor.floor_index,
+                            record_index: i as u32,
+                            type_id: floor.type_id,
+                            type_name: schema.name.clone(),
+                            record_data: obj,
+                        });
+                    }
+                }
+            }
+        } else if schema.record_size > 0 && !schema.fields.is_empty() {
             let rec_size = schema.record_size as usize;
             let count = (payload.len() / rec_size).min(floor.record_count as usize);
 
@@ -1651,7 +2434,7 @@ fn execute_cross_section<R: Read + Seek>(
                         withheld_count += 1;
                     } else {
                         matches.push(TourCrossMatch {
-                            floor_index: floor.tile_index,
+                            floor_index: floor.floor_index,
                             record_index: i as u32,
                             type_id: floor.type_id,
                             type_name: schema.name.clone(),
@@ -1730,13 +2513,14 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!(" S3A SEAL CHAIN HISTORY");
         println!("============================================================");
         println!(
-            " Seal Verification: {}",
+            " Seal Chain: {}",
             if report.lobby.seal_status.hash_chain_verified {
                 "✓ Valid"
             } else {
                 "✗ Broken"
             }
         );
+        println!(" (Chain only — payload checksums are checked by `s3a-cli verify`, not here.)");
         println!(" Total Epochs:      {}", history.len());
         println!();
         println!(
@@ -1776,8 +2560,22 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
             " Records:     {} ({} bytes)",
             detail.record_count, detail.size_bytes
         );
-        println!(" Keys/Range:  {}..{}", detail.min_key, detail.max_key);
+        println!(
+            " Keys/Range:  {}",
+            detail
+                .key_range
+                .clone()
+                .unwrap_or_else(|| "— (empty tile)".to_string())
+        );
         println!(" Hash:        {}", detail.payload_hash);
+        println!(
+            " Payload:     {}",
+            if detail.payload_check.is_empty() {
+                "(not checked)".to_string()
+            } else {
+                detail.payload_check.clone()
+            }
+        );
         println!();
 
         if let Some(stats) = &detail.array_stats {
@@ -1803,8 +2601,21 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         if !detail.records.is_empty() {
             println!("Records (First {}):", detail.records.len());
             for (idx, r) in detail.records.iter().enumerate() {
-                println!("  [{}] {}", idx, r);
+                let pretty = serde_json::to_string_pretty(r)
+                    .unwrap_or_else(|_| r.to_string());
+                let mut lines = pretty.lines();
+                if let Some(first) = lines.next() {
+                    println!("  [{}] {}", idx, first);
+                    for line in lines {
+                        println!("       {}", line);
+                    }
+                }
             }
+        }
+
+        if let Some(note) = &detail.record_note {
+            println!();
+            println!("Note: {}", note);
         }
 
         if detail.withheld_count > 0 {
@@ -1892,19 +2703,27 @@ pub fn print_tour_report(report: &TourReport, json_mode: bool) {
         println!("--- FLOOR DIRECTORY ---");
         for f in floors {
             let type_upper = f.type_name.to_uppercase();
+            let keys = f
+                .key_range
+                .clone()
+                .unwrap_or_else(|| "—".to_string());
             if let Some(arr) = &f.array_info {
+                let range = match (arr.min_val, arr.max_val) {
+                    (Some(lo), Some(hi)) => format!("{}..{}", lo, hi),
+                    _ => "—".to_string(),
+                };
                 println!(
-                    "Floor {:>2}: {:<16} (type {:<2}, v{}) | {:<4} recs | {:<6} B | shape: {:?} | axes: [{}] | units: [{}] | coords: {:?} | range: [{:?}..{:?}] | hash: {}",
+                    "Floor {:>2}: {:<16} (type {:<2}, v{}) | {:<4} recs | {:<6} B | shape: {:?} | axes: [{}] | units: [{}] | coords: {:?} | range: [{}] | hash: {}",
                     f.index, type_upper, f.type_id, f.version, f.record_count, f.size_bytes,
                     arr.shape, arr.axis_names, arr.units, arr.chunk_coords,
-                    arr.min_val.unwrap_or(0.0), arr.max_val.unwrap_or(0.0),
+                    range,
                     f.payload_hash_short
                 );
             } else {
                 println!(
                     "Floor {:>2}: {:<16} (type {:<2}, v{}) | {:<4} recs | {:<6} B | keys: {} | hash: {}",
                     f.index, type_upper, f.type_id, f.version, f.record_count, f.size_bytes,
-                    key_range(f.min_key, f.max_key), f.payload_hash_short
+                    keys, f.payload_hash_short
                 );
             }
         }

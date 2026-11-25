@@ -16,7 +16,11 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **21 – 24** | Core xAPI 1.0.3 Learning Record Store (LRS) | Core LRS Specification |
 | **25 – 31** | Core Enterprise Learner Record (ELR) Projections (IEEE P2997) | Core ELR Specification |
 | **32** | Cryptographic Citation Fingerprints (Scholar Pack, spec amendment v1.2) | Research Provenance Extensions |
-| **33 – 63** | Reserved for Standard Domain Packs (allocated via spec amendment) | Standards Working Group |
+| **33** | Spatial Computing OGC GeoPose Basic-Quaternion (Spatial Pack, spec amendment) | Standard Domain Packs |
+| **34 – 35** | Unallocated (standard domain packs, via spec amendment) | Standards Working Group |
+| **36 – 40** | Vault identity/delegation/holding/transfer/event log (`s3a-vault`, in-tree; not yet listed in §2) | Vault Specification |
+| **41 – 46** | Technical Order / OEM maintenance manual records (TO Pack, spec amendment) | Standard Domain Packs |
+| **47 – 63** | Reserved for Standard Domain Packs (allocated via spec amendment) | Standards Working Group |
 | **64 – $2^{32}-1$** | Open Third-Party & Vendor Extensions | Uncoordinated / Vendor Addons |
 
 > ¹ **Note on IDs 3–6**: Tile IDs 3–6 (`wearable_micro`, `robotics_kinematic`, `gis_survey_mesh`, `data_availability`) are legacy pack assignments allocated inside the core band (0–9) and are now frozen. Greenfield standard domain packs MUST use IDs in the **32–63** band (via specification amendment), and third-party/application extensions MUST use **64+**.
@@ -60,6 +64,19 @@ Tile type identifiers are 32-bit unsigned integers (`u32`) partitioned into desi
 | **30** | `elr_credential_assertion` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **31** | `elr_goal` | Core ELR (`s3a-core`) | None | Variable | 96B Hdr + JSON | Active |
 | **32** | `citation_fingerprint` | Scholar Pack (`s3a-pack-scholar`) | `0x0001` (`ADDON_EDU`) | 96 B | Fixed Pod | Active |
+| **33** | `geopose_basic_quat` | Spatial Pack (`s3a-spatial`) | `0x0080` (`ADDON_SPATIAL`) | 128 B | Fixed Pod | Active |
+| **41** | `to_section` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **42** | `to_wcn` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **43** | `to_fault_node` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **44** | `to_fault_edge` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **45** | `to_spec_cell` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **46** | `to_figure_anchor` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **47** | `can_dtc` | CAN Bridge (`s3a-can-bridge`) | `0x0200` (`ADDON_CAN`) | 128 B | Fixed Pod | Active |
+| **48** | `can_trigger` | CAN Bridge (`s3a-can-bridge`) | `0x0200` (`ADDON_CAN`) | 128 B | Fixed Pod | Active |
+| **49** | `to_procedure_step` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **50** | `to_reference` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 128 B | Fixed Pod | Active |
+| **51** | `to_locator` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 160 B | Fixed Pod | Active |
+| **52** | `to_scan_agreement` | Technical Order Pack (`s3a-pack-to`) | `0x0100` (`ADDON_TO`) | 384 B | Fixed Pod | Active |
 | **64** | `record` | Core Engine (`s3a-core`) | None | 64 B | Fixed Pod | Active |
 | **68** | `blob` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Raw Chunk | Active |
 | **72** | `provenance` | Core Engine (`s3a-core`) | None | Variable | 40B Prefix + Provenance Chunk | Active |
@@ -99,7 +116,10 @@ The `FileHeader.addon_mask` bitmask registers authorized domain extensions enabl
 | **4** | `0x0010` | `ADDON_GIS` | `s3a-pack-gis` | Topographic 3D mesh & geospatial indexing |
 | **5** | `0x0020` | `ADDON_DA` | `s3a-pack-da` | Data availability & state commitments |
 | **6** | `0x0040` | `ADDON_ONTOLOGY` | `s3a-pack-ontology` | Formal concept ontology & axiom registry |
-| **7 – 31** | `0x0080`.. | -- | Unallocated | Reserved for future standardization |
+| **7** | `0x0080` | `ADDON_SPATIAL` | `s3a-spatial` | OGC GeoPose Basic-Quaternion records |
+| **8** | `0x0100` | `ADDON_TO` | `s3a-pack-to` | Technical Order and OEM maintenance manual records |
+| **9** | `0x0200` | `ADDON_CAN` | `s3a-can-bridge` | J1939/OBD ingest and fail-closed fault-isolation triggers |
+| **10 – 31** | `0x0400`.. | -- | Unallocated | Reserved for future standardization |
 
 ---
 
@@ -436,7 +456,7 @@ defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
 | 5 | `capabilities` | U32 (3) | 56 | 4 | false | Capability mask |
 | 6 | `flags` | U32 (3) | 60 | 4 | false | Status flags |
 
-#### Tile 20: `note_claims` (Record Size: 64 B)
+#### Tile 20: `note_claims` (Record Size: 160 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
 | 1 | `claim_id` | U64 (4) | 0 | 8 | false | Claim identifier hash |
@@ -450,16 +470,28 @@ defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
 | 9 | `text_hash` | U32 (3) | 52 | 4 | false | CRC32C hash of text content |
 | 10 | `embedding_tile_id` | U32 (3) | 56 | 4 | false | Pointer to embedding tile |
 | 11 | `embedding_offset` | U32 (3) | 60 | 4 | false | Record offset in embedding tile |
+| 12 | `citation_fingerprint_id` | U64 (4) | 64 | 8 | false | 64-bit ID of CitationFingerprintRecord / paper_id (Phase C) |
+| 13 | `passage_page` | U32 (3) | 72 | 4 | false | Page number in source document (Phase C) |
+| 14 | `passage_char_offset` | U32 (3) | 76 | 4 | false | Character start offset within page (Phase C) |
+| 15 | `passage_char_length` | U32 (3) | 80 | 4 | false | Character length of passage (Phase C) |
+| 16 | `reserved_passage` | U32 (3) | 84 | 4 | false | Alignment padding (Phase C) |
+| 17 | `quote_sha256` | BYTES (13) | 88 | 32 | false | SHA-256 hash of the exact quoted passage text (Phase C) |
+| 18 | `producer_id` | U64 (4) | 120 | 8 | false | Human researcher or AI agent ID (Phase C) |
+| 19 | `verification_statement_uuid` | BYTES (13) | 128 | 16 | false | 128-bit statement UUID, verified-claim / flagged-hallucination (Phase C) |
+| 20 | `reserved` | BYTES (13) | 144 | 16 | false | Reserved zero padding to 160 bytes (Phase C) |
 
 #### Tile 32: `citation_fingerprint` (Record Size: 96 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `fingerprint_id` | U64 (4) | 0 | 8 | false | Fingerprint identifier |
-| 2 | `paper_id` | U64 (4) | 8 | 8 | false | Associated paper identifier |
-| 3 | `timestamp_sec` | U64 (4) | 16 | 8 | false | Fingerprint generation timestamp |
-| 4 | `doi_hash` | BYTES (13) | 24 | 32 | false | SHA-256 hash of canonical DOI |
-| 5 | `citation_hash` | BYTES (13) | 56 | 32 | false | Cryptographic citation tree hash |
-| 6 | `flags` | U64 (4) | 88 | 8 | false | Status flags |
+| 1 | `paper_id` | U64 (4) | 0 | 8 | false | 64-bit ID or hash of paper / DOI |
+| 2 | `doi_hash` | U64 (4) | 8 | 8 | false | 64-bit hash of normalized DOI string |
+| 3 | `content_sha256` | BYTES (13) | 16 | 32 | false | SHA-256 digest of fetched content bytes |
+| 4 | `content_kind` | U32 (3) | 48 | 4 | false | Content kind: PDF (1), HTML (2), ABSTRACT (3) |
+| 5 | `crossref_version` | U32 (3) | 52 | 4 | false | Crossref work update sequence / version number |
+| 6 | `fetched_at` | U64 (4) | 56 | 8 | false | Timestamp when content was fetched, epoch seconds |
+| 7 | `source_url_hash` | U64 (4) | 64 | 8 | false | 64-bit hash of source URL |
+| 8 | `flags` | U64 (4) | 72 | 8 | false | Status flags |
+| 9 | `reserved` | BYTES (13) | 80 | 16 | false | Reserved zero padding to 96 bytes |
 
 #### Tile 96: `committee_decision` (Record Size: 160 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |

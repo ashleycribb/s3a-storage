@@ -1002,7 +1002,10 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         owner_pack: "Scholar Pack",
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
-        record_size: 64,
+        // 160: `ScholarNoteClaimRecord` (incl. Phase C extension). Was 64,
+        // the pre-Phase-C size; must agree with the engine schema and the
+        // pack descriptor (the `schema.rs` cross-check enforces it).
+        record_size: 160,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
@@ -1016,6 +1019,100 @@ pub fn register_standard_pack_types(reg: &mut TileTypeRegistry) -> Result<(), Re
         lifecycle: TileLifecycle::Active,
         required_addon: Some(crate::ADDON_EDU),
         record_size: 96,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tile 33: Spatial Computing OGC GeoPose Basic-Quaternion record.
+    // First free ID in the standard-pack band 32–63 (32 is taken by
+    // `citation_fingerprint`); allocated via spec amendment (registry.md §1).
+    reg.register(TileTypeDescriptor {
+        tile_type: 33,
+        name: "geopose_basic_quat",
+        owner_pack: "Spatial Pack",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(crate::ADDON_SPATIAL),
+        record_size: 128,
+        current_layout_version: 1,
+        min_supported_layout_version: 1,
+        flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+    })?;
+
+    // Tiles 41..=46: Technical Order / OEM maintenance manual pack.
+    // Next free IDs in the standard-pack band 32–63 after tile 33
+    // (geopose_basic_quat) and after in-tree vault IDs 36–40.
+    // Allocated via spec amendment (docs/spec/registry.md §1).
+    for (tile_type, name, record_size) in [
+        (41, "to_section", 128),
+        (42, "to_wcn", 128),
+        (43, "to_fault_node", 128),
+        (44, "to_fault_edge", 128),
+        (45, "to_spec_cell", 160),
+        (46, "to_figure_anchor", 160),
+    ] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "Technical Order Pack",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_TO),
+            record_size,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
+    // Tiles 47..=48: CAN bus bridge (J1939/OBD ingest and fail-closed triggers).
+    // Next free IDs after the Technical Order pack (tiles 41..=46).
+    for (tile_type, name) in [(47, "can_dtc"), (48, "can_trigger")] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "s3a-can-bridge",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_CAN),
+            record_size: 128,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
+    // Tiles 49..=51: Technical Order pack extension (procedure steps,
+    // related publications, and paragraph/printed-page locators).
+    // 47..=48 remain s3a-can-bridge (PR #224).
+    // required_addon_for_tile returns owner_pack; AT-TO-11 (and the
+    // no_std fallback) use the crate name, matching tiles 47..=48.
+    for (tile_type, name, record_size) in [
+        (49, "to_procedure_step", 160),
+        (50, "to_reference", 128),
+        (51, "to_locator", 160),
+    ] {
+        reg.register(TileTypeDescriptor {
+            tile_type,
+            name,
+            owner_pack: "s3a-pack-to",
+            lifecycle: TileLifecycle::Active,
+            required_addon: Some(crate::ADDON_TO),
+            record_size,
+            current_layout_version: 1,
+            min_supported_layout_version: 1,
+            flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,
+        })?;
+    }
+
+    // Tile 52: Technical Order scan-agreement adjunct (dual-OCR provenance).
+    // Next free ID after tiles 49..=51. Existing TO tiles are not resized.
+    // required_addon_for_tile returns owner_pack "s3a-pack-to".
+    reg.register(TileTypeDescriptor {
+        tile_type: 52,
+        name: "to_scan_agreement",
+        owner_pack: "s3a-pack-to",
+        lifecycle: TileLifecycle::Active,
+        required_addon: Some(crate::ADDON_TO),
+        record_size: 384,
         current_layout_version: 1,
         min_supported_layout_version: 1,
         flags: TileTypeFlags::FIXED_POD | TileTypeFlags::COPY_THROUGH_COMPACT,

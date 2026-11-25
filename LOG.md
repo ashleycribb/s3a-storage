@@ -595,3 +595,14 @@
 
 - The live Cloudflare worker `s3a-gate` (s3a-gate.ashley-e-cribb.workers.dev) was deleted with `wrangler delete` on 2026-11-15 because its admin secret had leaked (hard-coded in public scripts). The "S3A Gate Worker & Navigation CI" workflow is disabled (`gh workflow disable`, reversible); its file and all code under `cloudflare/` and `scripts/` are kept. The gate may return later for academic research; it would need a new admin secret and the Cf-Access header check in `crypto.ts` fixed first.
 - Container app `s3a-gate-sandbox` deleted on 2026-11-15 (wrangler has no stop or scale-to-zero) after an archive was made and verified: image `docker.io/cloudflare/sandbox:0.12.10` (manifest digest `sha256:35c932d3e5b35f28d350800cf00551cac46dfe28274afb54e16325b8d8f560d1`) saved as a tarball, all 1,471 objects of R2 bucket `s3a-evidence` copied with sha256 hashes, config and redeploy notes. The archive is on Grok Bot's box at `/workspace/s3a-gate-archive/` (not in git). The bucket itself is kept. Container disks were ephemeral, so there was no container data to keep; the gate's Durable Object state went with the worker deletion.
+
+
+---
+
+## pack-to/scan-agreement: tile 52 (`to_scan_agreement`)
+
+- **Status**: local implementation on branch `pack-to/scan-agreement` from `origin/main` (`b1424c8`). Test-first (AT-TO-16..22).
+- **Change**: new 384-byte adjunct tile 52, registered in the core tile-type registry with `owner_pack` `s3a-pack-to` and `ADDON_TO`. Links to an existing section/cell (tiles 41..=46 or 49..=51) by id. Existing tiles are not resized. Stores block status (`verified` / `held` / `scan_agreement` / `human_verified`), both OCR engine names and versions, both OCR text sha256s, the crop sha256, CER (`f64::to_bits`) and the required threshold (no silent default). `scan_agreement` never decodes or labels as `verified`. `human_verified` requires reviewer, timestamp, and the three evidence hashes.
+- **Core**: registry entry and `required_addon_for_tile` no_std arm only (`41..=46 | 49..=51 | 52`).
+- **Not changed**: s3a-vault, money, or crypto paths.
+

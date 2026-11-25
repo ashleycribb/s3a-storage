@@ -20,6 +20,7 @@ pub mod compactor_daemon;
 pub mod compactor_gates;
 pub mod concurrent_writer;
 pub mod display_layouts;
+pub mod document;
 pub mod edge_import;
 pub mod edge_view;
 pub mod elr;
@@ -457,6 +458,11 @@ pub struct TileWriter {
     /// Opening a sealed archive does not modify it; the first append unseals it (drops the
     /// trailer) exactly as opening used to, so a read-only session leaves the seal intact.
     unseal_on_write: Option<u64>,
+    /// Prompt 010: the archive stores tiles back-to-back at their smallest
+    /// fitting slab size class instead of one 128 KiB stride each.
+    packed: bool,
+    /// Byte offset just past the last committed tile's slot (packed only).
+    packed_data_end: u64,
 }
 
 impl TileWriter {
@@ -546,6 +552,8 @@ impl TileWriter {
             next_sequence: 1,
             sequence_exhausted: false,
             unseal_on_write: None,
+            packed: false,
+            packed_data_end: FILE_HEADER_SIZE as u64,
         })
     }
 
@@ -597,8 +605,64 @@ impl TileWriter {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
         let committed_tile_count = active_header.tile_count;
-        let expected_size =
-            FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64);
+        // Prompt 010: a packed archive stores tiles back-to-back at their
+        // smallest fitting slab size class, so the committed length is the
+        // walked end of the last tile, not tile_count * 128 KiB. The walk
+        // also yields the next monotonic sequence number. A tile whose
+        // header cannot be walked (truncated or unclassifiable payload)
+        // ends the walk: everything from there is treated as an uncommitted
+        // torn write, exactly like the legacy truncation below.
+        let packed = active_header.is_packed_slots() && !active_header.is_edge_profile();
+        let (expected_size, packed_data_end, max_seq) = if packed {
+            let mut offset = FILE_HEADER_SIZE as u64;
+            let mut max_seq: u32 = 0;
+            for _ in 0..committed_tile_count {
+                if offset + HYPER_TILE_HEADER_SIZE as u64 > file_len {
+                    break;
+                }
+                let mut hdr_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
+                if file.seek(SeekFrom::Start(offset)).is_err()
+                    || file.read_exact(&mut hdr_bytes).is_err()
+                {
+                    break;
+                }
+                let h: HyperTileHeader = bytemuck::pod_read_unaligned(&hdr_bytes);
+                if compute_tile_header_crc32(&h) == h.header_crc32 && h.sequence_number > max_seq {
+                    max_seq = h.sequence_number;
+                }
+                let Some(slot_len) = s3a_core::packed_slot_size(h.payload_bytes as usize) else {
+                    break;
+                };
+                let next = offset + slot_len as u64;
+                if next > file_len {
+                    break;
+                }
+                offset = next;
+            }
+            (offset, offset, max_seq)
+        } else {
+            let expected_size =
+                FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64);
+            // Scan existing tiles to determine next monotonic sequence number
+            let mut max_seq: u32 = 0;
+            for i in 0..committed_tile_count as usize {
+                let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                if (offset + HYPER_TILE_HEADER_SIZE) as u64 <= file_len {
+                    let mut hdr_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
+                    if file.seek(SeekFrom::Start(offset as u64)).is_ok()
+                        && file.read_exact(&mut hdr_bytes).is_ok()
+                    {
+                        let h: HyperTileHeader = bytemuck::pod_read_unaligned(&hdr_bytes);
+                        if compute_tile_header_crc32(&h) == h.header_crc32
+                            && h.sequence_number > max_seq
+                        {
+                            max_seq = h.sequence_number;
+                        }
+                    }
+                }
+            }
+            (expected_size, FILE_HEADER_SIZE as u64, max_seq)
+        };
 
         // A seal trailer (directory + end cap) after the committed tiles is not a torn write:
         // leave it in place until the first write instead of stripping it on open.
@@ -627,25 +691,6 @@ impl TileWriter {
             let _ = fsutil::clean_orphan_temps(path);
         }
 
-        // Scan existing tiles to determine next monotonic sequence number
-        let mut max_seq: u32 = 0;
-        for i in 0..committed_tile_count as usize {
-            let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-            if (offset + HYPER_TILE_HEADER_SIZE) as u64 <= file_len {
-                let mut hdr_bytes = [0u8; HYPER_TILE_HEADER_SIZE];
-                if file.seek(SeekFrom::Start(offset as u64)).is_ok()
-                    && file.read_exact(&mut hdr_bytes).is_ok()
-                {
-                    let h: HyperTileHeader = bytemuck::pod_read_unaligned(&hdr_bytes);
-                    if compute_tile_header_crc32(&h) == h.header_crc32
-                        && h.sequence_number > max_seq
-                    {
-                        max_seq = h.sequence_number;
-                    }
-                }
-            }
-        }
-
         file.seek(SeekFrom::End(0))?;
 
         Ok(Self {
@@ -660,6 +705,8 @@ impl TileWriter {
             next_sequence: max_seq.wrapping_add(1),
             sequence_exhausted: max_seq == u32::MAX,
             unseal_on_write: sealed.then_some(expected_size),
+            packed,
+            packed_data_end,
         })
     }
 
@@ -722,6 +769,13 @@ impl TileWriter {
             self.created_timestamp,
             now,
         );
+        // Prompt 010: with_commit starts from flags=0; carry the packed-slots
+        // layout bit forward so a packed archive stays packed across commits.
+        new_slot.flags = if self.packed {
+            s3a_core::FLAG_PACKED_SLOTS
+        } else {
+            0
+        };
         new_slot.addon_mask = addon_mask;
         new_slot.file_uuid = self.file_uuid;
         new_slot.header_crc32 = compute_header_crc32(&new_slot);
@@ -745,6 +799,126 @@ impl TileWriter {
         Ok(())
     }
 
+    /// Prompt 010: true when this writer appends to a packed archive.
+    pub fn is_packed(&self) -> bool {
+        self.packed
+    }
+
+    /// Byte offset at which the next tile slot starts: the 128 KiB stride
+    /// end for legacy archives, the walked end of the last slot for packed.
+    fn data_end(&self) -> u64 {
+        if self.packed {
+            self.packed_data_end
+        } else {
+            FILE_HEADER_SIZE as u64 + (self.tile_count as u64 * HYPER_TILE_SIZE as u64)
+        }
+    }
+
+    /// Stored slot size for a tile with `payload_len` payload bytes under
+    /// this archive's layout. Fails closed when the tile cannot fit.
+    fn slot_size_for(&self, payload_len: usize) -> io::Result<usize> {
+        if self.packed {
+            s3a_core::packed_slot_size(payload_len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Payload size {} exceeds packed tile capacity {}",
+                        payload_len,
+                        HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE
+                    ),
+                )
+            })
+        } else {
+            if HYPER_TILE_HEADER_SIZE + payload_len > HYPER_TILE_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Payload size {} exceeds hyper tile capacity {}",
+                        payload_len,
+                        HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE
+                    ),
+                ));
+            }
+            Ok(HYPER_TILE_SIZE)
+        }
+    }
+
+    /// Shared write tail for `write_hyper_tile_ext` and
+    /// `write_raw_hyper_tile`: header + payload + zero padding to the slot
+    /// size, the data flush barrier, the AFTER-GATE re-read/CRC check, and
+    /// the A/B header commit. The slot size and offset follow the archive
+    /// layout (128 KiB stride for legacy, smallest fitting slab class for
+    /// packed).
+    fn write_tile_slot(&mut self, header: &HyperTileHeader, payload: &[u8]) -> io::Result<()> {
+        let slot_size = self.slot_size_for(payload.len())?;
+        let tile_offset = self.data_end();
+
+        // Write header
+        self.file.write_all(bytes_of(header))?;
+
+        // Write record payload
+        self.file.write_all(payload)?;
+
+        // Write padding to reach the slot size
+        let written = HYPER_TILE_HEADER_SIZE + payload.len();
+        let padding_needed = slot_size - written;
+        if padding_needed > 0 {
+            let zeros = vec![0u8; padding_needed];
+            self.file.write_all(&zeros)?;
+        }
+
+        // 1. Data flush barrier: sync tile data to disk before switching metadata slot
+        self.file.flush()?;
+        self.file.sync_data()?;
+
+        // AFTER GATE: Re-read output tile from disk and verify CRC before A/B commit switch
+        crate::compactor_gates::verify_written_tile_from_disk(
+            &mut self.file,
+            tile_offset,
+            header.header_crc32,
+            header.data_crc32,
+            payload.len(),
+        )?;
+
+        #[cfg(any(test, feature = "fault-injection"))]
+        if crate::compactor_gates::fault_injection::INJECT_CRASH_BEFORE_COMMIT
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Crash simulated between tile write and header commit switch",
+            ));
+        }
+
+        self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
+        if self.packed {
+            self.packed_data_end = tile_offset + slot_size as u64;
+        }
+        Ok(())
+    }
+
+    /// Writes one tile to a packed archive, converting an empty archive to
+    /// the packed layout on first use. Fails on a legacy (128 KiB-stride)
+    /// archive with committed tiles: those keep their layout and the caller
+    /// must use the legacy write path instead.
+    pub fn write_packed_hyper_tile(
+        &mut self,
+        header: &HyperTileHeader,
+        payload: &[u8],
+    ) -> io::Result<u64> {
+        if !self.packed {
+            if self.tile_count > 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "cannot write a packed tile into a legacy 128 KiB-stride archive",
+                ));
+            }
+            self.packed = true;
+            self.packed_data_end = FILE_HEADER_SIZE as u64;
+        }
+        self.write_raw_hyper_tile(header, payload)
+    }
+
     pub fn write_hyper_tile_ext<T: Pod>(
         &mut self,
         tile_type: u32,
@@ -754,27 +928,37 @@ impl TileWriter {
         filter_keys: Option<&[u64]>,
     ) -> io::Result<u64> {
         self.ensure_writable()?;
-        // Enforce capability write gate and registry validation:
-        let registry = s3a_core::registry::global_registry();
-        let target_version = registry.pod_record_layout_version(tile_type).unwrap_or(1);
-        if registry.get(tile_type).is_some() {
-            if let Err(e) = registry.validate_write(tile_type, target_version, self.addon_mask) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("{}", e),
-                ));
+        // Enforce capability write gate and registry validation.
+        // NOTE: the registry read guard must be dropped before any call that
+        // takes its own registry read (`required_addon_for_tile` and
+        // `HyperTileHeader::new` below) — std's writer-preferring RwLock
+        // deadlocks a nested read while a writer waits.
+        let (target_version, registered) = {
+            let registry = s3a_core::registry::global_registry();
+            let target_version = registry.pod_record_layout_version(tile_type).unwrap_or(1);
+            let registered = registry.get(tile_type).is_some();
+            if registered {
+                if let Err(e) = registry.validate_write(tile_type, target_version, self.addon_mask)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("{}", e),
+                    ));
+                }
             }
-        } else if let Some((pack_name, required_mask)) =
-            s3a_core::required_addon_for_tile(tile_type)
-        {
-            if (self.addon_mask & required_mask) == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
-                        tile_type, pack_name, required_mask, self.addon_mask
-                    ),
-                ));
+            (target_version, registered)
+        };
+        if !registered {
+            if let Some((pack_name, required_mask)) = s3a_core::required_addon_for_tile(tile_type) {
+                if (self.addon_mask & required_mask) == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                            tile_type, pack_name, required_mask, self.addon_mask
+                        ),
+                    ));
+                }
             }
         }
 
@@ -885,47 +1069,8 @@ impl TileWriter {
         // Compute header CRC32C (excluding header_crc32 field itself)
         header.header_crc32 = compute_tile_header_crc32(&header);
 
-        // Write header
-        self.file.write_all(bytes_of(&header))?;
-
-        // Write record payload
-        self.file.write_all(record_bytes)?;
-
-        // Write padding to reach 128 KB total tile size
-        let written = HYPER_TILE_HEADER_SIZE + payload_bytes;
-        let padding_needed = HYPER_TILE_SIZE - written;
-        if padding_needed > 0 {
-            let zeros = vec![0u8; padding_needed];
-            self.file.write_all(&zeros)?;
-        }
-
-        // 1. Data flush barrier: sync tile data to disk before switching metadata slot
-        self.file.flush()?;
-        self.file.sync_data()?;
-
-        // AFTER GATE: Re-read output tile from disk and verify CRC before A/B commit switch
-        let tile_offset =
-            FILE_HEADER_SIZE as u64 + (self.tile_count as u64 * HYPER_TILE_SIZE as u64);
-        crate::compactor_gates::verify_written_tile_from_disk(
-            &mut self.file,
-            tile_offset,
-            header.header_crc32,
-            header.data_crc32,
-            payload_bytes,
-        )?;
-
-        #[cfg(any(test, feature = "fault-injection"))]
-        if crate::compactor_gates::fault_injection::INJECT_CRASH_BEFORE_COMMIT
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Crash simulated between tile write and header commit switch",
-            ));
-        }
-
         let committed_tile_id = self.current_tile_id;
-        self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
+        self.write_tile_slot(&header, record_bytes)?;
         self.current_tile_id += 1;
 
         Ok(committed_tile_id)
@@ -947,33 +1092,44 @@ impl TileWriter {
         payload: &[u8],
     ) -> io::Result<u64> {
         self.ensure_writable()?;
-        // Enforce capability write gate and registry validation:
-        let registry = s3a_core::registry::global_registry();
-        let effective_version = if header.record_layout_version == 0 {
-            1
-        } else {
-            header.record_layout_version
-        };
-        if registry.get(header.tile_type).is_some() {
-            if let Err(e) =
-                registry.validate_write(header.tile_type, effective_version, self.addon_mask)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("{}", e),
-                ));
+        // Enforce capability write gate and registry validation.
+        // NOTE: the registry read guard must be dropped before any call that
+        // takes its own registry read (`required_addon_for_tile` below) —
+        // std's writer-preferring RwLock deadlocks a nested read while a
+        // writer waits.
+        let (effective_version, registered) = {
+            let registry = s3a_core::registry::global_registry();
+            let effective_version = if header.record_layout_version == 0 {
+                1
+            } else {
+                header.record_layout_version
+            };
+            let registered = registry.get(header.tile_type).is_some();
+            if registered {
+                if let Err(e) =
+                    registry.validate_write(header.tile_type, effective_version, self.addon_mask)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("{}", e),
+                    ));
+                }
             }
-        } else if let Some((pack_name, required_mask)) =
-            s3a_core::required_addon_for_tile(header.tile_type)
-        {
-            if (self.addon_mask & required_mask) == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
-                        header.tile_type, pack_name, required_mask, self.addon_mask
-                    ),
-                ));
+            (effective_version, registered)
+        };
+        if !registered {
+            if let Some((pack_name, required_mask)) =
+                s3a_core::required_addon_for_tile(header.tile_type)
+            {
+                if (self.addon_mask & required_mask) == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "Tile type {} belongs to {} but addon bit 0x{:04x} is not enabled on archive (addon_mask: 0x{:04x})",
+                            header.tile_type, pack_name, required_mask, self.addon_mask
+                        ),
+                    ));
+                }
             }
         }
 
@@ -1016,52 +1172,8 @@ impl TileWriter {
 
         new_header.header_crc32 = compute_tile_header_crc32(&new_header);
 
-        let written = HYPER_TILE_HEADER_SIZE + payload.len();
-        if written > HYPER_TILE_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Payload size {} exceeds hyper tile capacity {}",
-                    payload.len(),
-                    HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE
-                ),
-            ));
-        }
+        self.write_tile_slot(&new_header, payload)?;
 
-        self.file.write_all(bytes_of(&new_header))?;
-        self.file.write_all(payload)?;
-
-        let padding_needed = HYPER_TILE_SIZE - written;
-        if padding_needed > 0 {
-            let zeros = vec![0u8; padding_needed];
-            self.file.write_all(&zeros)?;
-        }
-
-        self.file.flush()?;
-        self.file.sync_data()?;
-
-        // AFTER GATE: Re-read output tile from disk and verify CRC before A/B commit switch
-        let tile_offset =
-            FILE_HEADER_SIZE as u64 + (self.tile_count as u64 * HYPER_TILE_SIZE as u64);
-        crate::compactor_gates::verify_written_tile_from_disk(
-            &mut self.file,
-            tile_offset,
-            new_header.header_crc32,
-            new_header.data_crc32,
-            payload.len(),
-        )?;
-
-        #[cfg(any(test, feature = "fault-injection"))]
-        if crate::compactor_gates::fault_injection::INJECT_CRASH_BEFORE_COMMIT
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "Crash simulated between tile write and header commit switch",
-            ));
-        }
-
-        self.commit_header_slot(self.tile_count + 1, self.addon_mask)?;
         if committed_tile_id >= self.current_tile_id {
             self.current_tile_id = committed_tile_id + 1;
         }
@@ -1157,6 +1269,12 @@ pub struct MmapReader {
     mmap: ReaderBacking,
     active_header: FileHeader,
     active_slot: usize,
+    /// Prompt 010: the archive stores tiles back-to-back at their smallest
+    /// fitting slab size class instead of one 128 KiB stride each.
+    packed: bool,
+    /// `(offset, slot_len)` per tile, walked from the tile headers at open
+    /// (lenient: a truncated file still opens with the spans it could walk).
+    packed_spans: Vec<(usize, usize)>,
 }
 
 /// Where a reader's bytes live: a memory-mapped file, or an owned in-memory copy.
@@ -1252,10 +1370,22 @@ impl MmapReader {
         // (spec vector invalid_truncated_tile); see validate_file_size() / verify_checksums().
         let _ = need;
 
+        // Prompt 010: packed archives store tiles back-to-back at their smallest
+        // fitting slab size class. Walk the slots once at open so every accessor
+        // can address tiles without stride arithmetic.
+        let packed = active_header.is_packed_slots() && !active_header.is_edge_profile();
+        let packed_spans = if packed {
+            s3a_core::packed_tile_spans(&mmap, active_header.tile_count)
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             mmap,
             active_header,
             active_slot,
+            packed,
+            packed_spans,
         })
     }
 
@@ -1264,6 +1394,25 @@ impl MmapReader {
     pub fn validate_file_size(&self) -> Result<(), Corrupt> {
         let count = self.tile_count() as usize;
         if count == 0 {
+            return Ok(());
+        }
+        if self.packed {
+            // Packed tiles are variable-size: the file must hold every walked span.
+            if self.packed_spans.len() < count {
+                let first_missing = self.packed_spans.len();
+                let end = self
+                    .packed_spans
+                    .last()
+                    .map(|(o, l)| o + l)
+                    .unwrap_or(FILE_HEADER_SIZE);
+                return Err(Corrupt::new(
+                    first_missing,
+                    CorruptReason::SlotPastEof {
+                        end,
+                        file_len: self.mmap.len(),
+                    },
+                ));
+            }
             return Ok(());
         }
         let (base, stride) = if self.is_edge_archive() {
@@ -1318,6 +1467,25 @@ impl MmapReader {
 
     pub fn is_edge_archive(&self) -> bool {
         self.active_header.is_edge_profile()
+    }
+
+    /// Prompt 010: true when the archive stores tiles back-to-back at their
+    /// smallest fitting slab size class instead of one 128 KiB stride each.
+    pub fn is_packed(&self) -> bool {
+        self.packed
+    }
+
+    /// `(offset, slot_len)` per tile for a packed archive (empty otherwise).
+    pub fn packed_spans(&self) -> &[(usize, usize)] {
+        &self.packed_spans
+    }
+
+    /// Byte offset just past the last committed tile's slot (the data end).
+    pub fn packed_data_end(&self) -> usize {
+        self.packed_spans
+            .last()
+            .map(|(o, l)| o + l)
+            .unwrap_or(FILE_HEADER_SIZE)
     }
 
     pub fn header_extent(&self) -> usize {
@@ -1567,12 +1735,30 @@ impl MmapReader {
         &self,
         index: usize,
     ) -> Result<(&HyperTileHeader, &[u8]), Corrupt> {
-        let (offset, slot_end) = self.tile_slot(
-            index,
-            FILE_HEADER_SIZE,
-            HYPER_TILE_SIZE,
-            HYPER_TILE_HEADER_SIZE,
-        )?;
+        let (offset, slot_end) = if self.packed {
+            if index >= self.tile_count() as usize {
+                return Err(Corrupt::new(index, CorruptReason::IndexOutOfRange));
+            }
+            match self.packed_spans.get(index) {
+                Some(&(offset, slot_len)) => (offset, offset + slot_len),
+                None => {
+                    return Err(Corrupt::new(
+                        index,
+                        CorruptReason::SlotPastEof {
+                            end: self.mmap.len(),
+                            file_len: self.mmap.len(),
+                        },
+                    ));
+                }
+            }
+        } else {
+            self.tile_slot(
+                index,
+                FILE_HEADER_SIZE,
+                HYPER_TILE_SIZE,
+                HYPER_TILE_HEADER_SIZE,
+            )?
+        };
 
         let header_slice = &self.mmap[offset..offset + HYPER_TILE_HEADER_SIZE];
         // A4 (ADR-0005): this accessor returns a header borrowed from the mmap (public API), so it
@@ -1842,8 +2028,15 @@ pub fn recover_archive<P: AsRef<Path>>(path: P) -> io::Result<FileHeader> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
     let committed_tile_count = active_header.tile_count;
-    let expected_size =
-        FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64);
+    // Prompt 010: packed archives store tiles back-to-back at their smallest
+    // fitting slab size class, so the committed length is the walked end of
+    // the last tile, not tile_count * 128 KiB.
+    let expected_size = if active_header.is_packed_slots() && !active_header.is_edge_profile() {
+        let reader = MmapReader::open(path_ref)?;
+        reader.packed_data_end() as u64
+    } else {
+        FILE_HEADER_SIZE as u64 + (committed_tile_count as u64 * HYPER_TILE_SIZE as u64)
+    };
 
     if file_len > expected_size {
         file.set_len(expected_size)?;
@@ -3385,7 +3578,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
             type_version: 1,
             name: "note_claims".to_string(),
             owning_pack: "Scholar Pack".to_string(),
-            record_size: 64,
+            record_size: 160,
             fields: vec![
                 SchemaFieldDefinition {
                     field_id: 1,
@@ -3474,6 +3667,78 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_len: 4,
                     null_allowed: false,
                     name: "embedding_offset".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 12,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "citation_fingerprint_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 13,
+                    field_type: 3,
+                    byte_offset: 72,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_page".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 14,
+                    field_type: 3,
+                    byte_offset: 76,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_char_offset".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 15,
+                    field_type: 3,
+                    byte_offset: 80,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "passage_char_length".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 16,
+                    field_type: 3,
+                    byte_offset: 84,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "reserved_passage".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 17,
+                    field_type: 13,
+                    byte_offset: 88,
+                    byte_len: 32,
+                    null_allowed: false,
+                    name: "quote_sha256".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 18,
+                    field_type: 4,
+                    byte_offset: 120,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "producer_id".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 19,
+                    field_type: 13,
+                    byte_offset: 128,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "verification_statement_uuid".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 20,
+                    field_type: 13,
+                    byte_offset: 144,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "reserved".to_string(),
                 },
             ],
         },
@@ -3782,7 +4047,7 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 0,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "fingerprint_id".to_string(),
+                    name: "paper_id".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 2,
@@ -3790,39 +4055,63 @@ pub fn standard_schema_for_type(tile_type: u32) -> SchemaTypeDefinition {
                     byte_offset: 8,
                     byte_len: 8,
                     null_allowed: false,
-                    name: "paper_id".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 3,
-                    field_type: 4,
-                    byte_offset: 16,
-                    byte_len: 8,
-                    null_allowed: false,
-                    name: "timestamp_sec".to_string(),
-                },
-                SchemaFieldDefinition {
-                    field_id: 4,
-                    field_type: 13,
-                    byte_offset: 24,
-                    byte_len: 32,
-                    null_allowed: false,
                     name: "doi_hash".to_string(),
                 },
                 SchemaFieldDefinition {
-                    field_id: 5,
+                    field_id: 3,
                     field_type: 13,
-                    byte_offset: 56,
+                    byte_offset: 16,
                     byte_len: 32,
                     null_allowed: false,
-                    name: "citation_hash".to_string(),
+                    name: "content_sha256".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 4,
+                    field_type: 3,
+                    byte_offset: 48,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "content_kind".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 5,
+                    field_type: 3,
+                    byte_offset: 52,
+                    byte_len: 4,
+                    null_allowed: false,
+                    name: "crossref_version".to_string(),
                 },
                 SchemaFieldDefinition {
                     field_id: 6,
                     field_type: 4,
-                    byte_offset: 88,
+                    byte_offset: 56,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "fetched_at".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 7,
+                    field_type: 4,
+                    byte_offset: 64,
+                    byte_len: 8,
+                    null_allowed: false,
+                    name: "source_url_hash".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 8,
+                    field_type: 4,
+                    byte_offset: 72,
                     byte_len: 8,
                     null_allowed: false,
                     name: "flags".to_string(),
+                },
+                SchemaFieldDefinition {
+                    field_id: 9,
+                    field_type: 13,
+                    byte_offset: 80,
+                    byte_len: 16,
+                    null_allowed: false,
+                    name: "reserved".to_string(),
                 },
             ],
         },

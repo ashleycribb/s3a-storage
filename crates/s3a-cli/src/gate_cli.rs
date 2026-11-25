@@ -203,19 +203,19 @@ fn get_or_prompt_passphrase(provided: Option<String>) -> Result<String, String> 
 pub fn handle_gate_command(args: &[String]) {
     if args.len() < 3 {
         print_gate_usage();
-        return;
+        std::process::exit(2);
     }
 
     match args[2].as_str() {
         "resolve" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli gate resolve <name> --directory <url>");
-                return;
+                std::process::exit(2);
             }
             let name = &args[3];
             let Some(directory) = get_arg_val(args, "--directory") else {
                 eprintln!("Error: --directory <url> is required");
-                return;
+                std::process::exit(2);
             };
 
             match resolve_gate(&directory, name) {
@@ -234,18 +234,19 @@ pub fn handle_gate_command(args: &[String]) {
                 }
                 Err(err) => {
                     eprintln!("{}", err);
+                    std::process::exit(1);
                 }
             }
         }
         "register" => {
             if args.len() < 4 {
                 println!("Usage: s3a-cli gate register <name> --directory <url> [--keystore <path>] [--vault <path>] [--passphrase <pass>] [--endpoints <csv>]");
-                return;
+                std::process::exit(2);
             }
             let name = &args[3];
             let Some(directory) = get_arg_val(args, "--directory") else {
                 eprintln!("Error: --directory <url> is required");
-                return;
+                std::process::exit(2);
             };
 
             let vault_arg = get_arg_val(args, "--vault").map(PathBuf::from);
@@ -275,7 +276,7 @@ pub fn handle_gate_command(args: &[String]) {
                 Ok(p) => p,
                 Err(err) => {
                     eprintln!("Error: {}", err);
-                    return;
+                    std::process::exit(1);
                 }
             };
 
@@ -284,7 +285,7 @@ pub fn handle_gate_command(args: &[String]) {
                     Ok(k) => k,
                     Err(e) => {
                         eprintln!("Failed to open keystore {:?}: {}", ks_path, e);
-                        return;
+                        std::process::exit(1);
                     }
                 };
 
@@ -304,11 +305,11 @@ pub fn handle_gate_command(args: &[String]) {
                         OsRng.fill_bytes(&mut new_id);
                         if let Err(e) = ks.generate_keypair(&new_id) {
                             eprintln!("Failed to generate identity keypair: {}", e);
-                            return;
+                            std::process::exit(1);
                         }
                         if let Err(e) = ks.save(&passphrase) {
                             eprintln!("Failed to save keystore: {}", e);
-                            return;
+                            std::process::exit(1);
                         }
                         new_id
                     }
@@ -318,7 +319,7 @@ pub fn handle_gate_command(args: &[String]) {
                 if let Some(parent) = ks_path.parent() {
                     if let Err(e) = fs::create_dir_all(parent) {
                         eprintln!("Failed to create keystore directory {:?}: {}", parent, e);
-                        return;
+                        std::process::exit(1);
                     }
                 }
 
@@ -326,7 +327,7 @@ pub fn handle_gate_command(args: &[String]) {
                     Ok(k) => k,
                     Err(e) => {
                         eprintln!("Failed to create keystore {:?}: {}", ks_path, e);
-                        return;
+                        std::process::exit(1);
                     }
                 };
 
@@ -352,20 +353,20 @@ pub fn handle_gate_command(args: &[String]) {
                             );
                             if let Err(gen_err) = ks.generate_keypair(&new_id) {
                                 eprintln!("Failed to generate identity keypair: {}", gen_err);
-                                return;
+                                std::process::exit(1);
                             }
                         }
                     }
                 } else {
                     if let Err(gen_err) = ks.generate_keypair(&new_id) {
                         eprintln!("Failed to generate identity keypair: {}", gen_err);
-                        return;
+                        std::process::exit(1);
                     }
                 }
 
                 if let Err(e) = ks.save(&passphrase) {
                     eprintln!("Failed to persist encrypted keystore: {}", e);
-                    return;
+                    std::process::exit(1);
                 }
 
                 println!(
@@ -393,11 +394,13 @@ pub fn handle_gate_command(args: &[String]) {
                 }
                 Err(err) => {
                     eprintln!("{}", err);
+                    std::process::exit(1);
                 }
             }
         }
         _ => {
             print_gate_usage();
+            std::process::exit(2);
         }
     }
 }

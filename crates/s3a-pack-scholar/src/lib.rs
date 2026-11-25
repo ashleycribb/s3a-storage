@@ -12,6 +12,7 @@
 //! - Tile 15: Scholar Research Snapshot Manifest (`SrsManifestHeader`)
 //! - Tile 18: Task Agent Registry (`AgentRegistryRecord`)
 
+pub mod add_paper;
 pub mod committee;
 pub mod display_layouts;
 pub mod evidence;
@@ -23,9 +24,16 @@ pub mod paper;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod recheck;
 pub mod records;
+pub mod sift_render;
 pub mod snapshot;
 pub mod sync;
 pub mod xapi;
+
+pub use add_paper::{
+    add_paper, build_paper_record, content_kind_for_file_name, derive_topic_coords, normalize_doi,
+    topic_coords_to_hilbert, AddPaperInput, AddPaperOutcome, DossierVerification, HILBERT_BITS,
+    HILBERT_GRID,
+};
 
 pub use graph_edge::{ScholarEdgeBlobHeader, ScholarGraphEdge};
 pub use paper::{ScholarAuthor, ScholarPaperBlobHeader, ScholarPaperRecord};
@@ -102,14 +110,13 @@ pub fn register_ql_handlers() {
             results.truncate(lim);
         }
         let count = results.len();
+        // B3: render decoded rows instead of a bare count.
+        let rendered = crate::sift_render::render_human_lrs(&sift.from_path, &results);
         Ok(s3a_engine::ql::QueryResult::PackData {
             domain: sift.domain,
             count,
-            summary: format!(
-                "Found {} human decision/LRS records in '{}'",
-                count, sift.from_path
-            ),
-            json_payload: None,
+            summary: rendered.summary,
+            json_payload: Some(rendered.json_payload),
         })
     });
 
@@ -159,11 +166,13 @@ pub fn register_ql_handlers() {
                 results.truncate(lim);
             }
             let count = results.len();
+            // B3: render decoded rows instead of a bare count.
+            let rendered = crate::sift_render::render_ai_traces(&sift.from_path, &results);
             Ok(s3a_engine::ql::QueryResult::PackData {
                 domain: s3a_engine::ql::ast::SiftDomain::AiTraces,
                 count,
-                summary: format!("Found {} AI trace records in '{}'", count, sift.from_path),
-                json_payload: None,
+                summary: rendered.summary,
+                json_payload: Some(rendered.json_payload),
             })
         }),
     );
@@ -193,14 +202,14 @@ pub fn register_ql_handlers() {
                 results.truncate(lim);
             }
             let count = results.len();
+            // B3: render decoded rows instead of a bare count. Titles/DOIs
+            // cannot be shown: Tile 12 stores hashes only (see sift_render).
+            let rendered = crate::sift_render::render_papers(&sift.from_path, &results);
             Ok(s3a_engine::ql::QueryResult::PackData {
                 domain: s3a_engine::ql::ast::SiftDomain::AcademicPapers,
                 count,
-                summary: format!(
-                    "Found {} academic paper records in '{}'",
-                    count, sift.from_path
-                ),
-                json_payload: None,
+                summary: rendered.summary,
+                json_payload: Some(rendered.json_payload),
             })
         }),
     );
