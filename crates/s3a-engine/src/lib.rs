@@ -39,6 +39,7 @@ pub mod seal_probe;
 pub mod sealed;
 pub mod slab;
 pub mod tiering;
+pub mod tree;
 
 pub use anchor::*;
 pub use compactor_gates::*;

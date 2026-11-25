@@ -18,6 +18,8 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "put",
     "get",
     "open",
+    "pack",
+    "extract",
     "graph",
     "import",
     "export",
@@ -802,6 +804,103 @@ pub fn handle_open(args: &[String], verbose: bool) {
                 ext,
                 temp_file.display(),
                 e
+            );
+        }
+    }
+}
+
+/// Pack a whole directory tree into a vault (prompt 012):
+/// `s3a pack <dir> <vault>`. One document record per file (010 slab sizing
+/// and 011 chunking apply automatically), one manifest record under the
+/// tree-manifest key carrying the layout version, the entry list, and the
+/// whole-tree SHA-256.
+pub fn handle_pack(args: &[String], verbose: bool) {
+    let pos = extract_positional_args(args);
+    if pos.len() < 2 {
+        print_cli_error(
+            "missing arguments: 's3a pack' requires <dir> and <vault>",
+            Some("usage: s3a pack <dir> <vault>"),
+            verbose,
+            None,
+        );
+    }
+    let dir = PathBuf::from(pos[0]);
+    let vault_path = PathBuf::from(pos[1]);
+    if !dir.is_dir() {
+        print_cli_error(
+            &format!("pack source '{}' is not a directory", dir.display()),
+            Some("specify an existing directory to pack"),
+            verbose,
+            None,
+        );
+    }
+    match s3a_engine::tree::pack_tree(&vault_path, &dir) {
+        Ok(summary) => {
+            println!(
+                "OK: packed '{}' ({} files, {} dirs, {} symlinks, {} bytes) into {}",
+                dir.display(),
+                summary.files,
+                summary.dirs,
+                summary.symlinks,
+                summary.total_bytes,
+                vault_path.display()
+            );
+        }
+        Err(e) => {
+            print_cli_error(
+                &e,
+                Some("ensure the source tree is readable and the vault is writable"),
+                verbose,
+                None,
+            );
+        }
+    }
+}
+
+/// Extract a packed tree from a vault (prompt 012):
+/// `s3a extract <vault> <dir> [--overwrite]`. Refuses the whole extraction
+/// (writing nothing) when the manifest is missing, has an unknown version,
+/// fails its tree hash, contains an escaping path, or the destination is
+/// non-empty without --overwrite.
+pub fn handle_extract(args: &[String], verbose: bool) {
+    let pos = extract_positional_args(args);
+    if pos.len() < 2 {
+        print_cli_error(
+            "missing arguments: 's3a extract' requires <vault> and <dir>",
+            Some("usage: s3a extract <vault> <dir> [--overwrite]"),
+            verbose,
+            None,
+        );
+    }
+    let vault_path = PathBuf::from(pos[0]);
+    let dest = PathBuf::from(pos[1]);
+    let overwrite = args.iter().any(|a| a == "--overwrite");
+    if !vault_path.exists() {
+        print_cli_error(
+            &format!("vault file '{}' does not exist", vault_path.display()),
+            Some("run 's3a pack <dir> <vault>' to create a packed vault"),
+            verbose,
+            None,
+        );
+    }
+    match s3a_engine::tree::extract_tree(&vault_path, &dest, overwrite) {
+        Ok(summary) => {
+            println!(
+                "OK: extracted '{}' ({} files, {} dirs, {} symlinks, {} bytes) to {}",
+                vault_path.display(),
+                summary.files,
+                summary.dirs,
+                summary.symlinks,
+                summary.total_bytes,
+                dest.display()
+            );
+        }
+        Err(e) => {
+            print_cli_error(
+                &e,
+                Some("verify the vault holds a packed tree (s3a ls --vault <vault>)"),
+                verbose,
+                None,
             );
         }
     }
@@ -2906,6 +3005,38 @@ pub fn handle_help(args: &[String]) {
             println!("  s3a open my.s3a cad/gearbox.step");
             println!("  s3a open docs/readme.txt --vault production.s3a");
         }
+        Some("pack") => {
+            println!("s3a pack <dir> <vault>");
+            println!();
+            println!("Pack a whole directory tree into a vault (prompt 012).");
+            println!("One document record per file (010 slab sizing and 011");
+            println!("chunking apply automatically); one manifest record under");
+            println!("'__s3a_tree_manifest__' carries the layout version, the");
+            println!("entry list, and the whole-tree SHA-256. Empty dirs,");
+            println!("symlinks, and unix modes are preserved; symlinks are");
+            println!("stored as links, never followed. The vault is created");
+            println!("if missing; it is skipped if it lies inside the tree.");
+            println!("mtimes are NOT preserved (known limitation).");
+            println!();
+            println!("examples:");
+            println!("  s3a pack my-docs backup.s3a");
+            println!("  s3a pack ~/photos photos.s3a");
+        }
+        Some("extract") => {
+            println!("s3a extract <vault> <dir> [--overwrite]");
+            println!();
+            println!("Extract a packed tree from a vault (prompt 012).");
+            println!("The manifest is validated first (version, whole-tree");
+            println!("SHA-256, entry paths, no entry below a symlink); a");
+            println!("refused extraction writes nothing. Without --overwrite");
+            println!("the destination must not exist or must be empty.");
+            println!("Symlinks are recreated as-is, never written through;");
+            println!("every output path stays inside the destination.");
+            println!();
+            println!("examples:");
+            println!("  s3a extract backup.s3a restored-docs");
+            println!("  s3a extract backup.s3a restored-docs --overwrite");
+        }
         Some("import") => {
             println!("s3a import - Import records from CSV or JSON into the vault");
             println!();
@@ -3092,6 +3223,8 @@ pub fn print_general_help() {
     println!("  s3a open <key>                   Open stored document in OS default application");
     println!("  s3a import <data.csv|data.json>  Import records from CSV or JSON");
     println!("  s3a export <out|key> [-o path]   Export vault records, document payload, or BOM");
+    println!("  s3a pack <dir> <vault>           Pack a directory tree into a vault");
+    println!("  s3a extract <vault> <dir> [--overwrite]  Extract a packed tree from a vault");
     println!(
         "  s3a query \"<QL>\" [--json]        Execute native S3A-QL statement with table output"
     );
