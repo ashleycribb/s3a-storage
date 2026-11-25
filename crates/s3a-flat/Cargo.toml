@@ -8,6 +8,7 @@ description = "Flattened transport/storage form (.s3af) for sealed/export/backup
 
 [dependencies]
 s3a-core = { path = "../s3a-core" }
+bytemuck = { workspace = true }
 sha2 = { workspace = true }
 crc32c = { workspace = true }
 zstd = { version = "0.13", default-features = false }

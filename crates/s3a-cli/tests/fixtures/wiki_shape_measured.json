@@ -1,0 +1,21 @@
+{
+  "files": 1871,
+  "content_bytes": 5961273,
+  "largest_bytes": 117998,
+  "key_len_bytes": 19,
+  "class_counts": [
+    1356,
+    283,
+    122,
+    65,
+    29,
+    6,
+    6,
+    1,
+    0,
+    3
+  ],
+  "ceiling_bytes": 12100096,
+  "prototype_bytes": 245236224,
+  "notes": "Reconstruction of the 2026-11-25 wiki backup shape from the measured numbers in prompts/010-slab-sized-packing.md (live wiki not available on this machine). Content is a SHA-256 stream of each key, not live wiki content; only key + size are stored here."
+}

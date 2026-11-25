@@ -422,3 +422,25 @@ Tests (local, box):
 Notes:
   1. Rust untouched; cargo checks not rerun for this change.
   2. crawl-nav-test.mjs still fails (stale UI expectations); not changed.
+
+---
+
+## 010-slab-sized-packing, 2026-11-25 07:53 EST
+Status: done locally; pushed as PR (not merged; Ashley merges)
+Commit: HEAD (implementation); tests commit 78b4dfe
+Changed: crates/s3a-core/src/{lib,schema}.rs, crates/s3a-engine/src/{lib,document,sealed}.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-pack-tdp/src/store.rs, crates/s3a-flat/{Cargo.toml,src/lib.rs}, crates/s3a-vcs/src/repo.rs, Cargo.lock, prompts/LOG.md; tests: crates/s3a-cli/tests/slab_sized_packing.rs + fixtures/wiki_shape.jsonl, wiki_shape_measured.json, legacy_one_doc.s3a
+Tests (local, box):
+  - cargo test --workspace --no-fail-fast: 966 passed, 0 failed (163 targets ok; bins built first — stack_cli_tests needs target/debug/s3a-lrs-server present)
+  - cargo test -p s3a-cli --test slab_sized_packing: 7 passed, 0 failed
+  - fail-first on origin/main 378d962: 4 passed, 3 failed (small-doc padded to 131,584; class-1 vault same size as class-0; wiki shape 245,236,224 bytes over ceiling 12,100,096)
+  - cargo clippy -p s3a-core -p s3a-engine -p s3a-cli -p s3a-pack-tdp -p s3a-flat -p s3a-vcs --all-targets: exit 0; two warnings in new code fixed (needless as_bytes, needless range loop); remaining warnings are pre-existing at lines untouched by this diff
+  - cargo fmt: new/edited implementation files clean under rustfmt 1.100; repo-wide --check still flags untouched files (pre-existing drift); committed test file left unformatted per fail-first rule
+  - mutation check: packed_slot_size forced to class 9 (128 KiB) -> test_small_document_is_not_padded_to_128kib, test_different_payloads_select_different_size_classes, test_wiki_shape_is_at_least_20x_smaller_than_245mb_prototype failed; restored -> 7/7 green
+  - smoke (built CLI): seal/verify/prove/verify-proof/ls/get pass on a packed vault (1 doc = 4,608 bytes) and on the legacy 128 KiB fixture; export is STEP-BOM-only and errors identically for both layouts
+Notes:
+  1. Tests + fixtures written from the prompt spec, NOT copied: /workspace/slab-prompts/ does not exist on this machine and the live wiki is not here. Wiki-shape fixtures are reconstructions from the prompt's measured numbers (1,871 files, 5,961,273 content bytes, largest 117,998, class counts 1356/283/122/65/29/6/6/1/0/3, ceiling 12,100,096); content is a SHA-256 stream of each key, not live wiki content.
+  2. Design: single-file packed document archive — 512-byte header + variable-size slots (512-byte tile header + record payload + zero pad to smallest fitting slab class), FLAG_PACKED_SLOTS (0x0040). Legacy 128 KiB vaults keep the old write path (flag not set); readers walk both layouts. Seal v2 normalizes tiles (manifest/spec/record-root tile_ids after data tiles); seal v1 fails closed on packed input; flat transport uses a stride-0 sentinel.
+  3. Known limitation: a packed tile whose header payload_bytes is corrupt ends the append walk and open-append truncates there (torn-write recovery); the corrupt tile is lost on the next write. Legacy archives unaffected.
+  4. Clippy flags 2 cosmetic warnings in the committed test file (needless_range_loop at :241, useless_vec at :204); left untouched — the fail-first test commit must not be edited.
+  5. No existing tests, fixtures, or frozen vectors were edited. Test temp dirs live under target/ (workspace root) because /tmp is a 512 MB tmpfs and two parallel 245 MB wiki vaults filled it.
+  6. Push constraint: the GitHub snapshot route (push_files) rejects the binary legacy_one_doc.s3a fixture (non-UTF-8); see the PR description for how the branch was pushed. The local branch keeps the test-first (78b4dfe) / implementation split.

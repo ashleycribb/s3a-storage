@@ -10,6 +10,11 @@
 //! `HYPER_TILE_SIZE` tile regions, then any shorter tail kept as its own region (e.g. trailing
 //! bytes after the last full tile).
 //!
+//! Packed archives (prompt 010) store variable-size tiles, so the header's stride field
+//! carries 0 as the variable-region sentinel and each tile region records its own length;
+//! the reader validates the record order (head, tiles in order, at most one tail) instead
+//! of recomputing regions from the stride.
+//!
 //! ```text
 //! .s3af = header (FLAT_HEADER_LEN bytes, little-endian)
 //!   magic "S3AF" | version u16 | flags u16 (bit0 = zstd body)
@@ -108,6 +113,82 @@ fn regions(len: usize, head: usize, stride: usize) -> Vec<Region> {
     out
 }
 
+/// Regions for a packed (slab-sized, prompt 010) S3A archive, or `None`
+/// when `original` is not one. The active header slot is picked by
+/// generation among slots that pass the core header check, mirroring the
+/// engine's arbitration for the cases that matter; a wrong pick here is
+/// still a correct round-trip, because any tiles the walk misses fall into
+/// the tail region. A walk that cannot reach every committed tile also
+/// falls back to the legacy regions.
+fn packed_regions(original: &[u8]) -> Option<Vec<Region>> {
+    if original.len() < s3a_core::FILE_HEADER_SIZE {
+        return None;
+    }
+    let slot_a: &s3a_core::FileHeader =
+        &bytemuck::pod_read_unaligned(&original[..s3a_core::FILE_HEADER_SLOT_SIZE]);
+    let slot_b: &s3a_core::FileHeader = &bytemuck::pod_read_unaligned(
+        &original[s3a_core::FILE_HEADER_SLOT_B_OFFSET
+            ..s3a_core::FILE_HEADER_SLOT_B_OFFSET + s3a_core::FILE_HEADER_SLOT_SIZE],
+    );
+    let (va, vb) = (slot_a.verify().is_ok(), slot_b.verify().is_ok());
+    let active = match (va, vb) {
+        (true, true) => {
+            if slot_b.generation > slot_a.generation {
+                slot_b
+            } else {
+                slot_a
+            }
+        }
+        (true, false) => slot_a,
+        (false, true) => slot_b,
+        (false, false) => {
+            // Legacy single-slot files: slot A valid, unset CRC, slot B zero.
+            if slot_a.verify().is_ok()
+                && slot_a.header_crc32 == 0
+                && bytemuck::bytes_of(slot_b).iter().all(|b| *b == 0)
+            {
+                slot_a
+            } else {
+                return None;
+            }
+        }
+    };
+    if !active.is_packed_slots() {
+        return None;
+    }
+    let spans = s3a_core::packed_tile_spans(original, active.tile_count);
+    if spans.len() != active.tile_count as usize {
+        return None;
+    }
+    let mut regs = vec![Region {
+        kind: 0,
+        index: 0,
+        start: 0,
+        len: s3a_core::FILE_HEADER_SIZE,
+    }];
+    for (i, (off, len)) in spans.iter().enumerate() {
+        regs.push(Region {
+            kind: 1,
+            index: i as u32,
+            start: *off,
+            len: *len,
+        });
+    }
+    let data_end = spans
+        .last()
+        .map(|(o, l)| o + l)
+        .unwrap_or(s3a_core::FILE_HEADER_SIZE);
+    if data_end < original.len() {
+        regs.push(Region {
+            kind: 2,
+            index: spans.len() as u32,
+            start: data_end,
+            len: original.len() - data_end,
+        });
+    }
+    Some(regs)
+}
+
 /// Non-zero segments (offset, len) of `r`, with zero runs shorter than MIN_ZERO_RUN kept inline.
 fn segments(r: &[u8]) -> Vec<(usize, usize)> {
     let mut segs: Vec<(usize, usize)> = Vec::new();
@@ -143,10 +224,19 @@ fn segments(r: &[u8]) -> Vec<(usize, usize)> {
 }
 
 /// Flatten `original` into `.s3af` bytes. `zstd_level` = Some(level) compresses the body.
+///
+/// Prompt 010: packed archives store variable-size tiles, so the stride
+/// field carries 0 as the variable-region sentinel and each tile region
+/// records its own length. Legacy archives keep the 128 KiB stride.
 pub fn flatten(original: &[u8], zstd_level: Option<i32>) -> Result<Vec<u8>, FlatError> {
     let head = s3a_core::FILE_HEADER_SIZE;
-    let stride = s3a_core::HYPER_TILE_SIZE;
-    let regs = regions(original.len(), head, stride);
+    let (stride, regs) = match packed_regions(original) {
+        Some(regs) => (0, regs),
+        None => {
+            let stride = s3a_core::HYPER_TILE_SIZE;
+            (stride, regions(original.len(), head, stride))
+        }
+    };
     let mut body = Vec::new();
     for r in &regs {
         let bytes = &original[r.start..r.start + r.len];
@@ -259,7 +349,7 @@ fn parse_header(flat: &[u8]) -> Result<Header, FlatError> {
     if crc32c::crc32c(&flat[..crc_at]) != crc {
         return Err(FlatError::HeaderCrc);
     }
-    if original_len > MAX_ORIGINAL_LEN || stride == 0 {
+    if original_len > MAX_ORIGINAL_LEN {
         return Err(FlatError::BadField("original_len/stride"));
     }
     Ok(Header {
@@ -321,18 +411,61 @@ pub fn unflatten(flat: &[u8]) -> Result<Vec<u8>, FlatError> {
     if body.len() as u64 != h.info.body_len {
         return Err(FlatError::BadField("body_len"));
     }
-    let expect = regions(h.info.original_len as usize, h.head, h.stride);
-    if expect.len() as u64 != h.info.record_count as u64 {
+    let expect = if h.stride == 0 {
+        // Variable regions (prompt 010, stride sentinel 0): the record
+        // headers in the body carry each region's kind/index/length, so
+        // there is nothing to precompute; they are validated as read below.
+        Vec::new()
+    } else {
+        regions(h.info.original_len as usize, h.head, h.stride)
+    };
+    if h.stride != 0 && expect.len() as u64 != h.info.record_count as u64 {
         return Err(FlatError::BadField("record_count"));
     }
     let mut out = Vec::new();
     let mut c = Cur { b: body, p: 0 };
-    for (n, r) in expect.iter().enumerate() {
+    // Variable-path ordering state: tile indices must run 0, 1, 2, ... after
+    // the head record, and at most one tail record may follow the tiles.
+    let mut next_tile = 0u32;
+    let mut saw_tail = false;
+    let mut n = 0usize;
+    loop {
+        if h.stride == 0 {
+            if c.p >= body.len() {
+                break;
+            }
+        } else if n >= expect.len() {
+            break;
+        }
         let kind = c.u8("record kind")?;
         let index = c.u32("record index")?;
         let len = c.u32("region_len")? as usize;
-        if kind != r.kind || index != r.index || len != r.len {
-            return Err(FlatError::BadField("record header"));
+        if h.stride == 0 {
+            match kind {
+                0 => {
+                    if n != 0 || index != 0 || len != h.head {
+                        return Err(FlatError::BadField("record header"));
+                    }
+                }
+                1 => {
+                    if saw_tail || index != next_tile {
+                        return Err(FlatError::BadField("record header"));
+                    }
+                    next_tile += 1;
+                }
+                2 => {
+                    if saw_tail {
+                        return Err(FlatError::BadField("record header"));
+                    }
+                    saw_tail = true;
+                }
+                _ => return Err(FlatError::BadField("record header")),
+            }
+        } else {
+            let r = &expect[n];
+            if kind != r.kind || index != r.index || len != r.len {
+                return Err(FlatError::BadField("record header"));
+            }
         }
         let segc = c.u32("seg_count")? as usize;
         if segc > len / 2 + 1 {
@@ -360,6 +493,10 @@ pub fn unflatten(flat: &[u8]) -> Result<Vec<u8>, FlatError> {
         if crc32c::crc32c(&out[start..]) != crc {
             return Err(FlatError::RecordCrc(n as u32));
         }
+        n += 1;
+    }
+    if n as u64 != h.info.record_count as u64 {
+        return Err(FlatError::BadField("record_count"));
     }
     if c.p != body.len() {
         return Err(FlatError::BadField("trailing body bytes"));

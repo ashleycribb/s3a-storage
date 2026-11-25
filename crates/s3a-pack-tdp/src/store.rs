@@ -1,84 +1,23 @@
 //! Storage helpers for writing TDP documents (PDF and STEP) to S3A vaults.
 
 use std::path::Path;
-use std::time::SystemTime;
 
-use s3a_core::document::{
-    compute_key_hash, DocumentRecordHeader, DOC_FLAG_ACTIVE, DOC_FLAG_IS_JSON, DOC_KIND_BINARY,
-    DOC_KIND_JSON,
-};
-use s3a_core::{HyperTileHeader, TileType, HYPER_TILE_PAYLOAD_SIZE};
-use s3a_engine::TileWriter;
+use s3a_core::document::{DOC_KIND_BINARY, DOC_KIND_JSON};
 
 use crate::pdf::{compute_sha256, extract_pdf_metadata, PdfMetadata};
 use crate::step::{parse_step, StepAssemblyTree};
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Appends a raw document record of the specified kind to an S3A vault.
+/// Delegates to `s3a_engine::document` (prompt 010) so the CLI and TDP share
+/// one layout decision: packed slots for empty/packed vaults, legacy stride
+/// for vaults that already hold legacy tiles.
 pub fn write_document_record(
     vault_path: &Path,
     doc_kind: u32,
     key: &str,
     content: &[u8],
 ) -> Result<(), String> {
-    let key_bytes = key.as_bytes();
-    let content_crc = crc32c::crc32c(content);
-    let mut flags = DOC_FLAG_ACTIVE;
-    if doc_kind == DOC_KIND_JSON {
-        flags |= DOC_FLAG_IS_JSON;
-    }
-
-    let doc_hdr = DocumentRecordHeader {
-        doc_kind,
-        flags,
-        key_hash: compute_key_hash(doc_kind, key),
-        timestamp_ms: now_ms(),
-        key_len: key_bytes.len() as u32,
-        content_len: content.len() as u32,
-        content_crc32: content_crc,
-        ..Default::default()
-    };
-
-    let header_size = std::mem::size_of::<DocumentRecordHeader>();
-    let total_record_size = header_size + key_bytes.len() + content.len();
-
-    if total_record_size > HYPER_TILE_PAYLOAD_SIZE {
-        return Err(format!(
-            "Payload size ({} bytes) exceeds single tile payload limit ({} bytes)",
-            content.len(),
-            HYPER_TILE_PAYLOAD_SIZE - header_size - key_bytes.len()
-        ));
-    }
-
-    let mut tile_payload = Vec::with_capacity(total_record_size);
-    tile_payload.extend_from_slice(bytemuck::bytes_of(&doc_hdr));
-    tile_payload.extend_from_slice(key_bytes);
-    tile_payload.extend_from_slice(content);
-
-    let mut tile_hdr = HyperTileHeader::new(0, TileType::DOCUMENT_STORE);
-    tile_hdr.record_count = 1;
-    tile_hdr.payload_bytes = tile_payload.len() as u32;
-    tile_hdr.data_crc32 = crc32c::crc32c(&tile_payload);
-
-    let mut writer = TileWriter::open_append(vault_path).map_err(|e| {
-        format!(
-            "Failed to open vault '{}' for writing: {}",
-            vault_path.display(),
-            e
-        )
-    })?;
-
-    writer
-        .write_raw_hyper_tile(&tile_hdr, &tile_payload)
-        .map_err(|e| format!("Failed to commit tile record: {}", e))?;
-
-    Ok(())
+    s3a_engine::document::write_document_record_kind(vault_path, doc_kind, key, content)
 }
 
 /// Stores a PDF document and its sidecar metadata in an S3A vault.

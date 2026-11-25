@@ -2183,6 +2183,7 @@ dependencies = [
 name = "s3a-flat"
 version = "0.2.0"
 dependencies = [
+ "bytemuck",
  "crc32c",
  "s3a-core",
  "sha2 0.10.9",

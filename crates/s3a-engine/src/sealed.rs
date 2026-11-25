@@ -150,12 +150,8 @@ pub fn about_report(reader: &crate::MmapReader) -> AboutReport {
 
 /// Sets the about trailer on the first Schema tile in `out_data` (replacing any prior
 /// one), or appends a registry-derived Schema tile. Returns the new tile count.
-fn apply_about(
-    out_data: &mut Vec<u8>,
-    tile_count: u32,
-    file_uuid: [u64; 2],
-    generation: u64,
-) -> io::Result<u32> {
+fn apply_about(seal: &mut SealInput, file_uuid: [u64; 2], generation: u64) -> io::Result<u32> {
+    let tile_count = seal.tile_count();
     let a = build_about()?;
     for (kind, id) in [
         (s3a_core::algorithms::AlgKind::SealHash, &a.seal_hash_alg),
@@ -170,38 +166,37 @@ fn apply_about(
     let bad = |e: S3AError| io::Error::new(io::ErrorKind::InvalidData, format!("schema tile: {e}"));
     let mut present = std::collections::BTreeSet::new();
     for i in 0..tile_count as usize {
-        let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-        let mut h: HyperTileHeader =
-            bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+        let mut h: HyperTileHeader = seal.tile_header(i);
         present.insert(h.tile_type);
         if h.tile_type != TileType::SCHEMA {
             continue;
         }
-        let p0 = off + HYPER_TILE_HEADER_SIZE;
+        let p0 = HYPER_TILE_HEADER_SIZE;
         let plen = (h.payload_bytes as usize).min(HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE);
-        let rec = s3a_core::schema_records_len(&out_data[p0..p0 + plen]).map_err(bad)?;
-        let mut payload = out_data[p0..p0 + rec].to_vec();
+        let rec = s3a_core::schema_records_len(&seal.tiles[i][p0..p0 + plen]).map_err(bad)?;
+        let mut payload = seal.tiles[i][p0..p0 + rec].to_vec();
         payload.extend_from_slice(&about);
         if payload.len() > HYPER_TILE_SIZE - HYPER_TILE_HEADER_SIZE {
             return Err(io::Error::other("schema tile too full for about entry"));
         }
-        out_data[p0..off + HYPER_TILE_SIZE].fill(0);
-        out_data[p0..p0 + payload.len()].copy_from_slice(&payload);
+        seal.tiles[i][p0..].fill(0);
+        seal.tiles[i][p0..p0 + payload.len()].copy_from_slice(&payload);
         h.payload_bytes = payload.len() as u32;
         h.data_crc32 = crc32c::crc32c(&payload);
         h.header_crc32 = compute_tile_header_crc32(&h);
-        out_data[off..off + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+        seal.set_tile_header(i, &h);
+        // Prompt 010: the about entry can push a packed schema tile into the
+        // next size class; re-store it at its class length.
+        if seal.packed {
+            let stored = s3a_core::truncate_tile_to_packed(&seal.tiles[i])
+                .ok_or_else(|| io::Error::other("schema tile too large for a packed slot"))?;
+            seal.tiles[i] = stored;
+        }
         return Ok(tile_count);
     }
     present.insert(TileType::SCHEMA);
     let max_id = (0..tile_count as usize)
-        .map(|i| {
-            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-            bytemuck::pod_read_unaligned::<HyperTileHeader>(
-                &out_data[off..off + HYPER_TILE_HEADER_SIZE],
-            )
-            .tile_id
-        })
+        .map(|i| seal.tile_header(i).tile_id)
         .max()
         .unwrap_or(0);
     let defs: Vec<_> = present
@@ -221,8 +216,8 @@ fn apply_about(
     let mut tile = vec![0u8; HYPER_TILE_SIZE];
     tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
     tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload.len()].copy_from_slice(&payload);
-    out_data.extend_from_slice(&tile);
-    set_tile_count(out_data, tile_count + 1, file_uuid);
+    seal.tiles.push(seal.store_generated(tile));
+    seal.set_tile_count(tile_count + 1, file_uuid);
     Ok(tile_count + 1)
 }
 
@@ -680,6 +675,15 @@ pub fn seal_buffer_v1(in_bytes: &[u8], k: u16, m: u16) -> io::Result<Vec<u8>> {
     let (active_header, _) = resolve_active_header(slot_a, slot_b)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
+    // Prompt 010: v1 seals the legacy 128 KiB-stride layout only. Packed
+    // archives must use v2.
+    if active_header.is_packed_slots() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot seal a packed (slab-sized) archive with seal v1; use seal v2",
+        ));
+    }
+
     let tile_count = active_header.tile_count;
     let expected_data_len = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
     if in_bytes.len() < expected_data_len {
@@ -855,6 +859,121 @@ pub(crate) fn set_tile_count(out_data: &mut [u8], tile_count: u32, file_uuid: [u
     }
 }
 
+/// In-memory working form of a seal input (prompt 010): the 512-byte dual
+/// header plus one stored-bytes vec per tile. Legacy tiles are 128 KiB;
+/// packed tiles are their size-class length. Every seal phase works on this
+/// form, so packed and legacy archives share one code path.
+struct SealInput {
+    header: Vec<u8>,
+    tiles: Vec<Vec<u8>>,
+    packed: bool,
+}
+
+impl SealInput {
+    /// Parses `in_bytes` into the working form. Fails closed when the input
+    /// is truncated before all committed tiles are read (packed: the slot
+    /// walk must reach exactly `tile_count` tiles).
+    fn from_bytes(
+        in_bytes: &[u8],
+        active_header: &FileHeader,
+        file_uuid: [u64; 2],
+    ) -> io::Result<Self> {
+        let tile_count = active_header.tile_count;
+        let packed = active_header.is_packed_slots() && !active_header.is_edge_profile();
+        let mut header = in_bytes[..FILE_HEADER_SIZE].to_vec();
+        // Ensure the active slot in the working header has file_uuid stamped.
+        let slot_a_mut: &mut FileHeader = bytemuck::from_bytes_mut(
+            &mut header
+                [FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
+        );
+        if slot_a_mut.file_uuid == [0, 0] {
+            slot_a_mut.file_uuid = file_uuid;
+            slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
+        }
+        let mut tiles = Vec::with_capacity(tile_count as usize);
+        if packed {
+            let spans = s3a_core::packed_tile_spans(in_bytes, tile_count);
+            if spans.len() != tile_count as usize {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Buffer truncated before all committed tiles are read",
+                ));
+            }
+            for (off, len) in spans {
+                tiles.push(in_bytes[off..off + len].to_vec());
+            }
+        } else {
+            let expected_data_len = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
+            if in_bytes.len() < expected_data_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Buffer truncated before all committed tiles are read",
+                ));
+            }
+            for i in 0..tile_count as usize {
+                let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+                tiles.push(in_bytes[off..off + HYPER_TILE_SIZE].to_vec());
+            }
+        }
+        Ok(Self {
+            header,
+            tiles,
+            packed,
+        })
+    }
+
+    fn tile_count(&self) -> u32 {
+        self.tiles.len() as u32
+    }
+
+    /// Flattens the working form back to file bytes: header + tiles.
+    fn flatten(&self) -> Vec<u8> {
+        let mut out = self.header.clone();
+        for t in &self.tiles {
+            out.extend_from_slice(t);
+        }
+        out
+    }
+
+    /// Truncates a freshly generated 128 KiB tile vec to this archive's
+    /// stored length (packed: its size class; legacy: unchanged).
+    fn store_generated(&self, tile: Vec<u8>) -> Vec<u8> {
+        if self.packed {
+            s3a_core::truncate_tile_to_packed(&tile).unwrap_or(tile)
+        } else {
+            tile
+        }
+    }
+
+    /// Stored length of a freshly generated tile with `payload_len` payload
+    /// bytes (packed: its size class; legacy: 128 KiB).
+    fn generated_len(&self, payload_len: usize) -> usize {
+        if self.packed {
+            s3a_core::packed_slot_size(HYPER_TILE_HEADER_SIZE + payload_len)
+                .unwrap_or(HYPER_TILE_SIZE)
+        } else {
+            HYPER_TILE_SIZE
+        }
+    }
+
+    fn set_tile_count(&mut self, tile_count: u32, file_uuid: [u64; 2]) {
+        set_tile_count(&mut self.header, tile_count, file_uuid);
+    }
+
+    fn tile_header(&self, i: usize) -> HyperTileHeader {
+        bytemuck::pod_read_unaligned(&self.tiles[i][..HYPER_TILE_HEADER_SIZE])
+    }
+
+    fn set_tile_header(&mut self, i: usize, header: &HyperTileHeader) {
+        self.tiles[i][..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(header));
+    }
+}
+
+/// Tile type of a tile vec in the seal working form.
+fn seal_tile_type(tile_bytes: &[u8]) -> u32 {
+    bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]).tile_type
+}
+
 pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Vec<u8>> {
     let k = options.k;
     let m = options.m;
@@ -882,50 +1001,28 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     let (active_header, _) = resolve_active_header(slot_a, slot_b)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{}", e)))?;
 
-    let mut tile_count = active_header.tile_count;
-    let expected_data_len = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
-    if in_bytes.len() < expected_data_len {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Buffer truncated before all committed tiles are read",
-        ));
-    }
-
     let file_uuid = if active_header.file_uuid != [0, 0] {
         active_header.file_uuid
     } else {
         generate_file_uuid()
     };
 
-    let mut out_data = in_bytes[..expected_data_len].to_vec();
-
-    // Ensure active slot in out_data has file_uuid stamped
-    let slot_a_mut: &mut FileHeader = bytemuck::from_bytes_mut(
-        &mut out_data[FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
-    );
-    if slot_a_mut.file_uuid == [0, 0] {
-        slot_a_mut.file_uuid = file_uuid;
-        slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
-    }
+    // Prompt 010: normalize the input to the working tile-vec form. Packed
+    // archives store tiles back-to-back at their size class; legacy archives
+    // use the 128 KiB stride. Every phase below works on the tile vec, so
+    // both layouts share one code path.
+    let mut seal = SealInput::from_bytes(in_bytes, &active_header, file_uuid)?;
+    let mut tile_count = seal.tile_count();
 
     // A prior record-root tile is derived data and is always dropped; it is regenerated below
     // when requested (ADR-0012). Files without one are byte-identical to before.
     {
-        let mut kept: Vec<u8> = out_data[..FILE_HEADER_SIZE].to_vec();
-        let mut n = 0u32;
-        for i in 0..tile_count as usize {
-            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-            let h: HyperTileHeader =
-                bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
-            if h.tile_type != TileType::RECORD_ROOT {
-                kept.extend_from_slice(&out_data[off..off + HYPER_TILE_SIZE]);
-                n += 1;
-            }
-        }
-        if n != tile_count {
-            out_data = kept;
-            tile_count = n;
-            set_tile_count(&mut out_data, tile_count, file_uuid);
+        let before = seal.tile_count();
+        seal.tiles
+            .retain(|t| seal_tile_type(t) != TileType::RECORD_ROOT);
+        if seal.tile_count() != before {
+            tile_count = seal.tile_count();
+            seal.set_tile_count(tile_count, file_uuid);
         }
     }
 
@@ -939,10 +1036,9 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     let unregistered: Vec<(usize, u32)> = {
         let reg = s3a_core::registry::global_registry();
         let mut v = Vec::new();
-        for i in 0..tile_count as usize {
-            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+        for (i, tile_bytes) in seal.tiles.iter().enumerate() {
             let h: HyperTileHeader =
-                bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
+                bytemuck::pod_read_unaligned(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
             if reg.get(h.tile_type).is_none() {
                 v.push((i, h.tile_type));
             }
@@ -962,12 +1058,8 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
     }
 
     if options.about {
-        tile_count = apply_about(
-            &mut out_data,
-            tile_count,
-            file_uuid,
-            active_header.generation,
-        )?;
+        apply_about(&mut seal, file_uuid, active_header.generation)?;
+        tile_count = seal.tile_count();
     }
 
     if options.write_manifest {
@@ -983,9 +1075,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             std::collections::HashMap::new();
         let mut mark_withdrawn_count = 0usize;
 
-        for i in 0..tile_count as usize {
-            let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-            let tile_slice = &out_data[offset..offset + HYPER_TILE_SIZE];
+        for tile_slice in &seal.tiles {
             let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
                 &tile_slice[..HYPER_TILE_HEADER_SIZE],
             );
@@ -1026,7 +1116,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 }
             }
 
-            existing_data_tiles.push(tile_slice.to_vec());
+            existing_data_tiles.push(tile_slice.clone());
         }
 
         let mut total_consents = subject_map.len();
@@ -1054,90 +1144,8 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
 
         let sealed_ts = current_time_secs();
 
-        // Build list of tile summaries for manifest
-        let mut tile_summaries = Vec::new();
-        // Floor 0: Manifest
-        tile_summaries.push((0u32, TileType::MANIFEST, "manifest", 0u32, HYPER_TILE_SIZE));
-
-        let mut next_floor = 1u32;
-        if options.embed_spec {
-            tile_summaries.push((
-                next_floor,
-                TileType::SPECIFICATION,
-                "specification",
-                0u32,
-                HYPER_TILE_SIZE,
-            ));
-            next_floor += 1;
-        }
-
-        for (idx, tile_bytes) in existing_data_tiles.iter().enumerate() {
-            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
-                &tile_bytes[..HYPER_TILE_HEADER_SIZE],
-            );
-            let floor_idx = next_floor + idx as u32;
-            let type_name = resolve_type_name(hdr.tile_type);
-            tile_summaries.push((
-                floor_idx,
-                hdr.tile_type,
-                type_name,
-                hdr.record_count,
-                HYPER_TILE_SIZE,
-            ));
-        }
-
-        // The record-root tile(s) are appended after this manifest is built (they cover
-        // it), so list them here from the same entries the seal will write.
-        if options.record_roots {
-            let covered = existing_data_tiles
-                .iter()
-                .filter(|t| {
-                    let h: HyperTileHeader =
-                        bytemuck::pod_read_unaligned(&t[..HYPER_TILE_HEADER_SIZE]);
-                    crate::record_roots::tile_root(&h, &t[HYPER_TILE_HEADER_SIZE..]).is_some()
-                })
-                .count();
-            let floor0 = next_floor + existing_data_tiles.len() as u32;
-            let per = crate::record_roots::ENTRIES_PER_TILE;
-            for (k, start) in (0..covered).step_by(per).enumerate() {
-                tile_summaries.push((
-                    floor0 + k as u32,
-                    TileType::RECORD_ROOT,
-                    "record_root",
-                    (covered - start).min(per) as u32,
-                    HYPER_TILE_SIZE,
-                ));
-            }
-        }
-
-        let manifest_text = generate_plain_text_manifest(
-            options.title.as_deref(),
-            options.creator.as_deref(),
-            file_uuid,
-            created_ts,
-            sealed_ts,
-            &tile_summaries,
-            (total_consents, active_research, withdrawn_consents),
-            options.seal_generation,
-            &options.prev_seal_hash,
-            options.enable_parity,
-        )?;
-
-        let manifest_bytes = manifest_text.as_bytes();
-        let mut manifest_tile = vec![0u8; HYPER_TILE_SIZE];
-        let mut manifest_hdr = HyperTileHeader::new(0, TileType::MANIFEST);
-        manifest_hdr.record_count = 0;
-        manifest_hdr.record_layout_version = 1;
-        manifest_hdr.payload_bytes = manifest_bytes.len() as u32;
-        manifest_hdr.data_crc32 = crc32c::crc32c(manifest_bytes);
-        manifest_hdr.generation = active_header.generation;
-        manifest_hdr.tile_index = 0;
-        manifest_hdr.file_uuid = file_uuid;
-        manifest_hdr.header_crc32 = compute_tile_header_crc32(&manifest_hdr);
-        manifest_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&manifest_hdr));
-        manifest_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + manifest_bytes.len()]
-            .copy_from_slice(manifest_bytes);
-
+        // The specification tile's payload is fixed (compressed spec), so its
+        // stored length is known before the manifest text is generated.
         let mut spec_tile_opt = None;
         if options.embed_spec {
             let compressed_spec =
@@ -1155,10 +1163,118 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             spec_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&spec_hdr));
             spec_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + compressed_spec.len()]
                 .copy_from_slice(&compressed_spec);
-            spec_tile_opt = Some(spec_tile);
+            spec_tile_opt = Some(seal.store_generated(spec_tile));
         }
 
-        // Reassemble out_data: header + manifest + [spec] + existing_data_tiles
+        // Build list of tile summaries for manifest. Sizes are stored lengths
+        // (packed: size class; legacy: 128 KiB), not the stride.
+        let mut tile_summaries = Vec::new();
+        // Floor 0: Manifest (its stored size appears in its own summary; the
+        // fixed-point loop below settles it).
+        let mut manifest_size_guess = seal.generated_len(0);
+        tile_summaries.push((
+            0u32,
+            TileType::MANIFEST,
+            "manifest",
+            0u32,
+            manifest_size_guess,
+        ));
+
+        let mut next_floor = 1u32;
+        if let Some(spec_tile) = &spec_tile_opt {
+            tile_summaries.push((
+                next_floor,
+                TileType::SPECIFICATION,
+                "specification",
+                0u32,
+                spec_tile.len(),
+            ));
+            next_floor += 1;
+        }
+
+        for (idx, tile_bytes) in existing_data_tiles.iter().enumerate() {
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
+                &tile_bytes[..HYPER_TILE_HEADER_SIZE],
+            );
+            let floor_idx = next_floor + idx as u32;
+            let type_name = resolve_type_name(hdr.tile_type);
+            tile_summaries.push((
+                floor_idx,
+                hdr.tile_type,
+                type_name,
+                hdr.record_count,
+                tile_bytes.len(),
+            ));
+        }
+
+        // The record-root tile(s) are appended after this manifest is built (they cover
+        // it), so list them here from the same entries the seal will write.
+        if options.record_roots {
+            let covered = existing_data_tiles
+                .iter()
+                .filter(|t| {
+                    let h: HyperTileHeader =
+                        bytemuck::pod_read_unaligned(&t[..HYPER_TILE_HEADER_SIZE]);
+                    crate::record_roots::tile_root(&h, &t[HYPER_TILE_HEADER_SIZE..]).is_some()
+                })
+                .count();
+            let floor0 = next_floor + existing_data_tiles.len() as u32;
+            let per = crate::record_roots::ENTRIES_PER_TILE;
+            for (k, start) in (0..covered).step_by(per).enumerate() {
+                let n = (covered - start).min(per);
+                tile_summaries.push((
+                    floor0 + k as u32,
+                    TileType::RECORD_ROOT,
+                    "record_root",
+                    n as u32,
+                    seal.generated_len(n * crate::record_roots::RECORD_ROOT_ENTRY_SIZE),
+                ));
+            }
+        }
+
+        // Prompt 010: the manifest tile's stored size appears in its own
+        // summary, so iterate the text generation to a fixed point (the
+        // stored size is monotone in the text length and bounded by the
+        // largest class, so this converges in a few rounds; legacy archives
+        // always store 128 KiB tiles and need one pass).
+        let manifest_text = loop {
+            tile_summaries[0].4 = manifest_size_guess;
+            let text = generate_plain_text_manifest(
+                options.title.as_deref(),
+                options.creator.as_deref(),
+                file_uuid,
+                created_ts,
+                sealed_ts,
+                &tile_summaries,
+                (total_consents, active_research, withdrawn_consents),
+                options.seal_generation,
+                &options.prev_seal_hash,
+                options.enable_parity,
+            )?;
+            let class = seal.generated_len(text.len());
+            if class == manifest_size_guess || !seal.packed {
+                break text;
+            }
+            manifest_size_guess = class;
+        };
+
+        let manifest_bytes = manifest_text.as_bytes();
+        let mut manifest_tile = vec![0u8; HYPER_TILE_SIZE];
+        let mut manifest_hdr = HyperTileHeader::new(0, TileType::MANIFEST);
+        manifest_hdr.record_count = 0;
+        manifest_hdr.record_layout_version = 1;
+        manifest_hdr.payload_bytes = manifest_bytes.len() as u32;
+        manifest_hdr.data_crc32 = crc32c::crc32c(manifest_bytes);
+        manifest_hdr.generation = active_header.generation;
+        manifest_hdr.tile_index = 0;
+        manifest_hdr.file_uuid = file_uuid;
+        manifest_hdr.header_crc32 = compute_tile_header_crc32(&manifest_hdr);
+        manifest_tile[..HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&manifest_hdr));
+        manifest_tile[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + manifest_bytes.len()]
+            .copy_from_slice(manifest_bytes);
+        let manifest_tile = seal.store_generated(manifest_tile);
+
+        // Reassemble: header + manifest + [spec] + existing_data_tiles
         let mut new_tiles = Vec::new();
         new_tiles.push(manifest_tile);
         if let Some(spec) = spec_tile_opt {
@@ -1177,43 +1293,20 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
 
         tile_count = new_tiles.len() as u32;
-        out_data.truncate(FILE_HEADER_SIZE);
-        for t in &new_tiles {
-            out_data.extend_from_slice(t);
-        }
-
-        // Update tile_count in header slot A and slot B in out_data
-        let slot_a_mut: &mut FileHeader = bytemuck::from_bytes_mut(
-            &mut out_data
-                [FILE_HEADER_SLOT_A_OFFSET..FILE_HEADER_SLOT_A_OFFSET + FILE_HEADER_SLOT_SIZE],
-        );
-        slot_a_mut.tile_count = tile_count;
-        slot_a_mut.file_uuid = file_uuid;
-        slot_a_mut.header_crc32 = compute_header_crc32(slot_a_mut);
-
-        let slot_b_mut: &mut FileHeader = bytemuck::from_bytes_mut(
-            &mut out_data
-                [FILE_HEADER_SLOT_B_OFFSET..FILE_HEADER_SLOT_B_OFFSET + FILE_HEADER_SLOT_SIZE],
-        );
-        if slot_b_mut.magic == s3a_core::S3A_MAGIC {
-            slot_b_mut.tile_count = tile_count;
-            slot_b_mut.file_uuid = file_uuid;
-            slot_b_mut.header_crc32 = compute_header_crc32(slot_b_mut);
-        }
+        seal.tiles = new_tiles;
+        seal.set_tile_count(tile_count, file_uuid);
     }
 
     if options.record_roots {
         let entries = {
-            let tiles: Vec<(usize, HyperTileHeader, &[u8])> = (0..tile_count as usize)
-                .map(|i| {
-                    let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
+            let tiles: Vec<(usize, HyperTileHeader, &[u8])> = seal
+                .tiles
+                .iter()
+                .enumerate()
+                .map(|(i, tile_bytes)| {
                     let h: HyperTileHeader =
-                        bytemuck::pod_read_unaligned(&out_data[off..off + HYPER_TILE_HEADER_SIZE]);
-                    (
-                        i,
-                        h,
-                        &out_data[off + HYPER_TILE_HEADER_SIZE..off + HYPER_TILE_SIZE],
-                    )
+                        bytemuck::pod_read_unaligned(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
+                    (i, h, &tile_bytes[HYPER_TILE_HEADER_SIZE..])
                 })
                 .collect();
             crate::record_roots::compute_entries(
@@ -1227,51 +1320,47 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
             active_header.generation,
             file_uuid,
         );
-        for t in &rr {
-            out_data.extend_from_slice(t);
+        for t in rr {
+            seal.tiles.push(seal.store_generated(t));
         }
-        tile_count += rr.len() as u32;
-        set_tile_count(&mut out_data, tile_count, file_uuid);
+        tile_count = seal.tile_count();
+        seal.set_tile_count(tile_count, file_uuid);
     }
 
     // Tiles the sealer generates (manifest 78, spec 79, record roots 83) get tile_ids after
     // every other tile's, so tile_ids stay unique in the sealed file (compaction remaps
     // by tile_id, §6.1.5). Earlier sealers wrote them with ids 0/1, colliding with data.
     {
-        let hdr_at = |d: &[u8], i: usize| -> HyperTileHeader {
-            let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-            bytemuck::pod_read_unaligned(&d[off..off + HYPER_TILE_HEADER_SIZE])
-        };
         let generated = |t: u32| {
             matches!(
                 t,
                 TileType::MANIFEST | TileType::SPECIFICATION | TileType::RECORD_ROOT
             )
         };
-        let mut next = (0..tile_count as usize)
-            .map(|i| hdr_at(&out_data, i))
-            .filter(|h| !generated(h.tile_type))
-            .map(|h| h.tile_id)
+        let mut next = seal
+            .tiles
+            .iter()
+            .map(|t| seal_tile_type(t))
+            .enumerate()
+            .filter(|(_, ty)| !generated(*ty))
+            .map(|(i, _)| seal.tile_header(i).tile_id)
             .max()
             .unwrap_or(0)
             + 1;
         for i in 0..tile_count as usize {
-            let mut h = hdr_at(&out_data, i);
+            let mut h = seal.tile_header(i);
             if generated(h.tile_type) {
                 h.tile_id = next;
                 next += 1;
                 h.header_crc32 = compute_tile_header_crc32(&h);
-                let off = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-                out_data[off..off + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&h));
+                seal.set_tile_header(i, &h);
             }
         }
     }
 
     // Stamp self-addressing metadata (file_uuid, tile_index, generation) into all tiles
     for i in 0..tile_count as usize {
-        let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-        let mut hdr: HyperTileHeader =
-            bytemuck::pod_read_unaligned(&out_data[offset..offset + HYPER_TILE_HEADER_SIZE]);
+        let mut hdr: HyperTileHeader = seal.tile_header(i);
         let mut changed = false;
 
         if hdr.file_uuid == [0, 0] {
@@ -1288,19 +1377,22 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
 
         if changed {
             hdr.header_crc32 = compute_tile_header_crc32(&hdr);
-            out_data[offset..offset + HYPER_TILE_HEADER_SIZE].copy_from_slice(bytes_of(&hdr));
+            seal.set_tile_header(i, &hdr);
         }
     }
 
-    // 1. Build v2 directory entries
+    // 1. Build v2 directory entries. Offsets are cumulative stored lengths
+    // (packed: size classes back-to-back; legacy: 128 KiB stride) and each
+    // entry's length is the tile's stored length.
     let mut entries: Vec<SealedTileIndexEntry> = Vec::with_capacity(tile_count as usize);
-    for i in 0..tile_count as usize {
-        let offset = (FILE_HEADER_SIZE + i * HYPER_TILE_SIZE) as u64;
-        let tile_bytes = &out_data[offset as usize..offset as usize + HYPER_TILE_SIZE];
+    let mut next_offset = FILE_HEADER_SIZE as u64;
+    for tile_bytes in &seal.tiles {
+        let offset = next_offset;
+        next_offset += tile_bytes.len() as u64;
         let hdr: &HyperTileHeader =
             &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]);
         let payload_bytes = hdr.payload_bytes as usize;
-        let payload = if HYPER_TILE_HEADER_SIZE + payload_bytes <= HYPER_TILE_SIZE {
+        let payload = if HYPER_TILE_HEADER_SIZE + payload_bytes <= tile_bytes.len() {
             &tile_bytes[HYPER_TILE_HEADER_SIZE..HYPER_TILE_HEADER_SIZE + payload_bytes]
         } else {
             &tile_bytes[HYPER_TILE_HEADER_SIZE..]
@@ -1309,7 +1401,7 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
 
         entries.push(SealedTileIndexEntry {
             offset,
-            length: HYPER_TILE_SIZE as u64,
+            length: tile_bytes.len() as u64,
             type_id: hdr.tile_type,
             type_version: hdr.record_layout_version as u16,
             _pad: [0u8; 2],
@@ -1321,7 +1413,9 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         });
     }
 
-    // 2. Parity shards if enabled via Reed-Solomon (galois_8)
+    // 2. Parity shards if enabled via Reed-Solomon (galois_8). RS works on
+    // fixed 128 KiB shards, so packed tiles are zero-padded to the shard
+    // size before encoding; the padding is never stored in the file.
     let mut parity_bytes: Vec<u8> = Vec::new();
     let k_usize = k as usize;
     let m_usize = m as usize;
@@ -1336,9 +1430,10 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
                 .map_err(|e| io::Error::other(format!("ReedSolomon error: {}", e)))?;
 
             let mut shards: Vec<Vec<u8>> = Vec::with_capacity(k_g + m_usize);
-            for i in start_tile..end_tile {
-                let offset = FILE_HEADER_SIZE + i * HYPER_TILE_SIZE;
-                shards.push(out_data[offset..offset + HYPER_TILE_SIZE].to_vec());
+            for tile in &seal.tiles[start_tile..end_tile] {
+                let mut shard = tile.clone();
+                shard.resize(HYPER_TILE_SIZE, 0);
+                shards.push(shard);
             }
             for _ in 0..m_usize {
                 shards.push(vec![0u8; HYPER_TILE_SIZE]);
@@ -1353,7 +1448,11 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
         }
     }
 
-    // 3. Assemble index directory
+    // 3. Assemble index directory. The data region is the flattened working
+    // form (header + tiles at their stored lengths); parity, index, and
+    // end cap follow it exactly as before.
+    let mut out_data = seal.flatten();
+
     let seal_hash = compute_seal_hash_v2(
         &options.prev_seal_hash,
         options.seal_generation,
@@ -1671,10 +1770,13 @@ fn verify_sealed_impl(
 
                 for (i, entry) in v2_entries.iter().enumerate() {
                     let offset = entry.offset as usize;
-                    if offset + HYPER_TILE_SIZE > file_len {
+                    // Prompt 010: each entry carries its tile's stored length
+                    // (packed: size class; legacy: 128 KiB).
+                    let tile_len = entry.length as usize;
+                    if tile_len < HYPER_TILE_HEADER_SIZE || offset + tile_len > file_len {
                         return Err(S3AError::SealedTruncated);
                     }
-                    let tile = file_bytes[offset..offset + HYPER_TILE_SIZE].to_vec();
+                    let tile = file_bytes[offset..offset + tile_len].to_vec();
                     let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
                         &tile[..HYPER_TILE_HEADER_SIZE],
                     );
@@ -1719,7 +1821,12 @@ fn verify_sealed_impl(
                     (tile_count as usize).div_ceil(k_usize)
                 };
 
-                let data_end_offset = FILE_HEADER_SIZE + (tile_count as usize * HYPER_TILE_SIZE);
+                // The data region ends at the last directory entry's end
+                // (packed: cumulative size classes; legacy: tile_count * 128 KiB).
+                let data_end_offset = v2_entries
+                    .last()
+                    .map(|e| e.offset as usize + e.length as usize)
+                    .unwrap_or(FILE_HEADER_SIZE);
                 let parity_end_offset = if parity_enabled {
                     data_end_offset + (num_groups * m_usize * HYPER_TILE_SIZE)
                 } else {
@@ -1801,7 +1908,11 @@ fn verify_sealed_impl(
                         if corrupted_in_group.contains(&j) {
                             shards.push(None);
                         } else {
-                            shards.push(Some(tiles_raw[t_idx].clone()));
+                            // RS works on fixed 128 KiB shards: pad a packed
+                            // tile to the shard size before encoding.
+                            let mut shard = tiles_raw[t_idx].clone();
+                            shard.resize(HYPER_TILE_SIZE, 0);
+                            shards.push(Some(shard));
                         }
                     }
 
@@ -1843,7 +1954,11 @@ fn verify_sealed_impl(
                         }
 
                         let global_idx = (start_tile + missing_col) as u32;
-                        tiles_raw[global_idx as usize] = repaired.clone();
+                        // The reconstructed shard is 128 KiB; truncate it back
+                        // to the tile's stored length before putting it back.
+                        let mut repaired_tile = repaired.clone();
+                        repaired_tile.truncate(v2_entries[global_idx as usize].length as usize);
+                        tiles_raw[global_idx as usize] = repaired_tile;
                         repaired_tiles.push(global_idx);
                         warnings.push(format!("tile_{}_corrupt_repaired", global_idx));
                     }
@@ -1987,7 +2102,9 @@ fn verify_sealed_impl(
             tiles_raw.push(tile);
         }
     } else {
-        // Fallback: Scan self-addressed tiles
+        // Fallback: Scan self-addressed tiles. Packed archives step by each
+        // tile's size class; legacy archives step by the 128 KiB stride.
+        let packed = active_header.is_packed_slots() && !active_header.is_edge_profile();
         let mut scan_offset = FILE_HEADER_SIZE;
         let mut tile_idx = 0u32;
         let target_tile_count = if active_header.tile_count > 0 {
@@ -1996,10 +2113,25 @@ fn verify_sealed_impl(
             ((file_len - FILE_HEADER_SIZE) / HYPER_TILE_SIZE) as u32
         };
 
-        while tile_idx < target_tile_count && scan_offset + HYPER_TILE_SIZE <= file_len {
-            let tile = file_bytes[scan_offset..scan_offset + HYPER_TILE_SIZE].to_vec();
-            let hdr: &HyperTileHeader =
-                &bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile[..HYPER_TILE_HEADER_SIZE]);
+        while tile_idx < target_tile_count {
+            if scan_offset + HYPER_TILE_HEADER_SIZE > file_len {
+                break;
+            }
+            let hdr: &HyperTileHeader = &bytemuck::pod_read_unaligned::<HyperTileHeader>(
+                &file_bytes[scan_offset..scan_offset + HYPER_TILE_HEADER_SIZE],
+            );
+            let slot_len = if packed {
+                match s3a_core::packed_slot_size(hdr.payload_bytes as usize) {
+                    Some(l) => l,
+                    None => break,
+                }
+            } else {
+                HYPER_TILE_SIZE
+            };
+            if scan_offset + slot_len > file_len {
+                break;
+            }
+            let tile = file_bytes[scan_offset..scan_offset + slot_len].to_vec();
 
             let actual_idx = if hdr.tile_index != 0 || tile_idx == 0 {
                 hdr.tile_index
@@ -2017,12 +2149,12 @@ fn verify_sealed_impl(
                 tile_type: hdr.tile_type,
                 generation: hdr.generation,
                 offset: scan_offset as u64,
-                length: HYPER_TILE_SIZE as u64,
+                length: slot_len as u64,
                 xxh3_64: hash,
             });
 
             tiles_raw.push(tile);
-            scan_offset += HYPER_TILE_SIZE;
+            scan_offset += slot_len;
             tile_idx += 1;
         }
 
