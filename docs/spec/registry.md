@@ -432,19 +432,27 @@ defaults. Layout v1 (fixed 64-byte records, read-only) is documented in
 #### Tile 16: `ontology_concept` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `concept_id` | U64 (4) | 0 | 8 | false | Concept identifier |
-| 2 | `timestamp_sec` | U64 (4) | 8 | 8 | false | Definition timestamp |
-| 3 | `name_hash` | U64 (4) | 16 | 8 | false | Concept name hash |
-| 4 | `flags` | U64 (4) | 24 | 8 | false | Status flags |
+| 1 | `concept_id` | U64 (4) | 0 | 8 | false | 64-bit hash of canonical URI |
+| 2 | `parent_id` | U64 (4) | 8 | 8 | false | Subsumption parent concept hash (0 if root) |
+| 3 | `ontology_id` | U32 (3) | 16 | 4 | false | Enclosing ontology ID |
+| 4 | `concept_kind` | U16 (2) | 20 | 2 | false | 1=Class, 2=Verb, 3=ActivityType, etc. |
+| 5 | `xapi_profile_id` | U16 (2) | 22 | 2 | false | Associated xAPI profile ID |
+| 6 | `hilbert_coord` | U32 (3) | 24 | 4 | false | Topological interval index for SIMD subtree sifting |
+| 7 | `flags` | U32 (3) | 28 | 4 | false | Active, Tombstone, Provisional |
+| 8 | `reserved` | BYTES (13) | 32 | 32 | false | Padding to exact 64 bytes |
 
 #### Tile 17: `ontology_axiom` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |
 |:---:|:---|:---:|:---:|:---:|:---:|:---|
-| 1 | `axiom_id` | U64 (4) | 0 | 8 | false | Axiom identifier |
-| 2 | `subject_id` | U64 (4) | 8 | 8 | false | Subject concept ID |
-| 3 | `predicate_id` | U64 (4) | 16 | 8 | false | Predicate axiom ID |
-| 4 | `object_id` | U64 (4) | 24 | 8 | false | Object concept ID |
-| 5 | `flags` | U64 (4) | 32 | 8 | false | Status flags |
+| 1 | `subject_concept_id` | U64 (4) | 0 | 8 | false | Subject concept hash |
+| 2 | `object_concept_id` | U64 (4) | 8 | 8 | false | Object concept hash |
+| 3 | `predicate_id` | U32 (3) | 16 | 4 | false | Predicate type |
+| 4 | `axiom_type` | U16 (2) | 20 | 2 | false | 1=Hierarchical, 2=PedagogicalScaffold, 3=xAPIRule |
+| 5 | `weight_fp16` | U16 (2) | 22 | 2 | false | Relevance / confidence weight |
+| 6 | `target_tile_type` | U16 (2) | 24 | 2 | false | Target S3A tile type e.g. 10 (LRS), 12 (Paper) |
+| 7 | `required_addon_mask` | U16 (2) | 26 | 2 | false | Required addon bitmask |
+| 8 | `flags` | U32 (3) | 28 | 4 | false | Active, Tombstone, Provisional |
+| 9 | `reserved` | BYTES (13) | 32 | 32 | false | Padding to exact 64 bytes |
 
 #### Tile 18: `agent_registry` (Record Size: 64 B)
 | Field ID | Name | Field Type | Byte Offset | Byte Length | Null Allowed | Description |

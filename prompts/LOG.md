@@ -486,3 +486,29 @@ Notes:
   3. Known limitations: mtimes are NOT preserved; one tree per vault (re-packing overwrites the manifest, the previous tree's file records remain as orphans); the root directory's own mode is not stored; Windows ACLs out of scope; non-unix mode restore is best-effort (stored, restore is a no-op).
   4. No binary fixtures needed (tests build fixture trees at runtime in temp dirs); the GitHub snapshot route's binary-file limitation does not apply.
   5. No existing tests, fixtures, or frozen vectors were edited. The committed test file was not edited after the tests commit.
+
+
+---
+
+## 013-ontology-registry-conformance, 2026-11-27 13:54
+Status: done
+Branch: feat/013-ontology-registry-conformance (from origin/main c8bed6a)
+Commit: e8ceff4 (fail-first tests); HEAD (implementation + log)
+Changed: docs/spec/registry.md, crates/s3a-engine/src/lib.rs (`standard_schema_for_type` arms 16 and 17), crates/s3a-pack-ontology/tests/registry_conformance.rs, prompts/LOG.md
+Tests:
+  - fail-first on origin/main c8bed6a (`cargo test -p s3a-pack-ontology --test registry_conformance`): 3 passed, 2 failed (`registry_md_tile_16_fields_match_ontology_concept_record`, `registry_md_tile_17_fields_match_ontology_axiom_record`)
+  - `cargo test -p s3a-pack-ontology --test registry_conformance`: 5 passed, 0 failed
+  - `cargo test -p s3a-pack-ontology`: 9 passed, 0 failed (4 unit + 5 integration)
+  - `cargo test -p s3a-spec-vectors --test spec_fields_check`: 1 passed, 0 failed
+  - `cargo test -p s3a-spec-vectors`: all passed (32 unit + 3 algorithm_registry + 4 conformance_suite + 7 display_layouts + 3 open_from_bytes + 5 seal_and_edge_accessors + 1 spec_fields_check)
+  - `cargo test -p s3a-core`: 34 passed, 0 failed
+  - `cargo test -p s3a-engine`: all passed
+  - `cargo clippy -p s3a-pack-ontology -p s3a-engine --all-targets`: exit 0 (zero warnings in `s3a-pack-ontology` or touched lines)
+  - `rustfmt --check crates/s3a-pack-ontology/tests/registry_conformance.rs` & `rustfmt --check crates/s3a-engine/src/lib.rs`: exit 0
+  - mutation check:
+    1. Reverted Tile 16 and Tile 17 tables in `docs/spec/registry.md` -> `registry_md_tile_16_fields_match_ontology_concept_record` and `registry_md_tile_17_fields_match_ontology_axiom_record` both failed (3 passed, 2 failed).
+    2. Renamed `parent_id` to `timestamp_sec` in Tile 16 of `docs/spec/registry.md` -> `registry_md_tile_16_fields_match_ontology_concept_record` failed (4 passed, 1 failed).
+    3. Restored corrected tables -> 5 passed, 0 failed.
+Notes:
+  1. Confirmed `crates/s3a-core/Cargo.toml` does not depend on `s3a-pack-ontology`, and `crates/s3a-pack-ontology/src/records.rs` was not modified.
+  2. Existing tests touched: none. Committed fail-first test file (`e8ceff4`) was not edited after commit.
