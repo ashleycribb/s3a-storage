@@ -512,3 +512,33 @@ Tests:
 Notes:
   1. Confirmed `crates/s3a-core/Cargo.toml` does not depend on `s3a-pack-ontology`, and `crates/s3a-pack-ontology/src/records.rs` was not modified.
   2. Existing tests touched: none. Committed fail-first test file (`e8ceff4`) was not edited after commit.
+
+
+---
+
+## 015-vault-key-seal-signing, 2026-11-27 15:24
+Status: done
+Branch: feat/015-vault-key-seal-signing (from origin/main 3f8b970)
+Commit: a383abb (fail-first tests); HEAD (implementation + log)
+Changed: crates/s3a-core/src/lib.rs, crates/s3a-engine/Cargo.toml, crates/s3a-engine/src/sealed.rs, crates/s3a-cli/src/main.rs, crates/s3a-cli/src/first_run.rs, crates/s3a-cli/tests/vault_key_seal_signing.rs, Cargo.lock, prompts/LOG.md
+Tests:
+  - fail-first on origin/main 3f8b970 (`cargo test -p s3a-cli --test vault_key_seal_signing`): 0 passed, 8 failed (`unknown command 'keygen'` / `signed: null`)
+  - `cargo test -p s3a-cli --test vault_key_seal_signing`: 8 passed, 0 failed (Windows; Unix mode `0600`/`0700`/`0644` checks are `#[cfg(unix)]`-gated)
+  - `cargo test -p s3a-core`: 34 passed, 0 failed
+  - `cargo test -p s3a-engine`: all passed
+  - `cargo test -p s3a-cli --test stack_cli_tests --test tour_tests --test tour_usability_tests --test vault_key_seal_signing` (after `cargo build --workspace --bins`): all passed
+  - `cargo test -p s3a-spec-vectors`: all passed (32 unit + 3 algorithm_registry + 4 conformance_suite + 7 display_layouts + 3 open_from_bytes + 5 seal_and_edge_accessors + 1 spec_fields_check)
+  - `cargo clippy -p s3a-core -p s3a-engine -p s3a-cli --all-targets`: exit 0 (zero warnings in touched code)
+  - `rustfmt --check` on all 5 touched Rust files: exit 0
+  - mutation check:
+    1. Forced `signature_valid: true` in `inspect_seal_signature` and `verify_file` error JSON -> `test_tampered_sealed_file_fails_signature` failed (7 passed, 1 failed).
+    2. Signed `[0u8; 72]` instead of `canonical_seal_signing_bytes(&seal_hash, seal_generation, &prev_seal_hash)` -> `test_signed_seal_round_trips` and `test_signed_pack_extract_round_trips` failed (6 passed, 2 failed).
+    3. Dropped public-key pinning check in `seal_file` -> `test_seal_with_missing_or_wrong_key_fails_closed` failed (7 passed, 1 failed).
+    4. Permission check `0644` reject mutation not executed on Windows host (gated `#[cfg(unix)]`); verified by inspection in `load_signing_key_file` and `test_seal_with_missing_or_wrong_key_fails_closed`.
+    5. Restored all -> 8 passed, 0 failed.
+Notes:
+  1. Private-key default home: `~/.s3a/keys/<name>.key` (0600 on Unix, `~/.s3a/keys/` 0700 on Unix) and `<name>.pub` (0644 on Unix); `--out <path>` overrides path. Private key is never written into the vault or beside the archive.
+  2. `s3a-engine` gained `ed25519-dalek = { version = "2.1", default-features = false }` so signing (`seal_buffer_v2_signed` / `seal_archive_v2_signed`) and verification (`inspect_seal_signature` / `verify_sealed_bytes`) live on the single seal path in `s3a-engine/src/sealed.rs` rather than duplicating in CLI.
+  3. Pinned public key is stored in the vault under reserved document key `__s3a_vault_pubkey__` (`VAULT_PUBKEY_DOC_KEY`), embedded at `s3a init --key / --key-name` or pinned onto the scratch copy at first signed `s3a seal --key` on pre-015 vaults.
+  4. `SealOptionsV2` fields were left untouched (`seal_buffer_v2_signed` / `seal_archive_v2_signed` added alongside `seal_buffer_v2` / `seal_archive_v2`) so zero existing tests had to be edited.
+  5. Named follow-up: key rotation and revocation (out of scope for 015).

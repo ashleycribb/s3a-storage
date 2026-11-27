@@ -32,6 +32,7 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 # RUSTSEC-2023-0071: it concerns private-key operations, which this crate never performs.
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
 signature = "2.2"
+ed25519-dalek = { version = "2.1", default-features = false }
 getrandom = "0.2"
 reed-solomon-erasure = "6.0.0"
 miniz_oxide = { workspace = true }
