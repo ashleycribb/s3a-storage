@@ -1,0 +1,54 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: s3a-registry-server
+  labels:
+    cloud.googleapis.com/location: us-east1
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "4"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containerConcurrency: 40
+      timeoutSeconds: 60
+      serviceAccountName: s3a-registry-sa@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: us-east1-docker.pkg.dev/PROJECT_ID/s3a/s3a-registry-server:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: S3A_REGISTRY_ARCHIVE_PATH
+              value: /mnt/gcs/verified_registry.s3a
+            - name: S3A_LRS_URL
+              value: https://34.74.163.88.sslip.io
+            - name: S3A_REGISTRY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: s3a-registry-token
+                  key: latest
+            - name: S3A_LRS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: s3a-lrs-token
+                  key: latest
+          volumeMounts:
+            - name: gcs-registry-vol
+              mountPath: /mnt/gcs
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          readinessProbe:
+            httpGet:
+              path: /api/v1/registry/about
+              port: 8080
+      volumes:
+        - name: gcs-registry-vol
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            readOnly: false
+            volumeAttributes:
+              bucketName: S3A_REGISTRY_BUCKET
