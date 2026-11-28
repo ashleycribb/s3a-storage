@@ -34,7 +34,6 @@ def _find_s3a_cli() -> Optional[str]:
     candidates = [
         Path(__file__).resolve().parent.parent / "target" / "debug" / "s3a-cli.exe",
         Path(__file__).resolve().parent.parent / "target" / "release" / "s3a-cli.exe",
-        Path(__file__).resolve().parent.parent.parent / "s3a-015" / "target" / "debug" / "s3a-cli.exe",
     ]
     for cand in candidates:
         if cand.exists():
