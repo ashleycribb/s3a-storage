@@ -24,6 +24,40 @@
       "record_layout_version": 1,
       "human_confirmation_required": true,
       "ingest_file": "human_lrs.jsonl",
+      "telemetry_extensions": {
+        "dwell_time_ms": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/dwell_time_ms",
+          "type": "integer",
+          "minimum": 0,
+          "description": "Milliseconds spent inspecting dossier, held PDF block, or diff before confirming/overriding."
+        },
+        "evidence_inspected": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/evidence_inspected",
+          "type": "boolean",
+          "description": "Whether the researcher opened review.html, checked a quote_sha256 anchor, or inspected a held/unverified block."
+        },
+        "override_delta": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/override_delta",
+          "type": ["object", "null"],
+          "properties": {
+            "changed": { "type": "boolean" },
+            "ai_suggested": { "type": ["string", "null"] },
+            "human_selected": { "type": ["string", "null"] },
+            "held_block_rejected": { "type": "boolean" },
+            "needs_human_annotated": { "type": "boolean" }
+          }
+        },
+        "note_substantiveness": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/note_substantiveness",
+          "type": "object",
+          "properties": {
+            "char_count": { "type": "integer", "minimum": 0 },
+            "token_count": { "type": "integer", "minimum": 0 },
+            "citation_anchor_count": { "type": "integer", "minimum": 0 },
+            "is_empty_template": { "type": "boolean" }
+          }
+        }
+      },
       "ingest_fields": {
         "session_high": { "type": "integer", "minimum": 0 },
         "session_low": { "type": "integer", "minimum": 0 },
@@ -66,6 +100,19 @@
       "record_layout_version": 1,
       "human_confirmation_required": false,
       "ingest_file": "ai_traces.jsonl",
+      "telemetry_extensions": {
+        "dwell_time_ms": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/dwell_time_ms",
+          "type": "integer",
+          "minimum": 0,
+          "description": "Agent inference/processing latency in milliseconds paired with the human gate."
+        },
+        "evidence_inspected": {
+          "xapi_extension_id": "https://w3id.org/xapi/s3a/extensions/evidence_inspected",
+          "type": "boolean",
+          "description": "Whether the AI trace emitted verifiable quote_sha256 / held-block evidence anchors for human review."
+        }
+      },
       "ingest_fields": {
         "session_high": { "type": "integer", "minimum": 0 },
         "session_low": { "type": "integer", "minimum": 0 },
