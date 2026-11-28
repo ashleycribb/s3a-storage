@@ -155,6 +155,23 @@
       "record_layout_version": 1,
       "human_confirmation_required": false,
       "ingest_file": "academic_papers.jsonl",
+      "registry_metadata": {
+        "canonical_id": { "type": "string", "description": "Canonical DOI or arXiv identifier (e.g., arxiv:1703.05175 or 10.xxxx/...)" },
+        "version_tag": { "type": "string", "description": "Version tag (e.g., v1, v2, published)" },
+        "content_sha256": { "type": "string", "description": "SHA-256 of verified PDF or canonical metadata payload" },
+        "status": { "type": "string", "enum": ["verified", "superseded", "corrected", "retracted", "withdrawn"] },
+        "status_checked_at": { "type": "string", "format": "date-time" },
+        "superseded_by_id": { "type": ["string", "null"] },
+        "verified_by": {
+          "type": "object",
+          "properties": {
+            "existence_source": { "type": "string" },
+            "three_pass_verified": { "type": "boolean" },
+            "human_confirmed": { "type": "boolean" },
+            "human_lrs_ref": { "type": ["string", "null"] }
+          }
+        }
+      },
       "ingest_fields": {
         "paper_id": { "type": "integer", "minimum": 0 },
         "timestamp_sec": { "type": "integer", "minimum": 0 },
@@ -208,6 +225,14 @@
       "record_layout_version": 1,
       "human_confirmation_required": false,
       "ingest_file": "graph_edges.jsonl",
+      "predicates": {
+        "uses_resource": {
+          "predicate_id": 101,
+          "subject_type": "SrsWorkspaceRecord",
+          "object_type": "AcademicPaperRecord",
+          "description": "Links a researcher's .srs workspace to the exact (canonical_id, version_tag) used in their research."
+        }
+      },
       "ingest_fields": {
         "subject_hash": { "type": "integer", "minimum": 0 },
         "object_hash": { "type": "integer", "minimum": 0 },

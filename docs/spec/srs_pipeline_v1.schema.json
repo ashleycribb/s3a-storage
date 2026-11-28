@@ -78,6 +78,14 @@
         "required": ["paper_id", "discovery_uri", "lifecycle_stage", "human_verdict"],
         "properties": {
           "paper_id": { "type": "string" },
+          "canonical_id": { "type": "string" },
+          "version_tag": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["verified", "superseded", "corrected", "retracted", "withdrawn"]
+          },
+          "status_checked_at": { "type": ["string", "null"] },
+          "superseded_by_id": { "type": ["string", "null"] },
           "discovery_uri": { "type": "string" },
           "sha256": { "type": ["string", "null"] },
           "lifecycle_stage": { "type": "string", "enum": ["DISCOVERED", "CLASSIFIED", "EXTRACTED", "REPRODUCED"] },
