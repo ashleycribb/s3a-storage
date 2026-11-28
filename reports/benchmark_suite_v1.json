@@ -6,17 +6,16 @@
       "domain_category": "Baseline (Clean LaTeX + CI Tables)",
       "three_pass": {
         "extraction_path": "verified_pdf",
-        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\wiki_arxiv-1703.05175\\papers\\SRC-5858.md",
+        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\wiki_arxiv-1703.05175\\papers\\SRC-9159.md",
         "verified_blocks": 79,
         "held_blocks": 2,
         "total_blocks": 81,
         "verified_pct": 97.5
       },
       "paperlab_check": {
-        "skipped": false,
-        "returncode": 0,
-        "stdout": "checks: 19/20 passed; report written to C:\\Users\\Ashley\\Downloads\\paperlab\\cases\\arxiv-1703.05175\\existence_checks.json",
-        "stderr": ""
+        "skipped": true,
+        "passed": null,
+        "total": null
       },
       "paperlab_verify": {
         "returncode": 0,
@@ -27,11 +26,17 @@
         "pairing_label": "100.0% (79/79)"
       },
       "needs_a_human_count": 6,
+      "sandbox": {
+        "valid": true,
+        "errors": [],
+        "paper_id": "arXiv:1703.05175v2",
+        "dataset_pins_count": 20
+      },
       "s3a": {
         "ingest_ok": true,
         "verify_ok": true,
         "verify_json": {
-          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\arxiv-1703.05175.s3a",
+          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\arxiv-1703.05175.s3a",
           "is_sealed": false,
           "ok": true,
           "record_roots": {
@@ -51,17 +56,16 @@
       "domain_category": "EdTech / Knowledge Tracing",
       "three_pass": {
         "extraction_path": "verified_pdf",
-        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\wiki_arxiv-1506.05908\\papers\\SRC-2306.md",
+        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\wiki_arxiv-1506.05908\\papers\\SRC-9188.md",
         "verified_blocks": 3,
         "held_blocks": 0,
         "total_blocks": 3,
         "verified_pct": 100.0
       },
       "paperlab_check": {
-        "skipped": false,
-        "returncode": 0,
-        "stdout": "checks: 5/5 passed; report written to C:\\Users\\Ashley\\Downloads\\paperlab\\cases\\arxiv-1506.05908\\existence_checks.json",
-        "stderr": ""
+        "skipped": true,
+        "passed": null,
+        "total": null
       },
       "paperlab_verify": {
         "returncode": 0,
@@ -72,11 +76,17 @@
         "pairing_label": "N/A (no % table)"
       },
       "needs_a_human_count": 3,
+      "sandbox": {
+        "valid": true,
+        "errors": [],
+        "paper_id": "arXiv:1506.05908",
+        "dataset_pins_count": 2
+      },
       "s3a": {
         "ingest_ok": true,
         "verify_ok": true,
         "verify_json": {
-          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\arxiv-1506.05908.s3a",
+          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\arxiv-1506.05908.s3a",
           "is_sealed": false,
           "ok": true,
           "record_roots": {
@@ -96,17 +106,16 @@
       "domain_category": "PDF-Only Two-Column Layout",
       "three_pass": {
         "extraction_path": "verified_pdf",
-        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\wiki_arxiv-1512.03385\\papers\\SRC-7564.md",
+        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\wiki_arxiv-1512.03385\\papers\\SRC-7145.md",
         "verified_blocks": 4,
         "held_blocks": 0,
         "total_blocks": 4,
         "verified_pct": 100.0
       },
       "paperlab_check": {
-        "skipped": false,
-        "returncode": 0,
-        "stdout": "checks: 5/5 passed; report written to C:\\Users\\Ashley\\Downloads\\paperlab\\cases\\arxiv-1512.03385\\existence_checks.json",
-        "stderr": ""
+        "skipped": true,
+        "passed": null,
+        "total": null
       },
       "paperlab_verify": {
         "returncode": 0,
@@ -117,11 +126,17 @@
         "pairing_label": "100.0% (4/4)"
       },
       "needs_a_human_count": 3,
+      "sandbox": {
+        "valid": true,
+        "errors": [],
+        "paper_id": "arXiv:1512.03385",
+        "dataset_pins_count": 1
+      },
       "s3a": {
         "ingest_ok": true,
         "verify_ok": true,
         "verify_json": {
-          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\arxiv-1512.03385.s3a",
+          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\arxiv-1512.03385.s3a",
           "is_sealed": false,
           "ok": true,
           "record_roots": {
@@ -141,17 +156,16 @@
       "domain_category": "Dense Math & Inline Figures",
       "three_pass": {
         "extraction_path": "verified_pdf",
-        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\wiki_arxiv-1312.6114\\papers\\SRC-5020.md",
+        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\wiki_arxiv-1312.6114\\papers\\SRC-9004.md",
         "verified_blocks": 2,
         "held_blocks": 2,
         "total_blocks": 4,
         "verified_pct": 50.0
       },
       "paperlab_check": {
-        "skipped": false,
-        "returncode": 0,
-        "stdout": "checks: 4/4 passed; report written to C:\\Users\\Ashley\\Downloads\\paperlab\\cases\\arxiv-1312.6114\\existence_checks.json",
-        "stderr": ""
+        "skipped": true,
+        "passed": null,
+        "total": null
       },
       "paperlab_verify": {
         "returncode": 0,
@@ -162,11 +176,17 @@
         "pairing_label": "N/A (no % table)"
       },
       "needs_a_human_count": 3,
+      "sandbox": {
+        "valid": true,
+        "errors": [],
+        "paper_id": "arXiv:1312.6114",
+        "dataset_pins_count": 1
+      },
       "s3a": {
         "ingest_ok": true,
         "verify_ok": true,
         "verify_json": {
-          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\arxiv-1312.6114.s3a",
+          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\arxiv-1312.6114.s3a",
           "is_sealed": false,
           "ok": true,
           "record_roots": {
@@ -186,17 +206,16 @@
       "domain_category": "Incomplete Docs / Missing Hyperparams",
       "three_pass": {
         "extraction_path": "verified_pdf",
-        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\wiki_arxiv-1406.2661\\papers\\SRC-9622.md",
+        "dossier_path": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\wiki_arxiv-1406.2661\\papers\\SRC-1040.md",
         "verified_blocks": 2,
         "held_blocks": 0,
         "total_blocks": 2,
         "verified_pct": 100.0
       },
       "paperlab_check": {
-        "skipped": false,
-        "returncode": 0,
-        "stdout": "checks: 4/4 passed; report written to C:\\Users\\Ashley\\Downloads\\paperlab\\cases\\arxiv-1406.2661\\existence_checks.json",
-        "stderr": ""
+        "skipped": true,
+        "passed": null,
+        "total": null
       },
       "paperlab_verify": {
         "returncode": 0,
@@ -207,11 +226,17 @@
         "pairing_label": "N/A (no % table)"
       },
       "needs_a_human_count": 5,
+      "sandbox": {
+        "valid": true,
+        "errors": [],
+        "paper_id": "arXiv:1406.2661",
+        "dataset_pins_count": 1
+      },
       "s3a": {
         "ingest_ok": true,
         "verify_ok": true,
         "verify_json": {
-          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_ms65bx8y\\arxiv-1406.2661.s3a",
+          "file": "C:\\Users\\Ashley\\AppData\\Local\\Temp\\s3a_bench_3lp6h20s\\arxiv-1406.2661.s3a",
           "is_sealed": false,
           "ok": true,
           "record_roots": {

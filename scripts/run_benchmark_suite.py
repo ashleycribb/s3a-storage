@@ -32,6 +32,7 @@ for p in (str(PAPERLAB_REPO), str(THREE_PASS_REPO)):
         sys.path.insert(0, p)
 
 from paperlab.rules import guard_output  # noqa: E402
+from paperlab.sandbox import validate_sandbox_bundle  # noqa: E402
 from scripts.models import PaperRecord, RecordProvenance  # noqa: E402
 from scripts.wiki_manager import build_paper_page_from_record, ensure_wiki_scaffold  # noqa: E402
 
@@ -220,18 +221,19 @@ def render_markdown_table(results: List[Dict[str, Any]]) -> str:
         "",
         "Strict adherence to PaperLab rules: open-access papers only, MIT/Apache/BSD reference code, no committed restricted PDFs, and zero AI verdict claims.",
         "",
-        "| Paper ID | Domain Category | 3Pass Path | Verified Block % (Held Count) | PaperLab Presence % | Table-Pairing % | `needs-a-human` Flags | S3A Archive (`s3a-cli verify --json`) |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Paper ID | Domain Category | 3Pass Path | Verified Block % (Held Count) | PaperLab Presence % | Table-Pairing % | `needs-a-human` Flags | Sandbox Validated | S3A Archive (`s3a-cli verify --json`) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for row in results:
         tp = row["three_pass"]
         pl = row["paperlab_verify"]
         s3a_status = "PASS" if row["s3a"]["verify_ok"] else "FAIL"
+        sbx_status = "PASS" if row.get("sandbox", {}).get("valid") else "FAIL"
         lines.append(
             f"| `{row['case_id']}` | {row['domain_category']} | `{tp['extraction_path']}` | "
             f"{tp['verified_pct']:.1f}% ({tp['held_blocks']} held) | "
             f"{pl['presence_pct']:.1f}% ({pl['presence_passed']}/{pl['presence_total']}) | "
-            f"{pl['pairing_label']} | {row['needs_a_human_count']} | `{s3a_status}` |"
+            f"{pl['pairing_label']} | {row['needs_a_human_count']} | `{sbx_status}` | `{s3a_status}` |"
         )
     lines.append("")
     return "\n".join(lines)
@@ -263,6 +265,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             check_res = _run_paperlab_check(case_dir, skip_network=args.skip_network_check)
             verify_res = _run_paperlab_verify(case_dir)
             s3a_res = _run_ingest_and_verify_s3a(case_dir, tmp / f"{case_id}.s3a", s3a_cli)
+            sbx_res = validate_sandbox_bundle(case_dir)
             nah = json.loads((case_dir / "needs_a_human.json").read_text(encoding="utf-8"))
             results.append(
                 {
@@ -272,6 +275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "paperlab_check": check_res,
                     "paperlab_verify": verify_res,
                     "needs_a_human_count": len(nah),
+                    "sandbox": sbx_res,
                     "s3a": s3a_res,
                 }
             )
