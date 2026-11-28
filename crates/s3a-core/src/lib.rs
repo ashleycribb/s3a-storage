@@ -1015,6 +1015,31 @@ impl Default for SealedIndexHeaderV2 {
     }
 }
 
+/// Magic bytes for the v2 Ed25519 seal signature block.
+pub const SEALED_SIG_MAGIC_V2: [u8; 8] = *b"S3ASIGV2";
+
+/// Reserved document key storing the vault's pinned Ed25519 public key (32 bytes).
+pub const VAULT_PUBKEY_DOC_KEY: &str = "__s3a_vault_pubkey__";
+
+/// Fixed 112-byte Ed25519 signature block in the v2 sealed footer (8-byte aligned).
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+pub struct SealedSignatureV2 {
+    pub magic: [u8; 8],
+    pub pubkey: [u8; 32],
+    pub signature: [u8; 64],
+    pub sig_crc32: u32,
+    pub _pad: u32,
+}
+
+pub const SEALED_SIGNATURE_SIZE_V2: usize = core::mem::size_of::<SealedSignatureV2>();
+
+/// Computes CRC32C over `magic || pubkey || signature` (first 104 bytes).
+pub fn compute_signature_crc32_v2(sig: &SealedSignatureV2) -> u32 {
+    let bytes = bytemuck::bytes_of(sig);
+    crc32c::crc32c(&bytes[..104])
+}
+
 /// Individual tile entry in the v2 sealed footer directory (80 bytes, 8-byte aligned).
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq, Eq, Default)]

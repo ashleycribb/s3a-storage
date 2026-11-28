@@ -366,6 +366,9 @@ fn main() {
         "init" => {
             s3a_cli::first_run::handle_init(&args, verbose);
         }
+        "keygen" => {
+            s3a_cli::first_run::handle_keygen(&args, verbose);
+        }
         "put" => {
             s3a_cli::first_run::handle_put(&args, verbose);
         }
@@ -701,12 +704,19 @@ fn main() {
             let embed_spec = args.iter().any(|a| a == "--embed-spec");
             let record_roots = args.iter().any(|a| a == "--record-roots");
             let about = args.iter().any(|a| a == "--about");
+            let no_sign = args.iter().any(|a| a == "--no-sign");
             let mut title = None;
             let mut creator = None;
+            let mut key_path: Option<String> = None;
             let mut positional: Vec<&str> = Vec::new();
             let mut i = 2;
             while i < args.len() {
-                if args[i] == "--parity" || args[i] == "--embed-spec" {
+                if args[i] == "--parity"
+                    || args[i] == "--embed-spec"
+                    || args[i] == "--record-roots"
+                    || args[i] == "--about"
+                    || args[i] == "--no-sign"
+                {
                     i += 1;
                 } else if args[i] == "--title" && i + 1 < args.len() {
                     title = Some(args[i + 1].clone());
@@ -720,6 +730,12 @@ fn main() {
                 } else if args[i].starts_with("--creator=") {
                     creator = Some(args[i]["--creator=".len()..].to_string());
                     i += 1;
+                } else if args[i] == "--key" && i + 1 < args.len() {
+                    key_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else if let Some(v) = args[i].strip_prefix("--key=") {
+                    key_path = Some(v.to_string());
+                    i += 1;
                 } else if !args[i].starts_with("--") {
                     positional.push(args[i].as_str());
                     i += 1;
@@ -728,7 +744,7 @@ fn main() {
                 }
             }
             if positional.len() < 2 {
-                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--about] [--title <title>] [--creator <creator>]");
+                println!("Usage: s3a-cli seal <in_file> <out_file> [--parity] [--embed-spec] [--record-roots] [--about] [--title <title>] [--creator <creator>] [--key <path>] [--no-sign]");
                 exit_failure();
             }
             seal_file(
@@ -740,6 +756,8 @@ fn main() {
                 creator,
                 record_roots,
                 about,
+                key_path.as_deref(),
+                no_sign,
             );
         }
         "repair" => {
@@ -2638,6 +2656,34 @@ fn escape_cli_json(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
+fn load_signing_key_file(path: &str) -> Result<([u8; 32], [u8; 32]), String> {
+    let p = Path::new(path);
+    let meta = std::fs::metadata(p).map_err(|e| format!("cannot read key '{}': {}", path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "private key '{}' has insecure permissions {:04o} (must be 0600 or stricter)",
+                path, mode
+            ));
+        }
+    }
+    let _ = meta;
+    let raw =
+        std::fs::read_to_string(p).map_err(|e| format!("cannot read key '{}': {}", path, e))?;
+    let bytes =
+        hex::decode(raw.trim()).map_err(|e| format!("invalid hex in key '{}': {}", path, e))?;
+    let sk_bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| format!("private key '{}' must be 32 bytes (64 hex chars)", path))?;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&sk_bytes);
+    let vk_bytes = sk.verifying_key().to_bytes();
+    Ok((sk_bytes, vk_bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn seal_file(
     in_path: &str,
     out_path: &str,
@@ -2647,7 +2693,52 @@ fn seal_file(
     creator: Option<String>,
     record_roots: bool,
     about: bool,
+    key_path: Option<&str>,
+    no_sign: bool,
 ) {
+    let pinned_pubkey = match s3a_engine::get_vault_pinned_pubkey(Path::new(in_path)) {
+        Ok(pk) => pk,
+        Err(e) => {
+            eprintln!("Error reading vault key metadata from '{}': {}", in_path, e);
+            exit_failure();
+        }
+    };
+
+    let (signing_key, pin_on_scratch): (Option<[u8; 32]>, Option<[u8; 32]>) = if no_sign {
+        (None, None)
+    } else if let Some(kp) = key_path {
+        let (sk_bytes, vk_bytes) = match load_signing_key_file(kp) {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("Error sealing archive: {}", e);
+                exit_failure();
+            }
+        };
+        if let Some(pinned) = pinned_pubkey {
+            if vk_bytes != pinned {
+                eprintln!(
+                    "Error sealing archive: key '{}' (pubkey {}) does not match pinned vault key {}",
+                    kp,
+                    hex::encode(vk_bytes),
+                    hex::encode(pinned)
+                );
+                exit_failure();
+            }
+            (Some(sk_bytes), None)
+        } else {
+            (Some(sk_bytes), Some(vk_bytes))
+        }
+    } else if let Some(pinned) = pinned_pubkey {
+        eprintln!(
+            "Error sealing archive: vault '{}' has pinned signer key {}; pass --key <path> to sign or --no-sign to seal unsigned",
+            in_path,
+            hex::encode(pinned)
+        );
+        exit_failure();
+    } else {
+        (None, None)
+    };
+
     // Never write the input: add the schema tile (if missing) to a scratch copy
     // next to the output and seal from that. Output bytes are the same as before.
     let scratch = format!("{}.seal-input.tmp.s3a", out_path);
@@ -2656,7 +2747,14 @@ fn seal_file(
             "Error sealing archive: cannot read input '{}': {}",
             in_path, e
         );
-        return;
+        exit_failure();
+    }
+    if let Some(pk) = pin_on_scratch {
+        if let Err(e) = s3a_engine::set_vault_pinned_pubkey(Path::new(&scratch), &pk) {
+            let _ = std::fs::remove_file(&scratch);
+            eprintln!("Error pinning signer key on scratch archive: {}", e);
+            exit_failure();
+        }
     }
     let _ = s3a_engine::append_schema_tile_if_missing(&scratch);
     let seal_in = scratch.as_str();
@@ -2673,7 +2771,7 @@ fn seal_file(
         record_roots,
         about,
     };
-    let res = s3a_engine::seal_archive_v2(seal_in, out_path, &options);
+    let res = s3a_engine::seal_archive_v2_signed(seal_in, out_path, &options, signing_key.as_ref());
     let _ = std::fs::remove_file(&scratch);
     match res {
         Ok(_) => {
@@ -2867,6 +2965,9 @@ fn verify_file(
                             "anchors": anchor_results,
                             "anchors_ok": !anchors_failed,
                             "record_roots": record_roots_json,
+                            "signed": report.signed,
+                            "signature_valid": report.signature_valid,
+                            "signer": report.signer.map(hex::encode),
                         })
                     );
                 } else {
@@ -2927,6 +3028,9 @@ fn verify_file(
                         "repaired_tiles": report.repaired_tiles,
                         "warnings": report.warnings,
                         "record_roots": record_roots_json,
+                        "signed": report.signed,
+                        "signature_valid": report.signature_valid,
+                        "signer": report.signer.map(hex::encode),
                     })
                 );
             } else {
@@ -2960,10 +3064,24 @@ fn verify_file(
         }
         Err(e) => {
             if json_mode {
+                let sig_info = std::fs::read(path)
+                    .ok()
+                    .and_then(|b| s3a_engine::inspect_seal_signature(&b));
+                let (signed, signer_val) = match sig_info {
+                    Some((pk, _)) => (true, serde_json::Value::String(hex::encode(pk))),
+                    None => (false, serde_json::Value::Null),
+                };
                 println!(
-                    r#"{{"ok":false,"file":"{}","status":"failed","error":"{}"}}"#,
-                    escape_cli_json(path),
-                    escape_cli_json(&e.to_string())
+                    "{}",
+                    serde_json::json!({
+                        "ok": false,
+                        "file": path,
+                        "status": "failed",
+                        "error": e.to_string(),
+                        "signed": signed,
+                        "signature_valid": false,
+                        "signer": signer_val,
+                    })
                 );
             } else {
                 eprintln!("Verification FAILED in {}: {}", path, e);

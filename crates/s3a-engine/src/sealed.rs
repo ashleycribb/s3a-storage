@@ -5,16 +5,19 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use bytemuck::{bytes_of, cast_slice};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use sha2::{Digest, Sha256};
 
 use s3a_core::{
-    ConsentRecord, FileHeader, HyperTileHeader, MarkRecord, S3AError, SealedDirectoryEntry,
-    SealedEndCap, SealedEndCapV2, SealedIndexHeaderV2, SealedTileIndexEntry, TileType,
-    FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET, FILE_HEADER_SLOT_B_OFFSET, FILE_HEADER_SLOT_SIZE,
-    HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE, MARK_CONSENT_WITHDRAWN, SEALED_ANCHORS_MAGIC,
-    SEALED_ENDCAP_MAGIC_V1, SEALED_ENDCAP_MAGIC_V2, SEALED_ENDCAP_SIZE, SEALED_FLAG_PARITY_ENABLED,
-    SEALED_INDEX_ENTRY_SIZE_V2, SEALED_INDEX_HEADER_SIZE_V2, SEALED_INDEX_MAGIC_V2,
+    compute_signature_crc32_v2, ConsentRecord, FileHeader, HyperTileHeader, MarkRecord, S3AError,
+    SealedDirectoryEntry, SealedEndCap, SealedEndCapV2, SealedIndexHeaderV2, SealedSignatureV2,
+    SealedTileIndexEntry, TileType, FILE_HEADER_SIZE, FILE_HEADER_SLOT_A_OFFSET,
+    FILE_HEADER_SLOT_B_OFFSET, FILE_HEADER_SLOT_SIZE, HYPER_TILE_HEADER_SIZE, HYPER_TILE_SIZE,
+    MARK_CONSENT_WITHDRAWN, SEALED_ANCHORS_MAGIC, SEALED_ENDCAP_MAGIC_V1, SEALED_ENDCAP_MAGIC_V2,
+    SEALED_ENDCAP_SIZE, SEALED_FLAG_PARITY_ENABLED, SEALED_INDEX_ENTRY_SIZE_V2,
+    SEALED_INDEX_HEADER_SIZE_V2, SEALED_INDEX_MAGIC_V2, SEALED_SIGNATURE_SIZE_V2,
+    SEALED_SIG_MAGIC_V2, VAULT_PUBKEY_DOC_KEY,
 };
 
 use crate::erasure::{invert_matrix, ReedSolomonCodec, GF};
@@ -244,6 +247,9 @@ pub struct SealedVerifyReport {
     pub seal_generation: u64,
     pub parity_enabled: bool,
     pub v2_entries: Vec<SealedTileIndexEntry>,
+    pub signed: bool,
+    pub signature_valid: bool,
+    pub signer: Option<[u8; 32]>,
 }
 
 /// Configuration options for sealing an archive in v2 format.
@@ -974,7 +980,109 @@ fn seal_tile_type(tile_bytes: &[u8]) -> u32 {
     bytemuck::pod_read_unaligned::<HyperTileHeader>(&tile_bytes[..HYPER_TILE_HEADER_SIZE]).tile_type
 }
 
+/// Canonical 72-byte payload signed at seal time:
+/// `seal_hash (32 B) || seal_generation (8 B LE) || prev_seal_hash (32 B)`.
+pub fn canonical_seal_signing_bytes(
+    seal_hash: &[u8; 32],
+    seal_generation: u64,
+    prev_seal_hash: &[u8; 32],
+) -> [u8; 72] {
+    let mut msg = [0u8; 72];
+    msg[..32].copy_from_slice(seal_hash);
+    msg[32..40].copy_from_slice(&seal_generation.to_le_bytes());
+    msg[40..72].copy_from_slice(prev_seal_hash);
+    msg
+}
+
+/// Inspects a sealed buffer's footer for a v2 Ed25519 signature block.
+/// Returns `Some((signer_pubkey, signature_valid))` if a signature block is present.
+pub fn inspect_seal_signature(file_bytes: &[u8]) -> Option<([u8; 32], bool)> {
+    let file_len = file_bytes.len();
+    if file_len < FILE_HEADER_SIZE + SEALED_ENDCAP_SIZE {
+        return None;
+    }
+    let candidate_bytes = &file_bytes[file_len - SEALED_ENDCAP_SIZE..];
+    if candidate_bytes[0..8] != SEALED_ENDCAP_MAGIC_V2 {
+        return None;
+    }
+    let endcap: SealedEndCapV2 = bytemuck::pod_read_unaligned(candidate_bytes);
+    if endcap.endcap_crc32 != compute_endcap_crc32_v2(&endcap) {
+        return None;
+    }
+    let sig_offset = (endcap.index_offset.checked_add(endcap.index_len)?) as usize;
+    let endcap_offset = file_len - SEALED_ENDCAP_SIZE;
+    if sig_offset + SEALED_SIGNATURE_SIZE_V2 > endcap_offset {
+        return None;
+    }
+    let sig_slice = &file_bytes[sig_offset..sig_offset + SEALED_SIGNATURE_SIZE_V2];
+    if sig_slice[0..8] != SEALED_SIG_MAGIC_V2 {
+        return None;
+    }
+    let sig_block: SealedSignatureV2 = bytemuck::pod_read_unaligned(sig_slice);
+    let crc_ok = sig_block.sig_crc32 == compute_signature_crc32_v2(&sig_block);
+    if !crc_ok {
+        return Some((sig_block.pubkey, false));
+    }
+    let idx_start = endcap.index_offset as usize;
+    let idx_end = idx_start + endcap.index_len as usize;
+    if idx_end > sig_offset || endcap.index_len < SEALED_INDEX_HEADER_SIZE_V2 as u64 {
+        return Some((sig_block.pubkey, false));
+    }
+    let index_hdr: SealedIndexHeaderV2 = bytemuck::pod_read_unaligned(
+        &file_bytes[idx_start..idx_start + SEALED_INDEX_HEADER_SIZE_V2],
+    );
+    if index_hdr.magic != SEALED_INDEX_MAGIC_V2 {
+        return Some((sig_block.pubkey, false));
+    }
+    let msg = canonical_seal_signing_bytes(
+        &index_hdr.seal_hash,
+        index_hdr.seal_generation,
+        &index_hdr.prev_seal_hash,
+    );
+    let valid = VerifyingKey::from_bytes(&sig_block.pubkey)
+        .ok()
+        .is_some_and(|vk| {
+            let sig = Signature::from_bytes(&sig_block.signature);
+            vk.verify(&msg, &sig).is_ok()
+        });
+    Some((sig_block.pubkey, valid))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_vault_pinned_pubkey(path: &Path) -> io::Result<Option<[u8; 32]>> {
+    let bytes_opt = crate::document::read_document_record(path, VAULT_PUBKEY_DOC_KEY)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    match bytes_opt {
+        None => Ok(None),
+        Some(b) => {
+            if b.len() != 32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "pinned vault public key must be 32 bytes",
+                ));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&b);
+            Ok(Some(arr))
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_vault_pinned_pubkey(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
+    crate::document::write_document_record(path, VAULT_PUBKEY_DOC_KEY, pubkey)
+        .map_err(io::Error::other)
+}
+
 pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Vec<u8>> {
+    seal_buffer_v2_signed(in_bytes, options, None)
+}
+
+pub fn seal_buffer_v2_signed(
+    in_bytes: &[u8],
+    options: &SealOptionsV2,
+    signing_key: Option<&[u8; 32]>,
+) -> io::Result<Vec<u8>> {
     let k = options.k;
     let m = options.m;
     if options.enable_parity && (k == 0 || m == 0) {
@@ -1508,6 +1616,25 @@ pub fn seal_buffer_v2(in_bytes: &[u8], options: &SealOptionsV2) -> io::Result<Ve
 
     out_data.extend_from_slice(&parity_bytes);
     out_data.extend_from_slice(&index_bytes);
+    if let Some(sk_bytes) = signing_key {
+        let sk = SigningKey::from_bytes(sk_bytes);
+        let vk_bytes = sk.verifying_key().to_bytes();
+        let msg = canonical_seal_signing_bytes(
+            &seal_hash,
+            options.seal_generation,
+            &options.prev_seal_hash,
+        );
+        let sig = sk.sign(&msg);
+        let mut sig_block = SealedSignatureV2 {
+            magic: SEALED_SIG_MAGIC_V2,
+            pubkey: vk_bytes,
+            signature: sig.to_bytes(),
+            sig_crc32: 0,
+            _pad: 0,
+        };
+        sig_block.sig_crc32 = compute_signature_crc32_v2(&sig_block);
+        out_data.extend_from_slice(bytes_of(&sig_block));
+    }
     out_data.extend_from_slice(bytes_of(&endcap));
 
     Ok(out_data)
@@ -1519,8 +1646,18 @@ pub fn seal_archive_v2<P: AsRef<Path>, Q: AsRef<Path>>(
     out_path: Q,
     options: &SealOptionsV2,
 ) -> io::Result<()> {
+    seal_archive_v2_signed(in_path, out_path, options, None)
+}
+
+/// Seals an S3A archive file according to v2 format with an optional Ed25519 signing key.
+pub fn seal_archive_v2_signed<P: AsRef<Path>, Q: AsRef<Path>>(
+    in_path: P,
+    out_path: Q,
+    options: &SealOptionsV2,
+    signing_key: Option<&[u8; 32]>,
+) -> io::Result<()> {
     let in_bytes = std::fs::read(in_path.as_ref())?;
-    let out_data = seal_buffer_v2(&in_bytes, options)?;
+    let out_data = seal_buffer_v2_signed(&in_bytes, options, signing_key)?;
 
     let mut out_file = OpenOptions::new()
         .write(true)
@@ -2007,6 +2144,11 @@ fn verify_sealed_impl(
                     out_file.sync_all().map_err(|_| S3AError::CorruptedHeader)?;
                 }
 
+                let (signed, signature_valid, signer) = match inspect_seal_signature(file_bytes) {
+                    Some((pk, valid)) => (true, valid, Some(pk)),
+                    None => (false, false, None),
+                };
+
                 return Ok(SealedVerifyReport {
                     is_sealed: true,
                     tile_count,
@@ -2025,6 +2167,9 @@ fn verify_sealed_impl(
                     seal_generation: index_hdr.seal_generation,
                     parity_enabled,
                     v2_entries,
+                    signed,
+                    signature_valid,
+                    signer,
                 });
             }
         }
@@ -2401,6 +2546,9 @@ fn verify_sealed_impl(
         seal_generation: 1,
         parity_enabled: is_sealed,
         v2_entries: Vec::new(),
+        signed: false,
+        signature_valid: false,
+        signer: None,
     })
 }
 

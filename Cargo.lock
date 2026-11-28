@@ -2141,6 +2141,7 @@ dependencies = [
  "cms",
  "crc32c",
  "der",
+ "ed25519-dalek",
  "fs2",
  "getrandom 0.2.17",
  "hex",

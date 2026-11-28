@@ -15,6 +15,7 @@ use s3a_engine::{execute_query, MmapReader, QueryResult, TelemetryRecord, TileWr
 /// Canonical list of recognized CLI commands for 'did you mean' suggestions.
 pub const KNOWN_COMMANDS: &[&str] = &[
     "init",
+    "keygen",
     "put",
     "get",
     "open",
@@ -415,8 +416,291 @@ pub fn write_single_slot_document_record(
 // Command Handlers
 // =========================================================================
 
+pub fn handle_keygen(args: &[String], verbose: bool) {
+    let mut name = "default".to_string();
+    let mut out_opt: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--name" && i + 1 < args.len() {
+            name = args[i + 1].clone();
+            i += 2;
+        } else if let Some(v) = args[i].strip_prefix("--name=") {
+            name = v.to_string();
+            i += 1;
+        } else if args[i] == "--out" && i + 1 < args.len() {
+            out_opt = Some(args[i + 1].clone());
+            i += 2;
+        } else if let Some(v) = args[i].strip_prefix("--out=") {
+            out_opt = Some(v.to_string());
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    let (key_path, pub_path) = if let Some(out) = out_opt {
+        let p = PathBuf::from(&out);
+        if out.ends_with('/') || out.ends_with('\\') || p.is_dir() {
+            (
+                p.join(format!("{}.key", name)),
+                p.join(format!("{}.pub", name)),
+            )
+        } else if out.ends_with(".key") {
+            (p.clone(), p.with_extension("pub"))
+        } else {
+            (
+                PathBuf::from(format!("{}.key", out)),
+                PathBuf::from(format!("{}.pub", out)),
+            )
+        }
+    } else {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .unwrap_or_else(|| {
+                print_cli_error(
+                    "cannot determine home directory for ~/.s3a/keys/",
+                    Some("pass --out <path> or set HOME"),
+                    verbose,
+                    None,
+                )
+            });
+        let keys_dir = PathBuf::from(home).join(".s3a").join("keys");
+        (
+            keys_dir.join(format!("{}.key", name)),
+            keys_dir.join(format!("{}.pub", name)),
+        )
+    };
+
+    if let Some(parent) = key_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true).mode(0o700);
+                if let Err(e) = builder.create(parent) {
+                    print_cli_error(
+                        &format!(
+                            "failed to create key directory '{}': {}",
+                            parent.display(),
+                            e
+                        ),
+                        None,
+                        verbose,
+                        Some(&e.to_string()),
+                    );
+                }
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
+            #[cfg(not(unix))]
+            if let Err(e) = fs::create_dir_all(parent) {
+                print_cli_error(
+                    &format!(
+                        "failed to create key directory '{}': {}",
+                        parent.display(),
+                        e
+                    ),
+                    None,
+                    verbose,
+                    Some(&e.to_string()),
+                );
+            }
+        }
+    }
+
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+    let priv_hex = hex::encode(signing_key.to_bytes());
+    let pub_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = match fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&key_path)
+        {
+            Ok(f) => f,
+            Err(e) => print_cli_error(
+                &format!(
+                    "failed to write private key '{}': {}",
+                    key_path.display(),
+                    e
+                ),
+                None,
+                verbose,
+                Some(&e.to_string()),
+            ),
+        };
+        if let Err(e) = writeln!(f, "{}", priv_hex) {
+            print_cli_error(
+                &format!(
+                    "failed to write private key '{}': {}",
+                    key_path.display(),
+                    e
+                ),
+                None,
+                verbose,
+                Some(&e.to_string()),
+            );
+        }
+        let _ = fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    if let Err(e) = fs::write(&key_path, format!("{}\n", priv_hex)) {
+        print_cli_error(
+            &format!(
+                "failed to write private key '{}': {}",
+                key_path.display(),
+                e
+            ),
+            None,
+            verbose,
+            Some(&e.to_string()),
+        );
+    }
+
+    if let Err(e) = fs::write(&pub_path, format!("{}\n", pub_hex)) {
+        print_cli_error(
+            &format!("failed to write public key '{}': {}", pub_path.display(), e),
+            None,
+            verbose,
+            Some(&e.to_string()),
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&pub_path, fs::Permissions::from_mode(0o644));
+    }
+
+    println!("Generated Ed25519 vault keypair:");
+    println!("  Private key: {}", key_path.display());
+    println!("  Public key:  {}", pub_path.display());
+    println!("  Pubkey hex:  {}", pub_hex);
+}
+
+fn resolve_init_pubkey(
+    key_arg: Option<&str>,
+    key_name_arg: Option<&str>,
+    verbose: bool,
+) -> Option<[u8; 32]> {
+    if let Some(k) = key_arg {
+        let trimmed = k.trim();
+        let hex_str = if Path::new(trimmed).is_file() {
+            fs::read_to_string(trimmed).unwrap_or_else(|e| {
+                print_cli_error(
+                    &format!("failed to read public key file '{}': {}", trimmed, e),
+                    None,
+                    verbose,
+                    Some(&e.to_string()),
+                )
+            })
+        } else {
+            trimmed.to_string()
+        };
+        let bytes = hex::decode(hex_str.trim()).unwrap_or_else(|e| {
+            print_cli_error(
+                &format!("invalid --key public key hex: {}", e),
+                Some("pass a 64-character hex Ed25519 public key or path to a .pub file"),
+                verbose,
+                None,
+            )
+        });
+        let arr: [u8; 32] = bytes.try_into().unwrap_or_else(|_| {
+            print_cli_error(
+                "invalid --key public key length (expected 32 bytes / 64 hex chars)",
+                None,
+                verbose,
+                None,
+            )
+        });
+        return Some(arr);
+    }
+    if let Some(name) = key_name_arg {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .unwrap_or_else(|| {
+                print_cli_error(
+                    "cannot determine home directory for ~/.s3a/keys/",
+                    Some("pass --key <pubkey> or set HOME"),
+                    verbose,
+                    None,
+                )
+            });
+        let pub_path = PathBuf::from(home)
+            .join(".s3a")
+            .join("keys")
+            .join(format!("{}.pub", name));
+        let hex_str = fs::read_to_string(&pub_path).unwrap_or_else(|e| {
+            print_cli_error(
+                &format!(
+                    "failed to read public key '{}' for --key-name {}: {}",
+                    pub_path.display(),
+                    name,
+                    e
+                ),
+                Some("run 's3a keygen --name <name>' first"),
+                verbose,
+                Some(&e.to_string()),
+            )
+        });
+        let bytes = hex::decode(hex_str.trim()).unwrap_or_else(|e| {
+            print_cli_error(
+                &format!("invalid public key in '{}': {}", pub_path.display(), e),
+                None,
+                verbose,
+                Some(&e.to_string()),
+            )
+        });
+        let arr: [u8; 32] = bytes.try_into().unwrap_or_else(|_| {
+            print_cli_error(
+                &format!(
+                    "invalid public key length in '{}' (expected 32 bytes)",
+                    pub_path.display()
+                ),
+                None,
+                verbose,
+                None,
+            )
+        });
+        return Some(arr);
+    }
+    None
+}
+
 pub fn handle_init(args: &[String], verbose: bool) {
-    let pos = extract_positional_args(args);
+    let mut pos: Vec<&String> = Vec::new();
+    let mut key_arg: Option<String> = None;
+    let mut key_name_arg: Option<String> = None;
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--key" && i + 1 < args.len() {
+            key_arg = Some(args[i + 1].clone());
+            i += 2;
+        } else if let Some(v) = args[i].strip_prefix("--key=") {
+            key_arg = Some(v.to_string());
+            i += 1;
+        } else if args[i] == "--key-name" && i + 1 < args.len() {
+            key_name_arg = Some(args[i + 1].clone());
+            i += 2;
+        } else if let Some(v) = args[i].strip_prefix("--key-name=") {
+            key_name_arg = Some(v.to_string());
+            i += 1;
+        } else if args[i] == "--vault" && i + 1 < args.len() {
+            i += 2;
+        } else if args[i].starts_with('-') {
+            i += 1;
+        } else {
+            pos.push(&args[i]);
+            i += 1;
+        }
+    }
+
+    let pinned_pubkey = resolve_init_pubkey(key_arg.as_deref(), key_name_arg.as_deref(), verbose);
+
     let path = if let Some(p) = pos.first() {
         PathBuf::from(p)
     } else {
@@ -450,7 +734,21 @@ pub fn handle_init(args: &[String], verbose: bool) {
     // Initialize VCS repo so revision history, commits, and status work immediately
     let _ = s3a_vcs::VcsRepo::init(&path);
 
+    if let Some(pk) = pinned_pubkey {
+        if let Err(e) = s3a_engine::set_vault_pinned_pubkey(&path, &pk) {
+            print_cli_error(
+                &format!("failed to pin public key to '{}': {}", path.display(), e),
+                None,
+                verbose,
+                Some(&e.to_string()),
+            );
+        }
+    }
+
     println!("Initialized new S3A vault at {}", path.display());
+    if let Some(pk) = pinned_pubkey {
+        println!("Pinned signer key: {}", hex::encode(pk));
+    }
     println!();
     println!("Next steps:");
     println!("  1. Store a key-value record:");
@@ -2733,6 +3031,16 @@ pub fn handle_info(args: &[String], verbose: bool) {
         }
     }
 
+    let signer_hex = fs::read(&vault_path)
+        .ok()
+        .and_then(|b| s3a_engine::inspect_seal_signature(&b).map(|(pk, _)| hex::encode(pk)))
+        .or_else(|| {
+            s3a_engine::get_vault_pinned_pubkey(&vault_path)
+                .ok()
+                .flatten()
+                .map(hex::encode)
+        });
+
     if json_mode {
         let types_json = type_counts
             .iter()
@@ -2759,13 +3067,19 @@ pub fn handle_info(args: &[String], verbose: bool) {
             None => String::new(),
         };
 
+        let signer_json = match &signer_hex {
+            Some(s) => format!(r#","signer":"{}""#, s),
+            None => String::new(),
+        };
+
         println!(
-            r#"{{"ok":true,"vault":"{}","file_size":{},"total_tiles":{},"types":[{}]{}}}"#,
+            r#"{{"ok":true,"vault":"{}","file_size":{},"total_tiles":{},"types":[{}]{}{}}}"#,
             vault_path.display(),
             file_size,
             total_tiles,
             types_json,
-            commit_json
+            commit_json,
+            signer_json
         );
     } else {
         println!("=========================================================================");
@@ -2777,6 +3091,9 @@ pub fn handle_info(args: &[String], verbose: bool) {
             file_size,
             file_size as f64 / 1024.0
         );
+        if let Some(ref s) = signer_hex {
+            println!("Signer:             {}", s);
+        }
         println!("Storage Version:    1");
         println!("Committed Tiles:    {}", total_tiles);
         println!();
@@ -2947,16 +3264,27 @@ pub fn handle_help(args: &[String]) {
             println!("s3a init - Create a new S3A vault");
             println!();
             println!("Usage:");
-            println!("  s3a init [path]");
+            println!("  s3a init [path] [--key <pubkey>] [--key-name <name>]");
             println!();
             println!("Description:");
             println!("  Initializes a new sector-aligned S3A archive with generation 1 dual A/B headers.");
             println!("  Defaults to './my.s3a' if no path is provided.");
+            println!("  Optionally pins an Ed25519 public key to require signed seals.");
             println!();
             println!("Examples:");
             println!("  s3a init");
             println!("  s3a init ./production.s3a");
-            println!("  s3a init /var/data/telemetry.s3a");
+            println!("  s3a init ./production.s3a --key-name default");
+        }
+        Some("keygen") => {
+            println!("s3a keygen - Generate an Ed25519 vault signing keypair");
+            println!();
+            println!("Usage:");
+            println!("  s3a keygen [--name <name>] [--out <path>]");
+            println!();
+            println!("Description:");
+            println!("  Generates an Ed25519 keypair. Defaults to ~/.s3a/keys/<name>.key (0600)");
+            println!("  and ~/.s3a/keys/<name>.pub (0644).");
         }
         Some("put") => {
             println!("s3a put - Store a key-value record in the vault");
@@ -3167,11 +3495,11 @@ pub fn handle_help(args: &[String]) {
             println!("s3a seal - Seal cold archive with Reed-Solomon parity and Merkle roots");
             println!();
             println!("Usage:");
-            println!("  s3a seal <in_file> <out_file> [--about] [--record-roots]");
+            println!("  s3a seal <in_file> <out_file> [--parity] [--about] [--record-roots] [--key <path>] [--no-sign]");
             println!();
             println!("Examples:");
             println!("  s3a seal my.s3a my.sealed.s3a");
-            println!("  s3a seal my.s3a my.sealed.s3a --about --record-roots");
+            println!("  s3a seal my.s3a my.sealed.s3a --key ~/.s3a/keys/default.key");
         }
         Some("verify") => {
             println!("s3a verify - Verify sealed parity, self-addressing, or anchors");
@@ -3217,7 +3545,8 @@ pub fn print_general_help() {
     println!("High-performance, crash-resilient columnar database and storage engine.");
     println!();
     println!("FIRST-RUN COMMANDS:");
-    println!("  s3a init [path]                  Create a new vault (default: ./my.s3a)");
+    println!("  s3a init [path] [--key <pk>]     Create a new vault (default: ./my.s3a)");
+    println!("  s3a keygen [--name N] [--out P]  Generate an Ed25519 vault signing keypair");
     println!("  s3a put <key> <value|@file>      Store a key-value record in the vault");
     println!("  s3a get <key>                    Retrieve a value by key");
     println!("  s3a open <key>                   Open stored document in OS default application");
