@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/srs_pipeline_v1.schema.json",
+  "title": "S3A Scholar Snapshot Pipeline Manifest (srs_pipeline_v1)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "record_layout_version",
+    "project_uuid",
+    "snapshot_uuid",
+    "lifecycle_stage",
+    "srs_workspace",
+    "srs_manifest",
+    "provenance",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "record_layout_version": { "const": 1 },
+    "project_uuid": { "type": "string" },
+    "snapshot_uuid": { "type": "string" },
+    "parent_snapshot_uuid": { "type": ["string", "null"] },
+    "lifecycle_stage": {
+      "type": "string",
+      "enum": ["DISCOVERED", "CLASSIFIED", "EXTRACTED", "REPRODUCED"]
+    },
+    "srs_workspace": {
+      "type": "object",
+      "required": ["tile_id", "status", "question_hash", "collection_mask"],
+      "properties": {
+        "tile_id": { "const": 14 },
+        "status": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "status_label": {
+          "type": "string",
+          "enum": ["DISCOVERED", "CLASSIFIED", "EXTRACTED", "REPRODUCED"]
+        },
+        "question_hash": { "type": "integer", "minimum": 0 },
+        "collection_mask": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "srs_manifest": {
+      "type": "object",
+      "required": ["tile_id", "magic", "schema_version"],
+      "properties": {
+        "tile_id": { "const": 15 },
+        "magic": { "const": "S3ASTOR1" },
+        "schema_version": { "const": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["prov_context", "lineage", "human_gate_status"],
+      "properties": {
+        "prov_context": { "const": "http://www.w3.org/ns/prov#" },
+        "human_gate_status": { "type": "string", "enum": ["pending", "confirmed"] },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["stage", "wasGeneratedBy", "derivedFrom", "actor_kind", "timestamp"],
+            "properties": {
+              "stage": { "type": "string", "enum": ["DISCOVERED", "CLASSIFIED", "EXTRACTED", "REPRODUCED"] },
+              "wasGeneratedBy": { "type": "string" },
+              "derivedFrom": { "type": "string" },
+              "actor_kind": { "type": "string", "enum": ["ai_agent", "human"] },
+              "actor_id": { "type": "string" },
+              "timestamp": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["paper_id", "discovery_uri", "lifecycle_stage", "human_verdict"],
+        "properties": {
+          "paper_id": { "type": "string" },
+          "discovery_uri": { "type": "string" },
+          "sha256": { "type": ["string", "null"] },
+          "lifecycle_stage": { "type": "string", "enum": ["DISCOVERED", "CLASSIFIED", "EXTRACTED", "REPRODUCED"] },
+          "human_confirmed_classification": { "type": "boolean" },
+          "wiki_dossier_path": { "type": ["string", "null"] },
+          "paperlab_case_dir": { "type": ["string", "null"] },
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["quote_sha256", "passage_page"],
+              "properties": {
+                "quote_sha256": { "type": "string" },
+                "passage_page": { "type": "integer", "minimum": 1 }
+              }
+            }
+          },
+          "human_verdict": {
+            "type": ["object", "null"],
+            "properties": {
+              "verdict": { "type": ["string", "null"] },
+              "professor_identity": { "type": ["string", "null"] },
+              "signed_at": { "type": ["string", "null"] },
+              "signature": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
