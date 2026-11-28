@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ashleycribb/s3a-storage/blob/main/docs/spec/scholar_pack_v1.schema.json",
+  "title": "S3A Scholar Pack v1 Contract (Tiles 10-15 + NoteClaims Tile 20)",
+  "schema_version": "1.0.0",
+  "record_layout_version": 1,
+  "required_addon": {
+    "name": "ADDON_EDU",
+    "mask": 1
+  },
+  "invariants": {
+    "ai_allowed_tiles": [11],
+    "ai_provisional_metadata_tiles": [12, 13, 14, 20],
+    "human_confirmation_required_tiles": [10],
+    "human_confirmation_rule": "AI agents may only write AiTraceRecord (Tile 11) and provisional/suggested metadata. HumanLrsRecord (Tile 10) and final classification/verdict edges require explicit human confirmation or signature."
+  },
+  "tiles": {
+    "10": {
+      "tile_id": 10,
+      "constant_name": "HUMAN_LRS",
+      "struct_name": "HumanLrsRecord",
+      "record_size": 64,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": true,
+      "ingest_file": "human_lrs.jsonl",
+      "ingest_fields": {
+        "session_high": { "type": "integer", "minimum": 0 },
+        "session_low": { "type": "integer", "minimum": 0 },
+        "timestamp_sec": { "type": "integer", "minimum": 0 },
+        "actor_hash": { "type": "integer", "minimum": 0 },
+        "verb_id": { "type": "integer", "minimum": 0 },
+        "decision_score": { "type": "number" },
+        "object_hash": { "type": "integer", "minimum": 0 },
+        "ai_tile": { "type": "integer", "minimum": 0 },
+        "ai_record": { "type": "integer", "minimum": 0 }
+      },
+      "required_ingest_fields": [
+        "session_high",
+        "session_low",
+        "timestamp_sec",
+        "actor_hash",
+        "verb_id",
+        "decision_score",
+        "object_hash",
+        "ai_tile",
+        "ai_record"
+      ],
+      "fields": [
+        { "name": "session_uuid", "rust_field": "session_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 0, "byte_len": 16 },
+        { "name": "timestamp_sec", "rust_field": "timestamp_sec", "type": "U64", "type_code": 4, "byte_offset": 16, "byte_len": 8 },
+        { "name": "actor_hash", "rust_field": "actor_hash", "type": "U64", "type_code": 4, "byte_offset": 24, "byte_len": 8 },
+        { "name": "verb_id", "rust_field": "verb_id", "type": "U32", "type_code": 3, "byte_offset": 32, "byte_len": 4 },
+        { "name": "decision_score", "rust_field": "decision_score", "type": "F32", "type_code": 9, "byte_offset": 36, "byte_len": 4 },
+        { "name": "ai_trace_coord", "rust_field": "ai_trace_coord", "type": "BYTES", "type_code": 13, "byte_offset": 40, "byte_len": 16 },
+        { "name": "object_hash", "rust_field": "object_hash", "type": "U32", "type_code": 3, "byte_offset": 56, "byte_len": 4 },
+        { "name": "flags", "rust_field": "flags", "type": "U32", "type_code": 3, "byte_offset": 60, "byte_len": 4 }
+      ]
+    },
+    "11": {
+      "tile_id": 11,
+      "constant_name": "AI_TRACE_LOG",
+      "struct_name": "AiTraceRecord",
+      "record_size": 64,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": "ai_traces.jsonl",
+      "ingest_fields": {
+        "session_high": { "type": "integer", "minimum": 0 },
+        "session_low": { "type": "integer", "minimum": 0 },
+        "timestamp_sec": { "type": "integer", "minimum": 0 },
+        "agent_id": { "type": "integer", "minimum": 0 },
+        "step_type": { "type": "integer", "minimum": 1 },
+        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "human_tile": { "type": "integer", "minimum": 0 },
+        "human_record": { "type": "integer", "minimum": 0 },
+        "hilbert_index": { "type": "integer", "minimum": 0 }
+      },
+      "required_ingest_fields": [
+        "session_high",
+        "session_low",
+        "timestamp_sec",
+        "agent_id",
+        "step_type",
+        "confidence",
+        "human_tile",
+        "human_record",
+        "hilbert_index"
+      ],
+      "fields": [
+        { "name": "session_uuid", "rust_field": "session_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 0, "byte_len": 16 },
+        { "name": "timestamp_sec", "rust_field": "timestamp_sec", "type": "U64", "type_code": 4, "byte_offset": 16, "byte_len": 8 },
+        { "name": "agent_id", "rust_field": "agent_id", "type": "U64", "type_code": 4, "byte_offset": 24, "byte_len": 8 },
+        { "name": "step_type", "rust_field": "step_type", "type": "U32", "type_code": 3, "byte_offset": 32, "byte_len": 4 },
+        { "name": "confidence", "rust_field": "confidence", "type": "F32", "type_code": 9, "byte_offset": 36, "byte_len": 4 },
+        { "name": "human_coord", "rust_field": "human_coord", "type": "BYTES", "type_code": 13, "byte_offset": 40, "byte_len": 16 },
+        { "name": "hilbert_index", "rust_field": "hilbert_index", "type": "U32", "type_code": 3, "byte_offset": 56, "byte_len": 4 },
+        { "name": "flags", "rust_field": "flags", "type": "U32", "type_code": 3, "byte_offset": 60, "byte_len": 4 }
+      ]
+    },
+    "12": {
+      "tile_id": 12,
+      "constant_name": "ACADEMIC_PAPERS",
+      "struct_name": "AcademicPaperRecord",
+      "record_size": 64,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": "academic_papers.jsonl",
+      "ingest_fields": {
+        "paper_id": { "type": "integer", "minimum": 0 },
+        "timestamp_sec": { "type": "integer", "minimum": 0 },
+        "hilbert_index": { "type": "integer", "minimum": 0 },
+        "topic_x": { "type": "number" },
+        "topic_y": { "type": "number" },
+        "topic_z": { "type": "number" },
+        "citation_count": { "type": "integer", "minimum": 0 },
+        "year": { "type": "integer", "minimum": 0 },
+        "venue_id": { "type": "integer", "minimum": 0 },
+        "open_access_flag": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "warning_count": { "type": "integer", "minimum": 0 },
+        "doi_prefix_hash": { "type": "integer", "minimum": 0 }
+      },
+      "required_ingest_fields": [
+        "paper_id",
+        "timestamp_sec",
+        "hilbert_index",
+        "topic_x",
+        "topic_y",
+        "topic_z",
+        "citation_count",
+        "year",
+        "venue_id",
+        "open_access_flag",
+        "warning_count",
+        "doi_prefix_hash"
+      ],
+      "fields": [
+        { "name": "paper_id", "rust_field": "paper_id", "type": "U64", "type_code": 4, "byte_offset": 0, "byte_len": 8 },
+        { "name": "timestamp_sec", "rust_field": "timestamp_sec", "type": "U64", "type_code": 4, "byte_offset": 8, "byte_len": 8 },
+        { "name": "hilbert_index", "rust_field": "hilbert_index", "type": "U64", "type_code": 4, "byte_offset": 16, "byte_len": 8 },
+        { "name": "topic_x", "rust_field": "topic_x", "type": "F32", "type_code": 9, "byte_offset": 24, "byte_len": 4 },
+        { "name": "topic_y", "rust_field": "topic_y", "type": "F32", "type_code": 9, "byte_offset": 28, "byte_len": 4 },
+        { "name": "topic_z", "rust_field": "topic_z", "type": "F32", "type_code": 9, "byte_offset": 32, "byte_len": 4 },
+        { "name": "citation_count", "rust_field": "citation_count", "type": "U32", "type_code": 3, "byte_offset": 36, "byte_len": 4 },
+        { "name": "year", "rust_field": "year", "type": "U16", "type_code": 2, "byte_offset": 40, "byte_len": 2 },
+        { "name": "venue_id", "rust_field": "venue_id", "type": "U16", "type_code": 2, "byte_offset": 42, "byte_len": 2 },
+        { "name": "open_access_flag", "rust_field": "open_access_flag", "type": "U16", "type_code": 2, "byte_offset": 44, "byte_len": 2 },
+        { "name": "warning_count", "rust_field": "warning_count", "type": "U16", "type_code": 2, "byte_offset": 46, "byte_len": 2 },
+        { "name": "doi_prefix_hash", "rust_field": "doi_prefix_hash", "type": "U64", "type_code": 4, "byte_offset": 48, "byte_len": 8 },
+        { "name": "flags", "rust_field": "flags", "type": "U64", "type_code": 4, "byte_offset": 56, "byte_len": 8 }
+      ]
+    },
+    "13": {
+      "tile_id": 13,
+      "constant_name": "RESEARCH_GRAPH",
+      "struct_name": "ResearchGraphEdgeRecord",
+      "record_size": 64,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": "graph_edges.jsonl",
+      "ingest_fields": {
+        "subject_hash": { "type": "integer", "minimum": 0 },
+        "object_hash": { "type": "integer", "minimum": 0 },
+        "timestamp_sec": { "type": "integer", "minimum": 0 },
+        "hilbert_coord": { "type": "integer", "minimum": 0 },
+        "predicate_id": { "type": "integer", "minimum": 1 },
+        "weight": { "type": "number" }
+      },
+      "required_ingest_fields": [
+        "subject_hash",
+        "object_hash",
+        "timestamp_sec",
+        "hilbert_coord",
+        "predicate_id",
+        "weight"
+      ],
+      "fields": [
+        { "name": "subject_hash", "rust_field": "subject_hash", "type": "U64", "type_code": 4, "byte_offset": 0, "byte_len": 8 },
+        { "name": "object_hash", "rust_field": "object_hash", "type": "U64", "type_code": 4, "byte_offset": 8, "byte_len": 8 },
+        { "name": "timestamp_sec", "rust_field": "timestamp_sec", "type": "U64", "type_code": 4, "byte_offset": 16, "byte_len": 8 },
+        { "name": "hilbert_coord", "rust_field": "hilbert_coord", "type": "U64", "type_code": 4, "byte_offset": 24, "byte_len": 8 },
+        { "name": "predicate_id", "rust_field": "predicate_id", "type": "U32", "type_code": 3, "byte_offset": 32, "byte_len": 4 },
+        { "name": "weight", "rust_field": "weight", "type": "F32", "type_code": 9, "byte_offset": 36, "byte_len": 4 },
+        { "name": "flags", "rust_field": "flags", "type": "U64", "type_code": 4, "byte_offset": 40, "byte_len": 8 },
+        { "name": "reserved", "rust_field": "_reserved", "type": "BYTES", "type_code": 13, "byte_offset": 48, "byte_len": 16 }
+      ]
+    },
+    "14": {
+      "tile_id": 14,
+      "constant_name": "SRS_WORKSPACE",
+      "struct_name": "SrsWorkspaceRecord",
+      "record_size": 64,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": "workspace.json",
+      "ingest_fields": {
+        "project_high": { "type": "integer", "minimum": 0 },
+        "project_low": { "type": "integer", "minimum": 0 },
+        "question_hash": { "type": "integer", "minimum": 0 },
+        "collection_mask": { "type": "integer", "minimum": 0 },
+        "centroid_x": { "type": "number" },
+        "centroid_y": { "type": "number" },
+        "centroid_z": { "type": "number" },
+        "status": { "type": "integer", "minimum": 0 }
+      },
+      "required_ingest_fields": [
+        "project_high",
+        "project_low",
+        "question_hash",
+        "collection_mask",
+        "centroid_x",
+        "centroid_y",
+        "centroid_z",
+        "status"
+      ],
+      "fields": [
+        { "name": "project_uuid", "rust_field": "project_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 0, "byte_len": 16 },
+        { "name": "question_hash", "rust_field": "question_hash", "type": "U64", "type_code": 4, "byte_offset": 16, "byte_len": 8 },
+        { "name": "collection_mask", "rust_field": "collection_mask", "type": "U64", "type_code": 4, "byte_offset": 24, "byte_len": 8 },
+        { "name": "topic_centroid_xyz", "rust_field": "topic_centroid_xyz", "type": "BYTES", "type_code": 13, "byte_offset": 32, "byte_len": 12 },
+        { "name": "status", "rust_field": "status", "type": "U32", "type_code": 3, "byte_offset": 44, "byte_len": 4 },
+        { "name": "pinned_works_count", "rust_field": "pinned_works_count", "type": "U32", "type_code": 3, "byte_offset": 48, "byte_len": 4 },
+        { "name": "claims_count", "rust_field": "claims_count", "type": "U32", "type_code": 3, "byte_offset": 52, "byte_len": 4 },
+        { "name": "flags", "rust_field": "flags", "type": "U64", "type_code": 4, "byte_offset": 56, "byte_len": 8 }
+      ]
+    },
+    "15": {
+      "tile_id": 15,
+      "constant_name": "SRS_MANIFEST",
+      "struct_name": "SrsManifestHeader",
+      "record_size": 512,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": null,
+      "ingest_fields": {},
+      "required_ingest_fields": [],
+      "fields": [
+        { "name": "magic", "rust_field": "magic", "type": "STRING", "type_code": 11, "byte_offset": 0, "byte_len": 8 },
+        { "name": "schema_version", "rust_field": "schema_version", "type": "U32", "type_code": 3, "byte_offset": 8, "byte_len": 4 },
+        { "name": "archive_flags", "rust_field": "archive_flags", "type": "U32", "type_code": 3, "byte_offset": 12, "byte_len": 4 },
+        { "name": "project_uuid", "rust_field": "project_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 16, "byte_len": 16 },
+        { "name": "snapshot_uuid", "rust_field": "snapshot_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 32, "byte_len": 16 },
+        { "name": "parent_snapshot_uuid", "rust_field": "parent_snapshot_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 48, "byte_len": 16 },
+        { "name": "origin_session_uuid", "rust_field": "origin_session_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 64, "byte_len": 16 },
+        { "name": "created_at_sec", "rust_field": "created_at_sec", "type": "U64", "type_code": 4, "byte_offset": 80, "byte_len": 8 },
+        { "name": "tile_count", "rust_field": "tile_count", "type": "U32", "type_code": 3, "byte_offset": 88, "byte_len": 4 },
+        { "name": "crc32c_checksum", "rust_field": "crc32c_checksum", "type": "U32", "type_code": 3, "byte_offset": 92, "byte_len": 4 },
+        { "name": "total_records", "rust_field": "total_records", "type": "U64", "type_code": 4, "byte_offset": 96, "byte_len": 8 }
+      ]
+    },
+    "20": {
+      "tile_id": 20,
+      "constant_name": "SCHOLAR_NOTE_CLAIMS",
+      "struct_name": "ScholarNoteClaimRecord",
+      "record_size": 160,
+      "align": 8,
+      "record_layout_version": 1,
+      "human_confirmation_required": false,
+      "ingest_file": null,
+      "ingest_fields": {},
+      "required_ingest_fields": [],
+      "fields": [
+        { "name": "claim_id", "rust_field": "claim_id", "type": "U64", "type_code": 4, "byte_offset": 0, "byte_len": 8 },
+        { "name": "timestamp_sec", "rust_field": "timestamp_sec", "type": "U64", "type_code": 4, "byte_offset": 8, "byte_len": 8 },
+        { "name": "session_uuid", "rust_field": "session_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 16, "byte_len": 16 },
+        { "name": "author_hash", "rust_field": "author_hash", "type": "U64", "type_code": 4, "byte_offset": 32, "byte_len": 8 },
+        { "name": "confidence", "rust_field": "confidence", "type": "F32", "type_code": 9, "byte_offset": 40, "byte_len": 4 },
+        { "name": "kind", "rust_field": "kind", "type": "U16", "type_code": 2, "byte_offset": 44, "byte_len": 2 },
+        { "name": "flags", "rust_field": "flags", "type": "U16", "type_code": 2, "byte_offset": 46, "byte_len": 2 },
+        { "name": "keyword_bloom", "rust_field": "keyword_bloom", "type": "U32", "type_code": 3, "byte_offset": 48, "byte_len": 4 },
+        { "name": "text_hash", "rust_field": "text_hash", "type": "U32", "type_code": 3, "byte_offset": 52, "byte_len": 4 },
+        { "name": "embedding_tile_id", "rust_field": "embedding_tile_id", "type": "U32", "type_code": 3, "byte_offset": 56, "byte_len": 4 },
+        { "name": "embedding_offset", "rust_field": "embedding_offset", "type": "U32", "type_code": 3, "byte_offset": 60, "byte_len": 4 },
+        { "name": "citation_fingerprint_id", "rust_field": "citation_fingerprint_id", "type": "U64", "type_code": 4, "byte_offset": 64, "byte_len": 8 },
+        { "name": "passage_page", "rust_field": "passage_page", "type": "U32", "type_code": 3, "byte_offset": 72, "byte_len": 4 },
+        { "name": "passage_char_offset", "rust_field": "passage_char_offset", "type": "U32", "type_code": 3, "byte_offset": 76, "byte_len": 4 },
+        { "name": "passage_char_length", "rust_field": "passage_char_length", "type": "U32", "type_code": 3, "byte_offset": 80, "byte_len": 4 },
+        { "name": "quote_sha256", "rust_field": "quote_sha256", "type": "BYTES", "type_code": 13, "byte_offset": 88, "byte_len": 32 },
+        { "name": "producer_id", "rust_field": "producer_id", "type": "U64", "type_code": 4, "byte_offset": 120, "byte_len": 8 },
+        { "name": "verification_statement_uuid", "rust_field": "verification_statement_uuid", "type": "BYTES", "type_code": 13, "byte_offset": 128, "byte_len": 16 }
+      ]
+    }
+  }
+}
